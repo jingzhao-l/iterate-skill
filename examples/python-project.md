@@ -26,10 +26,15 @@ git:
   use_worktree: false
 
 validation:
-  vm:
-    - "ruff check src/ tests/"
-    - "mypy src/ --ignore-missing-imports"
-    - "pytest tests/ -x -q --timeout=60"
+  command_whitelist:
+    - "ruff"
+    - "mypy"
+    - "pytest"
+  commands:
+    vm:
+      - "ruff check src/ tests/"
+      - "mypy src/ --ignore-missing-imports"
+      - "pytest tests/ -x -q --timeout=60"
 ```
 
 触发方式：

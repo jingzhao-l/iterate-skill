@@ -27,10 +27,13 @@ git:
   use_worktree: false
 
 validation:
-  ide-plugin:
-    - "npm run lint"
-    - "npm run compile"
-    - "npm test"
+  command_whitelist:
+    - "npm run"
+  commands:
+    ide-plugin:
+      - "npm run lint"
+      - "npm run compile"
+      - "npm test"
 ```
 
 触发方式：

@@ -89,14 +89,21 @@ dimensions:
   - ui-ux
 
 validation:
-  vm:
-    - "ruff check src/"
-    - "mypy src/ --ignore-missing-imports"
-    - "pytest tests/ -x -q --timeout=60"
-  host:
-    - "swift build -c debug"
-  ide-plugin:
-    - "npm run compile"
+  command_whitelist:
+    - "ruff"
+    - "mypy"
+    - "pytest"
+    - "swift"
+    - "npm run"
+  commands:
+    vm:
+      - "ruff check src/"
+      - "mypy src/ --ignore-missing-imports"
+      - "pytest tests/ -x -q --timeout=60"
+    host:
+      - "swift build -c debug"
+    ide-plugin:
+      - "npm run compile"
 ```
 
 然后在对话中触发：
@@ -114,8 +121,10 @@ iterate-skill/
 ├── SKILL.md                          # 核心技能文件
 ├── README.md                         # 本文件
 ├── LICENSE                           # MIT 许可证
+├── CONTRIBUTING.md                   # 开源贡献指南
 ├── config/
 │   ├── iterate.config.yaml           # 默认配置
+│   ├── config.schema.json            # iterate.config.yaml 的 JSON Schema
 │   └── dimensions.yaml               # 9 维度定义与 prompt
 ├── examples/
 │   ├── python-project.md             # Python 项目示例
@@ -123,8 +132,18 @@ iterate-skill/
 │   └── typescript-project.md         # TypeScript 项目示例
 ├── templates/
 │   └── iterate-decisions.template.md # 决策日志模板
-└── scripts/
-    └── validate.py                   # 决策日志格式校验脚本
+├── scripts/
+│   ├── validate.py                   # 配置与决策日志校验脚本
+│   └── requirements.txt              # 校验脚本依赖
+├── tools/
+│   ├── SKILL.trae.md                 # Trae 专属实现示例
+│   ├── SKILL.claude.md               # Claude Code 专属实现示例
+│   └── SKILL.cursor.md               # Cursor / Generic 实现示例
+├── tests/
+│   └── test_validate.py              # validate.py 单元测试
+└── .github/
+    └── workflows/
+        └── ci.yml                    # GitHub Actions CI
 ```
 
 ---
@@ -163,9 +182,13 @@ Summary
 | `max_rounds` | int | `7` | 最大轮数 |
 | `language` | string | `"en"` | 输出语言：`zh` / `en` |
 | `dimensions` | list | 9 维度 | 启用的审查维度 |
-| `validation` | object | 示例命令 | 各模块验证命令（**由使用者完全自定义**） |
+| `review.scope` | string | `"full"` | 审查范围：`changed-only` 增量 / `full` 全量 |
 | `atomic.max_lines` | int | `20` | 原子问题最大行数 |
 | `git.target_branch` | string | `main` | 合并目标分支 |
+| `git.push_per_round` | bool | `true` | 每轮通过后是否立即 push |
+| `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
+| `validation.commands` | object | 示例命令 | 各模块验证命令（**由使用者完全自定义**） |
+| `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
 
 ---
 
@@ -185,4 +208,4 @@ Summary
 
 ## 许可证 / License
 
-[MIT](./LICENSE) © 2026 Zynthara AI contributors
+[MIT](./LICENSE) © 2026 iterate-skill contributors

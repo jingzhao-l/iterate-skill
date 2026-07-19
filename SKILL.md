@@ -156,7 +156,11 @@ Launch **9 parallel reviewer sub-agents**, one per dimension.
 每个子代理的任务提示：
 
 ```text
-Review the ENTIRE codebase for {DIMENSION} issues ONLY.
+Review the codebase for {DIMENSION} issues ONLY.
+
+Scope: {review.scope}
+- "full"      → review the ENTIRE codebase.
+- "changed-only" → review ONLY files changed in the current round (git diff against {git.target_branch}).
 
 Focus: {focus description}
 
@@ -168,35 +172,51 @@ For each finding, report:
 - is_atomic (boolean): true if fix is ≤{atomic.max_lines} lines within a SINGLE function/file;
   false if cross-file, new files, API changes, or large refactoring.
 
-Return: { "findings": [...] }
+Return strictly as JSON: { "findings": [...] }
+Each finding object must contain: file, severity, dimension, summary, failure_scenario, suggested_fix, is_atomic.
+If no issues are found, return { "findings": [] }.
 ```
 
 #### 工具映射 / Tool Mapping
 
 | 工具 / Tool | Trae | Claude Code | Cursor / Generic |
 |-------------|------|-------------|------------------|
-| 并行审查子代理 | `Task` × 9 (type: `search` or `general_purpose_task`) | `Workflow` / `Agent` × 9 | 手动或脚本并行运行 |
+| 并行审查子代理 | `Task` × N (type: `search` or `general_purpose_task`) | `Workflow` / `Agent` × N | 手动或脚本并行运行 |
+| 按目录拆分审查 | `Task` per directory/module | `Agent` per directory/module | 脚本分组 |
 | 结果汇总 | `Task` (type: `general_purpose_task`) | `Agent` synthesize | 人工汇总 |
+| reviewer 输出 schema 校验 | 主模型 JSON parse + field check | 主模型 JSON parse + field check | 脚本校验 |
 | 用户审批 | `AskUserQuestion` | `EnterPlanMode` / `ExitPlanMode` | 对话确认 |
 | 文件编辑 | `Read` / `Edit` / `Write` | `Read` / `Edit` / `Write` | IDE 编辑 |
 | 执行命令 | `RunCommand` | `Bash` | Terminal |
+| 配置校验 | `python scripts/validate.py config ...` | `python scripts/validate.py config ...` | 同左 |
+
+#### 按模块/目录拆分 / Split by Module or Directory
+
+当项目较大时，可将一个维度拆分为多个子任务，每个任务只审查一个模块或目录：
+
+```text
+Split dimension {DIMENSION} review by top-level directories.
+For each directory, launch a reviewer with scope "changed-only" or "full".
+Merge findings, removing duplicates across directory boundaries.
+```
 
 #### 汇总与分类 / Synthesize and Classify
 
 使用一个汇总子代理：
 
 ```text
-Synthesize findings from 9 reviewers.
+Synthesize findings from all reviewers.
 
 Goal: {goal} / Round: {round}
 
 Steps:
-1. REMOVE duplicates (same defect, same file → keep most detailed)
-2. REMOVE false positives (clearly wrong or unactionable)
-3. RE-VALIDATE is_atomic flag for each finding
-4. CLASSIFY into atomic and architectural
-5. SORT each group by severity (critical → high → medium → low)
-6. TRIM each group to 20 max
+1. PARSE each reviewer output as JSON; if invalid and reviewer.output_schema_validation is true, retry that reviewer up to 2 times.
+2. REMOVE duplicates (same defect, same file → keep most detailed)
+3. REMOVE false positives (clearly wrong or unactionable)
+4. RE-VALIDATE is_atomic flag for each finding
+5. CLASSIFY into atomic and architectural
+6. SORT each group by severity (critical → high → medium → low)
+7. TRIM each group to 20 max
 
 Return: { "empty": boolean, "atomic": [...], "architectural": [...] }
 ```
@@ -235,11 +255,13 @@ if empty AND deferredArchitectural is empty:
 
 3. **验证原子修复 / Validate atomic fixes**
 
-   根据改动的模块跑对应检查（从配置读取）：
+   根据改动的模块跑对应检查（从 `validation.commands` 读取）：
 
    - `vm/`：`ruff check src/ && mypy src/ --ignore-missing-imports && pytest tests/ -x -q --timeout=60`
    - `host/`：`swift build -c debug`
    - `ide-plugin/`：`npm run compile`
+
+   执行前检查命令前缀是否在 `validation.command_whitelist` 中；不在白名单中的命令必须二次确认。
 
    若验证失败：
    - 追加 `.iterate_decisions.md`：`Atomic fix validation failed: {details}`
@@ -311,6 +333,8 @@ if empty AND deferredArchitectural is empty:
 
    根据改动模块跑完整验证（同 Phase 2，但覆盖所有改动模块）。
 
+   执行前同样检查 `validation.command_whitelist`。
+
    若失败：
    - 追加 `.iterate_decisions.md`：`Full validation failed: {details}`
    - 输出：`❌ Round {round}: full validation failed, stopping iteration`
@@ -324,6 +348,7 @@ if empty AND deferredArchitectural is empty:
 
 - 原子修复列表 + 状态
 - 架构修复列表（已执行 + 延迟 + 原因）
+- 修改范围审计：本轮修改的文件清单、每个文件对应的 task/reviewer、审批状态
 - AI 重要决策
 
 输出：`✅ Round {round} complete`
@@ -334,26 +359,34 @@ if empty AND deferredArchitectural is empty:
 
 每轮验证通过后：
 
-1. **Commit / 提交**
+1. **Backup tag / 备份标签**
+   - 在 commit 前为当前迭代分支打标签：`git tag iterate/round-{round}-backup`
+   - 若后续需要回滚，可 `git reset --hard iterate/round-{round}-backup`（仅用于迭代分支，不用于 main/master）。
+
+2. **Commit / 提交**
    - `git add <changed files>`
    - `git commit -m "fix: iterate round {round} — {brief summary}"`
 
-2. **Merge / 合并**
+3. **Merge / 合并**
    - `git checkout {target_branch}`
    - `git merge iterate/<goal-slug>-<timestamp>`
    - 如有冲突，立即解决；解决后重新验证。
 
-3. **Push / 推送**
-   - `git push origin {target_branch}`
-   - 若被拒绝，先 `git pull --rebase`，解决冲突，重新验证，再 push。
-   - **绝不 force-push 到 main/master**。
+4. **Push / 推送**
+   - 若 `git.push_per_round` 为 `true`：
+     - `git push origin {target_branch}`
+     - 若被拒绝，先 `git pull --rebase`，解决冲突，重新验证，再 push。
+     - **绝不 force-push 到 main/master**。
+   - 若 `git.push_per_round` 为 `false`：
+     - 本轮回不 push，只保留本地 merge。
+     - 在最后一轮或会话结束时，一次性 `git push origin {target_branch}`。
 
-4. **切回迭代分支 / Switch back**
+5. **切回迭代分支 / Switch back**
    - `git checkout iterate/<goal-slug>-<timestamp>`
    - 继续下一轮。
 
-5. **记录 / Log**
-   - 在 `.iterate_decisions.md` 中记录 commit hash、merge 结果、冲突处理。
+6. **记录 / Log**
+   - 在 `.iterate_decisions.md` 中记录 backup tag、commit hash、merge 结果、冲突处理。
 
 ```
 round += 1
@@ -470,15 +503,47 @@ Branch: {iteration-branch}
 | `max_rounds` | int | `7` | 最大轮数 |
 | `language` | string | `"en"` | 输出语言 `zh` / `en` |
 | `dimensions` | list | 9 维度 | 启用维度 |
+| `review.scope` | string | `"full"` | 审查范围：`changed-only` / `full` |
 | `atomic.max_lines` | int | `20` | 原子问题行数上限 |
 | `atomic.max_adjacent_methods` | int | `3` | 相邻方法数上限 |
 | `git.target_branch` | string | `"main"` | 合并目标分支 |
 | `git.use_worktree` | bool | `false` | 是否使用 worktree |
-| `validation.vm` | list | ... | Python/VM 模块验证命令 |
-| `validation.host` | list | ... | Swift/Host 模块验证命令 |
-| `validation.ide_plugin` | list | ... | TS/IDE 插件验证命令 |
+| `git.push_per_round` | bool | `true` | 每轮通过后是否立即 push |
+| `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
+| `validation.commands.<module>` | list | 示例命令 | 各模块验证命令 |
+| `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
 
 ---
+
+## 安全与敏感信息保护 / Security & Sensitive Data
+
+1. **Reviewer 不读取敏感文件 / No sensitive file access**
+   - reviewer 子代理不得读取 `.env`、`*.key`、`secrets/`、`*.pem`、`*.p12`、`credentials.json` 等文件。
+   - `projectContext` 中不得包含 API 密钥、密码、Token、数据库连接字符串。
+
+2. **命令白名单 / Command whitelist**
+   - 默认白名单：`ruff`, `mypy`, `pytest`, `swift`, `npm run`, `yarn`, `pnpm`, `go test`, `cargo`, `python`, `python3` 等已知前缀。
+   - 不在白名单中的 `validation.commands` 必须经用户二次确认后方可执行。
+   - 可用 `python scripts/validate.py config <path>` 提前检查命令合规性。
+
+3. **修改范围审计 / Modification scope audit**
+   - 每轮 `.iterate_decisions.md` 必须记录：本轮修改的文件、对应 task/reviewer、用户审批状态。
+   - 子代理只允许修改任务描述中的文件；越权修改必须报告并中止。
+
+4. **No force-push / No direct main commits**
+   - 绝不 force-push 到 `main`/`master`。
+   - 绝不直接在 `main`/`master` 上提交。
+
+## Reviewer Prompt 质量检查清单 / Reviewer Prompt Quality Checklist
+
+在启动 reviewer 前确认：
+
+- [ ] 已注入 `projectContext`，但不含密钥。
+- [ ] 已明确 `review.scope`（`changed-only` 或 `full`）。
+- [ ] 已说明 `atomic.max_lines` 和 `atomic.max_adjacent_methods`。
+- [ ] 已要求返回严格 JSON 并列出必填字段。
+- [ ] 已说明禁止读取敏感文件。
+- [ ] 大项目已按目录/模块拆分 reviewer 任务。
 
 ## 重要注意事项 / Important Notes
 
@@ -490,4 +555,4 @@ Branch: {iteration-branch}
 6. **主模型可补充 findings / Main model can supplement findings**：当 reviewer 遗漏明显问题时。
 7. **Git 隔离强制 / Git isolation is mandatory**：所有工作发生在 `iterate/*` 分支或 worktree；每轮验证后合并并推送。
 8. **完整审计 / Full audit trail**：`.iterate_decisions.md` 记录所有修复、延迟、回滚和重要决策。
-9. **验证命令安全 / Validation command safety**：`iterate.config.yaml` 中的 `validation` 命令由 AI 助手读取后执行；执行前应根据项目上下文确认命令安全性，避免运行未经验证的脚本。
+9. **验证命令安全 / Validation command safety**：`iterate.config.yaml` 中的 `validation.commands` 由 AI 助手读取后执行；执行前检查 `validation.command_whitelist`，不在白名单的命令需用户确认。

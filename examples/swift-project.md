@@ -26,9 +26,12 @@ git:
   use_worktree: false
 
 validation:
-  host:
-    - "swift build -c debug"
-    - "swift test -c debug"
+  command_whitelist:
+    - "swift"
+  commands:
+    host:
+      - "swift build -c debug"
+      - "swift test -c debug"
 ```
 
 触发方式：

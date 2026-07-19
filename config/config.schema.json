@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/jingzhao-l/iterate-skill/main/config/config.schema.json",
+  "title": "Iterate Skill Configuration",
+  "description": "Schema for iterate.config.yaml used by the iterate-skill AI coding assistant skill.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "goal": {
+      "type": "string",
+      "description": "Iteration goal shown in prompts and decision logs."
+    },
+    "max_rounds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50,
+      "description": "Maximum number of iteration rounds (hard cap 50)."
+    },
+    "language": {
+      "type": "string",
+      "enum": ["zh", "en"],
+      "description": "Output language for prompts and reports."
+    },
+    "dimensions": {
+      "type": "array",
+      "description": "Enabled review dimensions. Values are defined in config/dimensions.yaml.",
+      "items": {
+        "type": "string",
+        "enum": [
+          "correctness",
+          "security",
+          "performance",
+          "architecture",
+          "style-tests",
+          "tech-debt",
+          "spec-compliance",
+          "frontend-backend",
+          "ui-ux"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "review": {
+      "type": "object",
+      "description": "Review behaviour configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": ["changed-only", "full"],
+          "description": "changed-only reviews only files changed in the current round; full reviews the whole codebase."
+        }
+      }
+    },
+    "atomic": {
+      "type": "object",
+      "description": "Thresholds used to classify issues as atomic.",
+      "additionalProperties": false,
+      "properties": {
+        "max_lines": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of changed lines for an atomic issue."
+        },
+        "max_adjacent_methods": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of adjacent similar methods an atomic fix may span."
+        }
+      }
+    },
+    "git": {
+      "type": "object",
+      "description": "Git workflow configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "target_branch": {
+          "type": "string",
+          "description": "Target branch to merge fixes into."
+        },
+        "use_worktree": {
+          "type": "boolean",
+          "description": "Use git worktree instead of a local branch for isolation."
+        },
+        "push_per_round": {
+          "type": "boolean",
+          "description": "Push to remote after every round (true) or only at the end (false)."
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "description": "Validation command configuration and safety whitelist.",
+      "additionalProperties": false,
+      "properties": {
+        "command_whitelist": {
+          "type": "array",
+          "description": "Command prefixes allowed to run without user confirmation.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "commands": {
+          "type": "object",
+          "description": "Per-module validation command lists. Keys are module identifiers; values are shell commands.",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "reviewer": {
+      "type": "object",
+      "description": "Reviewer sub-agent configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "output_schema_validation": {
+          "type": "boolean",
+          "description": "Validate reviewer JSON output against the expected schema and retry on mismatch."
+        }
+      }
+    }
+  }
+}

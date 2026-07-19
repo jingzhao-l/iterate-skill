@@ -17,6 +17,7 @@ max_rounds: 7
 language: en
 
 # 启用的审查维度 / Enabled review dimensions
+# 可用值见 config/dimensions.yaml
 dimensions:
   - correctness
   - security
@@ -28,6 +29,12 @@ dimensions:
   - frontend-backend
   - ui-ux
 
+# 审查范围 / Review scope
+# - changed-only: 仅审查本轮有改动的文件（增量审查）。
+# - full:         每次审查整个代码库（全量审查）。
+review:
+  scope: full
+
 # 原子问题判定阈值 / Atomic issue thresholds
 atomic:
   max_lines: 20
@@ -37,18 +44,43 @@ atomic:
 git:
   target_branch: main
   use_worktree: false
+  # 每轮修复验证通过后是否立即 push。
+  # true:  每轮都 push（旧行为）。
+  # false: 只在本地合并，最后一次性 push。
+  push_per_round: true
 
-# 验证命令 / Validation commands
-# 键名对应项目模块，AI 会根据改动的模块选择执行。
-# 使用者决定：这些命令完全由你配置，AI 只读取并执行你信任的命令。
-# User decides: these commands are fully configurable. The AI only reads and
-# executes commands you trust.
+# 验证命令安全 / Validation command safety
+# 白名单中的命令前缀无需二次确认即可执行。
+# 不在白名单中的命令需要用户二次确认。
 validation:
-  vm:
-    - "ruff check src/"
-    - "mypy src/ --ignore-missing-imports"
-    - "pytest tests/ -x -q --timeout=60"
-  host:
-    - "swift build -c debug"
-  ide-plugin:
-    - "npm run compile"
+  command_whitelist:
+    - "ruff"
+    - "mypy"
+    - "pytest"
+    - "swift"
+    - "npm run"
+    - "yarn"
+    - "pnpm"
+    - "go test"
+    - "cargo"
+    - "python"
+    - "python3"
+
+  # 键名对应项目模块，AI 会根据改动的模块选择执行。
+  # 使用者决定：这些命令完全由你配置，AI 只读取并执行你信任的命令。
+  # User decides: these commands are fully configurable. The AI only reads and
+  # executes commands you trust.
+  commands:
+    vm:
+      - "ruff check src/"
+      - "mypy src/ --ignore-missing-imports"
+      - "pytest tests/ -x -q --timeout=60"
+    host:
+      - "swift build -c debug"
+    ide-plugin:
+      - "npm run compile"
+
+# Reviewer 输出校验 / Reviewer output validation
+reviewer:
+  # 是否对子代理返回的 JSON 进行 schema 校验，格式不符时自动重试。
+  output_schema_validation: true
