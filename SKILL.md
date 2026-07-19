@@ -99,23 +99,28 @@ Summary
    - 若指定 `--rounds N`，则 `maxRounds = N`。
    - 若指定 `--no-limit`，则 `maxRounds = 50`（硬上限）。
 
-3. **读取配置 / Load configuration**
+3. **确定项目根目录 / Locate project root**
+   - 以当前工作目录为起点，向上查找包含 `.git`、`iterate.config.yaml` 或 `CLAUDE.md` 的目录。
+   - 该目录即为项目根目录，后续所有文件读取和命令执行均以此为准。
+
+4. **读取配置 / Load configuration**
    - 优先读取项目根目录的 `iterate.config.yaml`。
-   - 若不存在，使用 `iterate-skill/config/iterate.config.yaml` 中的默认配置。
+   - 若不存在，使用本技能安装目录下的 `config/iterate.config.yaml` 作为默认配置。
    - 将配置合并到运行参数。
 
-4. **读取项目上下文 / Read project context**
+5. **读取项目上下文 / Read project context**
    - 读取项目根目录的 `CLAUDE.md`（若存在），提取项目名、架构、技术栈、代码规范。
    - 若不存在，使用简要描述。
    - 构造 `projectContext` 字符串供后续使用。
 
-5. **创建隔离环境 / Create isolated environment**
-   - 检查 `git status`，工作区必须干净；若不干净，询问用户是否 commit/stash。
+6. **创建隔离环境 / Create isolated environment**
+   - 检查 `git status`，工作区必须干净（无未跟踪文件、无未提交修改、无未解决冲突）；若不干净，询问用户是否 commit/stash。
+   - 记录当前分支名，作为迭代结束后的返回目标。
    - 创建迭代分支：`iterate/<goal-slug>-<timestamp>`。
    - 或创建 git worktree：`git worktree add ../<name> -b iterate/<goal-slug>-<timestamp>`。
    - 所有后续操作都在该分支/worktree 中进行。
 
-6. **初始化决策日志 / Initialize decision log**
+7. **初始化决策日志 / Initialize decision log**
    - 在隔离环境根目录创建 `.iterate_decisions.md`，写入文件头。
    - Initialize `deferredArchitectural = []` for cross-round carry-over.
 
@@ -172,7 +177,7 @@ Return: { "findings": [...] }
 |-------------|------|-------------|------------------|
 | 并行审查子代理 | `Task` × 9 (type: `search` or `general_purpose_task`) | `Workflow` / `Agent` × 9 | 手动或脚本并行运行 |
 | 结果汇总 | `Task` (type: `general_purpose_task`) | `Agent` synthesize | 人工汇总 |
-| 用户审批 | `AskUserQuestion` / `NotifyUser` | `EnterPlanMode` / `ExitPlanMode` | 对话确认 |
+| 用户审批 | `AskUserQuestion` | `EnterPlanMode` / `ExitPlanMode` | 对话确认 |
 | 文件编辑 | `Read` / `Edit` / `Write` | `Read` / `Edit` / `Write` | IDE 编辑 |
 | 执行命令 | `RunCommand` | `Bash` | Terminal |
 
@@ -256,7 +261,8 @@ if empty AND deferredArchitectural is empty:
 2. **分组与排序 / Group and sort**
    - 按模块依赖顺序排序（先被依赖，后依赖者）。
    - 合并同一模块/文件组的 finding 为一个 task。
-   - 确保不同 task 之间文件不重叠。
+   - 检测 `executableArchitectural` 内部 task 之间的文件重叠；如有重叠，按依赖顺序拆分为串行 task 或合并为单一 task。
+   - 最终确保不同 task 之间的文件集互不重叠。
 
 3. **用户审批 / User approval**
 
@@ -298,7 +304,7 @@ if empty AND deferredArchitectural is empty:
        Do NOT run build/test commands."
 
        Wait for completion before starting the next task.
-       If a sub-agent fails, log the reason and continue.
+       If a sub-agent fails, log the reason, report it to the user, and ask whether to continue, skip, or abort the round.
    ```
 
 5. **整体验证 / Full validation**
@@ -484,3 +490,4 @@ Branch: {iteration-branch}
 6. **主模型可补充 findings / Main model can supplement findings**：当 reviewer 遗漏明显问题时。
 7. **Git 隔离强制 / Git isolation is mandatory**：所有工作发生在 `iterate/*` 分支或 worktree；每轮验证后合并并推送。
 8. **完整审计 / Full audit trail**：`.iterate_decisions.md` 记录所有修复、延迟、回滚和重要决策。
+9. **验证命令安全 / Validation command safety**：`iterate.config.yaml` 中的 `validation` 命令由 AI 助手读取后执行；执行前应根据项目上下文确认命令安全性，避免运行未经验证的脚本。
