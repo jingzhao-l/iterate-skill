@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Local decision logs generated during runs
+.iterate_decisions.local.md
+.iterate_decisions.backup.*
+
+# Temporary worktrees or branches
+.iterate-worktree/
+iterate-*/
+
+# Node/Python artifacts (if examples are executed locally)
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Test coverage
+coverage/
+htmlcov/

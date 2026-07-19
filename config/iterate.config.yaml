@@ -1,0 +1,46 @@
+# Iterate Skill 默认配置 / Default configuration
+# 复制到项目根目录并修改，即可覆盖默认值。
+# Copy this file to project root to override defaults.
+
+# 迭代目标 / Iteration goal
+goal: "Improve code quality and maintainability"
+
+# 最大轮数 / Max rounds
+max_rounds: 7
+
+# 输出语言 / Output language: zh | en
+language: en
+
+# 启用的审查维度 / Enabled review dimensions
+dimensions:
+  - correctness
+  - security
+  - performance
+  - architecture
+  - style-tests
+  - tech-debt
+  - spec-compliance
+  - frontend-backend
+  - ui-ux
+
+# 原子问题判定阈值 / Atomic issue thresholds
+atomic:
+  max_lines: 20
+  max_adjacent_methods: 3
+
+# Git 配置 / Git configuration
+git:
+  target_branch: main
+  use_worktree: false
+
+# 验证命令 / Validation commands
+# 键名对应项目模块，AI 会根据改动的模块选择执行。
+validation:
+  vm:
+    - "ruff check src/"
+    - "mypy src/ --ignore-missing-imports"
+    - "pytest tests/ -x -q --timeout=60"
+  host:
+    - "swift build -c debug"
+  ide-plugin:
+    - "npm run compile"
