@@ -47,7 +47,7 @@
 将本仓库克隆到 Trae 的技能目录：
 
 ```bash
-git clone https://github.com/your-org/iterate-skill.git ~/.trae/skills/iterate
+git clone https://github.com/jingzhao-l/iterate-skill.git ~/.trae/skills/iterate
 ```
 
 或复制 `SKILL.md` 到项目内的 `.trae/skills/iterate/SKILL.md`。
@@ -55,7 +55,7 @@ git clone https://github.com/your-org/iterate-skill.git ~/.trae/skills/iterate
 ### Claude Code
 
 ```bash
-git clone https://github.com/your-org/iterate-skill.git ~/.claude/skills/iterate
+git clone https://github.com/jingzhao-l/iterate-skill.git ~/.claude/skills/iterate
 ```
 
 或复制 `SKILL.md` 到项目内的 `.claude/skills/iterate/SKILL.md`。
