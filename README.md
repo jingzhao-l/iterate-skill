@@ -72,6 +72,7 @@ git clone https://github.com/jingzhao-l/iterate-skill.git ~/.claude/skills/itera
 
 ```yaml
 # 示例：Python + Swift 混合项目
+# 注意：validation 下的命令只是示例，务必按你项目真实的工具链修改。
 goal: "提升代码质量，确保所有函数 ≤80 行且测试通过"
 max_rounds: 7
 language: zh
@@ -162,7 +163,7 @@ Summary
 | `max_rounds` | int | `7` | 最大轮数 |
 | `language` | string | `"en"` | 输出语言：`zh` / `en` |
 | `dimensions` | list | 9 维度 | 启用的审查维度 |
-| `validation` | object | 按语言默认 | 各模块验证命令 |
+| `validation` | object | 示例命令 | 各模块验证命令（**由使用者完全自定义**） |
 | `atomic.max_lines` | int | `20` | 原子问题最大行数 |
 | `git.target_branch` | string | `main` | 合并目标分支 |
 

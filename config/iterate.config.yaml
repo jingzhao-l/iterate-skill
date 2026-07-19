@@ -1,6 +1,11 @@
 # Iterate Skill 默认配置 / Default configuration
 # 复制到项目根目录并修改，即可覆盖默认值。
 # Copy this file to project root to override defaults.
+#
+# 重要 / IMPORTANT:
+# 下方的 validation 命令只是示例，必须根据你的实际项目自定义。
+# The validation commands below are examples only. You MUST customize them
+# for your actual project stack, package manager, and module layout.
 
 # 迭代目标 / Iteration goal
 goal: "Improve code quality and maintainability"
@@ -35,6 +40,9 @@ git:
 
 # 验证命令 / Validation commands
 # 键名对应项目模块，AI 会根据改动的模块选择执行。
+# 使用者决定：这些命令完全由你配置，AI 只读取并执行你信任的命令。
+# User decides: these commands are fully configurable. The AI only reads and
+# executes commands you trust.
 validation:
   vm:
     - "ruff check src/"
