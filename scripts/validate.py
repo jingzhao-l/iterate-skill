@@ -89,6 +89,11 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
     """校验 validation.commands 中的命令是否在白名单内。"""
     errors: list[str] = []
     validation = config.get("validation", {})
+
+    if not isinstance(validation, dict):
+        errors.append("validation must be a mapping")
+        return errors
+
     whitelist = validation.get("command_whitelist", [])
     commands_by_module = validation.get("commands", {})
 

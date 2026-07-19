@@ -69,7 +69,7 @@ Scope: {review.scope} (full = entire codebase, changed-only = files changed this
 Focus: {focus from config/dimensions.yaml}.
 Project context: {projectContext}.
 
-DO NOT read .env, *.key, secrets/, *.pem, *.p12, credentials.json.
+DO NOT read .env, .env.*, *.key, secrets/, *.pem, *.p12, *.crt, *.cer, credentials.json, .aws/, .ssh/.
 
 For each finding, report:
 - file, line, severity, dimension, summary, failure_scenario, suggested_fix, is_atomic

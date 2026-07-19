@@ -52,7 +52,7 @@ query: |
   Focus: injection, path traversal, hardcoded secrets, input validation.
   Project context: {projectContext}
 
-  Do NOT read .env, *.key, secrets/, *.pem, *.p12, credentials.json.
+  Do NOT read .env, .env.*, *.key, secrets/, *.pem, *.p12, *.crt, *.cer, credentials.json, .aws/, .ssh/.
 
   For each finding report: file, line, severity, dimension, summary,
   failure_scenario, suggested_fix, is_atomic.

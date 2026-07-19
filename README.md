@@ -11,7 +11,7 @@
 
 **Iterate Skill** 让 AI 助手像一位严谨的资深工程师一样，对代码库进行多轮审查与修复：
 
-1. 每轮从 **9 个维度** 并行审查整个项目。
+1. 每轮从 **N 个已启用维度** 并行审查整个项目（默认 9 个）。
 2. 发现的问题分为两类：
    - **原子问题（Atomic）**：单文件、单函数、≤20 行，直接自动修复。
    - **架构问题（Architectural）**：跨文件、改接口、新增模块，需要用户批准后执行。
@@ -20,7 +20,7 @@
 
 **Iterate Skill** enables your AI assistant to act as a rigorous senior engineer:
 
-1. Run **9 parallel dimension reviewers** across the entire codebase each round.
+1. Run **N parallel dimension reviewers** across the entire codebase each round (default 9).
 2. Classify findings into:
    - **Atomic issues**: single file, single function, ≤20 lines — fixed automatically.
    - **Architectural issues**: cross-file, API changes, new modules — executed only after user approval.
@@ -31,7 +31,7 @@
 
 ## 特性 / Features
 
-- **9 维度审查 / 9-Dimension Review**：正确性、安全、性能、架构、风格与测试、技术债、规范一致性、前后端一致性、UI/UX。
+- **可配置多维审查 / Configurable Multi-Dimension Review**：默认 9 维度，可通过 `dimensions` 列表启用/禁用。
 - **双轨修复 / Two-Track Fixing**：原子问题自动修，架构问题经审批后修。
 - **Git 隔离 / Git Isolation**：每轮在独立分支或 worktree 中完成，通过 merge 回主分支，绝不直接提交到 main/master。
 - **多框架适配 / Multi-Framework Adaptation**：支持 Trae、Claude Code、Cursor 等工具，核心流程与工具细节解耦。
@@ -125,7 +125,7 @@ iterate-skill/
 ├── config/
 │   ├── iterate.config.yaml           # 默认配置
 │   ├── config.schema.json            # iterate.config.yaml 的 JSON Schema
-│   └── dimensions.yaml               # 9 维度定义与 prompt
+│   └── dimensions.yaml               # 审查维度定义与 prompt
 ├── examples/
 │   ├── python-project.md             # Python 项目示例
 │   ├── swift-project.md              # Swift 项目示例
@@ -155,7 +155,7 @@ Setup
   └─ 读取项目上下文 → 创建隔离分支/ worktree
 
 Loop (round = 1 .. max_rounds)
-  ├─ Phase 1: 9 维度并行审查
+  ├─ Phase 1: N 维度并行审查（N = len(dimensions)）
   ├─ Phase 2: 原子问题直接修复
   ├─ Phase 3: 架构问题用户批准 → 子代理串行执行
   ├─ Phase 4: 记录本轮结果
@@ -181,7 +181,7 @@ Summary
 | `goal` | string | `"Improve code quality"` | 迭代目标 |
 | `max_rounds` | int | `7` | 最大轮数 |
 | `language` | string | `"en"` | 输出语言：`zh` / `en` |
-| `dimensions` | list | 9 维度 | 启用的审查维度 |
+| `dimensions` | list | 全部 9 维度 | 启用的审查维度 |
 | `review.scope` | string | `"full"` | 审查范围：`changed-only` 增量 / `full` 全量 |
 | `atomic.max_lines` | int | `20` | 原子问题最大行数 |
 | `git.target_branch` | string | `main` | 合并目标分支 |

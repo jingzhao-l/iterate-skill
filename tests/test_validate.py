@@ -164,6 +164,13 @@ class TestValidateConfig:
         errors = validate.validate_config(path, schema_path)
         assert any("command_whitelist must be a non-empty list" in e for e in errors)
 
+    def test_validation_not_mapping(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:
+        valid_config["validation"] = "not-a-mapping"
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        assert any("validation must be a mapping" in e for e in errors) or any("Schema error" in e for e in errors)
+
 
 class TestMain:
     def test_config_subcommand(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:

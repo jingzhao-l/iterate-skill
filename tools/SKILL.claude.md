@@ -60,7 +60,7 @@ Claude Code 实现 iterate skill 的核心要点：用 `/workflow` 或 `/agent` 
     },
     {
       "tool": "Agent",
-      "prompt": "Review the codebase for security issues ONLY. Scope: {review.scope}. Focus: injection, path traversal, hardcoded secrets, input validation. Project context: {projectContext}. Do NOT read .env, *.key, secrets/, *.pem, *.p12, credentials.json. Return strictly as JSON with 'findings' array."
+      "prompt": "Review the codebase for security issues ONLY. Scope: {review.scope}. Focus: injection, path traversal, hardcoded secrets, input validation. Project context: {projectContext}. Do NOT read .env, .env.*, *.key, secrets/, *.pem, *.p12, *.crt, *.cer, credentials.json, .aws/, .ssh/. Return strictly as JSON with 'findings' array."
     }
   ]
 }

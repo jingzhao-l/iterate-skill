@@ -1,18 +1,18 @@
 ---
 name: iterate
 description: |
-  Multi-round automated code iteration: 9-dimension parallel review → atomic fixes directly →
+  Multi-round automated code iteration: configurable N-dimension parallel review → atomic fixes directly →
   architectural fixes via user approval → validate → merge → push, looping until zero findings.
 description_zh: |
-  全自动多轮代码迭代：9 维度并行审查 → 原子问题直接修复 → 架构问题用户批准后执行 →
+  全自动多轮代码迭代：可配置 N 维度并行审查 → 原子问题直接修复 → 架构问题用户批准后执行 →
   验证 → 合并 → 推送，循环至零 findings。
 ---
 
 # /iterate `<goal>` `[--rounds N]` `[--no-limit]`
 
-> 中文：全自动多轮代码迭代。每轮从 9 个维度并行审查整个项目，原子问题直接修复，架构问题经用户批准后由子代理串行执行，验证通过后合并回主分支并推送，循环直到零 findings 或达到轮数上限。
+> 中文：全自动多轮代码迭代。每轮从 N 个已启用维度并行审查整个项目（默认 9 个），原子问题直接修复，架构问题经用户批准后由子代理串行执行，验证通过后合并回主分支并推送，循环直到零 findings 或达到轮数上限。
 >
-> English: Fully automated multi-round code iteration. Each round launches 9 parallel dimension reviewers across the project, fixes atomic issues directly, executes architectural issues after user approval via serial sub-agents, validates, merges into the target branch, pushes, and loops until zero findings or max rounds.
+> English: Fully automated multi-round code iteration. Each round launches N parallel dimension reviewers across the project (default 9), fixes atomic issues directly, executes architectural issues after user approval via serial sub-agents, validates, merges into the target branch, pushes, and loops until zero findings or max rounds.
 
 ---
 
@@ -135,11 +135,13 @@ while round <= maxRounds:
 
 ### Phase 1 — 并行审查 / Parallel Review
 
-启动 **9 个并行审查子代理**，每个审查一个维度。
+启动 **N 个并行审查子代理**（N = 启用的 dimensions 数量，默认 9），每个审查一个维度。
 
-Launch **9 parallel reviewer sub-agents**, one per dimension.
+Launch **N parallel reviewer sub-agents** (N = enabled dimensions count, default 9), one per dimension.
 
-#### 9 个审查维度 / 9 Review Dimensions
+#### 可用审查维度 / Available Review Dimensions
+
+以下 9 个维度可通过 `dimensions` 列表启用或禁用：
 
 | 维度 / Dimension | 关注点 / Focus |
 |------------------|---------------|
@@ -230,7 +232,7 @@ if empty AND deferredArchitectural is empty:
     break
 ```
 
-> **注意 / Note**：如果 9 个 reviewer 都返回空但代码中明显存在问题，主模型应基于自身判断补充 findings。
+> **注意 / Note**：如果所有 reviewer 都返回空但代码中明显存在问题，主模型应基于自身判断补充 findings。
 
 ---
 
@@ -255,11 +257,11 @@ if empty AND deferredArchitectural is empty:
 
 3. **验证原子修复 / Validate atomic fixes**
 
-   根据改动的模块跑对应检查（从 `validation.commands` 读取）：
+   根据改动的模块跑对应检查（从 `validation.commands` 读取，键名为示例）：
 
-   - `vm/`：`ruff check src/ && mypy src/ --ignore-missing-imports && pytest tests/ -x -q --timeout=60`
-   - `host/`：`swift build -c debug`
-   - `ide-plugin/`：`npm run compile`
+   - `python/`：`ruff check src/ && mypy src/ --ignore-missing-imports && pytest tests/ -x -q --timeout=60`
+   - `swift/`：`swift build -c debug`
+   - `typescript/`：`npm run compile`
 
    执行前检查命令前缀是否在 `validation.command_whitelist` 中；不在白名单中的命令必须二次确认。
 
@@ -502,7 +504,7 @@ Branch: {iteration-branch}
 | `goal` | string | `"Improve code quality"` | 迭代目标 |
 | `max_rounds` | int | `7` | 最大轮数 |
 | `language` | string | `"en"` | 输出语言 `zh` / `en` |
-| `dimensions` | list | 9 维度 | 启用维度 |
+| `dimensions` | list | 全部 9 维度 | 启用的审查维度 |
 | `review.scope` | string | `"full"` | 审查范围：`changed-only` / `full` |
 | `atomic.max_lines` | int | `20` | 原子问题行数上限 |
 | `atomic.max_adjacent_methods` | int | `3` | 相邻方法数上限 |
@@ -518,8 +520,10 @@ Branch: {iteration-branch}
 ## 安全与敏感信息保护 / Security & Sensitive Data
 
 1. **Reviewer 不读取敏感文件 / No sensitive file access**
-   - reviewer 子代理不得读取 `.env`、`*.key`、`secrets/`、`*.pem`、`*.p12`、`credentials.json` 等文件。
-   - `projectContext` 中不得包含 API 密钥、密码、Token、数据库连接字符串。
+   - reviewer 子代理不得读取敏感文件，包括但不限于：
+     `.env`、`.env.*`、`*.key`、`secrets/`、`*.pem`、`*.p12`、`*.crt`、`*.cer`、
+     `credentials.json`、`.aws/`、`.ssh/`。
+   - `projectContext` 中不得包含 API 密钥、密码、Token、数据库连接字符串、私钥内容。
 
 2. **命令白名单 / Command whitelist**
    - 默认白名单：`ruff`, `mypy`, `pytest`, `swift`, `npm run`, `yarn`, `pnpm`, `go test`, `cargo`, `python`, `python3` 等已知前缀。
