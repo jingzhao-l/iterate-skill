@@ -676,13 +676,13 @@ class TestUpdateCommand:
             lambda _token: {"tag": "v1.2.3", "tarball_url": "https://example.com/release.tar.gz"},
         )
         monkeypatch.setattr(
-            install, "_download_release_source", lambda _url, _token: release_source
+            install, "_download_release_source", lambda _url, _checksum_url, _token: release_source
         )
 
         assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(encoding="utf-8") == "skill"
         assert (
-            install_main(["update", "--ai", "trae", "--target", str(target), "--force"], source=source)
+            install_main(["update", "--ai", "trae", "--target", str(target), "--force", "--yes"], source=source)
             == 0
         )
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(

@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import shutil
@@ -38,6 +39,8 @@ GITHUB_REPO_NAME = "iterate-skill"
 RELEASE_API_URL = (
     f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
 )
+CHECKSUMS_ASSET_NAME = "SHA256SUMS.txt"
+EXPECTED_TARBALL_FILENAME = "iterate-skill.tar.gz"
 
 SUPPORTED_AI = {
     "trae": ".trae/skills/iterate",
@@ -200,7 +203,7 @@ def uninstall_command(
 
 
 def _fetch_latest_release_info(token: str | None) -> dict[str, str] | None:
-    """Query GitHub API for the latest release tag and tarball URL."""
+    """Query GitHub API for the latest release tag, tarball URL and checksum asset URL."""
     request = urllib.request.Request(RELEASE_API_URL, method="GET")
     request.add_header("Accept", "application/vnd.github+json")
     request.add_header("X-GitHub-Api-Version", "2022-11-28")
@@ -217,9 +220,23 @@ def _fetch_latest_release_info(token: str | None) -> dict[str, str] | None:
         return None
     tag = data.get("tag_name")
     tarball_url = data.get("tarball_url")
-    if isinstance(tag, str) and isinstance(tarball_url, str):
-        return {"tag": tag, "tarball_url": tarball_url}
-    return None
+    if not isinstance(tag, str) or not isinstance(tarball_url, str):
+        return None
+
+    checksum_url: str | None = None
+    assets = data.get("assets")
+    if isinstance(assets, list):
+        for asset in assets:
+            if isinstance(asset, dict) and asset.get("name") == CHECKSUMS_ASSET_NAME:
+                asset_url = asset.get("browser_download_url")
+                if isinstance(asset_url, str):
+                    checksum_url = asset_url
+                    break
+
+    result: dict[str, str] = {"tag": tag, "tarball_url": tarball_url}
+    if checksum_url:
+        result["checksum_url"] = checksum_url
+    return result
 
 
 def _fetch_latest_release_tag(token: str | None) -> str | None:
@@ -251,18 +268,59 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
     tar.extractall(path=path)
 
 
-def _download_release_source(tarball_url: str, token: str | None) -> Path | None:
-    """Download a release tarball and extract it to a temporary directory."""
-    request = urllib.request.Request(tarball_url, method="GET")
+def _download_bytes(url: str, token: str | None, timeout: int = 30) -> bytes | None:
+    """Download raw bytes from a URL, optionally using a GitHub token."""
+    request = urllib.request.Request(url, method="GET")
     request.add_header("Accept", "application/vnd.github+json")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
 
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = response.read()
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
     except (urllib.error.URLError, TimeoutError):
         return None
+
+
+def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
+    """Parse a SHA256SUMS-style file and return the hash for ``filename``."""
+    text = checksum_text.decode("utf-8")
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, name = parts
+        # Handle both "HASH  filename" and "HASH *filename" formats.
+        name = name.lstrip("*").strip()
+        if name == filename:
+            return digest.strip()
+    return None
+
+
+def _download_release_source(
+    tarball_url: str, checksum_url: str | None, token: str | None
+) -> Path | None:
+    """Download a release tarball, verify checksum if available, and extract it."""
+    data = _download_bytes(tarball_url, token)
+    if data is None:
+        return None
+
+    if checksum_url:
+        checksum_data = _download_bytes(checksum_url, token)
+        if checksum_data:
+            expected_hash = _parse_checksum(checksum_data, EXPECTED_TARBALL_FILENAME)
+            if expected_hash:
+                actual_hash = hashlib.sha256(data).hexdigest()
+                if actual_hash.lower() != expected_hash.lower():
+                    print(
+                        f"Checksum mismatch for release tarball: expected {expected_hash}, got {actual_hash}",
+                        file=sys.stderr,
+                    )
+                    return None
+                print("Release tarball checksum verified.")
 
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
@@ -281,6 +339,7 @@ def update_command(
     token: str | None,
     force: bool,
     global_install: bool,
+    yes: bool = False,
 ) -> int:
     """Refresh installed skill files from the latest GitHub release or local source."""
     effective_target = Path.home() if global_install else target
@@ -290,8 +349,29 @@ def update_command(
     release_source: Path | None = None
     if release_info:
         print(f"Latest GitHub release: {release_info['tag']}")
+        print(
+            "This will download code from "
+            f"https://github.com/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases "
+            "and install it into your AI assistant skill directories."
+        )
+        has_checksum = "checksum_url" in release_info
+        if not has_checksum:
+            print(
+                "Warning: no SHA256SUMS.txt asset found for this release; "
+                "tarball integrity cannot be verified.",
+                file=sys.stderr,
+            )
+        if not yes:
+            answer = input("Continue? [y/N]: ").strip().lower()
+            if answer not in ("y", "yes"):
+                print("Update cancelled.")
+                return 0
         print("Downloading release source...")
-        release_source = _download_release_source(release_info["tarball_url"], token)
+        release_source = _download_release_source(
+            release_info["tarball_url"],
+            release_info.get("checksum_url"),
+            token,
+        )
         if release_source:
             print(f"Using release source: {release_source}")
         else:
@@ -788,6 +868,12 @@ def _add_update_parser(subparsers) -> None:
         action="store_true",
         help="Update the installation in the user's home directory.",
     )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip the confirmation prompt before downloading from GitHub.",
+    )
 
 
 def _add_config_parser(subparsers) -> None:
@@ -914,6 +1000,7 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
             args.token,
             args.force,
             args.global_install,
+            args.yes,
         )
 
     if args.command == "config":

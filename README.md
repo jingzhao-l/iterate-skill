@@ -335,6 +335,13 @@ python scripts/install.py validate --target /path/to/project
 
 ---
 
+## 安全说明 / Security
+
+- **高自主性**：本 skill 会自主执行文件编辑、`git` 操作以及 `validation.commands` 中配置的命令。所有修改先在隔离分支/worktree 中进行，架构修复必须经用户批准。
+- **命令白名单**：执行 `validation.commands` 前会检查 `validation.command_whitelist`，不在白名单中的命令需要二次确认。请只配置你信任的命令。
+- **敏感文件**：skill 运行过程中不会读取 `.env`、密钥、凭证等敏感文件；`projectContext` 中也不得包含密钥内容。
+- **Update 命令**：`python scripts/install.py update` 会从 GitHub Release 下载最新源码。下载前会提示确认（`--yes` 跳过），若 release 提供 `SHA256SUMS.txt` 则会自动校验 tarball 完整性。
+
 ## 许可证 / License
 
 [MIT](./LICENSE) © 2026 iterate-skill contributors

@@ -693,6 +693,17 @@ iterate/
    - 绝不 force-push 到 `main`/`master`。
    - 绝不直接在 `main`/`master` 上提交。
 
+5. **高自主性风险披露 / High-autonomy risk disclosure**
+   - 本 skill 会自主执行文件编辑、`git` 操作（commit/merge/reset）以及 `validation.commands` 中配置的命令。
+   - 所有代码修改先在隔离的 `iterate/*` 分支或 worktree 中进行，验证通过后才合并回 `main`/`master`。
+   - 架构修复必须经用户批准后方可执行。
+   - 运行前请确保 `validation.command_whitelist` 和 `validation.commands` 只包含你信任的命令。
+
+6. **Update 命令远程下载说明 / Update command remote download**
+   - `scripts/install.py update` 会从 GitHub Release 下载最新源码并安装到 AI 助手技能目录。
+   - 下载前会提示确认（可用 `--yes` 跳过）。
+   - 若 release 包含 `SHA256SUMS.txt` asset，会自动校验 tarball 完整性；若无，则给出警告并提示风险。
+
 ## Reviewer Prompt 质量检查清单 / Reviewer Prompt Quality Checklist
 
 在启动 reviewer 前确认：

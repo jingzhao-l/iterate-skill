@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  checksums:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release tarball
+        run: |
+          curl -fsSL -o iterate-skill.tar.gz "${{ github.event.release.tarball_url }}"
+
+      - name: Generate SHA256 checksums
+        run: |
+          sha256sum iterate-skill.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload checksums to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SHA256SUMS.txt
