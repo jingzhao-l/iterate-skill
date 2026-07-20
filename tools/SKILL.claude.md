@@ -28,9 +28,9 @@ Claude Code 实现 iterate skill 的核心要点：用 `/workflow` 或 `/agent` 
 /iterate "提升代码质量" no-limit
 ```
 
-SKILL.md frontmatter 已声明 `arguments: [goal, rounds, limit_mode]`，因此也可用 `$goal`、`$rounds`、`$limit_mode`。
+参数通过 Agent Skills 标准占位符 `$0` / `$1` / `$2` 注入，也可使用 `$goal` / `$rounds` / `$limit_mode`。
 
-> 注意：本 skill 已设置 `disable-model-invocation: true`，不会自动触发，必须由用户显式调用。
+> 注意：本 skill 需要由用户显式调用 `/iterate` 才会触发。
 
 ---
 
