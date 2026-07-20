@@ -237,6 +237,20 @@ def _detect_installed_assistants(target: Path) -> list[str]:
     return installed
 
 
+def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
+    """Extract a tarball safely, preventing path traversal outside ``path``."""
+    if hasattr(tarfile, "data_filter"):
+        tar.extractall(path=path, filter="data")
+        return
+
+    # Fallback for Python < 3.12: validate each member resolves inside path.
+    for member in tar.getmembers():
+        member_path = (path / member.name).resolve()
+        if not str(member_path).startswith(str(path.resolve()) + "/"):
+            raise tarfile.TarError(f"Suspicious member path: {member.name}")
+    tar.extractall(path=path)
+
+
 def _download_release_source(tarball_url: str, token: str | None) -> Path | None:
     """Download a release tarball and extract it to a temporary directory."""
     request = urllib.request.Request(tarball_url, method="GET")
@@ -253,7 +267,7 @@ def _download_release_source(tarball_url: str, token: str | None) -> Path | None
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
             temp_dir = Path(tempfile.mkdtemp(prefix="iterate-release-"))
-            tar.extractall(path=temp_dir)
+            _safe_extractall(tar, temp_dir)
             extracted = [p for p in temp_dir.iterdir() if p.is_dir()]
             return extracted[0] if extracted else None
     except (tarfile.TarError, OSError):

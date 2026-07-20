@@ -14,7 +14,6 @@ Thumbs.db
 logs/
 
 # Local decision logs generated during runs
-.iterate_decisions.md
 .iterate_decisions.local.md
 .iterate_decisions.backup.*
 
