@@ -76,13 +76,16 @@ python scripts/install.py install --ai trae --global
 # 覆盖更新已安装的 skill
 python scripts/install.py install --ai trae --target /path/to/project --force
 
-# 检测已安装的助手并刷新（不覆盖，保留现有文件）
+# 卸载
+python scripts/install.py uninstall --ai trae --target /path/to/project --yes
+
+# 检测已安装的助手并从 GitHub 最新 release 刷新
 python scripts/install.py update --target /path/to/project
 
 # 强制刷新指定助手
 python scripts/install.py update --ai trae --target /path/to/project --force
 
-# 使用 GitHub Token 避免 API 限流（update 会查询最新 release）
+# 使用 GitHub Token 避免 API 限流（update 会下载最新 release）
 python scripts/install.py update --ai trae --target /path/to/project --token ghp_xxx
 ```
 
@@ -297,8 +300,7 @@ python scripts/install.py config --interactive --target /path/to/project
 # 校验项目配置
 python scripts/install.py validate --target /path/to/project
 ```
-
-`--set` 的值会按 YAML/JSON 语义解析，因此列表、数字、布尔值都可以直接写入。
+> `--set` 的值会按 YAML/JSON 语义解析，因此列表、数字、布尔值都可以直接写入。`--set` 保存后会自动用 schema 校验，不合法时会回滚，避免产生无效配置。注意 YAML 1.1 会把 `yes`/`no`/`on`/`off` 当作布尔值，CLI 中仅 `true`/`false` 会被识别为布尔，其余保留为字符串。
 
 ---
 

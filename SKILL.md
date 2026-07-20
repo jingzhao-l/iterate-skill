@@ -277,7 +277,8 @@ If no issues are found, return { "findings": [] }.
 常用 CLI 选项：
 - `--force`：覆盖已存在的 skill 文件。
 - `--global`：安装到用户主目录（如 `~/.trae/skills/iterate/`），供所有项目复用。
-- `update`：检测已安装的助手并刷新文件，同时查询 GitHub 最新 release。
+- `uninstall --yes`：卸载已安装的 skill；不加 `--yes` 时会要求二次确认。
+- `update`：检测已安装的助手并从 GitHub 最新 release 下载源码刷新文件；下载失败时回退到本地源码。
 
 #### 按模块/目录拆分 / Split by Module or Directory
 

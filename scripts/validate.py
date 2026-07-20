@@ -3,7 +3,7 @@
 
 用法：
     python scripts/validate.py decisions <path-to-.iterate_decisions.md>
-    python scripts/validate.py config <path-to-iterate.config.yaml>
+    python scripts/validate.py config <path-to-iterate.config.yaml> [<schema-path> [<dimensions-dir>]]
     python scripts/validate.py dimensions <path-to-config/dimensions>
 """
 
@@ -81,9 +81,15 @@ def validate_config_against_schema(
 
 
 def command_is_whitelisted(command: str, whitelist: list[str]) -> bool:
-    """检查命令是否以白名单中的某个前缀开头。"""
+    """检查命令是否以白名单中的某个前缀开头，并且前缀后必须是空白或字符串结尾。"""
     stripped = command.strip()
-    return any(stripped.startswith(prefix) for prefix in whitelist)
+    for prefix in whitelist:
+        if stripped == prefix:
+            return True
+        if stripped.startswith(prefix) and len(stripped) > len(prefix):
+            if stripped[len(prefix)].isspace():
+                return True
+    return False
 
 
 def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
@@ -172,7 +178,42 @@ def validate_dimensions(path: Path) -> list[str]:
     return errors
 
 
-def validate_config(path: Path, schema_path: Path | None = None) -> list[str]:
+def _dimension_enum_from_schema(schema: dict[str, Any]) -> set[str] | None:
+    """从 JSON Schema 中提取 dimensions 的允许取值。"""
+    try:
+        enum = schema["properties"]["dimensions"]["items"]["enum"]
+        if isinstance(enum, list):
+            return set(enum)
+    except (KeyError, TypeError):
+        pass
+    return None
+
+
+def validate_dimension_consistency(
+    dimensions_dir: Path, expected_keys: set[str]
+) -> list[str]:
+    """校验 dimensions 目录中的文件与 schema enum 一一对应。"""
+    errors: list[str] = []
+
+    if not dimensions_dir.exists():
+        errors.append(f"Dimension directory not found: {dimensions_dir}")
+        return errors
+
+    actual_keys = {p.stem for p in dimensions_dir.glob("*.yaml")}
+    missing_files = expected_keys - actual_keys
+    extra_files = actual_keys - expected_keys
+
+    for key in sorted(missing_files):
+        errors.append(f"Missing dimension file for schema enum value: {key}")
+    for key in sorted(extra_files):
+        errors.append(f"Unexpected dimension file not in schema enum: {key}")
+
+    return errors
+
+
+def validate_config(
+    path: Path, schema_path: Path | None = None, dimensions_dir: Path | None = None
+) -> list[str]:
     """校验 iterate.config.yaml 格式、schema 与白名单。"""
     errors: list[str] = []
 
@@ -194,9 +235,14 @@ def validate_config(path: Path, schema_path: Path | None = None) -> list[str]:
     errors.extend(validate_config_against_schema(config, schema))
     errors.extend(validate_command_whitelist(config))
 
-    dimensions_dir = path.parent / "dimensions"
-    if dimensions_dir.exists():
-        errors.extend(validate_dimensions(dimensions_dir))
+    resolved_dimensions_dir = dimensions_dir or (path.parent / "dimensions")
+    if resolved_dimensions_dir.exists():
+        errors.extend(validate_dimensions(resolved_dimensions_dir))
+        expected_keys = _dimension_enum_from_schema(schema)
+        if expected_keys is not None:
+            errors.extend(
+                validate_dimension_consistency(resolved_dimensions_dir, expected_keys)
+            )
 
     return errors
 
@@ -221,7 +267,8 @@ def main(argv: list[str] | None = None) -> int:
         errors = validate_decisions(target)
     elif command == "config":
         schema_path = Path(args[2]) if len(args) > 2 else None
-        errors = validate_config(target, schema_path)
+        dimensions_dir = Path(args[3]) if len(args) > 3 else None
+        errors = validate_config(target, schema_path, dimensions_dir)
     elif command == "dimensions":
         errors = validate_dimensions(target)
     else:

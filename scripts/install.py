@@ -12,16 +12,20 @@ Usage:
     python scripts/install.py config --set goal="Improve code quality"
     python scripts/install.py config --set dimensions='[correctness, security]'
     python scripts/install.py config --interactive
-    python scripts/install.py uninstall --ai trae --target /path/to/project
+    python scripts/install.py uninstall --ai trae --target /path/to/project --yes
     python scripts/install.py validate --target /path/to/project
+    python scripts/install.py update --ai trae --target /path/to/project --token ghp_xxx
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import shutil
 import sys
+import tarfile
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -66,6 +70,9 @@ OPTIONAL_FILES = [
     "README.md",
     "CONTRIBUTING.md",
     "LICENSE",
+    "examples/python-project.md",
+    "examples/swift-project.md",
+    "examples/typescript-project.md",
     "tools/SKILL.trae.md",
     "tools/SKILL.claude.md",
     "tools/SKILL.cursor.md",
@@ -74,6 +81,9 @@ OPTIONAL_FILES = [
 AI_CHOICES = list(SUPPORTED_AI.keys()) + ["all"]
 
 DEFAULT_CONFIG_PATH = Path("config/iterate.config.yaml")
+
+MIN_ROUNDS = 1
+MAX_ROUNDS = 50
 
 DIMENSION_CHOICES = [
     "correctness",
@@ -107,7 +117,8 @@ def copy_skill_files(
 
         dst = destination / relative
         if dry_run:
-            copied.append(f"{src} -> {dst}")
+            copied.append(str(dst))
+            print(f"  [dry-run] Would copy: {relative} -> {dst}")
             continue
 
         if dst.exists() and not force:
@@ -154,20 +165,33 @@ def install_command(
     return 0
 
 
-def uninstall_command(ai: str, target: Path, global_install: bool) -> int:
+def uninstall_command(
+    ai: str, target: Path, global_install: bool, yes: bool = False
+) -> int:
     """Remove the skill for one or more AI assistants."""
     targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
     effective_target = Path.home() if global_install else target
     mode_label = " (global)" if global_install else ""
 
-    for assistant in targets:
-        relative_dir = SUPPORTED_AI[assistant]
-        destination = effective_target / relative_dir
+    existing = [
+        (assistant, effective_target / SUPPORTED_AI[assistant])
+        for assistant in targets
+        if (effective_target / SUPPORTED_AI[assistant]).exists()
+    ]
+    if not existing:
+        print(f"No iterate-skill installation found in {effective_target}{mode_label}")
+        return 0
 
-        if not destination.exists():
-            print(f"Skipped (not installed): {assistant}{mode_label} at {destination}")
-            continue
+    if not yes:
+        print("The following installations will be removed:")
+        for assistant, destination in existing:
+            print(f"  - {assistant}{mode_label}: {destination}")
+        answer = input("Proceed? [y/N]: ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("Uninstall cancelled.")
+            return 0
 
+    for assistant, destination in existing:
         shutil.rmtree(destination)
         print(f"Uninstalled {assistant}{mode_label}: {destination}")
 
@@ -175,8 +199,8 @@ def uninstall_command(ai: str, target: Path, global_install: bool) -> int:
     return 0
 
 
-def _fetch_latest_release_tag(token: str | None) -> str | None:
-    """Query GitHub API for the latest release tag name."""
+def _fetch_latest_release_info(token: str | None) -> dict[str, str] | None:
+    """Query GitHub API for the latest release tag and tarball URL."""
     request = urllib.request.Request(RELEASE_API_URL, method="GET")
     request.add_header("Accept", "application/vnd.github+json")
     request.add_header("X-GitHub-Api-Version", "2022-11-28")
@@ -192,7 +216,16 @@ def _fetch_latest_release_tag(token: str | None) -> str | None:
     if not isinstance(data, dict):
         return None
     tag = data.get("tag_name")
-    return cast(str, tag) if isinstance(tag, str) else None
+    tarball_url = data.get("tarball_url")
+    if isinstance(tag, str) and isinstance(tarball_url, str):
+        return {"tag": tag, "tarball_url": tarball_url}
+    return None
+
+
+def _fetch_latest_release_tag(token: str | None) -> str | None:
+    """Query GitHub API for the latest release tag name."""
+    info = _fetch_latest_release_info(token)
+    return info["tag"] if info else None
 
 
 def _detect_installed_assistants(target: Path) -> list[str]:
@@ -204,6 +237,29 @@ def _detect_installed_assistants(target: Path) -> list[str]:
     return installed
 
 
+def _download_release_source(tarball_url: str, token: str | None) -> Path | None:
+    """Download a release tarball and extract it to a temporary directory."""
+    request = urllib.request.Request(tarball_url, method="GET")
+    request.add_header("Accept", "application/vnd.github+json")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = response.read()
+    except (urllib.error.URLError, TimeoutError):
+        return None
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            temp_dir = Path(tempfile.mkdtemp(prefix="iterate-release-"))
+            tar.extractall(path=temp_dir)
+            extracted = [p for p in temp_dir.iterdir() if p.is_dir()]
+            return extracted[0] if extracted else None
+    except (tarfile.TarError, OSError):
+        return None
+
+
 def update_command(
     ai: str | None,
     target: Path,
@@ -212,22 +268,32 @@ def update_command(
     force: bool,
     global_install: bool,
 ) -> int:
-    """Refresh installed skill files, optionally checking the latest GitHub release."""
+    """Refresh installed skill files from the latest GitHub release or local source."""
     effective_target = Path.home() if global_install else target
     mode_label = " (global)" if global_install else ""
 
-    latest_tag = _fetch_latest_release_tag(token)
-    if latest_tag:
-        print(f"Latest GitHub release: {latest_tag}")
-        print("Refreshing skill files from local source...")
+    release_info = _fetch_latest_release_info(token)
+    release_source: Path | None = None
+    if release_info:
+        print(f"Latest GitHub release: {release_info['tag']}")
+        print("Downloading release source...")
+        release_source = _download_release_source(release_info["tarball_url"], token)
+        if release_source:
+            print(f"Using release source: {release_source}")
+        else:
+            print("Could not download release source; falling back to local source...")
     else:
         print("Could not reach GitHub releases; refreshing from local source...")
+
+    update_source = release_source if release_source else source
 
     if ai is None:
         assistants = _detect_installed_assistants(effective_target)
         if not assistants:
             print(f"No iterate-skill installation found in {effective_target}{mode_label}")
             print("Run 'install --ai <assistant>' first, or use 'update --ai <assistant>'.")
+            if release_source:
+                shutil.rmtree(release_source)
             return 1
         print(f"Updating detected installations: {', '.join(assistants)}")
     elif ai == "all":
@@ -235,8 +301,12 @@ def update_command(
     else:
         assistants = [ai]
 
-    for assistant in assistants:
-        install_command(assistant, target, False, source, force, global_install)
+    try:
+        for assistant in assistants:
+            install_command(assistant, target, False, update_source, force, global_install)
+    finally:
+        if release_source:
+            shutil.rmtree(release_source, ignore_errors=True)
 
     print("Update complete.")
     return 0
@@ -259,6 +329,7 @@ def validate_command(target: Path, source: Path) -> int:
     """Validate the project-level iterate.config.yaml."""
     config_path = target / "iterate.config.yaml"
     schema_path = source / "config" / "config.schema.json"
+    dimensions_dir = source / "config" / "dimensions"
 
     if not config_path.exists():
         print(f"No project config found at {config_path}")
@@ -270,7 +341,7 @@ def validate_command(target: Path, source: Path) -> int:
         print(f"Failed to import validate.py: {exc}", file=sys.stderr)
         return 1
 
-    errors = validate.validate_config(config_path, schema_path)
+    errors = validate.validate_config(config_path, schema_path, dimensions_dir)
     if errors:
         print(f"Validation failed for {config_path}")
         for error in errors:
@@ -281,8 +352,28 @@ def validate_command(target: Path, source: Path) -> int:
     return 0
 
 
+def _validate_project_config(target: Path, source: Path) -> list[str]:
+    """Validate the saved project config and return errors."""
+    try:
+        validate = _load_validate_module(source)
+    except ImportError as exc:
+        return [f"Failed to import validate.py: {exc}"]
+
+    config_path = target / "iterate.config.yaml"
+    schema_path = source / "config" / "config.schema.json"
+    dimensions_dir = source / "config" / "dimensions"
+    return validate.validate_config(config_path, schema_path, dimensions_dir)
+
+
+YAML_BOOLEAN_ALIASES = {"true", "false", "True", "False", "TRUE", "FALSE"}
+
+
 def parse_value(raw: str) -> object:
-    """Parse a config value from CLI string using YAML/JSON semantics."""
+    """Parse a config value from CLI string using YAML/JSON semantics.
+
+    YAML 1.1 treats yes/no/on/off as booleans; we keep only explicit
+    true/false as bool to avoid surprising behavior in free-form strings.
+    """
     stripped = raw.strip()
     if not stripped:
         return ""
@@ -297,6 +388,9 @@ def parse_value(raw: str) -> object:
             parsed = json.loads(stripped)
         except json.JSONDecodeError:
             parsed = stripped
+
+    if isinstance(parsed, bool) and stripped not in YAML_BOOLEAN_ALIASES:
+        return stripped
 
     return parsed
 
@@ -369,10 +463,13 @@ def list_config(target: Path) -> int:
     return 0
 
 
-def set_config_values(target: Path, set_pairs: list[list[str]]) -> int:
-    """Apply --set key=value pairs to the project-level config."""
+def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) -> int:
+    """Apply --set key=value pairs to the project-level config and validate."""
     project_path = target / "iterate.config.yaml"
-    config = load_config(project_path) if project_path.exists() else {}
+    previous_text = (
+        project_path.read_text(encoding="utf-8") if project_path.exists() else None
+    )
+    config = load_config(project_path) if previous_text is not None else {}
 
     for group in set_pairs:
         for pair in group:
@@ -387,6 +484,18 @@ def set_config_values(target: Path, set_pairs: list[list[str]]) -> int:
             set_nested_value(config, key, parse_value(value))
 
     save_config(project_path, config)
+
+    errors = _validate_project_config(target, source)
+    if errors:
+        print(f"Validation failed for {project_path}; changes have been reverted.", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        if previous_text is not None:
+            project_path.write_text(previous_text, encoding="utf-8")
+        else:
+            project_path.unlink()
+        return 1
+
     print(f"Updated project config: {project_path}")
     return 0
 
@@ -461,10 +570,19 @@ def interactive_config(target: Path, source: Path) -> int:
     else:
         config = {}
 
+    previous_text = (
+        project_path.read_text(encoding="utf-8") if project_path.exists() else None
+    )
+
     print("=== iterate-skill configuration wizard ===")
 
     config["goal"] = prompt_text("Iteration goal", config.get("goal", "Improve code quality"))
-    config["max_rounds"] = prompt_int("Max rounds", config.get("max_rounds", 7))
+    config["max_rounds"] = prompt_int_in_range(
+        "Max rounds",
+        MIN_ROUNDS,
+        MAX_ROUNDS,
+        config.get("max_rounds", 7),
+    )
     config["language"] = prompt_choice(
         "Output language", LANGUAGE_CHOICES, config.get("language", "en")
     )
@@ -483,21 +601,45 @@ def interactive_config(target: Path, source: Path) -> int:
     )
 
     save_config(project_path, config)
+
+    errors = _validate_project_config(target, source)
+    if errors:
+        print(f"\nValidation failed for {project_path}; changes have been reverted.", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        if previous_text is not None:
+            project_path.write_text(previous_text, encoding="utf-8")
+        else:
+            project_path.unlink()
+        return 1
+
     print(f"\nConfiguration saved: {project_path}")
     return 0
+
+
+def prompt_int_in_range(
+    question: str, min_value: int, max_value: int, default: int | None = None
+) -> int:
+    """Ask the user for an integer constrained to [min_value, max_value]."""
+    full_question = f"{question} ({min_value}-{max_value})"
+    while True:
+        value = prompt_int(full_question, default)
+        if min_value <= value <= max_value:
+            return value
+        print(f"Please enter a value between {min_value} and {max_value}.")
 
 
 def prompt_dimensions(current: object) -> list[str]:
     """Interactively select enabled dimensions."""
     current_set = set(current) if isinstance(current, list) else set(DIMENSION_CHOICES)
-    selected = []
+    selected: list[str] = []
     print("\nSelect review dimensions (enter numbers/names, comma-separated):")
     for idx, dim in enumerate(DIMENSION_CHOICES, start=1):
         marker = " [enabled]" if dim in current_set else ""
         print(f"  {idx}. {dim}{marker}")
     answer = input("Dimensions: ").strip()
     if not answer:
-        return list(current_set)
+        return _ensure_non_empty_dimensions(list(current_set))
 
     for part in answer.split(","):
         part = part.strip()
@@ -508,7 +650,13 @@ def prompt_dimensions(current: object) -> list[str]:
         elif part in DIMENSION_CHOICES:
             selected.append(part)
 
-    return selected if selected else list(current_set)
+    unique_selected = list(dict.fromkeys(selected))
+    return _ensure_non_empty_dimensions(unique_selected)
+
+
+def _ensure_non_empty_dimensions(dimensions: list[str]) -> list[str]:
+    """Return the dimensions list, falling back to all choices if empty."""
+    return dimensions if dimensions else list(DIMENSION_CHOICES)
 
 
 def config_command(
@@ -525,7 +673,7 @@ def config_command(
     if list_config_flag:
         return list_config(target)
     if set_pairs:
-        return set_config_values(target, set_pairs)
+        return set_config_values(target, source, set_pairs)
     if interactive:
         return interactive_config(target, source)
 
@@ -533,7 +681,7 @@ def config_command(
     return 1
 
 
-def _add_install_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_install_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "install", help="Install the skill into an AI assistant's skills directory."
     )
@@ -560,7 +708,7 @@ def _add_install_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     )
 
 
-def _add_uninstall_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_uninstall_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "uninstall", help="Remove the skill from an AI assistant's skills directory."
     )
@@ -579,9 +727,14 @@ def _add_uninstall_parser(subparsers: argparse._SubParsersAction[argparse.Argume
         action="store_true",
         help="Uninstall from the user's home directory instead of the project.",
     )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt.",
+    )
 
 
-def _add_validate_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_validate_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "validate", help="Validate the project-level iterate.config.yaml."
     )
@@ -593,7 +746,7 @@ def _add_validate_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
     )
 
 
-def _add_update_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_update_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "update", help="Refresh installed skill files and check for new releases."
     )
@@ -623,7 +776,7 @@ def _add_update_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     )
 
 
-def _add_config_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_config_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "config", help="Manage the project-level iterate.config.yaml."
     )
@@ -685,7 +838,9 @@ def parse_legacy_args(argv: list[str] | None) -> argparse.Namespace | None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--global", dest="global_install", action="store_true")
-    namespace = parser.parse_args(args)
+    namespace, unknown = parser.parse_known_args(args)
+    if unknown:
+        return None
     namespace.command = "install"
     return namespace
 
@@ -724,7 +879,9 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
             return 1
 
     if args.command == "uninstall":
-        return uninstall_command(args.ai, args.target.resolve(), args.global_install)
+        return uninstall_command(
+            args.ai, args.target.resolve(), args.global_install, args.yes
+        )
 
     if args.command == "validate":
         if not args.target.exists():

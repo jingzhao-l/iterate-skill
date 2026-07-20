@@ -124,6 +124,11 @@ class TestCommandIsWhitelisted:
     def test_whitespace_is_stripped(self) -> None:
         assert validate.command_is_whitelisted("  ruff check src/", ["ruff"]) is True
 
+    def test_prefix_bypass_is_rejected(self) -> None:
+        assert validate.command_is_whitelisted("ruff-config --evil", ["ruff"]) is False
+        assert validate.command_is_whitelisted("ruffcheck", ["ruff"]) is False
+        assert validate.command_is_whitelisted("ruff\tcheck", ["ruff"]) is True
+
 
 class TestValidateConfig:
     def test_valid_config(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:
@@ -235,6 +240,59 @@ class TestValidateDimensions:
         assert any("field priority must be one of" in e for e in errors)
 
 
+class TestDimensionConsistency:
+    def test_consistency_passes(self, tmp_path: Path) -> None:
+        dimensions_dir = tmp_path / "dimensions"
+        dimensions_dir.mkdir()
+        for key in ("correctness", "security"):
+            (dimensions_dir / f"{key}.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": key,
+                        "name_en": key.title(),
+                        "priority": "critical",
+                        "focus": f"Focus on {key}.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+        assert validate.validate_dimension_consistency(dimensions_dir, {"correctness", "security"}) == []
+
+    def test_missing_dimension_file(self, tmp_path: Path) -> None:
+        dimensions_dir = tmp_path / "dimensions"
+        dimensions_dir.mkdir()
+        (dimensions_dir / "correctness.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Correctness",
+                    "name_en": "Correctness",
+                    "priority": "critical",
+                    "focus": "Crash risks.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        errors = validate.validate_dimension_consistency(dimensions_dir, {"correctness", "security"})
+        assert any("Missing dimension file" in e for e in errors)
+
+    def test_unexpected_dimension_file(self, tmp_path: Path) -> None:
+        dimensions_dir = tmp_path / "dimensions"
+        dimensions_dir.mkdir()
+        (dimensions_dir / "correctness.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Correctness",
+                    "name_en": "Correctness",
+                    "priority": "critical",
+                    "focus": "Crash risks.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        errors = validate.validate_dimension_consistency(dimensions_dir, {"security"})
+        assert any("Unexpected dimension file" in e for e in errors)
+
+
 def _build_minimal_source(tmp_path: Path) -> Path:
     """Create a minimal skill source tree for install tests."""
     source = tmp_path / "source"
@@ -261,7 +319,8 @@ def _build_minimal_source(tmp_path: Path) -> Path:
     )
     (source / "scripts").mkdir()
     (source / "scripts" / "validate.py").write_text(
-        "def validate_config(path, schema_path=None): return []\n", encoding="utf-8"
+        "def validate_config(path, schema_path=None, dimensions_dir=None): return []\n",
+        encoding="utf-8",
     )
     (source / "scripts" / "requirements.txt").write_text("reqs", encoding="utf-8")
     (source / "templates").mkdir()
@@ -396,6 +455,31 @@ class TestConfigCommand:
         config = yaml.safe_load((target / "iterate.config.yaml").read_text(encoding="utf-8"))
         assert config["dimensions"] == ["correctness", "security"]
 
+    def test_config_set_invalid_value_is_reverted(self, tmp_path: Path, monkeypatch) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+        import install
+
+        assert install_main(["config", "--init", "--target", str(target)], source=source) == 0
+        original_text = (target / "iterate.config.yaml").read_text(encoding="utf-8")
+
+        def fake_validate(_target: Path, _source: Path) -> list[str]:
+            return ["max_rounds exceeds allowed range"]
+
+        monkeypatch.setattr(install, "_validate_project_config", fake_validate)
+
+        assert (
+            install_main(
+                ["config", "--target", str(target), "--set", "max_rounds=99"],
+                source=source,
+            )
+            == 1
+        )
+        assert (target / "iterate.config.yaml").read_text(encoding="utf-8") == original_text
+
     def test_config_list_prints_yaml(self, tmp_path: Path, capsys) -> None:
         source = _build_minimal_source(tmp_path)
         target = tmp_path / "target"
@@ -485,7 +569,10 @@ class TestUninstallCommand:
 
         assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
         assert (target / ".trae" / "skills" / "iterate").exists()
-        assert install_main(["uninstall", "--ai", "trae", "--target", str(target)], source=source) == 0
+        assert (
+            install_main(["uninstall", "--ai", "trae", "--target", str(target), "--yes"], source=source)
+            == 0
+        )
         assert not (target / ".trae" / "skills" / "iterate").exists()
 
     def test_uninstall_global(self, tmp_path: Path, monkeypatch) -> None:
@@ -498,8 +585,22 @@ class TestUninstallCommand:
 
         assert install_main(["install", "--ai", "trae", "--global"], source=source) == 0
         assert (fake_home / ".trae" / "skills" / "iterate").exists()
-        assert install_main(["uninstall", "--ai", "trae", "--global"], source=source) == 0
+        assert (
+            install_main(["uninstall", "--ai", "trae", "--global", "--yes"], source=source) == 0
+        )
         assert not (fake_home / ".trae" / "skills" / "iterate").exists()
+
+    def test_uninstall_without_yes_prompts_and_cancels(self, tmp_path: Path, monkeypatch) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
+        monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+        assert install_main(["uninstall", "--ai", "trae", "--target", str(target)], source=source) == 0
+        assert (target / ".trae" / "skills" / "iterate").exists()
 
 
 class TestUpdateCommand:
@@ -511,7 +612,7 @@ class TestUpdateCommand:
         from install import main as install_main
         import install
 
-        monkeypatch.setattr(install, "_fetch_latest_release_tag", lambda _token: None)
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: None)
 
         assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
         (target / ".trae" / "skills" / "iterate" / "SKILL.md").write_text(
@@ -530,7 +631,7 @@ class TestUpdateCommand:
         from install import main as install_main
         import install
 
-        monkeypatch.setattr(install, "_fetch_latest_release_tag", lambda _token: "v1.2.3")
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: None)
 
         assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
         (target / ".trae" / "skills" / "iterate" / "SKILL.md").write_text(
@@ -552,9 +653,41 @@ class TestUpdateCommand:
         from install import main as install_main
         import install
 
-        monkeypatch.setattr(install, "_fetch_latest_release_tag", lambda _token: None)
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: None)
 
         assert install_main(["update", "--target", str(target)], source=source) == 1
+
+    def test_update_downloads_release_source(self, tmp_path: Path, monkeypatch) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+        import install
+
+        release_parent = tmp_path / "release"
+        release_parent.mkdir()
+        release_source = _build_minimal_source(release_parent)
+        (release_source / "SKILL.md").write_text("released-skill", encoding="utf-8")
+
+        monkeypatch.setattr(
+            install,
+            "_fetch_latest_release_info",
+            lambda _token: {"tag": "v1.2.3", "tarball_url": "https://example.com/release.tar.gz"},
+        )
+        monkeypatch.setattr(
+            install, "_download_release_source", lambda _url, _token: release_source
+        )
+
+        assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
+        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(encoding="utf-8") == "skill"
+        assert (
+            install_main(["update", "--ai", "trae", "--target", str(target), "--force"], source=source)
+            == 0
+        )
+        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(
+            encoding="utf-8"
+        ) == "released-skill"
 
 
 class TestValidateCommand:
@@ -576,6 +709,43 @@ class TestValidateCommand:
         from install import main as install_main
 
         assert install_main(["validate", "--target", str(target)], source=source) == 1
+
+
+class TestParseValue:
+    def test_explicit_booleans(self) -> None:
+        from install import parse_value
+
+        assert parse_value("true") is True
+        assert parse_value("false") is False
+
+    def test_yaml_boolean_aliases_are_strings(self) -> None:
+        from install import parse_value
+
+        assert parse_value("yes") == "yes"
+        assert parse_value("no") == "no"
+        assert parse_value("on") == "on"
+
+    def test_lists_and_strings(self) -> None:
+        from install import parse_value
+
+        assert parse_value("[a, b]") == ["a", "b"]
+        assert parse_value("plain") == "plain"
+
+
+class TestLegacyArgParser:
+    def test_legacy_install_parses_known_options(self) -> None:
+        from install import parse_legacy_args
+
+        namespace = parse_legacy_args(["--ai", "trae", "--target", "/tmp/foo"])
+        assert namespace is not None
+        assert namespace.ai == "trae"
+        assert str(namespace.target) == "/tmp/foo"
+        assert namespace.command == "install"
+
+    def test_legacy_parser_ignores_unknown_positional(self) -> None:
+        from install import parse_legacy_args
+
+        assert parse_legacy_args(["--ai", "trae", "config"]) is None
 
 
 class TestMain:
