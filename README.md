@@ -4,6 +4,7 @@
 > A portable, configurable AI coding assistant skill: fully automated multi-round code review and fixing.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![skills.sh](https://skills.sh/b/jingzhao-l/iterate-skill)](https://skills.sh/jingzhao-l/iterate-skill)
 
 ---
 
@@ -42,7 +43,23 @@
 
 ## 安装 / Installation
 
-### 方式一：CLI 脚本（推荐）
+### 方式一：skills.sh CLI（推荐）
+
+```bash
+# 安装到当前项目（自动识别并配置支持的 AI 助手）
+npx skills add jingzhao-l/iterate-skill
+
+# 全局安装（所有项目可用）
+npx skills add jingzhao-l/iterate-skill --global
+
+# 仅安装到指定助手
+npx skills add jingzhao-l/iterate-skill --agent claude-code
+npx skills add jingzhao-l/iterate-skill --agent trae
+```
+
+skills.sh 会自动将 `SKILL.md`、配置和脚本复制到对应 AI 助手的技能目录。
+
+### 方式二：CLI 脚本
 
 ```bash
 # 克隆到本地
@@ -89,7 +106,7 @@ python scripts/install.py update --ai trae --target /path/to/project --force
 python scripts/install.py update --ai trae --target /path/to/project --token ghp_xxx
 ```
 
-### 方式二：手动克隆
+### 方式三：手动克隆
 
 #### Trae
 
