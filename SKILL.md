@@ -1,26 +1,7 @@
 ---
 name: iterate
-description: |
-  Multi-round automated code iteration: configurable N-dimension parallel review → atomic fixes directly →
-  architectural fixes via user approval → validate → merge → push, looping until zero findings.
-description_zh: |
-  全自动多轮代码迭代：可配置 N 维度并行审查 → 原子问题直接修复 → 架构问题用户批准后执行 →
-  验证 → 合并 → 推送，循环至零 findings。
-argument-hint: "<goal> [rounds] [no-limit]"
-arguments:
-  - goal
-  - rounds
-  - limit_mode
-disable-model-invocation: true
-allowed-tools:
-  - Read
-  - Edit
-  - Write
-  - RunCommand
-  - AskUserQuestion
-  - Task
-  - Glob
-  - Grep
+description: Fully automated multi-round code iteration with configurable N-dimension parallel review.
+version: 1.0.0
 ---
 
 # /iterate `<goal>` `[rounds]` `[no-limit]`
@@ -589,7 +570,7 @@ Branch: {iteration-branch}
 
 ```text
 iterate/
-├── SKILL.md                          # 本文件，技能入口
+├── SKILL.md                          # 技能入口与使用说明
 ├── config/
 │   ├── iterate.config.yaml           # 默认配置
 │   ├── config.schema.json            # iterate.config.yaml 的 JSON Schema
@@ -642,21 +623,6 @@ iterate/
 | `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
 | `validation.commands.<module>` | list | 示例命令 | 各模块验证命令 |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
-
-### Agent Skills 标准 Frontmatter 映射
-
-本 SKILL.md 同时遵循 [Agent Skills](https://agentskills.io/) 开放标准，以下字段已被使用或推荐：
-
-| 字段 / Field | 当前取值 / Current Value | 说明 / Description |
-|--------------|--------------------------|--------------------|
-| `name` | `iterate` | 展示名 / Display name |
-| `description` | 英文简介 | 触发依据 / Trigger hint for Claude |
-| `argument-hint` | `<goal> [rounds] [no-limit]` | 命令行自动补全提示 / Autocomplete hint |
-| `arguments` | `[goal, rounds, limit_mode]` | 命名参数，用于 `$goal` / `$rounds` / `$limit_mode` 注入 |
-| `disable-model-invocation` | `true` | 必须由用户显式调用（因会修改代码并 push） |
-| `allowed-tools` | `Read, Edit, Write, RunCommand, AskUserQuestion, Task, Glob, Grep` | 调用 skill 时自动预授权的工具 |
-| `context` | — | 如需在子代理隔离环境中运行，可设为 `fork` |
-| `paths` | — | 如只想在特定文件模式匹配时自动加载，可设置 glob 列表 |
 
 ---
 

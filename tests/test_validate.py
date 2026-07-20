@@ -773,3 +773,25 @@ class TestMain:
 
     def test_missing_arguments(self) -> None:
         assert validate.main([]) == 1
+
+
+class TestSkillMarkdownFile:
+    def test_skill_md_exists(self) -> None:
+        assert (REPO_ROOT / "SKILL.md").exists()
+
+    def test_skill_md_has_valid_frontmatter(self) -> None:
+        text = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        assert text.startswith("---")
+        _, frontmatter, _ = text.split("---", 2)
+        meta = yaml.safe_load(frontmatter)
+        assert isinstance(meta, dict)
+        assert meta.get("name") == "iterate"
+        assert isinstance(meta.get("description"), str)
+        assert meta.get("description")
+        assert meta.get("version") == "1.0.0"
+
+    def test_skill_md_body_is_non_empty(self) -> None:
+        text = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        parts = text.split("---", 2)
+        assert len(parts) == 3
+        assert len(parts[2].strip()) > 100
