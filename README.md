@@ -42,9 +42,25 @@
 
 ## 安装 / Installation
 
-### Trae
+### 方式一：安装脚本（推荐）
 
-将本仓库克隆到 Trae 的技能目录：
+```bash
+# 克隆到本地
+git clone https://github.com/jingzhao-l/iterate-skill.git
+cd iterate-skill
+
+# 安装到指定 AI 助手的技能目录
+python scripts/install.py --ai trae --target /path/to/project
+python scripts/install.py --ai claude --target /path/to/project
+python scripts/install.py --ai cursor --target /path/to/project
+
+# 或一次性安装到所有支持的助手
+python scripts/install.py --ai all --target /path/to/project
+```
+
+### 方式二：手动克隆
+
+#### Trae
 
 ```bash
 git clone https://github.com/jingzhao-l/iterate-skill.git ~/.trae/skills/iterate
@@ -52,7 +68,7 @@ git clone https://github.com/jingzhao-l/iterate-skill.git ~/.trae/skills/iterate
 
 或复制 `SKILL.md` 到项目内的 `.trae/skills/iterate/SKILL.md`。
 
-### Claude Code
+#### Claude Code
 
 ```bash
 git clone https://github.com/jingzhao-l/iterate-skill.git ~/.claude/skills/iterate
@@ -60,7 +76,7 @@ git clone https://github.com/jingzhao-l/iterate-skill.git ~/.claude/skills/itera
 
 或复制 `SKILL.md` 到项目内的 `.claude/skills/iterate/SKILL.md`。
 
-### Cursor / 通用
+#### Cursor / 通用
 
 参考 `SKILL.md` 中的"工具映射表"，用 Cursor 的 Agent 模式或自定义脚本实现对应步骤。
 
@@ -127,9 +143,19 @@ iterate-skill/
 ├── LICENSE                           # MIT 许可证
 ├── CONTRIBUTING.md                   # 开源贡献指南
 ├── config/
-│   ├── iterate.config.yaml           # 默认配置
+│   ├── iterate.config.yaml           # 默认配置（Master）
 │   ├── config.schema.json            # iterate.config.yaml 的 JSON Schema
-│   └── dimensions.yaml               # 审查维度定义与 prompt
+│   ├── dimensions.yaml               # 聚合版维度定义（兼容旧版）
+│   └── dimensions/                   # 数据驱动的维度定义
+│       ├── correctness.yaml
+│       ├── security.yaml
+│       ├── performance.yaml
+│       ├── architecture.yaml
+│       ├── style-tests.yaml
+│       ├── tech-debt.yaml
+│       ├── spec-compliance.yaml
+│       ├── frontend-backend.yaml
+│       └── ui-ux.yaml
 ├── examples/
 │   ├── python-project.md             # Python 项目示例
 │   ├── swift-project.md              # Swift 项目示例
@@ -137,14 +163,15 @@ iterate-skill/
 ├── templates/
 │   └── iterate-decisions.template.md # 决策日志模板
 ├── scripts/
-│   ├── validate.py                   # 配置与决策日志校验脚本
+│   ├── install.py                    # 一键安装脚本
+│   ├── validate.py                   # 配置、决策日志、维度校验脚本
 │   └── requirements.txt              # 校验脚本依赖
 ├── tools/
 │   ├── SKILL.trae.md                 # Trae 专属实现示例
 │   ├── SKILL.claude.md               # Claude Code 专属实现示例
 │   └── SKILL.cursor.md               # Cursor / Generic 实现示例
 ├── tests/
-│   └── test_validate.py              # validate.py 单元测试
+│   └── test_validate.py              # 单元测试
 └── .github/
     └── workflows/
         └── ci.yml                    # GitHub Actions CI
@@ -193,6 +220,30 @@ Summary
 | `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
 | `validation.commands` | object | 示例命令 | 各模块验证命令（**由使用者完全自定义**） |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
+
+### Master + Overrides 配置模式
+
+借鉴 UI/UX Pro Max 的 Master + Overrides 设计：
+
+- **Master（主配置）**：skill 安装目录下的 `config/iterate.config.yaml`，定义默认值和公共规则。
+- **Overrides（项目级覆盖）**：目标项目根目录的 `iterate.config.yaml`，仅声明与 Master 不同的部分。
+
+运行时合并规则：
+
+1. 加载 Master 配置。
+2. 若项目根目录存在 `iterate.config.yaml`，则递归覆盖 Master 中的同名字段。
+3. `dimensions` 列表如需完全替换而非追加，在 Overrides 中直接写完整列表。
+
+示例：项目只需要 correctness / security 两个维度，且关闭每轮 push：
+
+```yaml
+dimensions:
+  - correctness
+  - security
+
+git:
+  push_per_round: false
+```
 
 ---
 

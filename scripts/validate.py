@@ -4,6 +4,7 @@
 用法：
     python scripts/validate.py decisions <path-to-.iterate_decisions.md>
     python scripts/validate.py config <path-to-iterate.config.yaml>
+    python scripts/validate.py dimensions <path-to-config/dimensions>
 """
 
 from __future__ import annotations
@@ -123,6 +124,54 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
     return errors
 
 
+DIMENSION_REQUIRED_FIELDS = ["name", "name_en", "priority", "focus"]
+DIMENSION_PRIORITY_VALUES = {"critical", "high", "medium", "low"}
+
+
+def validate_dimensions(path: Path) -> list[str]:
+    """校验 config/dimensions/*.yaml 每个维度文件格式是否合规。"""
+    errors: list[str] = []
+
+    if not path.exists():
+        errors.append(f"Directory not found: {path}")
+        return errors
+
+    if not path.is_dir():
+        errors.append(f"Path is not a directory: {path}")
+        return errors
+
+    yaml_files = sorted(path.glob("*.yaml"))
+    if not yaml_files:
+        errors.append("No dimension YAML files found")
+        return errors
+
+    for file_path in yaml_files:
+        try:
+            data = yaml.safe_load(file_path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            errors.append(f"Invalid YAML in {file_path.name}: {exc}")
+            continue
+
+        if not isinstance(data, dict):
+            errors.append(f"{file_path.name} must be a YAML mapping")
+            continue
+
+        for field in DIMENSION_REQUIRED_FIELDS:
+            if field not in data:
+                errors.append(f"{file_path.name} missing required field: {field}")
+                continue
+            if not isinstance(data[field], str):
+                errors.append(f"{file_path.name} field {field} must be a string")
+                continue
+            if field == "priority" and data[field] not in DIMENSION_PRIORITY_VALUES:
+                errors.append(
+                    f"{file_path.name} field priority must be one of "
+                    f"{sorted(DIMENSION_PRIORITY_VALUES)}, got {data[field]!r}"
+                )
+
+    return errors
+
+
 def validate_config(path: Path, schema_path: Path | None = None) -> list[str]:
     """校验 iterate.config.yaml 格式、schema 与白名单。"""
     errors: list[str] = []
@@ -144,6 +193,11 @@ def validate_config(path: Path, schema_path: Path | None = None) -> list[str]:
     schema = load_schema(schema_path or DEFAULT_SCHEMA_PATH)
     errors.extend(validate_config_against_schema(config, schema))
     errors.extend(validate_command_whitelist(config))
+
+    dimensions_dir = path.parent / "dimensions"
+    if dimensions_dir.exists():
+        errors.extend(validate_dimensions(dimensions_dir))
+
     return errors
 
 
@@ -168,6 +222,8 @@ def main(argv: list[str] | None = None) -> int:
     elif command == "config":
         schema_path = Path(args[2]) if len(args) > 2 else None
         errors = validate_config(target, schema_path)
+    elif command == "dimensions":
+        errors = validate_dimensions(target)
     else:
         print(f"Unknown command: {command}")
         print(__doc__)

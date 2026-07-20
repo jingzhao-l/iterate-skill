@@ -34,7 +34,7 @@ def valid_config() -> dict[str, Any]:
         "validation": {
             "command_whitelist": ["ruff", "pytest"],
             "commands": {
-                "vm": ["ruff check src/", "pytest tests/ -q"],
+                "python": ["ruff check src/", "pytest tests/ -q"],
             },
         },
         "reviewer": {"output_schema_validation": True},
@@ -151,7 +151,7 @@ class TestValidateConfig:
         assert any("Schema error" in e for e in errors)
 
     def test_command_not_in_whitelist(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:
-        valid_config["validation"]["commands"]["vm"].append("rm -rf src/")
+        valid_config["validation"]["commands"]["python"].append("rm -rf src/")
         path = tmp_path / "iterate.config.yaml"
         path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
         errors = validate.validate_config(path, schema_path)
@@ -170,6 +170,115 @@ class TestValidateConfig:
         path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
         errors = validate.validate_config(path, schema_path)
         assert any("validation must be a mapping" in e for e in errors) or any("Schema error" in e for e in errors)
+
+
+class TestValidateDimensions:
+    def test_valid_dimensions_directory(self, tmp_path: Path) -> None:
+        dimensions_dir = tmp_path / "dimensions"
+        dimensions_dir.mkdir()
+        (dimensions_dir / "correctness.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "正确性",
+                    "name_en": "Correctness",
+                    "priority": "critical",
+                    "focus": "Crash risks.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert validate.validate_dimensions(dimensions_dir) == []
+
+    def test_missing_required_field(self, tmp_path: Path) -> None:
+        dimensions_dir = tmp_path / "dimensions"
+        dimensions_dir.mkdir()
+        (dimensions_dir / "bad.yaml").write_text(
+            yaml.safe_dump({"name": "Bad", "focus": "Missing name_en and priority."}),
+            encoding="utf-8",
+        )
+        errors = validate.validate_dimensions(dimensions_dir)
+        assert any("missing required field: name_en" in e for e in errors)
+        assert any("missing required field: priority" in e for e in errors)
+
+    def test_invalid_field_type(self, tmp_path: Path) -> None:
+        dimensions_dir = tmp_path / "dimensions"
+        dimensions_dir.mkdir()
+        (dimensions_dir / "bad.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Bad",
+                    "name_en": "Bad",
+                    "priority": "medium",
+                    "focus": ["not", "a", "string"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        errors = validate.validate_dimensions(dimensions_dir)
+        assert any("field focus must be a string" in e for e in errors)
+
+    def test_invalid_priority_value(self, tmp_path: Path) -> None:
+        dimensions_dir = tmp_path / "dimensions"
+        dimensions_dir.mkdir()
+        (dimensions_dir / "bad.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Bad",
+                    "name_en": "Bad",
+                    "priority": "urgent",
+                    "focus": "Invalid priority value.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        errors = validate.validate_dimensions(dimensions_dir)
+        assert any("field priority must be one of" in e for e in errors)
+
+
+class TestInstallScript:
+    def test_dry_run_lists_files(self, tmp_path: Path) -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        (source / "SKILL.md").write_text("skill", encoding="utf-8")
+        (source / "config").mkdir()
+        (source / "config" / "iterate.config.yaml").write_text("config", encoding="utf-8")
+        (source / "config" / "dimensions").mkdir()
+        (source / "scripts").mkdir()
+        (source / "scripts" / "validate.py").write_text("validate", encoding="utf-8")
+        (source / "scripts" / "requirements.txt").write_text("reqs", encoding="utf-8")
+        (source / "templates").mkdir()
+        (source / "templates" / "iterate-decisions.template.md").write_text("template", encoding="utf-8")
+
+        from install import main as install_main
+
+        target = tmp_path / "target"
+        target.mkdir()
+        assert install_main(["--ai", "trae", "--target", str(target), "--dry-run"]) == 0
+        assert not (target / ".trae").exists()
+
+    def test_install_copies_files(self, tmp_path: Path) -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        (source / "SKILL.md").write_text("skill", encoding="utf-8")
+        (source / "config").mkdir()
+        (source / "config" / "iterate.config.yaml").write_text("config", encoding="utf-8")
+        (source / "config" / "config.schema.json").write_text("schema", encoding="utf-8")
+        (source / "config" / "dimensions.yaml").write_text("dims", encoding="utf-8")
+        (source / "config" / "dimensions").mkdir()
+        (source / "config" / "dimensions" / "correctness.yaml").write_text("correctness", encoding="utf-8")
+        (source / "scripts").mkdir()
+        (source / "scripts" / "validate.py").write_text("validate", encoding="utf-8")
+        (source / "scripts" / "requirements.txt").write_text("reqs", encoding="utf-8")
+        (source / "templates").mkdir()
+        (source / "templates" / "iterate-decisions.template.md").write_text("template", encoding="utf-8")
+
+        from install import main as install_main
+
+        target = tmp_path / "target"
+        target.mkdir()
+        assert install_main(["--ai", "claude", "--target", str(target)]) == 0
+        assert (target / ".claude" / "skills" / "iterate" / "SKILL.md").exists()
+        assert (target / ".claude" / "skills" / "iterate" / "config" / "dimensions" / "correctness.yaml").exists()
 
 
 class TestMain:
