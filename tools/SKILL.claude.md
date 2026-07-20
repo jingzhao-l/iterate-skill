@@ -18,13 +18,19 @@ Claude Code 实现 iterate skill 的核心要点：用 `/workflow` 或 `/agent` 
 
 ## 触发方式 / Invocation
 
-在 Claude Code 中输入：
+在 Claude Code 中输入（参数通过 `$ARGUMENTS` / `$0` / `$1` / `$2` 注入）：
 
 ```text
-/iterate "<goal>" [--rounds N] [--no-limit]
+/iterate "<goal>" [rounds] [no-limit]
+
+# 示例
+/iterate "提升代码质量" 10
+/iterate "提升代码质量" no-limit
 ```
 
-或直接在对话中说出目标。
+SKILL.md frontmatter 已声明 `arguments: [goal, rounds, limit_mode]`，因此也可用 `$goal`、`$rounds`、`$limit_mode`。
+
+> 注意：本 skill 已设置 `disable-model-invocation: true`，不会自动触发，必须由用户显式调用。
 
 ---
 

@@ -66,18 +66,18 @@ validation:
     - "python"
     - "python3"
 
-  # 键名对应项目模块，AI 会根据改动的模块选择执行。
+  # 键名对应项目模块（示例），AI 会根据改动的模块选择执行。
   # 使用者决定：这些命令完全由你配置，AI 只读取并执行你信任的命令。
   # User decides: these commands are fully configurable. The AI only reads and
   # executes commands you trust.
   commands:
-    vm:
+    python:
       - "ruff check src/"
       - "mypy src/ --ignore-missing-imports"
       - "pytest tests/ -x -q --timeout=60"
-    host:
+    swift:
       - "swift build -c debug"
-    ide-plugin:
+    typescript:
       - "npm run compile"
 
 # Reviewer 输出校验 / Reviewer output validation

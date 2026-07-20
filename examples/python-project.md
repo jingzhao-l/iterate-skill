@@ -31,7 +31,7 @@ validation:
     - "mypy"
     - "pytest"
   commands:
-    vm:
+    python:
       - "ruff check src/ tests/"
       - "mypy src/ --ignore-missing-imports"
       - "pytest tests/ -x -q --timeout=60"

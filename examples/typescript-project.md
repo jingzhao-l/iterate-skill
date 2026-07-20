@@ -30,7 +30,7 @@ validation:
   command_whitelist:
     - "npm run"
   commands:
-    ide-plugin:
+    typescript:
       - "npm run lint"
       - "npm run compile"
       - "npm test"

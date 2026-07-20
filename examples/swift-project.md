@@ -29,7 +29,7 @@ validation:
   command_whitelist:
     - "swift"
   commands:
-    host:
+    swift:
       - "swift build -c debug"
       - "swift test -c debug"
 ```

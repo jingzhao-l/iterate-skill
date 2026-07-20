@@ -96,13 +96,13 @@ validation:
     - "swift"
     - "npm run"
   commands:
-    vm:
+    python:
       - "ruff check src/"
       - "mypy src/ --ignore-missing-imports"
       - "pytest tests/ -x -q --timeout=60"
-    host:
+    swift:
       - "swift build -c debug"
-    ide-plugin:
+    typescript:
       - "npm run compile"
 ```
 
@@ -110,6 +110,10 @@ validation:
 
 ```text
 /iterate "提升代码质量，确保所有函数 ≤80 行且测试通过"
+# 或指定轮数
+/iterate "提升代码质量" 10
+# 或不设轮数上限（硬上限 50）
+/iterate "提升代码质量" no-limit
 ```
 
 ---

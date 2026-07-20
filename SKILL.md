@@ -6,9 +6,24 @@ description: |
 description_zh: |
   全自动多轮代码迭代：可配置 N 维度并行审查 → 原子问题直接修复 → 架构问题用户批准后执行 →
   验证 → 合并 → 推送，循环至零 findings。
+argument-hint: "<goal> [rounds] [no-limit]"
+arguments:
+  - goal
+  - rounds
+  - limit_mode
+disable-model-invocation: true
+allowed-tools:
+  - Read
+  - Edit
+  - Write
+  - RunCommand
+  - AskUserQuestion
+  - Task
+  - Glob
+  - Grep
 ---
 
-# /iterate `<goal>` `[--rounds N]` `[--no-limit]`
+# /iterate `<goal>` `[rounds]` `[no-limit]`
 
 > 中文：全自动多轮代码迭代。每轮从 N 个已启用维度并行审查整个项目（默认 9 个），原子问题直接修复，架构问题经用户批准后由子代理串行执行，验证通过后合并回主分支并推送，循环直到零 findings 或达到轮数上限。
 >
@@ -18,11 +33,21 @@ description_zh: |
 
 ## 参数 / Parameters
 
-| 参数 / Parameter | 默认值 / Default | 说明 / Description |
-|------------------|------------------|--------------------|
-| `<goal>` | required | 迭代目标 / Iteration goal |
-| `--rounds N` | `7` | 最大轮数 / Max rounds |
-| `--no-limit` | — | 不设上限（硬上限 50）/ Unlimited (hard cap 50) |
+调用格式 / Invocation: `/iterate <goal> [rounds] [no-limit]`
+
+参数通过 [Agent Skills](https://agentskills.io/) 标准占位符注入：
+
+| 占位符 / Placeholder | 含义 / Meaning | 默认值 / Default |
+|---------------------|----------------|------------------|
+| `$goal` / `$0` | 迭代目标 / Iteration goal | required |
+| `$rounds` / `$1` | 最大轮数 / Max rounds | `7` |
+| `$limit_mode` / `$2` | 若设为 `no-limit`，则最大轮数为 50（硬上限）/ Set to `no-limit` for hard cap 50 | — |
+| `$ARGUMENTS` | 用户输入的全部参数原样字符串 / Raw argument string | — |
+
+示例 / Examples：
+- `/iterate improve error handling`
+- `/iterate improve error handling 10`
+- `/iterate improve error handling no-limit`
 
 ---
 
@@ -77,7 +102,7 @@ Setup
   └─ Extract goal → load config → read project context → create isolated branch/worktree
 
 Loop (round = 1 .. max_rounds)
-  ├─ Phase 1: 9-dimension parallel review
+  ├─ Phase 1: N-dimension parallel review (N = enabled dimensions count, default 9)
   ├─ Phase 2: Atomic fixes (direct)
   ├─ Phase 3: Architectural fixes (approval → serial sub-agents)
   ├─ Phase 4: Record round results
@@ -91,13 +116,13 @@ Summary
 ## Step 1 — 设定目标与隔离 / Setup
 
 1. **提取目标 / Extract goal**
-   - 从用户输入中提取 `<goal>`；若缺失则反问用户。
-   - Extract `<goal>` from user input; ask if missing.
+   - 从 `$0` / `$goal` 读取迭代目标；若缺失则反问用户。
+   - Read iteration goal from `$0` / `$goal`; ask if missing.
 
 2. **确定轮数 / Determine max rounds**
-   - `maxRounds = 7`（默认）。
-   - 若指定 `--rounds N`，则 `maxRounds = N`。
-   - 若指定 `--no-limit`，则 `maxRounds = 50`（硬上限）。
+   - `maxRounds = $1` / `$rounds`，默认 `7`。
+   - 若 `$2` / `$limit_mode` 为 `no-limit`，则 `maxRounds = 50`（硬上限）。
+   - 解析失败时默认 `7` 并提示用户。
 
 3. **确定项目根目录 / Locate project root**
    - 以当前工作目录为起点，向上查找包含 `.git`、`iterate.config.yaml` 或 `CLAUDE.md` 的目录。
@@ -109,9 +134,10 @@ Summary
    - 将配置合并到运行参数。
 
 5. **读取项目上下文 / Read project context**
-   - 读取项目根目录的 `CLAUDE.md`（若存在），提取项目名、架构、技术栈、代码规范。
-   - 若不存在，使用简要描述。
+   - 按优先级查找项目根目录的上下文文件：`CLAUDE.md` → `PROJECT.md` → `README.md`。
+   - 提取项目名、架构、技术栈、代码规范；若都不存在，使用简要描述。
    - 构造 `projectContext` 字符串供后续使用。
+   - 绝不读取 `.env`、`.env.*`、`*.{key,pem,p12,crt,cer}`、`credentials.json`、`.aws/`、`.ssh/` 等敏感文件。
 
 6. **创建隔离环境 / Create isolated environment**
    - 检查 `git status`，工作区必须干净（无未跟踪文件、无未提交修改、无未解决冲突）；若不干净，询问用户是否 commit/stash。
@@ -495,6 +521,34 @@ Branch: {iteration-branch}
 
 ---
 
+## Skill 目录结构 / Skill Directory Layout
+
+一个完整的 iterate skill 目录应包含以下文件（相对 `SKILL.md` 的路径固定）：
+
+```text
+iterate/
+├── SKILL.md                          # 本文件，技能入口
+├── config/
+│   ├── iterate.config.yaml           # 默认配置
+│   └── config.schema.json            # iterate.config.yaml 的 JSON Schema
+├── scripts/
+│   ├── validate.py                   # 配置与决策日志校验脚本
+│   └── requirements.txt              # 校验脚本依赖
+├── templates/
+│   └── iterate-decisions.template.md # 决策日志模板
+├── tools/
+│   ├── SKILL.trae.md                 # Trae 专属 prompt/workflow 示例
+│   ├── SKILL.claude.md               # Claude Code 专属 workflow 示例
+│   └── SKILL.cursor.md               # Cursor 专属 prompt 示例
+├── tests/
+│   └── test_validate.py              # pytest 测试
+└── README.md / CONTRIBUTING.md       # 用户与贡献者文档
+```
+
+运行时优先读取**项目根目录**的 `iterate.config.yaml`；若不存在，则使用 skill 目录下的 `config/iterate.config.yaml` 作为默认配置。校验脚本路径以 `${CLAUDE_SKILL_DIR}/scripts/validate.py`（Claude Code）或 skill 安装目录相对路径解析。
+
+---
+
 ## 配置说明 / Configuration
 
 默认配置见 [`config/iterate.config.yaml`](./config/iterate.config.yaml)。
@@ -514,6 +568,21 @@ Branch: {iteration-branch}
 | `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
 | `validation.commands.<module>` | list | 示例命令 | 各模块验证命令 |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
+
+### Agent Skills 标准 Frontmatter 映射
+
+本 SKILL.md 同时遵循 [Agent Skills](https://agentskills.io/) 开放标准，以下字段已被使用或推荐：
+
+| 字段 / Field | 当前取值 / Current Value | 说明 / Description |
+|--------------|--------------------------|--------------------|
+| `name` | `iterate` | 展示名 / Display name |
+| `description` | 英文简介 | 触发依据 / Trigger hint for Claude |
+| `argument-hint` | `<goal> [rounds] [no-limit]` | 命令行自动补全提示 / Autocomplete hint |
+| `arguments` | `[goal, rounds, limit_mode]` | 命名参数，用于 `$goal` / `$rounds` / `$limit_mode` 注入 |
+| `disable-model-invocation` | `true` | 必须由用户显式调用（因会修改代码并 push） |
+| `allowed-tools` | `Read, Edit, Write, RunCommand, AskUserQuestion, Task, Glob, Grep` | 调用 skill 时自动预授权的工具 |
+| `context` | — | 如需在子代理隔离环境中运行，可设为 `fork` |
+| `paths` | — | 如只想在特定文件模式匹配时自动加载，可设置 glob 列表 |
 
 ---
 
