@@ -64,6 +64,27 @@ python scripts/install.py install --help
 已支持：Trae、Claude Code、Cursor、Windsurf、GitHub Copilot、OpenAI Codex、Roo Code、Qoder、Gemini CLI、OpenCode、Continue、Augment、Warp。
 
 > 旧版调用方式 `python scripts/install.py --ai trae --target ...` 仍兼容。
+>
+> 常用选项：
+> - `--force`：覆盖已存在的 skill 文件。
+> - `--global`：安装到用户主目录（如 `~/.trae/skills/iterate/`），供所有项目复用。
+
+```bash
+# 全局安装（所有项目可用）
+python scripts/install.py install --ai trae --global
+
+# 覆盖更新已安装的 skill
+python scripts/install.py install --ai trae --target /path/to/project --force
+
+# 检测已安装的助手并刷新（不覆盖，保留现有文件）
+python scripts/install.py update --target /path/to/project
+
+# 强制刷新指定助手
+python scripts/install.py update --ai trae --target /path/to/project --force
+
+# 使用 GitHub Token 避免 API 限流（update 会查询最新 release）
+python scripts/install.py update --ai trae --target /path/to/project --token ghp_xxx
+```
 
 ### 方式二：手动克隆
 

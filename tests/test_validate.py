@@ -419,6 +419,62 @@ class TestConfigCommand:
         assert install_main(["config", "--init", "--target", str(target)], source=source) == 1
 
 
+class TestForceAndGlobal:
+    def test_install_without_force_skips_existing(self, tmp_path: Path, capsys) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
+        (target / ".trae" / "skills" / "iterate" / "SKILL.md").write_text(
+            "modified", encoding="utf-8"
+        )
+        assert (
+            install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
+        )
+        captured = capsys.readouterr()
+        assert "Skipped (already exists, use --force)" in captured.out
+        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(
+            encoding="utf-8"
+        ) == "modified"
+
+    def test_install_with_force_overwrites(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
+        (target / ".trae" / "skills" / "iterate" / "SKILL.md").write_text(
+            "modified", encoding="utf-8"
+        )
+        assert (
+            install_main(
+                ["install", "--ai", "trae", "--target", str(target), "--force"], source=source
+            )
+            == 0
+        )
+        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(
+            encoding="utf-8"
+        ) == "skill"
+
+    def test_global_install_uses_home(self, tmp_path: Path, monkeypatch) -> None:
+        source = _build_minimal_source(tmp_path)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        from install import main as install_main
+
+        assert (
+            install_main(["install", "--ai", "claude", "--global"], source=source) == 0
+        )
+        assert (fake_home / ".claude" / "skills" / "iterate" / "SKILL.md").exists()
+
+
 class TestUninstallCommand:
     def test_uninstall_removes_files(self, tmp_path: Path) -> None:
         source = _build_minimal_source(tmp_path)
@@ -431,6 +487,74 @@ class TestUninstallCommand:
         assert (target / ".trae" / "skills" / "iterate").exists()
         assert install_main(["uninstall", "--ai", "trae", "--target", str(target)], source=source) == 0
         assert not (target / ".trae" / "skills" / "iterate").exists()
+
+    def test_uninstall_global(self, tmp_path: Path, monkeypatch) -> None:
+        source = _build_minimal_source(tmp_path)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        from install import main as install_main
+
+        assert install_main(["install", "--ai", "trae", "--global"], source=source) == 0
+        assert (fake_home / ".trae" / "skills" / "iterate").exists()
+        assert install_main(["uninstall", "--ai", "trae", "--global"], source=source) == 0
+        assert not (fake_home / ".trae" / "skills" / "iterate").exists()
+
+
+class TestUpdateCommand:
+    def test_update_detects_installed_assistants(self, tmp_path: Path, monkeypatch) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+        import install
+
+        monkeypatch.setattr(install, "_fetch_latest_release_tag", lambda _token: None)
+
+        assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
+        (target / ".trae" / "skills" / "iterate" / "SKILL.md").write_text(
+            "modified", encoding="utf-8"
+        )
+        assert install_main(["update", "--target", str(target)], source=source) == 0
+        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(
+            encoding="utf-8"
+        ) == "modified"
+
+    def test_update_with_force_refreshes_files(self, tmp_path: Path, monkeypatch) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+        import install
+
+        monkeypatch.setattr(install, "_fetch_latest_release_tag", lambda _token: "v1.2.3")
+
+        assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
+        (target / ".trae" / "skills" / "iterate" / "SKILL.md").write_text(
+            "modified", encoding="utf-8"
+        )
+        assert (
+            install_main(["update", "--ai", "trae", "--target", str(target), "--force"], source=source)
+            == 0
+        )
+        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(
+            encoding="utf-8"
+        ) == "skill"
+
+    def test_update_without_installation_fails(self, tmp_path: Path, monkeypatch) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+        import install
+
+        monkeypatch.setattr(install, "_fetch_latest_release_tag", lambda _token: None)
+
+        assert install_main(["update", "--target", str(target)], source=source) == 1
 
 
 class TestValidateCommand:

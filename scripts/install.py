@@ -22,9 +22,18 @@ import argparse
 import json
 import shutil
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
+from typing import cast
 
 import yaml
+
+GITHUB_REPO_OWNER = "jingzhao-l"
+GITHUB_REPO_NAME = "iterate-skill"
+RELEASE_API_URL = (
+    f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
+)
 
 SUPPORTED_AI = {
     "trae": ".trae/skills/iterate",
@@ -82,7 +91,9 @@ LANGUAGE_CHOICES = ["zh", "en"]
 SCOPE_CHOICES = ["full", "changed-only"]
 
 
-def copy_skill_files(source: Path, destination: Path, dry_run: bool) -> list[str]:
+def copy_skill_files(
+    source: Path, destination: Path, dry_run: bool, force: bool
+) -> list[str]:
     """Copy skill files from source to destination."""
     copied: list[str] = []
     all_files = REQUIRED_FILES + OPTIONAL_FILES
@@ -99,8 +110,14 @@ def copy_skill_files(source: Path, destination: Path, dry_run: bool) -> list[str
             copied.append(f"{src} -> {dst}")
             continue
 
+        if dst.exists() and not force:
+            print(f"  Skipped (already exists, use --force): {dst}")
+            continue
+
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
+            if dst.exists() and force:
+                shutil.rmtree(dst)
             shutil.copytree(src, dst, dirs_exist_ok=True)
         else:
             shutil.copy2(src, dst)
@@ -109,20 +126,24 @@ def copy_skill_files(source: Path, destination: Path, dry_run: bool) -> list[str
     return copied
 
 
-def install_command(ai: str, target: Path, dry_run: bool, source: Path) -> int:
+def install_command(
+    ai: str, target: Path, dry_run: bool, source: Path, force: bool, global_install: bool
+) -> int:
     """Install the skill for one or more AI assistants."""
     targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
+    effective_target = Path.home() if global_install else target
+    mode_label = " (global)" if global_install else ""
 
     for assistant in targets:
         relative_dir = SUPPORTED_AI[assistant]
-        destination = target / relative_dir
+        destination = effective_target / relative_dir
 
         if dry_run:
-            print(f"[dry-run] Would install for {assistant} into {destination}")
+            print(f"[dry-run] Would install for {assistant}{mode_label} into {destination}")
         else:
-            print(f"Installing for {assistant} into {destination}")
+            print(f"Installing for {assistant}{mode_label} into {destination}")
 
-        copied = copy_skill_files(source, destination, dry_run)
+        copied = copy_skill_files(source, destination, dry_run, force)
         for item in copied:
             print(f"  {item}")
 
@@ -133,22 +154,91 @@ def install_command(ai: str, target: Path, dry_run: bool, source: Path) -> int:
     return 0
 
 
-def uninstall_command(ai: str, target: Path) -> int:
+def uninstall_command(ai: str, target: Path, global_install: bool) -> int:
     """Remove the skill for one or more AI assistants."""
     targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
+    effective_target = Path.home() if global_install else target
+    mode_label = " (global)" if global_install else ""
 
     for assistant in targets:
         relative_dir = SUPPORTED_AI[assistant]
-        destination = target / relative_dir
+        destination = effective_target / relative_dir
 
         if not destination.exists():
-            print(f"Skipped (not installed): {assistant} at {destination}")
+            print(f"Skipped (not installed): {assistant}{mode_label} at {destination}")
             continue
 
         shutil.rmtree(destination)
-        print(f"Uninstalled {assistant}: {destination}")
+        print(f"Uninstalled {assistant}{mode_label}: {destination}")
 
     print("Uninstall complete.")
+    return 0
+
+
+def _fetch_latest_release_tag(token: str | None) -> str | None:
+    """Query GitHub API for the latest release tag name."""
+    request = urllib.request.Request(RELEASE_API_URL, method="GET")
+    request.add_header("Accept", "application/vnd.github+json")
+    request.add_header("X-GitHub-Api-Version", "2022-11-28")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    tag = data.get("tag_name")
+    return cast(str, tag) if isinstance(tag, str) else None
+
+
+def _detect_installed_assistants(target: Path) -> list[str]:
+    """Return assistants that already have an iterate skill installed in target."""
+    installed: list[str] = []
+    for assistant, relative_dir in SUPPORTED_AI.items():
+        if (target / relative_dir).exists():
+            installed.append(assistant)
+    return installed
+
+
+def update_command(
+    ai: str | None,
+    target: Path,
+    source: Path,
+    token: str | None,
+    force: bool,
+    global_install: bool,
+) -> int:
+    """Refresh installed skill files, optionally checking the latest GitHub release."""
+    effective_target = Path.home() if global_install else target
+    mode_label = " (global)" if global_install else ""
+
+    latest_tag = _fetch_latest_release_tag(token)
+    if latest_tag:
+        print(f"Latest GitHub release: {latest_tag}")
+        print("Refreshing skill files from local source...")
+    else:
+        print("Could not reach GitHub releases; refreshing from local source...")
+
+    if ai is None:
+        assistants = _detect_installed_assistants(effective_target)
+        if not assistants:
+            print(f"No iterate-skill installation found in {effective_target}{mode_label}")
+            print("Run 'install --ai <assistant>' first, or use 'update --ai <assistant>'.")
+            return 1
+        print(f"Updating detected installations: {', '.join(assistants)}")
+    elif ai == "all":
+        assistants = list(SUPPORTED_AI.keys())
+    else:
+        assistants = [ai]
+
+    for assistant in assistants:
+        install_command(assistant, target, False, source, force, global_install)
+
+    print("Update complete.")
     return 0
 
 
@@ -459,6 +549,15 @@ def _add_install_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     parser.add_argument(
         "--dry-run", action="store_true", help="Print what would be copied without copying."
     )
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing skill files."
+    )
+    parser.add_argument(
+        "--global",
+        dest="global_install",
+        action="store_true",
+        help="Install into the user's home directory instead of the project.",
+    )
 
 
 def _add_uninstall_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -474,6 +573,12 @@ def _add_uninstall_parser(subparsers: argparse._SubParsersAction[argparse.Argume
         default=Path.cwd(),
         help="Project directory (default: current directory).",
     )
+    parser.add_argument(
+        "--global",
+        dest="global_install",
+        action="store_true",
+        help="Uninstall from the user's home directory instead of the project.",
+    )
 
 
 def _add_validate_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -485,6 +590,36 @@ def _add_validate_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         type=Path,
         default=Path.cwd(),
         help="Project directory (default: current directory).",
+    )
+
+
+def _add_update_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subparsers.add_parser(
+        "update", help="Refresh installed skill files and check for new releases."
+    )
+    parser.add_argument(
+        "--ai",
+        choices=AI_CHOICES,
+        help="Target AI assistant (default: auto-detect installed assistants).",
+    )
+    parser.add_argument(
+        "--target",
+        type=Path,
+        default=Path.cwd(),
+        help="Project directory (default: current directory).",
+    )
+    parser.add_argument(
+        "--token",
+        help="GitHub Personal Access Token for higher API rate limits.",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing skill files."
+    )
+    parser.add_argument(
+        "--global",
+        dest="global_install",
+        action="store_true",
+        help="Update the installation in the user's home directory.",
     )
 
 
@@ -529,6 +664,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_install_parser(subparsers)
     _add_uninstall_parser(subparsers)
     _add_validate_parser(subparsers)
+    _add_update_parser(subparsers)
     _add_config_parser(subparsers)
     return parser
 
@@ -538,7 +674,7 @@ def parse_legacy_args(argv: list[str] | None) -> argparse.Namespace | None:
     args = argv if argv is not None else sys.argv[1:]
     if not args:
         return None
-    if args[0] in ("install", "uninstall", "validate", "config"):
+    if args[0] in ("install", "uninstall", "validate", "config", "update"):
         return None
     if "--ai" not in args:
         return None
@@ -547,6 +683,8 @@ def parse_legacy_args(argv: list[str] | None) -> argparse.Namespace | None:
     parser.add_argument("--ai", required=True, choices=AI_CHOICES)
     parser.add_argument("--target", type=Path, default=Path.cwd())
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--global", dest="global_install", action="store_true")
     namespace = parser.parse_args(args)
     namespace.command = "install"
     return namespace
@@ -573,22 +711,39 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
             print(f"Error: target directory does not exist: {args.target}", file=sys.stderr)
             return 1
         try:
-            return install_command(args.ai, args.target.resolve(), args.dry_run, source)
+            return install_command(
+                args.ai,
+                args.target.resolve(),
+                args.dry_run,
+                source,
+                args.force,
+                args.global_install,
+            )
         except FileNotFoundError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
     if args.command == "uninstall":
-        if not args.target.exists():
-            print(f"Error: target directory does not exist: {args.target}", file=sys.stderr)
-            return 1
-        return uninstall_command(args.ai, args.target.resolve())
+        return uninstall_command(args.ai, args.target.resolve(), args.global_install)
 
     if args.command == "validate":
         if not args.target.exists():
             print(f"Error: target directory does not exist: {args.target}", file=sys.stderr)
             return 1
         return validate_command(args.target.resolve(), source)
+
+    if args.command == "update":
+        if not args.target.exists():
+            print(f"Error: target directory does not exist: {args.target}", file=sys.stderr)
+            return 1
+        return update_command(
+            args.ai,
+            args.target.resolve(),
+            source,
+            args.token,
+            args.force,
+            args.global_install,
+        )
 
     if args.command == "config":
         return config_command(

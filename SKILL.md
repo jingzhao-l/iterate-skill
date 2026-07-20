@@ -274,6 +274,11 @@ If no issues are found, return { "findings": [] }.
 
 安装脚本会自动复制 `SKILL.md`、配置、维度定义、校验脚本和模板到对应目录；`--ai all` 一次性安装到所有支持的助手目录。
 
+常用 CLI 选项：
+- `--force`：覆盖已存在的 skill 文件。
+- `--global`：安装到用户主目录（如 `~/.trae/skills/iterate/`），供所有项目复用。
+- `update`：检测已安装的助手并刷新文件，同时查询 GitHub 最新 release。
+
 #### 按模块/目录拆分 / Split by Module or Directory
 
 当项目较大时，可将一个维度拆分为多个子任务，每个任务只审查一个模块或目录：
