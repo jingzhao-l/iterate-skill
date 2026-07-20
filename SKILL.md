@@ -141,12 +141,14 @@ Summary
 
 3. **确定项目根目录 / Locate project root**
    - 以当前工作目录为起点，向上查找包含 `.git`、`iterate.config.yaml` 或 `CLAUDE.md` 的目录。
+   - 若向上查找到文件系统根仍未找到，则使用当前工作目录作为项目根目录，并提示用户确认。
    - 该目录即为项目根目录，后续所有文件读取和命令执行均以此为准。
 
 4. **读取配置 / Load configuration**
    - **Master + Overrides 模式**：先加载技能安装目录下的 `config/iterate.config.yaml`（Master），再读取项目根目录的 `iterate.config.yaml`（Overrides）递归覆盖同名字段。
+   - 合并规则为**深度合并（deep merge）**：对象字段递归合并键值；Overrides 中的列表字段会**完全替换** Master 中的同名列表（如 `dimensions`、`command_whitelist`）。
    - 若项目根目录不存在 Overrides，则完全使用 Master。
-   - 将配置合并到运行参数。
+   - 将配置合并到运行参数；若合并后配置无法通过 schema 校验，立即报告错误并中止迭代。
 
 5. **读取项目上下文 / Read project context**
    - 按优先级查找项目根目录的上下文文件：`CLAUDE.md` → `PROJECT.md` → `README.md`。
@@ -155,10 +157,12 @@ Summary
    - 绝不读取 `.env`、`.env.*`、`*.{key,pem,p12,crt,cer}`、`credentials.json`、`.aws/`、`.ssh/` 等敏感文件。
 
 6. **创建隔离环境 / Create isolated environment**
-   - 检查 `git status`，工作区必须干净（无未跟踪文件、无未提交修改、无未解决冲突）；若不干净，询问用户是否 commit/stash。
+   - 检查 `git status`，工作区必须干净（无未跟踪文件、无未提交修改、无未解决冲突）。
+   - 若工作区不干净，询问用户是否 commit/stash；若用户拒绝或取消，**中止本次迭代**。
    - 记录当前分支名，作为迭代结束后的返回目标。
    - 创建迭代分支：`iterate/<goal-slug>-<timestamp>`。
    - 或创建 git worktree：`git worktree add ../<name> -b iterate/<goal-slug>-<timestamp>`。
+   - 若分支/worktree 创建失败（如名称冲突），尝试追加递增序号后重试，最多 3 次；仍失败则中止并告知用户。
    - 所有后续操作都在该分支/worktree 中进行。
 
 7. **初始化决策日志 / Initialize decision log**
@@ -204,6 +208,7 @@ Review the codebase for {DIMENSION} issues ONLY.
 Scope: {review.scope}
 - "full"      → review the ENTIRE codebase.
 - "changed-only" → review ONLY files changed in the current round (git diff against {git.target_branch}).
+- 当 `review.scope` 为 `changed-only` 且本轮相对于 `target_branch` 无改动文件时，自动 fallback 为 `full`。
 
 Focus: {focus description}
 
@@ -271,6 +276,19 @@ For each directory, launch a reviewer with scope "changed-only" or "full".
 Merge findings, removing duplicates across directory boundaries.
 ```
 
+#### 子代理失败处理 / Sub-agent Failure
+
+若某个 reviewer 子代理失败、超时或返回无效输出：
+
+1. 若输出非严格 JSON 且 `reviewer.output_schema_validation` 为 true，针对该子代理最多重试 2 次，每次在 prompt 中强调返回严格 JSON。
+2. 若仍失败，记录失败原因到 `.iterate_decisions.md`。
+3. 使用 `AskUserQuestion` / 对话确认询问用户：
+   - 继续（continue）：忽略该失败，按当前已收集的 findings 继续。
+   - 跳过该维度（skip）：该维度本轮不产生 findings。
+   - 中止本轮（abort round）：直接退出本轮循环，进入 Phase 4 记录后结束。
+
+> 若选择 skip 或 abort，仍应将失败原因写入决策日志，避免遗漏审查维度。
+
 #### 汇总与分类 / Synthesize and Classify
 
 使用一个汇总子代理：
@@ -328,6 +346,13 @@ if empty AND deferredArchitectural is empty:
 
    根据改动的模块跑对应检查（从 `validation.commands` 读取，键名为示例）：
 
+   - 确定本轮修改涉及的模块集合：根据修改文件的路径、扩展名或目录结构匹配 `validation.commands` 中的模块键名。
+   - 若改动涉及多个模块，依次执行每个模块对应的命令列表。
+   - 若某模块未在 `validation.commands` 中配置命令，跳过并提示用户补充配置。
+   - 任一模块验证失败即停止后续检查，进入失败处理流程。
+
+   示例 / Examples：
+
    - `python/`：`ruff check src/ && mypy src/ --ignore-missing-imports && pytest tests/ -x -q --timeout=60`
    - `swift/`：`swift build -c debug`
    - `typescript/`：`npm run compile`
@@ -337,6 +362,8 @@ if empty AND deferredArchitectural is empty:
    若验证失败：
    - 追加 `.iterate_decisions.md`：`Atomic fix validation failed: {details}`
    - 输出：`❌ Round {round}: atomic fix validation failed, stopping iteration`
+   - **回滚本轮所有原子修改**：`git reset --hard HEAD`（仍在迭代分支上，不影响 main/master）。
+   - 将本轮已识别但未执行的架构问题保留在 `deferredArchitectural` 中，供下次 `/iterate` 会话处理。
    - `break`
 
 ---
@@ -409,6 +436,8 @@ if empty AND deferredArchitectural is empty:
    若失败：
    - 追加 `.iterate_decisions.md`：`Full validation failed: {details}`
    - 输出：`❌ Round {round}: full validation failed, stopping iteration`
+   - **回滚本轮所有修改**（原子 + 已执行架构）：`git reset --hard iterate/round-{round}-backup`（或 `git reset --hard HEAD`），仍在迭代分支上，不影响 main/master。
+   - 将未执行的架构问题保留在 `deferredArchitectural` 中。
    - `break`
 
 ---
@@ -441,16 +470,18 @@ if empty AND deferredArchitectural is empty:
 3. **Merge / 合并**
    - `git checkout {target_branch}`
    - `git merge iterate/<goal-slug>-<timestamp>`
-   - 如有冲突，立即解决；解决后重新验证。
+   - 如有冲突，先尝试自动解决；若无法自动解决，**停止合并并询问用户**手动解决或跳过本轮。
+   - 冲突解决后重新验证，验证失败则切回迭代分支，**不推进 main/master**。
 
 4. **Push / 推送**
    - 若 `git.push_per_round` 为 `true`：
      - `git push origin {target_branch}`
      - 若被拒绝，先 `git pull --rebase`，解决冲突，重新验证，再 push。
+     - push-pull-rebase 循环最多执行 3 次；超过仍失败则停止并告知用户手动处理。
      - **绝不 force-push 到 main/master**。
    - 若 `git.push_per_round` 为 `false`：
      - 本轮回不 push，只保留本地 merge。
-     - 在最后一轮或会话结束时，一次性 `git push origin {target_branch}`。
+     - 在最后一轮或会话结束时，一次性 `git push origin {target_branch}`；同样遵循 3 次循环限制。
 
 5. **切回迭代分支 / Switch back**
    - `git checkout iterate/<goal-slug>-<timestamp>`
@@ -505,6 +536,20 @@ git checkout iterate/<goal>-<date>                  # 继续下一轮
 # 确保所有改动已合并推送
 # 可询问用户是否删除已合并的迭代分支
 ```
+
+### 会话中断与恢复 / Session Interruption and Resume
+
+若会话因用户关闭、AI 异常或验证失败而中断：
+
+1. 保留当前迭代分支和 `.iterate_decisions.md`，不要删除。
+2. 下次调用 `/iterate` 时，先读取 `.iterate_decisions.md` 确定：
+   - 上次的迭代分支名。
+   - 已完成的轮数、`deferredArchitectural` 列表。
+   - 是否有未 push 的本地 merge。
+3. 若工作区干净且迭代分支存在，询问用户：
+   - 继续上次会话（resume）：切回迭代分支，从下一轮开始。
+   - 重新开始（restart）：创建新迭代分支，`deferredArchitectural` 可继承或清空。
+4. 若上一轮已合并到 main/master 但未 push，在 resume 时先完成 push。
 
 ### 护栏 / Guardrails
 
@@ -628,11 +673,12 @@ iterate/
 
 ## 安全与敏感信息保护 / Security & Sensitive Data
 
-1. **Reviewer 不读取敏感文件 / No sensitive file access**
-   - reviewer 子代理不得读取敏感文件，包括但不限于：
+1. **所有 AI 操作不读取敏感文件 / No sensitive file access**
+   - 主模型、reviewer 子代理、架构修复子代理均不得读取敏感文件，包括但不限于：
      `.env`、`.env.*`、`*.key`、`secrets/`、`*.pem`、`*.p12`、`*.crt`、`*.cer`、
      `credentials.json`、`.aws/`、`.ssh/`。
    - `projectContext` 中不得包含 API 密钥、密码、Token、数据库连接字符串、私钥内容。
+   - 执行命令时避免将敏感文件作为参数或输出内容。
 
 2. **命令白名单 / Command whitelist**
    - 默认白名单：`ruff`, `mypy`, `pytest`, `swift`, `npm run`, `yarn`, `pnpm`, `go test`, `cargo`, `python`, `python3` 等已知前缀。
