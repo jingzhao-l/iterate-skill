@@ -31,6 +31,40 @@ allowed-tools:
 
 ---
 
+## 何时使用 / When to Apply
+
+本 Skill 适用于以下场景：
+
+- 需要系统性提升代码质量、修复潜在 bug 或安全漏洞。
+- 项目进入重构、迭代收尾或发布前的审查阶段。
+- 需要多维度（正确性、安全、性能、架构等）并行审查。
+- 希望将原子问题自动修复，将架构问题经审批后修复。
+
+This Skill is appropriate when:
+
+- You need a systematic code quality improvement, bug fix, or security hardening pass.
+- The project is in refactoring, pre-release, or iteration wrap-up phase.
+- You want parallel multi-dimension review (correctness, security, performance, architecture, etc.).
+- You want atomic issues fixed automatically and architectural issues fixed after approval.
+
+## 何时跳过 / When to Skip
+
+本 Skill 不适用于以下场景：
+
+- 仅需要单次、简单的代码编辑（不需要多轮审查）。
+- 项目工作区不干净、存在未提交改动或冲突。
+- 没有可用的验证命令（`validation.commands` 未配置）。
+- 只需要 UI/UX 设计建议（请使用 UI/UX Pro Max 等专业设计 Skill）。
+
+Do **not** use this Skill when:
+
+- A single, simple edit is sufficient (no multi-round review needed).
+- The working tree is dirty, has uncommitted changes, or unresolved conflicts.
+- No validation commands are configured in `validation.commands`.
+- You only need UI/UX design advice (use a dedicated design Skill like UI/UX Pro Max).
+
+---
+
 ## 参数 / Parameters
 
 调用格式 / Invocation: `/iterate <goal> [rounds] [no-limit]`
@@ -129,8 +163,8 @@ Summary
    - 该目录即为项目根目录，后续所有文件读取和命令执行均以此为准。
 
 4. **读取配置 / Load configuration**
-   - 优先读取项目根目录的 `iterate.config.yaml`。
-   - 若不存在，使用本技能安装目录下的 `config/iterate.config.yaml` 作为默认配置。
+   - **Master + Overrides 模式**：先加载技能安装目录下的 `config/iterate.config.yaml`（Master），再读取项目根目录的 `iterate.config.yaml`（Overrides）递归覆盖同名字段。
+   - 若项目根目录不存在 Overrides，则完全使用 Master。
    - 将配置合并到运行参数。
 
 5. **读取项目上下文 / Read project context**
@@ -167,19 +201,19 @@ Launch **N parallel reviewer sub-agents** (N = enabled dimensions count, default
 
 #### 可用审查维度 / Available Review Dimensions
 
-以下 9 个维度可通过 `dimensions` 列表启用或禁用：
+以下维度可通过 `dimensions` 列表启用或禁用（默认 9 个）。每个维度的中文名、英文名、优先级和 focus prompt 定义在 `config/dimensions/<key>.yaml` 中；`config/dimensions.yaml` 保留为聚合兼容文件。
 
-| 维度 / Dimension | 关注点 / Focus |
-|------------------|---------------|
-| correctness | 崩溃风险、逻辑错误、竞态条件、类型不匹配、静默吞错 |
-| security | 注入、路径遍历、硬编码密钥、输入校验、权限提升 |
-| performance | N+1 查询、主线程阻塞、循环引用、O(n²)、启动瓶颈 |
-| architecture | 模块边界违规、循环依赖、God Object、缺失抽象 |
-| style-tests | 函数 >80 行、圈复杂度 >15、嵌套 >3、魔法数字、缺失测试 |
-| tech-debt | TODO/FIXME/HACK、废弃 API、临时方案、硬编码配置 |
-| spec-compliance | 对照 specs/ 目录，发现未实现功能、规范偏离 |
-| frontend-backend | API/RPC 一致性、数据字段、错误传播、事件流覆盖 |
-| ui-ux | 加载/空/错误状态、导航、响应式断点、无障碍 |
+| 维度 / Dimension | 优先级 / Priority | 关注点 / Focus |
+|------------------|-------------------|---------------|
+| correctness | critical | 崩溃风险、逻辑错误、竞态条件、类型不匹配、静默吞错 |
+| security | critical | 注入、路径遍历、硬编码密钥、输入校验、权限提升 |
+| performance | high | N+1 查询、主线程阻塞、循环引用、O(n²)、启动瓶颈 |
+| architecture | high | 模块边界违规、循环依赖、God Object、缺失抽象 |
+| style-tests | medium | 函数 >80 行、圈复杂度 >15、嵌套 >3、魔法数字、缺失测试 |
+| tech-debt | medium | TODO/FIXME/HACK、废弃 API、临时方案、硬编码配置 |
+| spec-compliance | high | 对照 specs/ 目录，发现未实现功能、规范偏离 |
+| frontend-backend | high | API/RPC 一致性、数据字段、错误传播、事件流覆盖 |
+| ui-ux | medium | 加载/空/错误状态、导航、响应式断点、无障碍 |
 
 每个子代理的任务提示：
 
@@ -530,9 +564,21 @@ iterate/
 ├── SKILL.md                          # 本文件，技能入口
 ├── config/
 │   ├── iterate.config.yaml           # 默认配置
-│   └── config.schema.json            # iterate.config.yaml 的 JSON Schema
+│   ├── config.schema.json            # iterate.config.yaml 的 JSON Schema
+│   ├── dimensions.yaml               # 聚合版维度定义（兼容旧版）
+│   └── dimensions/                   # 数据驱动的维度定义
+│       ├── correctness.yaml
+│       ├── security.yaml
+│       ├── performance.yaml
+│       ├── architecture.yaml
+│       ├── style-tests.yaml
+│       ├── tech-debt.yaml
+│       ├── spec-compliance.yaml
+│       ├── frontend-backend.yaml
+│       └── ui-ux.yaml
 ├── scripts/
-│   ├── validate.py                   # 配置与决策日志校验脚本
+│   ├── install.py                    # 一键安装脚本
+│   ├── validate.py                   # 配置、决策日志、维度校验脚本
 │   └── requirements.txt              # 校验脚本依赖
 ├── templates/
 │   └── iterate-decisions.template.md # 决策日志模板
