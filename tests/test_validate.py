@@ -235,50 +235,223 @@ class TestValidateDimensions:
         assert any("field priority must be one of" in e for e in errors)
 
 
+def _build_minimal_source(tmp_path: Path) -> Path:
+    """Create a minimal skill source tree for install tests."""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("skill", encoding="utf-8")
+    (source / "config").mkdir()
+    (source / "config" / "iterate.config.yaml").write_text(
+        yaml.safe_dump({"goal": "test", "dimensions": ["correctness"]}),
+        encoding="utf-8",
+    )
+    (source / "config" / "config.schema.json").write_text("{}", encoding="utf-8")
+    (source / "config" / "dimensions.yaml").write_text("correctness:", encoding="utf-8")
+    (source / "config" / "dimensions").mkdir()
+    (source / "config" / "dimensions" / "correctness.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "正确性",
+                "name_en": "Correctness",
+                "priority": "critical",
+                "focus": "Crash risks.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "scripts").mkdir()
+    (source / "scripts" / "validate.py").write_text(
+        "def validate_config(path, schema_path=None): return []\n", encoding="utf-8"
+    )
+    (source / "scripts" / "requirements.txt").write_text("reqs", encoding="utf-8")
+    (source / "templates").mkdir()
+    (source / "templates" / "iterate-decisions.template.md").write_text(
+        "template", encoding="utf-8"
+    )
+    return source
+
+
 class TestInstallScript:
     def test_dry_run_lists_files(self, tmp_path: Path) -> None:
-        source = tmp_path / "source"
-        source.mkdir()
-        (source / "SKILL.md").write_text("skill", encoding="utf-8")
-        (source / "config").mkdir()
-        (source / "config" / "iterate.config.yaml").write_text("config", encoding="utf-8")
-        (source / "config" / "dimensions").mkdir()
-        (source / "scripts").mkdir()
-        (source / "scripts" / "validate.py").write_text("validate", encoding="utf-8")
-        (source / "scripts" / "requirements.txt").write_text("reqs", encoding="utf-8")
-        (source / "templates").mkdir()
-        (source / "templates" / "iterate-decisions.template.md").write_text("template", encoding="utf-8")
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
 
         from install import main as install_main
 
+        assert (
+            install_main(
+                ["install", "--ai", "trae", "--target", str(target), "--dry-run"],
+                source=source,
+            )
+            == 0
+        )
+        assert not (target / ".trae").exists()
+
+    def test_legacy_invocation_dry_run(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
         target = tmp_path / "target"
         target.mkdir()
-        assert install_main(["--ai", "trae", "--target", str(target), "--dry-run"]) == 0
+
+        from install import main as install_main
+
+        assert (
+            install_main(
+                ["--ai", "trae", "--target", str(target), "--dry-run"], source=source
+            )
+            == 0
+        )
         assert not (target / ".trae").exists()
 
     def test_install_copies_files(self, tmp_path: Path) -> None:
-        source = tmp_path / "source"
-        source.mkdir()
-        (source / "SKILL.md").write_text("skill", encoding="utf-8")
-        (source / "config").mkdir()
-        (source / "config" / "iterate.config.yaml").write_text("config", encoding="utf-8")
-        (source / "config" / "config.schema.json").write_text("schema", encoding="utf-8")
-        (source / "config" / "dimensions.yaml").write_text("dims", encoding="utf-8")
-        (source / "config" / "dimensions").mkdir()
-        (source / "config" / "dimensions" / "correctness.yaml").write_text("correctness", encoding="utf-8")
-        (source / "scripts").mkdir()
-        (source / "scripts" / "validate.py").write_text("validate", encoding="utf-8")
-        (source / "scripts" / "requirements.txt").write_text("reqs", encoding="utf-8")
-        (source / "templates").mkdir()
-        (source / "templates" / "iterate-decisions.template.md").write_text("template", encoding="utf-8")
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
 
         from install import main as install_main
 
+        assert (
+            install_main(["install", "--ai", "claude", "--target", str(target)], source=source)
+            == 0
+        )
+        assert (target / ".claude" / "skills" / "iterate" / "SKILL.md").exists()
+        assert (
+            target / ".claude" / "skills" / "iterate" / "config" / "dimensions" / "correctness.yaml"
+        ).exists()
+
+    def test_install_all_creates_multiple_folders(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
         target = tmp_path / "target"
         target.mkdir()
-        assert install_main(["--ai", "claude", "--target", str(target)]) == 0
-        assert (target / ".claude" / "skills" / "iterate" / "SKILL.md").exists()
-        assert (target / ".claude" / "skills" / "iterate" / "config" / "dimensions" / "correctness.yaml").exists()
+
+        from install import main as install_main
+
+        assert install_main(["install", "--ai", "all", "--target", str(target)], source=source) == 0
+        assert (target / ".trae" / "skills" / "iterate").exists()
+        assert (target / ".claude" / "skills" / "iterate").exists()
+
+
+class TestConfigCommand:
+    def test_config_init_copies_master(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["config", "--init", "--target", str(target)], source=source) == 0
+        assert (target / "iterate.config.yaml").exists()
+
+    def test_config_set_nested_value(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["config", "--init", "--target", str(target)], source=source) == 0
+        assert (
+            install_main(
+                [
+                    "config",
+                    "--target",
+                    str(target),
+                    "--set",
+                    "goal=New goal",
+                    "--set",
+                    "max_rounds=10",
+                    "--set",
+                    "review.scope=changed-only",
+                ],
+                source=source,
+            )
+            == 0
+        )
+        config = yaml.safe_load((target / "iterate.config.yaml").read_text(encoding="utf-8"))
+        assert config["goal"] == "New goal"
+        assert config["max_rounds"] == 10
+        assert config["review"]["scope"] == "changed-only"
+
+    def test_config_set_list_value(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["config", "--init", "--target", str(target)], source=source) == 0
+        assert (
+            install_main(
+                [
+                    "config",
+                    "--target",
+                    str(target),
+                    "--set",
+                    "dimensions=[correctness, security]",
+                ],
+                source=source,
+            )
+            == 0
+        )
+        config = yaml.safe_load((target / "iterate.config.yaml").read_text(encoding="utf-8"))
+        assert config["dimensions"] == ["correctness", "security"]
+
+    def test_config_list_prints_yaml(self, tmp_path: Path, capsys) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["config", "--init", "--target", str(target)], source=source) == 0
+        assert install_main(["config", "--list", "--target", str(target)], source=source) == 0
+        captured = capsys.readouterr()
+        assert "goal: test" in captured.out
+
+    def test_config_init_refuses_overwrite(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "iterate.config.yaml").write_text("existing: true", encoding="utf-8")
+
+        from install import main as install_main
+
+        assert install_main(["config", "--init", "--target", str(target)], source=source) == 1
+
+
+class TestUninstallCommand:
+    def test_uninstall_removes_files(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
+        assert (target / ".trae" / "skills" / "iterate").exists()
+        assert install_main(["uninstall", "--ai", "trae", "--target", str(target)], source=source) == 0
+        assert not (target / ".trae" / "skills" / "iterate").exists()
+
+
+class TestValidateCommand:
+    def test_validate_passes(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["config", "--init", "--target", str(target)], source=source) == 0
+        assert install_main(["validate", "--target", str(target)], source=source) == 0
+
+    def test_validate_fails_when_missing(self, tmp_path: Path) -> None:
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert install_main(["validate", "--target", str(target)], source=source) == 1
 
 
 class TestMain:
