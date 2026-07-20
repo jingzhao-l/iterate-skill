@@ -34,7 +34,7 @@
 - **可配置多维审查 / Configurable Multi-Dimension Review**：默认 9 维度，可通过 `dimensions` 列表启用/禁用。
 - **双轨修复 / Two-Track Fixing**：原子问题自动修，架构问题经审批后修。
 - **Git 隔离 / Git Isolation**：每轮在独立分支或 worktree 中完成，通过 merge 回主分支，绝不直接提交到 main/master。
-- **多框架适配 / Multi-Framework Adaptation**：支持 Trae、Claude Code、Cursor 等工具，核心流程与工具细节解耦。
+- **多框架适配 / Multi-Framework Adaptation**：支持 Trae、Claude Code、Cursor、Windsurf、GitHub Copilot、Codex、Roo Code 等 13+ 工具，核心流程与工具细节解耦。
 - **可配置 / Configurable**：通过 `iterate.config.yaml` 自定义审查维度、验证命令、轮数、语言等。
 - **完整审计 / Full Audit Trail**：每轮结果写入 `.iterate_decisions.md`，可追溯、可复盘。
 
@@ -42,7 +42,7 @@
 
 ## 安装 / Installation
 
-### 方式一：安装脚本（推荐）
+### 方式一：CLI 脚本（推荐）
 
 ```bash
 # 克隆到本地
@@ -50,13 +50,20 @@ git clone https://github.com/jingzhao-l/iterate-skill.git
 cd iterate-skill
 
 # 安装到指定 AI 助手的技能目录
-python scripts/install.py --ai trae --target /path/to/project
-python scripts/install.py --ai claude --target /path/to/project
-python scripts/install.py --ai cursor --target /path/to/project
+python scripts/install.py install --ai trae --target /path/to/project
+python scripts/install.py install --ai claude --target /path/to/project
+python scripts/install.py install --ai cursor --target /path/to/project
 
 # 或一次性安装到所有支持的助手
-python scripts/install.py --ai all --target /path/to/project
+python scripts/install.py install --ai all --target /path/to/project
+
+# 查看所有支持的工具
+python scripts/install.py install --help
 ```
+
+已支持：Trae、Claude Code、Cursor、Windsurf、GitHub Copilot、OpenAI Codex、Roo Code、Qoder、Gemini CLI、OpenCode、Continue、Augment、Warp。
+
+> 旧版调用方式 `python scripts/install.py --ai trae --target ...` 仍兼容。
 
 ### 方式二：手动克隆
 
@@ -76,9 +83,9 @@ git clone https://github.com/jingzhao-l/iterate-skill.git ~/.claude/skills/itera
 
 或复制 `SKILL.md` 到项目内的 `.claude/skills/iterate/SKILL.md`。
 
-#### Cursor / 通用
+#### Cursor / 其他工具
 
-参考 `SKILL.md` 中的"工具映射表"，用 Cursor 的 Agent 模式或自定义脚本实现对应步骤。
+参考 `SKILL.md` 中的"工具映射表"，用对应 AI 助手的 Agent 模式或自定义脚本实现对应步骤。`scripts/install.py` 会自动将文件放到 `.cursor/skills/iterate/`、`.windsurf/skills/iterate/` 等目录。
 
 ---
 
@@ -163,7 +170,7 @@ iterate-skill/
 ├── templates/
 │   └── iterate-decisions.template.md # 决策日志模板
 ├── scripts/
-│   ├── install.py                    # 一键安装脚本
+│   ├── install.py                    # CLI：安装、卸载、配置、校验
 │   ├── validate.py                   # 配置、决策日志、维度校验脚本
 │   └── requirements.txt              # 校验脚本依赖
 ├── tools/
@@ -244,6 +251,33 @@ dimensions:
 git:
   push_per_round: false
 ```
+
+### 命令行配置 / CLI Configuration
+
+除了手动编辑 `iterate.config.yaml`，还可以用 `scripts/install.py config` 在命令行快速管理配置：
+
+```bash
+# 在项目根目录生成 iterate.config.yaml（从 Master 复制）
+python scripts/install.py config --init --target /path/to/project
+
+# 查看当前项目配置
+python scripts/install.py config --list --target /path/to/project
+
+# 非交互式修改单个字段（支持嵌套键）
+python scripts/install.py config --set goal="Fix all bugs" --target /path/to/project
+python scripts/install.py config --set max_rounds=10 --target /path/to/project
+python scripts/install.py config --set dimensions='[correctness, security, performance]' --target /path/to/project
+python scripts/install.py config --set review.scope=changed-only --target /path/to/project
+python scripts/install.py config --set validation.commands.python='["ruff check src/", "pytest tests/ -q"]' --target /path/to/project
+
+# 交互式配置向导（推荐新手使用）
+python scripts/install.py config --interactive --target /path/to/project
+
+# 校验项目配置
+python scripts/install.py validate --target /path/to/project
+```
+
+`--set` 的值会按 YAML/JSON 语义解析，因此列表、数字、布尔值都可以直接写入。
 
 ---
 

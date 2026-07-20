@@ -252,6 +252,28 @@ If no issues are found, return { "findings": [] }.
 | 执行命令 | `RunCommand` | `Bash` | Terminal |
 | 配置校验 | `python scripts/validate.py config ...` | `python scripts/validate.py config ...` | 同左 |
 
+#### 支持的 AI 助手与安装路径 / Supported Assistants
+
+使用 `scripts/install.py install --ai <name> --target <project>` 即可安装到对应目录：
+
+| AI 助手 / Assistant | 安装路径 / Install Path |
+|---------------------|------------------------|
+| Trae | `.trae/skills/iterate/` |
+| Claude Code | `.claude/skills/iterate/` |
+| Cursor | `.cursor/skills/iterate/` |
+| Windsurf | `.windsurf/skills/iterate/` |
+| GitHub Copilot | `.github/skills/iterate/` |
+| OpenAI Codex | `.codex/skills/iterate/` |
+| Roo Code | `.roo/skills/iterate/` |
+| Qoder | `.qoder/skills/iterate/` |
+| Gemini CLI | `.gemini/skills/iterate/` |
+| OpenCode | `.opencode/skills/iterate/` |
+| Continue | `.continue/skills/iterate/` |
+| Augment | `.augment/skills/iterate/` |
+| Warp | `.warp/skills/iterate/` |
+
+安装脚本会自动复制 `SKILL.md`、配置、维度定义、校验脚本和模板到对应目录；`--ai all` 一次性安装到所有支持的助手目录。
+
 #### 按模块/目录拆分 / Split by Module or Directory
 
 当项目较大时，可将一个维度拆分为多个子任务，每个任务只审查一个模块或目录：
@@ -577,7 +599,7 @@ iterate/
 │       ├── frontend-backend.yaml
 │       └── ui-ux.yaml
 ├── scripts/
-│   ├── install.py                    # 一键安装脚本
+│   ├── install.py                    # CLI：安装、卸载、配置、校验
 │   ├── validate.py                   # 配置、决策日志、维度校验脚本
 │   └── requirements.txt              # 校验脚本依赖
 ├── templates/
