@@ -3,11 +3,12 @@
 > 一个可移植、可配置的 AI 编程助手技能：全自动多轮代码审查与修复。
 > A portable, configurable AI coding assistant skill: fully automated multi-round code review and fixing.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![skills.sh](https://skills.sh/b/jingzhao-l/iterate-skill)](https://skills.sh/jingzhao-l/iterate-skill)
-[![clawhub.ai](https://clawhub.ai/jingzhao-l/skills/iterate-skill)](https://clawhub.ai/jingzhao-l/skills/iterate-skill)
-[![skillhub.cn](https://www.skillhub.cn/skills/iterate-skill)](https://www.skillhub.cn/skills/iterate-skill)
-[![modelscope.cn](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](./LICENSE)
+[![skills.sh](https://img.shields.io/badge/platform-skills.sh-blue)](https://skills.sh/jingzhao-l/iterate-skill)
+[![ClawHub](https://img.shields.io/badge/platform-ClawHub.ai-4285F4)](https://clawhub.ai/jingzhao-l/skills/iterate-skill)
+[![SkillHub CN](https://img.shields.io/badge/platform-SkillHub.cn-2385bb)](https://www.skillhub.cn/skills/iterate-skill)
+[![ModelScope](https://img.shields.io/badge/platform-ModelScope-624aff)](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)
+
 ---
 
 ## 简介 / Introduction
