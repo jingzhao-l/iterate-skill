@@ -5,7 +5,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![skills.sh](https://skills.sh/b/jingzhao-l/iterate-skill)](https://skills.sh/jingzhao-l/iterate-skill)
-
+[![clawhub.ai](https://clawhub.ai/jingzhao-l/skills/iterate-skill)](https://clawhub.ai/jingzhao-l/skills/iterate-skill)
+[![skillhub.cn](https://www.skillhub.cn/skills/iterate-skill)](https://www.skillhub.cn/skills/iterate-skill)
+[![modelscope.cn](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)
 ---
 
 ## 简介 / Introduction
