@@ -4,10 +4,11 @@
 > A portable, configurable AI coding assistant skill: fully automated multi-round code review and fixing.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](./LICENSE)
-[![skills.sh](https://img.shields.io/badge/platform-skills.sh-blue)](https://skills.sh/jingzhao-l/iterate-skill)
-[![ClawHub](https://img.shields.io/badge/platform-ClawHub.ai-4285F4)](https://clawhub.ai/jingzhao-l/skills/iterate-skill)
-[![SkillHub CN](https://img.shields.io/badge/platform-SkillHub.cn-2385bb)](https://www.skillhub.cn/skills/iterate-skill)
-[![ModelScope](https://img.shields.io/badge/platform-ModelScope-624aff)](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)
+[![skills.sh](https://img.shields.io/badge/-skills.sh-222222?logo=github&logoColor=white)](https://skills.sh/jingzhao-l/iterate-skill)
+[![ClawHub](https://img.shields.io/badge/-ClawHub.ai-4285F4?logo=cloudflare&logoColor=white)](https://clawhub.ai/jingzhao-l/skills/iterate-skill)
+[![SkillHub CN](https://img.shields.io/badge/-SkillHub.cn-2385bb?logo=codeberg&logoColor=white)](https://www.skillhub.cn/skills/iterate-skill)
+[![ModelScope](https://img.shields.io/badge/-ModelScope-624aff?logo=alibabacloud&logoColor=white)](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)
+
 
 ---
 
