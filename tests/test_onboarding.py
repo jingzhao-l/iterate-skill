@@ -62,6 +62,16 @@ from iterate_cli.refresh import (
     is_onboarding_complete,
     load_onboarding_config,
 )
+from iterate_cli.personalize import (
+    DimensionFocusOverride,
+    KnownIntentional,
+    PersonalizationData,
+    RiskArea,
+    load_personalization_from_config,
+    merge_personalization_into_config,
+    run_personalize_wizard,
+    save_personalization_to_config,
+)
 from iterate_cli.cli import main as cli_main
 
 
@@ -547,6 +557,7 @@ class TestRunWizard:
             "Test project",  # project description
             "",           # code conventions: empty line to finish
             "y",          # confirm and generate
+            "n",          # personalization offer: no
         ])
         data = run_wizard(fake_project, input_func=lambda _: next(responses))
         assert data is not None
@@ -555,6 +566,7 @@ class TestRunWizard:
         assert "correctness" in data.dimensions
         assert data.target_branch == "main"
         assert len(data.fingerprints) == 1
+        assert data.personalization is None
 
     def test_gate_question_abort(self, fake_project: Path) -> None:
         responses = iter(["n"])  # gate: no
@@ -593,6 +605,7 @@ class TestRunWizard:
             "Desc",           # description
             "",               # conventions: empty
             "y",              # confirm: yes
+            "n",              # personalization offer: no
         ])
         data = run_wizard(fake_project, input_func=lambda _: next(responses))
         assert data is not None
@@ -611,6 +624,7 @@ class TestRunWizard:
             "Desc",       # description
             "",           # conventions: empty
             "y",          # confirm: yes
+            "n",          # personalization offer: no
         ])
         data = run_wizard(fake_project, input_func=lambda _: next(responses))
         assert data is not None
@@ -715,8 +729,9 @@ class TestFullReonboard:
         iterate_md = fake_project / "ITERATE.md"
         iterate_md.write_text("original content", encoding="utf-8")
 
+        # Returning user flow: update basic config, then decline personalization.
         responses = iter([
-            "y",          # gate: continue
+            "y",          # update basic config: yes
             "y",          # tech stack correct
             "y",          # use suggested commands
             "",           # default dimensions
@@ -726,6 +741,7 @@ class TestFullReonboard:
             "Redone",     # description
             "",           # conventions: empty
             "y",          # confirm: yes
+            "n",          # personalization offer: no
         ])
         result = full_reonboard(fake_project, input_func=lambda _: next(responses))
         assert result is True
@@ -739,7 +755,19 @@ class TestFullReonboard:
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
 
-        responses = iter(["n"])  # gate: no
+        # Returning user flow: say yes to update basic config, cancel at confirmation.
+        responses = iter([
+            "y",          # update basic config: yes
+            "y",          # tech stack correct
+            "y",          # use suggested commands
+            "",           # default dimensions
+            "",           # default branch
+            "",           # default scope
+            "y",          # push: yes
+            "Desc",       # description
+            "",           # conventions: empty
+            "n",          # confirm: no (cancel)
+        ])
         result = full_reonboard(fake_project, input_func=lambda _: next(responses))
         assert result is False
 
@@ -781,14 +809,81 @@ class TestCLIStatus:
         assert ret == 1
 
 
-class TestCLIOnboard:
-    def test_onboard_already_done(self, fake_project: Path, capsys) -> None:
+class TestReturningUserFlow:
+    """Tests for the multi-path wizard when ITERATE.md already exists."""
+
+    def test_skip_basic_keep_existing_config(self, fake_project: Path) -> None:
+        """Returning user declines basic update and personalization."""
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
-        ret = cli_main(["onboard", "-p", str(fake_project)])
-        assert ret == 1
-        captured = capsys.readouterr()
-        assert "already completed" in captured.out
+
+        responses = iter([
+            "n",          # update basic config: no (use existing)
+            "n",          # personalization: no
+        ])
+        result = run_wizard(fake_project, input_func=lambda _: next(responses))
+        assert result is not None
+        assert result.channel == "cli"
+        assert "correctness" in result.dimensions
+
+    def test_update_basic_config(self, fake_project: Path) -> None:
+        """Returning user updates basic config."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        responses = iter([
+            "y",          # update basic config: yes
+            "y",          # tech stack correct
+            "y",          # use suggested commands
+            "",           # default dimensions
+            "develop",    # target branch: develop
+            "",           # default scope
+            "n",          # push: no
+            "Updated",    # description
+            "",           # conventions: empty
+            "y",          # confirm: yes
+            "n",          # personalization: no
+        ])
+        result = run_wizard(fake_project, input_func=lambda _: next(responses))
+        assert result is not None
+        assert result.target_branch == "develop"
+        assert result.push_per_round is False
+
+    def test_returning_user_with_personalization(self, fake_project: Path) -> None:
+        """Returning user declines basic update but accepts personalization."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        responses = iter([
+            "n",          # update basic config: no
+            "y",          # personalization: yes
+            "y",          # start personalization
+            # Step 1: protected paths
+            "a",          # add
+            "legacy/**",  # path
+            "s",          # skip
+            # Step 2: risk areas
+            "s",          # skip
+            # Step 3: known intentional
+            "s",          # skip
+            # Step 4: dimension focus
+            "s",          # skip
+            # Step 5: fix priority order
+            "",           # skip (empty)
+            # Step 6: forbidden fixes
+            "s",          # skip
+            # Step 7: iterate notes
+            "s",          # skip
+            # Step 8: code conventions
+            "s",          # skip
+            # Step 9: extra validation commands
+            "s",          # skip
+            "y",          # confirm save
+        ])
+        result = run_wizard(fake_project, input_func=lambda _: next(responses))
+        assert result is not None
+        assert result.personalization is not None
+        assert "legacy/**" in result.personalization.protected_paths
 
 
 class TestCLIRefresh:
@@ -826,3 +921,985 @@ class TestCLINoCommand:
     def test_no_command_prints_help(self, capsys) -> None:
         ret = cli_main(["-p", "."])
         assert ret == 0
+
+
+# ---------------------------------------------------------------------------
+# PersonalizationData model tests
+# ---------------------------------------------------------------------------
+
+
+def _build_personalization_data() -> PersonalizationData:
+    """Build a PersonalizationData with all fields populated."""
+    return PersonalizationData(
+        protected_paths=["legacy/**", "vendor/**"],
+        risk_areas=[
+            RiskArea(path="src/auth/", reason="认证模块需审批"),
+            RiskArea(path="src/crypto/", reason="加密模块敏感"),
+        ],
+        known_intentional=[
+            KnownIntentional(
+                file="db/queries.py", line=42, dimension="tech-debt",
+                reason="使用 any 是性能优化",
+            ),
+            KnownIntentional(
+                file="legacy/handlers.py", line=0, dimension="style-tests",
+                reason="遗留代码不强制风格",
+            ),
+        ],
+        dimension_focus=[
+            DimensionFocusOverride(dimension="security", focus="SQL 注入历史事故"),
+        ],
+        fix_priority_order=["security", "correctness", "performance"],
+        forbidden_fixes=["try-catch 吞错", "# noqa"],
+        iterate_notes=["不要修改迁移文件", "测试数据库在 CI 中自动创建"],
+        code_conventions=["使用 4 空格缩进", "函数名用 snake_case"],
+        extra_validation_commands={"python": ["bandit -r src/"]},
+    )
+
+
+class TestPersonalizationDataModel:
+    def test_is_empty_true(self) -> None:
+        data = PersonalizationData()
+        assert data.is_empty() is True
+
+    def test_is_empty_false_with_protected_paths(self) -> None:
+        data = PersonalizationData(protected_paths=["src/"])
+        assert data.is_empty() is False
+
+    def test_is_empty_false_with_extra_commands(self) -> None:
+        data = PersonalizationData(extra_validation_commands={"python": ["test"]})
+        assert data.is_empty() is False
+
+    def test_to_config_dict_has_structured_fields(self) -> None:
+        data = _build_personalization_data()
+        d = data.to_config_dict()
+        assert d["protected_paths"] == ["legacy/**", "vendor/**"]
+        assert len(d["risk_areas"]) == 2
+        assert d["risk_areas"][0] == {"path": "src/auth/", "reason": "认证模块需审批"}
+        assert len(d["known_intentional"]) == 2
+        assert d["known_intentional"][0]["file"] == "db/queries.py"
+        assert d["known_intentional"][0]["line"] == 42
+        assert d["dimension_focus"][0] == {
+            "dimension": "security", "focus": "SQL 注入历史事故",
+        }
+        assert d["fix_priority_order"] == ["security", "correctness", "performance"]
+        assert d["forbidden_fixes"] == ["try-catch 吞错", "# noqa"]
+
+    def test_to_config_dict_excludes_free_form_fields(self) -> None:
+        data = _build_personalization_data()
+        d = data.to_config_dict()
+        # iterate_notes and code_conventions are free-form, not in config dict
+        assert "iterate_notes" not in d
+        assert "code_conventions" not in d
+        assert "extra_validation_commands" not in d
+
+    def test_to_user_md_sections_empty(self) -> None:
+        data = PersonalizationData()
+        assert data.to_user_md_sections().strip() == ""
+
+    def test_to_user_md_sections_with_conventions(self) -> None:
+        data = PersonalizationData(code_conventions=["Use 4 spaces", "snake_case"])
+        md = data.to_user_md_sections()
+        assert "Custom Code Conventions" in md
+        assert "Use 4 spaces" in md
+        assert "snake_case" in md
+
+    def test_to_user_md_sections_with_protected_paths(self) -> None:
+        data = PersonalizationData(protected_paths=["legacy/**"])
+        md = data.to_user_md_sections()
+        assert "Restricted" in md
+        assert "Protected" in md
+        assert "legacy/**" in md
+
+    def test_to_user_md_sections_with_risk_areas(self) -> None:
+        data = PersonalizationData(
+            risk_areas=[RiskArea(path="src/auth/", reason="sensitive")],
+        )
+        md = data.to_user_md_sections()
+        assert "Risk Areas" in md
+        assert "src/auth/" in md
+        assert "sensitive" in md
+
+    def test_to_user_md_sections_with_iterate_notes(self) -> None:
+        data = PersonalizationData(iterate_notes=["Don't touch migrations"])
+        md = data.to_user_md_sections()
+        assert "Iterate Notes" in md
+        assert "Don't touch migrations" in md
+
+    def test_to_user_md_sections_with_known_intentional(self) -> None:
+        data = PersonalizationData(
+            known_intentional=[
+                KnownIntentional(
+                    file="db/queries.py", line=42, dimension="tech-debt",
+                    reason="intentional any",
+                ),
+            ],
+        )
+        md = data.to_user_md_sections()
+        assert "Known Intentional" in md
+        assert "db/queries.py:42" in md
+        assert "tech-debt" in md
+
+    def test_to_user_md_sections_known_intentional_whole_file(self) -> None:
+        """Line 0 should show just the file path, not file:0."""
+        data = PersonalizationData(
+            known_intentional=[
+                KnownIntentional(
+                    file="legacy/handlers.py", line=0, dimension="style-tests",
+                    reason="legacy code",
+                ),
+            ],
+        )
+        md = data.to_user_md_sections()
+        assert "legacy/handlers.py" in md
+        assert "legacy/handlers.py:0" not in md
+
+    def test_to_user_md_sections_with_forbidden_fixes(self) -> None:
+        data = PersonalizationData(forbidden_fixes=["# noqa", "try-catch 吞错"])
+        md = data.to_user_md_sections()
+        assert "Forbidden Fixes" in md
+        assert "# noqa" in md
+
+
+# ---------------------------------------------------------------------------
+# Load / save / merge tests
+# ---------------------------------------------------------------------------
+
+
+class TestLoadPersonalizationFromConfig:
+    def test_load_empty_config(self) -> None:
+        data = load_personalization_from_config({})
+        assert data.is_empty() is True
+
+    def test_load_config_without_personalization(self) -> None:
+        config = {"dimensions": ["correctness"], "goal": "test"}
+        data = load_personalization_from_config(config)
+        assert data.is_empty() is True
+
+    def test_load_full_config(self) -> None:
+        config = {
+            "personalization": {
+                "protected_paths": ["legacy/**"],
+                "risk_areas": [{"path": "src/auth/", "reason": "sensitive"}],
+                "known_intentional": [
+                    {"file": "db.py", "line": 10, "dimension": "security", "reason": "ok"},
+                ],
+                "dimension_focus": [
+                    {"dimension": "security", "focus": "SQL injection"},
+                ],
+                "fix_priority_order": ["security", "correctness"],
+                "forbidden_fixes": ["# noqa"],
+                "extra_validation_commands": {"python": ["bandit -r src/"]},
+            },
+        }
+        data = load_personalization_from_config(config)
+        assert data.protected_paths == ["legacy/**"]
+        assert len(data.risk_areas) == 1
+        assert data.risk_areas[0].path == "src/auth/"
+        assert data.risk_areas[0].reason == "sensitive"
+        assert len(data.known_intentional) == 1
+        assert data.known_intentional[0].file == "db.py"
+        assert data.known_intentional[0].line == 10
+        assert data.known_intentional[0].dimension == "security"
+        assert len(data.dimension_focus) == 1
+        assert data.dimension_focus[0].dimension == "security"
+        assert data.fix_priority_order == ["security", "correctness"]
+        assert data.forbidden_fixes == ["# noqa"]
+        assert data.extra_validation_commands == {"python": ["bandit -r src/"]}
+
+    def test_load_partial_config(self) -> None:
+        config = {
+            "personalization": {
+                "protected_paths": ["vendor/**"],
+            },
+        }
+        data = load_personalization_from_config(config)
+        assert data.protected_paths == ["vendor/**"]
+        assert data.risk_areas == []
+        assert data.forbidden_fixes == []
+
+    def test_load_skips_malformed_entries(self) -> None:
+        config = {
+            "personalization": {
+                "risk_areas": [
+                    {"path": "ok/", "reason": "fine"},
+                    "not a dict",
+                    {"reason": "missing path"},
+                ],
+                "known_intentional": [
+                    {"file": "ok.py", "line": 1, "dimension": "security", "reason": "ok"},
+                    "not a dict",
+                    {"line": 5},
+                ],
+                "dimension_focus": [
+                    {"dimension": "security", "focus": "ok"},
+                    "not a dict",
+                    {"focus": "missing dim"},
+                ],
+            },
+        }
+        data = load_personalization_from_config(config)
+        assert len(data.risk_areas) == 1
+        assert len(data.known_intentional) == 1
+        assert len(data.dimension_focus) == 1
+
+    def test_load_extra_validation_commands_non_list_skipped(self) -> None:
+        config = {
+            "personalization": {
+                "extra_validation_commands": {
+                    "python": "not a list",
+                    "swift": ["swift build"],
+                },
+            },
+        }
+        data = load_personalization_from_config(config)
+        assert "python" not in data.extra_validation_commands
+        assert data.extra_validation_commands["swift"] == ["swift build"]
+
+
+class TestMergePersonalizationIntoConfig:
+    def test_merge_creates_personalization_section(self) -> None:
+        config = {"goal": "test", "dimensions": ["correctness"]}
+        data = PersonalizationData(protected_paths=["legacy/**"])
+        result = merge_personalization_into_config(config, data)
+        assert "personalization" in result
+        assert result["personalization"]["protected_paths"] == ["legacy/**"]
+
+    def test_merge_preserves_other_fields(self) -> None:
+        config = {"goal": "test", "dimensions": ["correctness"]}
+        data = _build_personalization_data()
+        result = merge_personalization_into_config(config, data)
+        assert result["goal"] == "test"
+        assert result["dimensions"] == ["correctness"]
+
+    def test_merge_extra_commands_into_validation(self) -> None:
+        config = {
+            "validation": {
+                "commands": {"python": ["pytest"]},
+                "command_whitelist": ["pytest"],
+            },
+        }
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["bandit -r src/"], "swift": ["swift build"]},
+        )
+        result = merge_personalization_into_config(config, data)
+        assert "bandit -r src/" in result["validation"]["commands"]["python"]
+        assert "pytest" in result["validation"]["commands"]["python"]
+        assert result["validation"]["commands"]["swift"] == ["swift build"]
+
+    def test_merge_extra_commands_no_duplicates(self) -> None:
+        config = {
+            "validation": {
+                "commands": {"python": ["pytest", "ruff check src/"]},
+            },
+        }
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["ruff check src/", "mypy src/"]},
+        )
+        result = merge_personalization_into_config(config, data)
+        cmds = result["validation"]["commands"]["python"]
+        assert cmds.count("ruff check src/") == 1
+        assert "mypy src/" in cmds
+        assert "pytest" in cmds
+
+    def test_merge_does_not_mutate_original(self) -> None:
+        config = {"goal": "test"}
+        data = PersonalizationData(protected_paths=["legacy/**"])
+        result = merge_personalization_into_config(config, data)
+        assert "personalization" not in config
+        assert "personalization" in result
+
+    def test_merge_creates_validation_section_if_missing(self) -> None:
+        config = {"goal": "test"}
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["bandit -r src/"]},
+        )
+        result = merge_personalization_into_config(config, data)
+        assert "validation" in result
+        assert result["validation"]["commands"]["python"] == ["bandit -r src/"]
+
+
+class TestSavePersonalizationToConfig:
+    def test_save_writes_personalization_section(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        personalization = PersonalizationData(protected_paths=["legacy/**"])
+        save_personalization_to_config(fake_project, personalization)
+
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert config["personalization"]["protected_paths"] == ["legacy/**"]
+
+    def test_save_preserves_other_config_fields(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        personalization = PersonalizationData(forbidden_fixes=["# noqa"])
+        save_personalization_to_config(fake_project, personalization)
+
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert config["goal"] == "Improve code quality and maintainability"
+        assert "correctness" in config["dimensions"]
+        assert config["onboarding"]["channel"] == "cli"
+
+    def test_save_raises_on_missing_config(self, empty_project: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            save_personalization_to_config(
+                empty_project, PersonalizationData(protected_paths=["x"]),
+            )
+
+    def test_save_roundtrip(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        original = _build_personalization_data()
+        save_personalization_to_config(fake_project, original)
+
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        loaded = load_personalization_from_config(config)
+
+        assert loaded.protected_paths == original.protected_paths
+        assert len(loaded.risk_areas) == len(original.risk_areas)
+        assert loaded.risk_areas[0].path == original.risk_areas[0].path
+        assert loaded.forbidden_fixes == original.forbidden_fixes
+        assert loaded.fix_priority_order == original.fix_priority_order
+
+    def test_save_merges_extra_commands(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Original config has python commands from scan.
+        personalization = PersonalizationData(
+            extra_validation_commands={"python": ["bandit -r src/"]},
+        )
+        save_personalization_to_config(fake_project, personalization)
+
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        python_cmds = config["validation"]["commands"]["python"]
+        assert "bandit -r src/" in python_cmds
+        # Original commands from scan should still be there.
+        assert any("pytest" in c for c in python_cmds)
+
+
+# ---------------------------------------------------------------------------
+# Personalize wizard tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunPersonalizeWizard:
+    def test_cancel_at_start(self, fake_project: Path) -> None:
+        responses = iter(["n"])  # start personalization? no
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is None
+
+    def test_full_flow_all_skip(self, fake_project: Path) -> None:
+        """User starts but skips every step, then confirms empty data."""
+        responses = iter([
+            "y",    # start personalization
+            "s",    # step 1: skip protected paths
+            "s",    # step 2: skip risk areas
+            "s",    # step 3: skip known intentional
+            "s",    # step 4: skip dimension focus
+            "",     # step 5: skip fix priority (empty)
+            "s",    # step 6: skip forbidden fixes
+            "s",    # step 7: skip iterate notes
+            "s",    # step 8: skip code conventions
+            "s",    # step 9: skip extra validation commands
+            "y",    # confirm save (even though empty)
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.is_empty() is True
+
+    def test_cancel_at_confirmation(self, fake_project: Path) -> None:
+        """User fills some data but cancels at final confirmation."""
+        responses = iter([
+            "y",          # start personalization
+            # Step 1: protected paths
+            "a",          # add
+            "legacy/**",  # path
+            "s",          # skip
+            # Step 2-9: skip all
+            "s", "s", "s", "", "s", "s", "s", "s", "s",
+            "n",          # confirm save: no
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is None
+
+    def test_add_protected_paths(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            # Step 1: protected paths
+            "a",              # add
+            "legacy/**",      # path
+            "a",              # add another
+            "vendor/**",      # path
+            "s",              # skip
+            # Step 2-9: skip all
+            "s", "s", "s", "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.protected_paths == ["legacy/**", "vendor/**"]
+
+    def test_add_and_remove_protected_path(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            # Step 1: protected paths
+            "a",              # add
+            "legacy/**",      # path
+            "a",              # add
+            "vendor/**",      # path
+            "r",              # remove
+            "1",              # remove first (legacy/**)
+            "s",              # skip
+            # Step 2-9: skip all
+            "s", "s", "s", "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.protected_paths == ["vendor/**"]
+
+    def test_add_risk_areas(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            # Step 1: skip
+            "s",
+            # Step 2: risk areas
+            "a",              # add
+            "src/auth/",      # path
+            "认证模块需审批",  # reason
+            "s",              # skip
+            # Step 3-9: skip all
+            "s", "s", "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert len(result.risk_areas) == 1
+        assert result.risk_areas[0].path == "src/auth/"
+        assert result.risk_areas[0].reason == "认证模块需审批"
+
+    def test_add_risk_area_empty_path_cancels(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s",              # step 1: skip
+            # Step 2: risk areas
+            "a",              # add
+            "",               # empty path → cancels add
+            "s",              # skip
+            # Step 3-9: skip all
+            "s", "s", "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.risk_areas == []
+
+    def test_add_risk_area_default_reason(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s",              # step 1: skip
+            # Step 2: risk areas
+            "a",              # add
+            "src/auth/",      # path
+            "",               # empty reason → uses default
+            "s",              # skip
+            # Step 3-9: skip all
+            "s", "s", "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert len(result.risk_areas) == 1
+        assert "未说明" in result.risk_areas[0].reason or "unspecified" in result.risk_areas[0].reason
+
+    def test_add_known_intentional(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s",         # skip steps 1-2
+            # Step 3: known intentional
+            "a",              # add
+            "db/queries.py",  # file
+            "42",             # line
+            "6",              # dimension number (tech-debt)
+            "使用 any 是性能优化",  # reason
+            "s",              # skip
+            # Step 4-9: skip all
+            "s", "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert len(result.known_intentional) == 1
+        assert result.known_intentional[0].file == "db/queries.py"
+        assert result.known_intentional[0].line == 42
+        assert result.known_intentional[0].dimension == "tech-debt"
+
+    def test_add_known_intentional_whole_file(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s",         # skip steps 1-2
+            # Step 3: known intentional
+            "a",              # add
+            "legacy/handlers.py",  # file
+            "",               # empty line → 0 (whole file)
+            "5",              # dimension number (style-tests)
+            "遗留代码不强制风格",  # reason
+            "s",              # skip
+            # Step 4-9: skip all
+            "s", "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.known_intentional[0].line == 0
+        assert result.known_intentional[0].dimension == "style-tests"
+
+    def test_add_known_intentional_invalid_line_defaults_zero(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s",         # skip steps 1-2
+            # Step 3: known intentional
+            "a",              # add
+            "db.py",          # file
+            "abc",            # invalid line → defaults to 0
+            "1",              # dimension number (correctness)
+            "ok",             # reason
+            "s",              # skip
+            # Step 4-9: skip all
+            "s", "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.known_intentional[0].line == 0
+
+    def test_add_dimension_focus(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s",    # skip steps 1-3
+            # Step 4: dimension focus
+            "a",              # add
+            "2",              # dimension number (security)
+            "SQL 注入历史事故",  # focus
+            "s",              # skip
+            # Step 5-9: skip all
+            "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert len(result.dimension_focus) == 1
+        assert result.dimension_focus[0].dimension == "security"
+        assert result.dimension_focus[0].focus == "SQL 注入历史事故"
+
+    def test_add_dimension_focus_empty_focus_cancels(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s",    # skip steps 1-3
+            # Step 4: dimension focus
+            "a",              # add
+            "2",              # dimension number (security)
+            "",               # empty focus → cancels
+            "s",              # skip
+            # Step 5-9: skip all
+            "", "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.dimension_focus == []
+
+    def test_fix_priority_order(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s", "s",  # skip steps 1-4
+            # Step 5: fix priority order
+            "2,1,3",          # security, correctness, performance
+            "y",              # confirm new order
+            # Step 6-9: skip all
+            "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.fix_priority_order == ["security", "correctness", "performance"]
+
+    def test_fix_priority_order_invalid_keeps_empty(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s", "s",  # skip steps 1-4
+            # Step 5: fix priority order
+            "abc",            # invalid input
+            # Step 6-9: skip all
+            "s", "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.fix_priority_order == []
+
+    def test_add_forbidden_fixes(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s", "s", "",  # skip steps 1-5
+            # Step 6: forbidden fixes
+            "a",              # add
+            "# noqa",         # value
+            "a",              # add
+            "try-catch 吞错",  # value
+            "s",              # skip
+            # Step 7-9: skip all
+            "s", "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.forbidden_fixes == ["# noqa", "try-catch 吞错"]
+
+    def test_add_iterate_notes(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s", "s", "", "s",  # skip steps 1-6
+            # Step 7: iterate notes
+            "a",              # add
+            "不要修改迁移文件",  # value
+            "s",              # skip
+            # Step 8-9: skip all
+            "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert "不要修改迁移文件" in result.iterate_notes
+
+    def test_add_code_conventions(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s", "s", "", "s", "s",  # skip steps 1-7
+            # Step 8: code conventions
+            "a",              # add
+            "使用 4 空格缩进",  # value
+            "s",              # skip
+            # Step 9: skip
+            "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert "使用 4 空格缩进" in result.code_conventions
+
+    def test_add_extra_validation_commands(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s", "s", "", "s", "s", "s",  # skip steps 1-8
+            # Step 9: extra validation commands
+            "a",              # add
+            "python",         # module
+            "bandit -r src/", # command
+            "a",              # add another
+            "python",         # module
+            "safety check",   # command
+            "s",              # skip
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert "python" in result.extra_validation_commands
+        assert "bandit -r src/" in result.extra_validation_commands["python"]
+        assert "safety check" in result.extra_validation_commands["python"]
+
+    def test_add_validation_command_duplicate_skipped(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s", "s", "", "s", "s", "s",  # skip steps 1-8
+            # Step 9: extra validation commands
+            "a",              # add
+            "python",         # module
+            "bandit -r src/", # command
+            "a",              # add same
+            "python",         # module
+            "bandit -r src/", # same command
+            "s",              # skip
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.extra_validation_commands["python"].count("bandit -r src/") == 1
+
+    def test_add_validation_command_empty_module_skipped(self, fake_project: Path) -> None:
+        responses = iter([
+            "y",              # start personalization
+            "s", "s", "s", "s", "", "s", "s", "s",  # skip steps 1-8
+            # Step 9: extra validation commands
+            "a",              # add
+            "",               # empty module → skipped
+            "s",              # skip
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.extra_validation_commands == {}
+
+    def test_edit_existing_data(self, fake_project: Path) -> None:
+        """Load existing personalization and add to it."""
+        existing = PersonalizationData(
+            protected_paths=["legacy/**"],
+            forbidden_fixes=["# noqa"],
+        )
+        responses = iter([
+            "y",              # start personalization
+            # Step 1: protected paths (has 1 existing)
+            "a",              # add
+            "vendor/**",      # path
+            "s",              # skip
+            # Step 2-5: skip
+            "s", "s", "s", "",
+            # Step 6: forbidden fixes (has 1 existing)
+            "a",              # add
+            "try-catch 吞错",  # value
+            "s",              # skip
+            # Step 7-9: skip
+            "s", "s", "s",
+            "y",              # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project,
+            input_func=lambda _: next(responses),
+            existing=existing,
+        )
+        assert result is not None
+        assert result.protected_paths == ["legacy/**", "vendor/**"]
+        assert result.forbidden_fixes == ["# noqa", "try-catch 吞错"]
+
+    def test_full_flow_all_categories(self, fake_project: Path) -> None:
+        """Fill all 9 categories in one wizard run."""
+        responses = iter([
+            "y",                          # start personalization
+            # Step 1: protected paths
+            "a", "legacy/**", "s",
+            # Step 2: risk areas
+            "a", "src/auth/", "sensitive", "s",
+            # Step 3: known intentional
+            "a", "db.py", "10", "2", "intentional", "s",
+            # Step 4: dimension focus
+            "a", "2", "SQL injection focus", "s",
+            # Step 5: fix priority order
+            "2,1", "y",
+            # Step 6: forbidden fixes
+            "a", "# noqa", "s",
+            # Step 7: iterate notes
+            "a", "Don't touch migrations", "s",
+            # Step 8: code conventions
+            "a", "Use 4 spaces", "s",
+            # Step 9: extra validation commands
+            "a", "python", "bandit -r src/", "s",
+            "y",  # confirm save
+        ])
+        result = run_personalize_wizard(
+            fake_project, input_func=lambda _: next(responses),
+        )
+        assert result is not None
+        assert result.protected_paths == ["legacy/**"]
+        assert len(result.risk_areas) == 1
+        assert len(result.known_intentional) == 1
+        assert len(result.dimension_focus) == 1
+        assert result.fix_priority_order == ["security", "correctness"]
+        assert result.forbidden_fixes == ["# noqa"]
+        assert len(result.iterate_notes) == 1
+        assert len(result.code_conventions) == 1
+        assert "python" in result.extra_validation_commands
+
+
+# ---------------------------------------------------------------------------
+# CLI personalize subcommand tests
+# ---------------------------------------------------------------------------
+
+
+class TestCLIPersonalize:
+    def test_personalize_not_onboarded(self, empty_project: Path, capsys) -> None:
+        ret = cli_main(["personalize", "-p", str(empty_project)])
+        assert ret == 1
+        captured = capsys.readouterr()
+        assert "not yet completed" in captured.out.lower() or "onboard" in captured.out.lower()
+
+    def test_personalize_no_config(self, fake_project: Path, capsys) -> None:
+        """ITERATE.md exists but config.yaml missing."""
+        (fake_project / "ITERATE.md").write_text("content", encoding="utf-8")
+        ret = cli_main(["personalize", "-p", str(fake_project)])
+        assert ret == 1
+
+    def test_personalize_success(self, fake_project: Path) -> None:
+        """Personalize via CLI with mock input (call _cmd_personalize directly)."""
+        from iterate_cli.cli import _cmd_personalize
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Mock run_personalize_wizard to return pre-built data
+        # instead of trying to inject input through the CLI.
+        mock_personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            code_conventions=["Use snake_case"],
+        )
+
+        import iterate_cli.personalize as personalize_module
+        original_func = personalize_module.run_personalize_wizard
+        personalize_module.run_personalize_wizard = lambda *args, **kwargs: mock_personalization
+
+        try:
+            ret = _cmd_personalize(fake_project)
+        finally:
+            personalize_module.run_personalize_wizard = original_func
+
+        assert ret == 0
+
+        # Verify config has personalization section.
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert "personalization" in config
+        assert "legacy/**" in config["personalization"]["protected_paths"]
+
+        # Verify ITERATE.md has user-owned content.
+        iterate_md = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        assert "legacy/**" in iterate_md
+        assert "Protected" in iterate_md or "Restricted" in iterate_md
+
+
+# ---------------------------------------------------------------------------
+# Generator with personalization tests
+# ---------------------------------------------------------------------------
+
+
+class TestGeneratorWithPersonalization:
+    def test_generate_config_with_personalization(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            forbidden_fixes=["# noqa"],
+            fix_priority_order=["security", "correctness"],
+        )
+        yaml_text = generate_config_yaml(data)
+        config = yaml.safe_load(yaml_text)
+        assert "personalization" in config
+        assert config["personalization"]["protected_paths"] == ["legacy/**"]
+        assert config["personalization"]["forbidden_fixes"] == ["# noqa"]
+        assert config["personalization"]["fix_priority_order"] == ["security", "correctness"]
+
+    def test_generate_config_without_personalization(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        yaml_text = generate_config_yaml(data)
+        config = yaml.safe_load(yaml_text)
+        # personalization section should not be present if no data
+        assert "personalization" not in config or config["personalization"] == {
+            "protected_paths": [],
+            "risk_areas": [],
+            "known_intentional": [],
+            "dimension_focus": [],
+            "fix_priority_order": [],
+            "forbidden_fixes": [],
+        }
+
+    def test_generate_iterate_md_with_personalization(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            code_conventions=["Use 4 spaces"],
+            iterate_notes=["Don't touch migrations"],
+        )
+        md = generate_iterate_md(data)
+        assert "legacy/**" in md
+        assert "Use 4 spaces" in md
+        assert "Don't touch migrations" in md
+
+    def test_generate_iterate_md_without_personalization(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        md = generate_iterate_md(data)
+        # Default user-owned section should be present
+        assert USER_START_MARKER in md
+        assert USER_END_MARKER in md
+
+    def test_config_with_personalization_passes_schema(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.personalization = _build_personalization_data()
+        # Add 'bandit' to whitelist since extra_validation_commands adds it.
+        data.command_whitelist = list(data.command_whitelist) + ["bandit"]
+        yaml_text = generate_config_yaml(data)
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(yaml_text, encoding="utf-8")
+
+        schema_path = REPO_ROOT / "config" / "config.schema.json"
+        import validate
+        errors = validate.validate_config(config_path, schema_path)
+        assert errors == [], f"Schema validation errors: {errors}"
+
+    def test_write_outputs_with_personalization(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            code_conventions=["Use snake_case"],
+        )
+        md_path, config_path = write_onboarding_outputs(data, fake_project)
+        assert md_path.is_file()
+        assert config_path.is_file()
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["personalization"]["protected_paths"] == ["legacy/**"]
+
+        md = md_path.read_text(encoding="utf-8")
+        assert "legacy/**" in md
+        assert "snake_case" in md

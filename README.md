@@ -125,8 +125,11 @@ iterate --version
 安装后可在任何项目目录中使用 `iterate` 命令：
 
 ```bash
-# 交互式 onboarding 向导（生成 ITERATE.md + iterate.config.yaml）
+# 交互式 onboarding 向导（多路引导：首次/非首次自动分支）
 iterate onboard
+
+# 个性化配置（项目中途追加约束，9 步向导）
+iterate personalize
 
 # 查看 onboarding 状态和漂移检测
 iterate status
@@ -139,6 +142,12 @@ iterate reonboard
 ```
 
 > CLI onboarding 适用于对项目有清晰认知的用户；AI onboarding（在 AI 工具中调用 `/iterate`）适用于需要自动扫描代码库的场景。两者产出相同格式的文件。
+>
+> **多路引导 / Multi-Path Flow**：
+> - **首次 onboarding**（无 ITERATE.md）：确认手动配置 → 基础 onboarding → 询问是否需要个性化配置。
+> - **非首次 onboarding**（已有 ITERATE.md）：询问是否更新基础配置（不建议手动改，建议用 `iterate refresh`）→ 询问是否进行个性化配置或遇到问题。
+>
+> **个性化配置 / Personalization**：捕获 AI 扫描不到的项目专属约束（禁区、风险区、已知意图、维度定制等 9 类）。运行 `iterate personalize` 可在项目中途随时追加，无需重做 onboarding。
 
 ### 方式四：手动克隆
 
@@ -259,6 +268,69 @@ validation:
 
 ---
 
+## 个性化配置 / Personalization
+
+AI 扫描能发现技术栈和目录结构，但无法发现项目专属的约束和经验。个性化配置让你把这些知识沉淀下来，让 iterate 更懂你的项目。
+
+### 9 类个性化配置
+
+| 类别 / Category | 说明 / Description | 存储位置 / Storage |
+|----------------|-------------------|-------------------|
+| **禁区 / Protected Paths** | iterate 不得修改的文件/目录（glob 模式） | `iterate.config.yaml` |
+| **风险区 / Risk Areas** | 改动需架构审批的文件/目录（path + reason） | `iterate.config.yaml` |
+| **已知意图 / Known Intentional** | 抑制误报（file:line + dimension + reason） | `iterate.config.yaml` |
+| **维度定制 / Dimension Focus** | 为特定维度追加 focus 内容 | `iterate.config.yaml` |
+| **优先修复顺序 / Fix Priority** | 维度修复优先级（从高到低） | `iterate.config.yaml` |
+| **禁止的修复方式 / Forbidden Fixes** | 不可使用的修复手法（如 `# noqa`） | `iterate.config.yaml` |
+| **Iterate 注意点 / Notes** | 经验教训、已知陷阱 | `ITERATE.md` 用户区 |
+| **自定义代码约定 / Conventions** | 项目特有的代码规范 | `ITERATE.md` 用户区 |
+| **补充验证命令 / Extra Validation** | 项目特有的验证命令（合并到 `validation.commands`） | `iterate.config.yaml` |
+
+### 使用方式
+
+```bash
+# 方式一：onboarding 时顺便配置个性化
+iterate onboard
+# 基础 onboarding 完成后，向导会询问是否有个性化要求
+
+# 方式二：项目中途随时追加个性化配置
+iterate personalize
+# 直接进入 9 步个性化向导，跳过基础 onboarding
+```
+
+每步支持 `[a]dd / [r]emove / [s]kip` 操作。已有配置会被加载，可在其基础上增量修改。
+
+### 配置示例
+
+```yaml
+# iterate.config.yaml 中的 personalization 段
+personalization:
+  protected_paths:
+    - "legacy/**"
+    - "vendor/**"
+  risk_areas:
+    - path: "src/auth/"
+      reason: "认证模块，任何改动需架构审批"
+  known_intentional:
+    - file: "db/queries.py"
+      line: 42
+      dimension: "tech-debt"
+      reason: "使用 any 是性能优化，非技术债"
+  dimension_focus:
+    - dimension: "security"
+      focus: "SQL 注入（项目历史上有过事故）"
+  fix_priority_order:
+    - security
+    - correctness
+    - performance
+  forbidden_fixes:
+    - "try-catch 吞错"
+    - "# noqa"
+    - "// @ts-ignore"
+```
+
+---
+
 ## 目录结构 / Directory Structure
 
 ```text
@@ -294,8 +366,9 @@ iterate-skill/
 ├── iterate_cli/                      # onboarding CLI 源码
 │   ├── __init__.py
 │   ├── __main__.py
-│   ├── cli.py                        # 入口：onboard/refresh/reonboard/status
-│   ├── wizard.py                     # 交互式 CLI 向导
+│   ├── cli.py                        # 入口：onboard/personalize/refresh/reonboard/status
+│   ├── wizard.py                     # 交互式 CLI 向导（多路引导）
+│   ├── personalize.py                # 个性化配置向导（9 步）
 │   ├── scan.py                       # 项目技术栈扫描
 │   ├── fingerprint.py                # manifest SHA-256 指纹
 │   ├── generator.py                  # ITERATE.md / config 生成
@@ -367,6 +440,12 @@ Summary
 | `onboarding.version` | string | `"1.0"` | onboarding 指纹 schema 版本 |
 | `onboarding.drift_check` | bool | `true` | 每次调用时是否检查 manifest 漂移 |
 | `onboarding.fingerprints` | list | `[]` | manifest 文件 SHA-256 指纹（onboarding 后自动填充） |
+| `personalization.protected_paths` | list | `[]` | 禁区 glob 模式，iterate 不得修改 |
+| `personalization.risk_areas` | list | `[]` | 风险区（path + reason），改动需架构审批 |
+| `personalization.known_intentional` | list | `[]` | 已知意图（file:line + dimension + reason），抑制误报 |
+| `personalization.dimension_focus` | list | `[]` | 维度定制（dimension + focus），追加 focus 到维度 prompt |
+| `personalization.fix_priority_order` | list | `[]` | 修复优先级顺序（从高到低） |
+| `personalization.forbidden_fixes` | list | `[]` | 禁止的修复方式（如 `# noqa`、`try-catch 吞错`） |
 
 ### Master + Overrides 配置模式
 

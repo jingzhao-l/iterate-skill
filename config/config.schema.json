@@ -177,6 +177,107 @@
           }
         }
       }
+    },
+    "personalization": {
+      "type": "object",
+      "description": "User-defined project-specific constraints and rules that AI scanning cannot discover. Managed by 'iterate personalize' or the onboarding wizard's personalization step.",
+      "additionalProperties": false,
+      "properties": {
+        "protected_paths": {
+          "type": "array",
+          "description": "Glob patterns of files/dirs iterate must never modify.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "risk_areas": {
+          "type": "array",
+          "description": "Fragile files/dirs where changes require architectural approval.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "File or directory path."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why this area is risky."
+              }
+            },
+            "required": ["path", "reason"]
+          }
+        },
+        "known_intentional": {
+          "type": "array",
+          "description": "Findings to suppress because the pattern is intentional. Matched by file:line + dimension.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1,
+                "description": "File path relative to project root."
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Line number (0 means the entire file)."
+              },
+              "dimension": {
+                "type": "string",
+                "description": "Review dimension to suppress (e.g. tech-debt, security)."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why this pattern is intentional."
+              }
+            },
+            "required": ["file", "line", "dimension", "reason"]
+          }
+        },
+        "dimension_focus": {
+          "type": "array",
+          "description": "Extra focus text appended to specific dimension prompts during review.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "dimension": {
+                "type": "string",
+                "description": "Dimension key (e.g. security, performance)."
+              },
+              "focus": {
+                "type": "string",
+                "description": "Extra focus text to append."
+              }
+            },
+            "required": ["dimension", "focus"]
+          }
+        },
+        "fix_priority_order": {
+          "type": "array",
+          "description": "Dimension fix priority order (high to low). Dimensions listed first are fixed first.",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "forbidden_fixes": {
+          "type": "array",
+          "description": "Fix approaches iterate must never use (e.g. 'try-catch 吞错', '# noqa').",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
     }
   }
 }

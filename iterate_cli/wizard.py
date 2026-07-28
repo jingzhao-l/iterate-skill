@@ -3,6 +3,10 @@
 Guides the user through project setup step by step. Uses a pluggable
 ``input_func`` parameter (defaults to ``builtins.input``) so tests can
 inject mock responses without touching stdin.
+
+The wizard uses multi-path branching:
+- **First-time** (no ITERATE.md): gate → basic onboarding → offer personalization.
+- **Returning user** (ITERATE.md exists): offer config update → offer personalization.
 """
 
 from __future__ import annotations
@@ -54,7 +58,11 @@ def run_wizard(
     project_root: Path,
     input_func: InputFunc = input,
 ) -> Optional[OnboardingData]:
-    """Run the interactive CLI onboarding wizard.
+    """Run the interactive CLI onboarding wizard with multi-path branching.
+
+    The flow depends on whether ``ITERATE.md`` already exists:
+    - **First-time**: gate question → basic onboarding → offer personalization.
+    - **Returning user**: offer config update → offer personalization.
 
     Args:
         project_root: The project root directory to onboard.
@@ -65,9 +73,106 @@ def run_wizard(
     """
     _print_welcome()
 
+    iterate_md_exists = (project_root / "ITERATE.md").is_file()
+
+    if not iterate_md_exists:
+        return _first_time_flow(project_root, input_func)
+    else:
+        return _returning_user_flow(project_root, input_func)
+
+
+def _first_time_flow(
+    project_root: Path,
+    input_func: InputFunc,
+) -> Optional[OnboardingData]:
+    """Handle first-time onboarding (no ITERATE.md exists)."""
+    print("首次 onboarding / First-time onboarding.")
+    print("AI 工具可自动扫描代码库生成基础配置；CLI 适合手动配置 + 个性化约束。")
+    print("AI tools can auto-scan; CLI suits manual config + personalization.")
+    print()
+
     if not _gate_question(input_func):
         return None
 
+    data = _run_basic_wizard(project_root, input_func)
+    if data is None:
+        return None
+
+    # Offer personalization after basic onboarding.
+    print()
+    if _ask_yes_no(
+        "是否有 iterate 场景的个性化要求? / Any personalization requirements?",
+        input_func,
+    ):
+        from iterate_cli.personalize import run_personalize_wizard
+
+        personalization = run_personalize_wizard(project_root, input_func)
+        if personalization is not None:
+            data.personalization = personalization
+
+    return data
+
+
+def _returning_user_flow(
+    project_root: Path,
+    input_func: InputFunc,
+) -> Optional[OnboardingData]:
+    """Handle returning user (ITERATE.md already exists)."""
+    print("检测到已有 ITERATE.md / ITERATE.md already exists.")
+    print()
+
+    # Ask about updating basic config.
+    print("⚠️  不建议手动更新基础配置，建议使用 `iterate refresh` 进行增量刷新。")
+    print("    Manual update is discouraged; use `iterate refresh` for incremental update.")
+    print()
+    update_basic = _ask_yes_no(
+        "是否需要更新基础配置? / Update basic config?",
+        input_func,
+    )
+
+    if update_basic:
+        data = _run_basic_wizard(project_root, input_func)
+        if data is None:
+            return None
+    else:
+        # Load existing config to preserve settings.
+        data = _load_existing_onboarding_data(project_root)
+        if data is None:
+            print("无法加载现有配置，转为基础 onboarding / Could not load existing config, falling back to basic.")
+            data = _run_basic_wizard(project_root, input_func)
+            if data is None:
+                return None
+
+    # Ask about personalization.
+    print()
+    print("是否进行个性化配置? 或使用 skill 时遇到问题? /")
+    print("Personalize configuration? Encountered issues during skill usage?")
+    if _ask_yes_no("", input_func):
+        from iterate_cli.personalize import (
+            load_personalization_from_config,
+            run_personalize_wizard,
+        )
+        from iterate_cli.refresh import load_onboarding_config
+
+        existing_config = load_onboarding_config(project_root) or {}
+        existing_personalization = load_personalization_from_config(existing_config)
+
+        personalization = run_personalize_wizard(
+            project_root,
+            input_func,
+            existing=existing_personalization,
+        )
+        if personalization is not None:
+            data.personalization = personalization
+
+    return data
+
+
+def _run_basic_wizard(
+    project_root: Path,
+    input_func: InputFunc,
+) -> Optional[OnboardingData]:
+    """Run the basic onboarding wizard (tech stack, dimensions, git, etc.)."""
     scan = scan_project(project_root)
     _print_scan_results(scan)
 
@@ -103,6 +208,45 @@ def run_wizard(
         return None
 
     return data
+
+
+def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingData]:
+    """Load existing onboarding data from ITERATE.md and iterate.config.yaml.
+
+    Returns None if config cannot be loaded.
+    """
+    try:
+        import yaml
+
+        from iterate_cli.scan import scan_project
+
+        config_path = project_root / "iterate.config.yaml"
+        if not config_path.is_file():
+            return None
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        scan = scan_project(project_root)
+
+        onboarding_section = config.get("onboarding") or {}
+        channel = onboarding_section.get("channel", "cli")
+
+        return OnboardingData(
+            project_root=project_root,
+            channel=channel,
+            scan=scan,
+            project_description="",
+            code_conventions="",
+            dimensions=config.get("dimensions") or [],
+            target_branch=(config.get("git") or {}).get("target_branch", "main"),
+            review_scope=(config.get("review") or {}).get("scope", "full"),
+            push_per_round=(config.get("git") or {}).get("push_per_round", True),
+            validation_commands=(config.get("validation") or {}).get("commands") or {},
+            command_whitelist=(config.get("validation") or {}).get("command_whitelist") or [],
+            fingerprints=capture_fingerprints(project_root),
+            language=config.get("language", "en"),
+        )
+    except Exception:
+        return None
 
 
 def _print_welcome() -> None:
