@@ -366,6 +366,8 @@ def _collect_validation_commands(
 
 def _manual_collect_commands(input_func: InputFunc) -> dict[str, list[str]]:
     """Manually collect validation commands from the user."""
+    from iterate_cli.personalize import MODULE_NAME_PATTERN
+
     print("手动输入验证命令（每行一条，空行结束该模块）/")
     print("Enter commands manually (one per line, empty line to finish a module):")
     print()
@@ -375,6 +377,10 @@ def _manual_collect_commands(input_func: InputFunc) -> dict[str, list[str]]:
         module = input_func("模块名 / Module name (如 python, swift, typescript; 留空结束 / empty to finish): ").strip()
         if not module:
             break
+        if not MODULE_NAME_PATTERN.match(module):
+            print(f"⚠️  模块名只能包含字母、数字、下划线、连字符、点。跳过 '{module}'。")
+            print(f"    Module name may only contain letters, digits, underscore, dash, dot. Skipping '{module}'.")
+            continue
 
         cmds: list[str] = []
         while True:
@@ -425,7 +431,8 @@ def _parse_dimension_selection(raw: str) -> list[str]:
         raw: User input like "1,2,5,7".
 
     Returns:
-        List of dimension keys, or empty list if parsing fails.
+        List of dimension keys (deduplicated, order preserved), or empty
+        list if parsing fails.
     """
     nums: list[int] = []
     for part in raw.split(","):
@@ -440,7 +447,15 @@ def _parse_dimension_selection(raw: str) -> list[str]:
             return []
         nums.append(num)
 
-    return [ALL_DIMENSIONS[n - 1] for n in nums]
+    # Deduplicate while preserving order (schema requires uniqueItems).
+    seen: set[str] = set()
+    result: list[str] = []
+    for n in nums:
+        dim = ALL_DIMENSIONS[n - 1]
+        if dim not in seen:
+            seen.add(dim)
+            result.append(dim)
+    return result
 
 
 def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:

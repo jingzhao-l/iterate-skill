@@ -261,23 +261,23 @@ def validate_personalization_consistency(config: dict[str, Any]) -> list[str]:
     # fix_priority_order: dimensions should be in enabled dimensions.
     fix_priority = personalization.get("fix_priority_order") or []
     if isinstance(fix_priority, list):
-        for dim in fix_priority:
+        for idx, dim in enumerate(fix_priority):
             if isinstance(dim, str) and dim not in enabled_dims:
                 errors.append(
-                    f"personalization.fix_priority_order contains '{dim}' "
-                    f"which is not in enabled dimensions {sorted(enabled_dims)}"
+                    f"personalization.fix_priority_order[{idx}] dimension '{dim}' "
+                    f"is not in enabled dimensions {sorted(enabled_dims)}"
                 )
 
     # dimension_focus: dimensions should be in enabled dimensions.
     dim_focus = personalization.get("dimension_focus") or []
     if isinstance(dim_focus, list):
-        for item in dim_focus:
+        for idx, item in enumerate(dim_focus):
             if isinstance(item, dict):
                 dim = item.get("dimension", "")
                 if dim and dim not in enabled_dims:
                     errors.append(
-                        f"personalization.dimension_focus contains '{dim}' "
-                        f"which is not in enabled dimensions {sorted(enabled_dims)}"
+                        f"personalization.dimension_focus[{idx}] dimension '{dim}' "
+                        f"is not in enabled dimensions {sorted(enabled_dims)}"
                     )
 
     # known_intentional: dimensions should be in enabled dimensions.
@@ -333,16 +333,16 @@ def validate_config(
 
 
 def print_errors(source: str, errors: list[str]) -> None:
-    """统一输出错误信息。"""
-    print(f"Validation failed for {source}")
+    """统一输出错误信息到 stderr。"""
+    print(f"Validation failed for {source}", file=sys.stderr)
     for error in errors:
-        print(f"  - {error}")
+        print(f"  - {error}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     if len(args) < 2:
-        print(__doc__)
+        print(__doc__, file=sys.stderr)
         return 1
 
     command, target_str = args[0], args[1]
@@ -357,8 +357,8 @@ def main(argv: list[str] | None = None) -> int:
     elif command == "dimensions":
         errors = validate_dimensions(target)
     else:
-        print(f"Unknown command: {command}")
-        print(__doc__)
+        print(f"Unknown command: {command}", file=sys.stderr)
+        print(__doc__, file=sys.stderr)
         return 1
 
     if errors:

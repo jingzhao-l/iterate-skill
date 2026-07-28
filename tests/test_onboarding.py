@@ -7,6 +7,7 @@ normal paths, error paths, and boundary scenarios.
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -882,6 +883,214 @@ class TestIncrementalRefreshAtomicity:
         # Config must also be unchanged.
         config_after = config_path.read_text(encoding="utf-8")
         assert config_after == config_before
+
+    def test_refresh_rolls_back_on_iterate_md_write_failure(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """If ITERATE.md write fails, config must remain unchanged (B-8-1)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        iterate_md = fake_project / "ITERATE.md"
+        config_path = fake_project / "iterate.config.yaml"
+        md_before = iterate_md.read_text(encoding="utf-8")
+        config_before = config_path.read_text(encoding="utf-8")
+
+        # Force write_text to fail on ITERATE.md only.
+        original_write_text = Path.write_text
+
+        def failing_write_text(self, data, encoding=None, errors=None):
+            if self == iterate_md:
+                raise OSError("simulated write failure")
+            return original_write_text(self, data, encoding, errors)
+
+        monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+        result = incremental_refresh(fake_project)
+
+        assert result is False
+
+        # ITERATE.md rollback was attempted but also failed (monkeypatch
+        # still active), so it may be partially written; however, config
+        # must NOT have been written at all.
+        config_after = config_path.read_text(encoding="utf-8")
+        assert config_after == config_before
+
+    def test_refresh_logs_rollback_failure(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        """Rollback failure must be logged to stderr (M-10-1)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        iterate_md = fake_project / "ITERATE.md"
+        config_path = fake_project / "iterate.config.yaml"
+
+        # Make ALL write_text calls fail — both initial write and rollback.
+        def always_failing_write_text(self, data, encoding=None, errors=None):
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(Path, "write_text", always_failing_write_text)
+
+        result = incremental_refresh(fake_project)
+
+        assert result is False
+        captured = capsys.readouterr()
+        # Primary error must be logged.
+        assert "Failed to write refresh outputs" in captured.err
+        # Rollback failure must also be logged (not silently swallowed).
+        assert "Rollback failed" in captured.err
+
+
+class TestFullReonboardErrorHandling:
+    """Tests for full_reonboard error handling (M-10-2)."""
+
+    def test_returns_false_on_backup_failure(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        """If backup fails, re-onboarding aborts with False."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Make shutil.copy2 raise OSError.
+        import iterate_cli.refresh as refresh_mod
+
+        def failing_copy2(src, dst, *, follow_symlinks=True):
+            raise OSError("simulated backup failure")
+
+        monkeypatch.setattr(refresh_mod.shutil, "copy2", failing_copy2)
+
+        # Backup happens before wizard runs, so wizard is never reached.
+        # Pass a dummy input_func in case it's called.
+        result = full_reonboard(fake_project, input_func=lambda _: "n")
+
+        assert result is False
+        captured = capsys.readouterr()
+        assert "Backup failed" in captured.err
+
+    def test_returns_false_on_write_failure(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        """If write_onboarding_outputs fails, re-onboarding returns False."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Mock run_wizard to return a valid OnboardingData (skip the
+        # interactive flow entirely).
+        import iterate_cli.refresh as refresh_mod
+
+        def mock_wizard(project_root, input_func=None):
+            return data
+
+        monkeypatch.setattr(refresh_mod, "run_wizard", mock_wizard)
+
+        # Force write_text to fail.
+        def failing_write_text(self, data, encoding=None, errors=None):
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+        result = full_reonboard(fake_project)
+
+        assert result is False
+        captured = capsys.readouterr()
+        assert "Failed to write onboarding outputs" in captured.err
+
+
+class TestParseDimensionSelectionDedup:
+    """Tests for _parse_dimension_selection deduplication (S-10-1)."""
+
+    def test_duplicate_numbers_are_deduplicated(self) -> None:
+        from iterate_cli.wizard import _parse_dimension_selection
+        result = _parse_dimension_selection("1,2,2,3,3")
+        assert result == ["correctness", "security", "performance"]
+
+    def test_same_number_repeated_returns_single(self) -> None:
+        from iterate_cli.wizard import _parse_dimension_selection
+        result = _parse_dimension_selection("5,5,5,5")
+        assert result == ["style-tests"]
+
+    def test_no_duplicates_preserved_in_order(self) -> None:
+        from iterate_cli.wizard import _parse_dimension_selection
+        result = _parse_dimension_selection("3,1,2")
+        assert result == ["performance", "correctness", "security"]
+
+
+class TestManualCollectCommandsModuleValidation:
+    """Tests for _manual_collect_commands module name validation (M-10-5)."""
+
+    def test_invalid_module_name_skipped(self) -> None:
+        from iterate_cli.wizard import _manual_collect_commands
+        responses = iter([
+            "python; rm -rf /",  # invalid module name
+            "python",            # valid module name
+            "ruff check src/",   # command
+            "",                  # end module
+            "",                  # end input
+        ])
+        result = _manual_collect_commands(lambda _: next(responses))
+        assert "python; rm -rf /" not in result
+        assert "python" in result
+        assert result["python"] == ["ruff check src/"]
+
+
+class TestValidateErrorMessages:
+    """Tests for validate.py error message format (S-10-3)."""
+
+    def test_fix_priority_order_error_includes_index(self) -> None:
+        from validate import validate_personalization_consistency
+        config = {
+            "dimensions": ["correctness"],
+            "personalization": {
+                "fix_priority_order": ["security", "correctness", "performance"],
+            },
+        }
+        errors = validate_personalization_consistency(config)
+        assert len(errors) == 2  # "security" and "performance" are invalid
+        assert "[0]" in errors[0]
+        assert "security" in errors[0]
+        assert "[2]" in errors[1]
+        assert "performance" in errors[1]
+
+    def test_dimension_focus_error_includes_index(self) -> None:
+        from validate import validate_personalization_consistency
+        config = {
+            "dimensions": ["correctness"],
+            "personalization": {
+                "dimension_focus": [
+                    {"dimension": "security", "focus": "extra focus"},
+                ],
+            },
+        }
+        errors = validate_personalization_consistency(config)
+        assert len(errors) == 1
+        assert "[0]" in errors[0]
+        assert "security" in errors[0]
+
+
+class TestValidateStderrOutput:
+    """Tests for validate.py error output going to stderr (M-10-7)."""
+
+    def test_validation_errors_go_to_stderr(self, capsys) -> None:
+        from validate import main
+        # Create an invalid config file.
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
+            f.write("dimensions: []\n")  # empty dimensions (minItems: 1)
+            temp_path = f.name
+
+        try:
+            ret = main(["config", temp_path])
+            assert ret == 1
+            captured = capsys.readouterr()
+            # Errors must go to stderr, not stdout.
+            assert captured.err  # something on stderr
+            # "Validation failed" should be on stderr, not stdout.
+            assert "Validation failed" not in captured.out
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
 
 
 class TestLoadExistingOnboardingDataUnicode:
