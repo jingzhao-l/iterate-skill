@@ -179,8 +179,8 @@
       }
     },
     "personalization": {
-      "type": "object",
-      "description": "User-defined project-specific constraints and rules that AI scanning cannot discover. Managed by 'iterate personalize' or the onboarding wizard's personalization step.",
+      "type": ["object", "null"],
+      "description": "User-defined project-specific constraints and rules that AI scanning cannot discover. Managed by 'iterate personalize' or the onboarding wizard's personalization step. Null/empty when no personalization has been configured yet.",
       "additionalProperties": false,
       "properties": {
         "version": {

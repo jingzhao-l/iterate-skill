@@ -446,6 +446,9 @@ Summary
 | `personalization.dimension_focus` | list | `[]` | 维度定制（dimension + focus），追加 focus 到维度 prompt |
 | `personalization.fix_priority_order` | list | `[]` | 修复优先级顺序（从高到低） |
 | `personalization.forbidden_fixes` | list | `[]` | 禁止的修复方式（如 `# noqa`、`try-catch 吞错`） |
+| `personalization.version` | string | `"1.0"` | personalization schema 版本（自动管理，勿手动编辑） |
+
+> **补充验证命令**：`personalization.extra_validation_commands` 在向导中收集，合并到 `validation.commands`，命令前缀自动加入 `validation.command_whitelist`。不单独存放在 personalization 段。
 
 ### Master + Overrides 配置模式
 

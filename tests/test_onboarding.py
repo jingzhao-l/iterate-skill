@@ -808,6 +808,73 @@ class TestCLIStatus:
         ret = cli_main(["status", "-p", "/nonexistent/path/xyz"])
         assert ret == 1
 
+    def test_status_personalization_rule_count_excludes_version(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """version field must be excluded from personalization rule count."""
+        from iterate_cli.cli import _count_personalization_rules
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Inject personalization with version + structured rules.
+        config_path = fake_project / "iterate.config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        config["personalization"] = {
+            "version": "1.0",
+            "protected_paths": ["src/legacy.py"],
+            "risk_areas": [{"path": "src/api/", "reason": "fragile"}],
+            "known_intentional": [],
+            "dimension_focus": [],
+            "fix_priority_order": ["security", "correctness"],
+            "forbidden_fixes": ["# noqa"],
+        }
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+        ret = cli_main(["status", "-p", str(fake_project)])
+        assert ret == 0
+        captured = capsys.readouterr()
+        # 1 protected + 1 risk + 2 priority + 1 forbidden = 5 (version excluded)
+        assert "Personalization: 5 rule(s)" in captured.out
+
+    def test_status_personalization_includes_extra_validation_commands(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """extra_validation_commands (dict) must be counted, not skipped."""
+        from iterate_cli.cli import _count_personalization_rules
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        config["personalization"] = {
+            "version": "1.0",
+            "protected_paths": ["src/legacy.py"],
+            "extra_validation_commands": {
+                "python": ["bandit -r src/", "pip-audit"],
+                "node": ["npm audit"],
+            },
+        }
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+        ret = cli_main(["status", "-p", str(fake_project)])
+        assert ret == 0
+        captured = capsys.readouterr()
+        # 1 protected + 2 python cmds + 1 node cmd = 4
+        assert "Personalization: 4 rule(s)" in captured.out
+
+    def test_count_personalization_rules_empty(self) -> None:
+        from iterate_cli.cli import _count_personalization_rules
+
+        assert _count_personalization_rules({}) == 0
+
+    def test_count_personalization_rules_only_version(self) -> None:
+        """Config with only version field should count as 0 rules."""
+        from iterate_cli.cli import _count_personalization_rules
+
+        assert _count_personalization_rules({"version": "1.0"}) == 0
+
 
 class TestReturningUserFlow:
     """Tests for the multi-path wizard when ITERATE.md already exists."""

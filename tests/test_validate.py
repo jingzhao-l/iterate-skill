@@ -293,6 +293,181 @@ class TestDimensionConsistency:
         assert any("Unexpected dimension file" in e for e in errors)
 
 
+class TestPersonalizationConsistency:
+    """End-to-end tests for validate_personalization_consistency."""
+
+    def test_no_personalization_returns_empty(self) -> None:
+        """Config without personalization section → no errors."""
+        config = {"dimensions": ["correctness", "security"]}
+        assert validate.validate_personalization_consistency(config) == []
+
+    def test_personalization_not_dict_returns_empty(self) -> None:
+        """personalization set to null/string → no errors (graceful skip)."""
+        config = {"dimensions": ["correctness"], "personalization": None}
+        assert validate.validate_personalization_consistency(config) == []
+
+    def test_no_dimensions_returns_empty(self) -> None:
+        """No enabled dimensions → skip consistency checks."""
+        config = {
+            "dimensions": [],
+            "personalization": {"fix_priority_order": ["nonexistent"]},
+        }
+        assert validate.validate_personalization_consistency(config) == []
+
+    def test_fix_priority_order_with_valid_dimensions(self) -> None:
+        """fix_priority_order containing only enabled dimensions → no errors."""
+        config = {
+            "dimensions": ["correctness", "security", "performance"],
+            "personalization": {
+                "fix_priority_order": ["security", "correctness", "performance"],
+            },
+        }
+        assert validate.validate_personalization_consistency(config) == []
+
+    def test_fix_priority_order_with_invalid_dimension(self) -> None:
+        """fix_priority_order referencing disabled dimension → error."""
+        config = {
+            "dimensions": ["correctness", "security"],
+            "personalization": {
+                "fix_priority_order": ["security", "nonexistent-dim"],
+            },
+        }
+        errors = validate.validate_personalization_consistency(config)
+        assert len(errors) == 1
+        assert "fix_priority_order" in errors[0]
+        assert "nonexistent-dim" in errors[0]
+
+    def test_dimension_focus_with_valid_dimension(self) -> None:
+        """dimension_focus referencing enabled dimension → no errors."""
+        config = {
+            "dimensions": ["correctness", "security"],
+            "personalization": {
+                "dimension_focus": [
+                    {"dimension": "security", "focus": "SQL injection"},
+                ],
+            },
+        }
+        assert validate.validate_personalization_consistency(config) == []
+
+    def test_dimension_focus_with_invalid_dimension(self) -> None:
+        """dimension_focus referencing disabled dimension → error."""
+        config = {
+            "dimensions": ["correctness"],
+            "personalization": {
+                "dimension_focus": [
+                    {"dimension": "performance", "focus": "N+1 queries"},
+                ],
+            },
+        }
+        errors = validate.validate_personalization_consistency(config)
+        assert len(errors) == 1
+        assert "dimension_focus" in errors[0]
+        assert "performance" in errors[0]
+
+    def test_known_intentional_with_valid_dimension(self) -> None:
+        """known_intentional referencing enabled dimension → no errors."""
+        config = {
+            "dimensions": ["correctness", "tech-debt"],
+            "personalization": {
+                "known_intentional": [
+                    {"file": "db/queries.py", "line": 42, "dimension": "tech-debt", "reason": "intentional"},
+                ],
+            },
+        }
+        assert validate.validate_personalization_consistency(config) == []
+
+    def test_known_intentional_with_invalid_dimension(self) -> None:
+        """known_intentional referencing disabled dimension → error with index."""
+        config = {
+            "dimensions": ["correctness"],
+            "personalization": {
+                "known_intentional": [
+                    {"file": "db/queries.py", "line": 42, "dimension": "tech-debt", "reason": "intentional"},
+                ],
+            },
+        }
+        errors = validate.validate_personalization_consistency(config)
+        assert len(errors) == 1
+        assert "known_intentional[0]" in errors[0]
+        assert "tech-debt" in errors[0]
+
+    def test_multiple_errors_across_categories(self) -> None:
+        """Errors in all three categories are reported together."""
+        config = {
+            "dimensions": ["correctness"],
+            "personalization": {
+                "fix_priority_order": ["bad-dim-1"],
+                "dimension_focus": [{"dimension": "bad-dim-2", "focus": "x"}],
+                "known_intentional": [
+                    {"file": "f.py", "line": 1, "dimension": "bad-dim-3", "reason": "r"},
+                ],
+            },
+        }
+        errors = validate.validate_personalization_consistency(config)
+        assert len(errors) == 3
+        assert any("fix_priority_order" in e for e in errors)
+        assert any("dimension_focus" in e for e in errors)
+        assert any("known_intentional[0]" in e for e in errors)
+
+    def test_end_to_end_validate_config_with_consistent_personalization(
+        self, tmp_path: Path, schema_path: Path
+    ) -> None:
+        """Full validate_config() accepts consistent personalization."""
+        config = {
+            "goal": "test",
+            "max_rounds": 3,
+            "language": "en",
+            "dimensions": ["correctness", "security"],
+            "review": {"scope": "full"},
+            "atomic": {"max_lines": 20, "max_adjacent_methods": 3},
+            "git": {"target_branch": "main", "use_worktree": False, "push_per_round": True},
+            "validation": {
+                "command_whitelist": ["ruff"],
+                "commands": {"python": ["ruff check src/"]},
+            },
+            "reviewer": {"output_schema_validation": True},
+            "personalization": {
+                "version": "1.0",
+                "fix_priority_order": ["security", "correctness"],
+                "dimension_focus": [{"dimension": "security", "focus": "SQLi"}],
+                "known_intentional": [
+                    {"file": "f.py", "line": 1, "dimension": "correctness", "reason": "ok"},
+                ],
+            },
+        }
+        config_path = tmp_path / "iterate.config.yaml"
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+        errors = validate.validate_config(config_path, schema_path)
+        assert errors == []
+
+    def test_end_to_end_validate_config_with_inconsistent_personalization(
+        self, tmp_path: Path, schema_path: Path
+    ) -> None:
+        """Full validate_config() reports inconsistent personalization dimensions."""
+        config = {
+            "goal": "test",
+            "max_rounds": 3,
+            "language": "en",
+            "dimensions": ["correctness"],
+            "review": {"scope": "full"},
+            "atomic": {"max_lines": 20, "max_adjacent_methods": 3},
+            "git": {"target_branch": "main", "use_worktree": False, "push_per_round": True},
+            "validation": {
+                "command_whitelist": ["ruff"],
+                "commands": {"python": ["ruff check src/"]},
+            },
+            "reviewer": {"output_schema_validation": True},
+            "personalization": {
+                "version": "1.0",
+                "fix_priority_order": ["security"],  # security not in dimensions
+            },
+        }
+        config_path = tmp_path / "iterate.config.yaml"
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+        errors = validate.validate_config(config_path, schema_path)
+        assert any("fix_priority_order" in e and "security" in e for e in errors)
+
+
 def _build_minimal_source(tmp_path: Path) -> Path:
     """Create a minimal skill source tree for install tests."""
     source = tmp_path / "source"
