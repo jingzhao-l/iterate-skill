@@ -168,6 +168,77 @@ class PersonalizationData:
         return "\n".join(sections)
 
 
+# Headers that mark personalization-generated sections in ITERATE.md.
+# Used by merge_user_sections to replace old personalization content
+# while preserving user's manually written sections.
+PERSONALIZATION_SECTION_HEADERS: tuple[str, ...] = (
+    "## 自定义代码约定 / Custom Code Conventions",
+    "## 禁区与风险区 / Restricted & Risk Areas",
+    "## Iterate 注意点 / Iterate Notes",
+    "## 已知意图 / Known Intentional",
+    "## 禁止的修复方式 / Forbidden Fixes",
+)
+
+
+def merge_user_sections(existing_content: str, new_personalization_md: str) -> str:
+    """Merge personalization-generated sections into existing user content.
+
+    Removes any old personalization-generated sections (identified by their
+    headers in PERSONALIZATION_SECTION_HEADERS) from existing_content, then
+    appends the new personalization sections. User's manually written
+    sections (those not matching personalization headers) are preserved.
+
+    Args:
+        existing_content: Current user-owned section content from ITERATE.md.
+        new_personalization_md: New personalization sections (from to_user_md_sections).
+
+    Returns:
+        Merged content with old personalization sections replaced by new ones.
+    """
+    lines = existing_content.split("\n")
+    result_lines: list[str] = []
+    skip_until_next_header = False
+
+    for line in lines:
+        # Check if this line starts a personalization section header.
+        is_personalization_header = any(
+            line.strip().startswith(header) for header in PERSONALIZATION_SECTION_HEADERS
+        )
+
+        if is_personalization_header:
+            # Start skipping this section.
+            skip_until_next_header = True
+            continue
+
+        if skip_until_next_header:
+            # Skip lines until we hit a new ## header (any section).
+            if line.strip().startswith("## "):
+                skip_until_next_header = False
+                # Don't skip this line — it's a new section.
+                if any(
+                    line.strip().startswith(h) for h in PERSONALIZATION_SECTION_HEADERS
+                ):
+                    skip_until_next_header = True
+                    continue
+                result_lines.append(line)
+            # Otherwise skip (part of old personalization section).
+            continue
+
+        result_lines.append(line)
+
+    # Clean up trailing whitespace from removed sections.
+    cleaned = "\n".join(result_lines).rstrip()
+
+    # Append new personalization sections.
+    new_sections = new_personalization_md.strip()
+    if not new_sections:
+        return cleaned
+
+    if cleaned:
+        return f"{cleaned}\n\n{new_sections}\n"
+    return f"{new_sections}\n"
+
+
 # ---------------------------------------------------------------------------
 # Load / save helpers
 # ---------------------------------------------------------------------------
@@ -620,7 +691,11 @@ def _add_risk_area(input_func: InputFunc) -> Optional[RiskArea]:
 
 
 def _add_known_intentional(input_func: InputFunc) -> Optional[KnownIntentional]:
-    """Collect a single KnownIntentional entry from the user."""
+    """Collect a single KnownIntentional entry from the user.
+
+    Returns None if the user cancels at any step or enters an invalid
+    dimension (rather than silently using an empty dimension string).
+    """
     file_path = input_func("  文件路径 / File path (e.g. db/queries.py): ").strip()
     if not file_path:
         return None
@@ -635,10 +710,13 @@ def _add_known_intentional(input_func: InputFunc) -> Optional[KnownIntentional]:
     dim_str = input_func("  维度编号 / Dimension number: ").strip()
     try:
         dim_idx = int(dim_str) - 1
-        dimension = ALL_DIMENSIONS[dim_idx] if 0 <= dim_idx < len(ALL_DIMENSIONS) else ""
+        if not (0 <= dim_idx < len(ALL_DIMENSIONS)):
+            print("  ⚠️  无效维度编号，已取消 / Invalid dimension number, cancelled")
+            return None
+        dimension = ALL_DIMENSIONS[dim_idx]
     except (ValueError, IndexError):
-        print("  ⚠️  无效维度，使用空 / Invalid dimension, using empty")
-        dimension = ""
+        print("  ⚠️  无效输入，已取消 / Invalid input, cancelled")
+        return None
     reason = input_func("  原因 / Reason: ").strip()
     if not reason:
         reason = "(未说明 / unspecified)"
