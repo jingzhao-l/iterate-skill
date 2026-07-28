@@ -113,6 +113,10 @@
         "commands": {
           "type": "object",
           "description": "Per-module validation command lists. Keys are module identifiers; values are shell commands.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "description": "Module identifiers must only contain letters, digits, underscore, dash, or dot (no shell metacharacters)."
+          },
           "additionalProperties": {
             "type": "array",
             "items": {
@@ -299,6 +303,10 @@
         "extra_validation_commands": {
           "type": "object",
           "description": "Project-specific validation commands grouped by module. Merged into validation.commands by merge_personalization_into_config.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "description": "Module identifiers must only contain letters, digits, underscore, dash, or dot (no shell metacharacters)."
+          },
           "additionalProperties": {
             "type": "array",
             "items": {

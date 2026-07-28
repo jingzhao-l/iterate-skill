@@ -134,16 +134,17 @@ def incremental_refresh(project_root: Path) -> bool:
     ITERATE.md while preserving user-owned sections. Also updates the
     fingerprints in iterate.config.yaml.
 
-    The refresh is atomic with respect to the two output files: if
-    either write fails, the other is rolled back so ITERATE.md and
-    iterate.config.yaml never diverge.
+    Best-effort rollback is attempted on write failure: if either file
+    write fails, the other is rolled back to its pre-refresh state.
+    If rollback itself fails, files may be in an inconsistent state
+    (the rollback failure is logged to stderr).
 
     Args:
         project_root: The project root directory.
 
     Returns:
-        True if refresh succeeded, False if ITERATE.md does not exist
-        or cannot be read.
+        True if refresh succeeded, False if ITERATE.md does not exist,
+        cannot be read, or a write failure occurred.
     """
     iterate_md_path = project_root / ITERATE_MD
     if not iterate_md_path.is_file():
@@ -201,13 +202,19 @@ def incremental_refresh(project_root: Path) -> bool:
         if backup_md is not None:
             try:
                 iterate_md_path.write_text(backup_md, encoding="utf-8")
-            except OSError:
-                pass  # Best-effort rollback; nothing more we can do.
+            except OSError as rollback_exc:
+                print(
+                    f"⚠️  Rollback failed for {iterate_md_path}: {rollback_exc}",
+                    file=sys.stderr,
+                )
         if backup_config is not None:
             try:
                 config_path.write_text(backup_config, encoding="utf-8")
-            except OSError:
-                pass  # Best-effort rollback; primary error already logged above.
+            except OSError as rollback_exc:
+                print(
+                    f"⚠️  Rollback failed for {config_path}: {rollback_exc}",
+                    file=sys.stderr,
+                )
         return False
 
     return True
@@ -251,7 +258,8 @@ def full_reonboard(
         input_func: Optional input callable for testing.
 
     Returns:
-        True if re-onboarding completed, False if cancelled or no existing files.
+        True if re-onboarding completed, False if cancelled, no existing
+        files, or backup/write failed (errors are logged to stderr).
     """
     iterate_md_path = project_root / ITERATE_MD
     config_path = project_root / CONFIG_YAML
@@ -261,10 +269,18 @@ def full_reonboard(
 
     # Backup existing files.
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    if iterate_md_path.is_file():
-        shutil.copy2(iterate_md_path, project_root / f"{ITERATE_MD}.bak-{timestamp}")
-    if config_path.is_file():
-        shutil.copy2(config_path, project_root / f"{CONFIG_YAML}.bak-{timestamp}")
+    try:
+        if iterate_md_path.is_file():
+            shutil.copy2(
+                iterate_md_path, project_root / f"{ITERATE_MD}.bak-{timestamp}"
+            )
+        if config_path.is_file():
+            shutil.copy2(
+                config_path, project_root / f"{CONFIG_YAML}.bak-{timestamp}"
+            )
+    except OSError as exc:
+        print(f"⚠️  Backup failed, aborting re-onboarding: {exc}", file=sys.stderr)
+        return False
 
     # Run the full wizard.
     if input_func is not None:
@@ -275,7 +291,12 @@ def full_reonboard(
     if data is None:
         return False
 
-    write_onboarding_outputs(data, project_root)
+    try:
+        write_onboarding_outputs(data, project_root)
+    except OSError as exc:
+        print(f"⚠️  Failed to write onboarding outputs: {exc}", file=sys.stderr)
+        return False
+
     return True
 
 
