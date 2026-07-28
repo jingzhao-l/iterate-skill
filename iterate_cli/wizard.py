@@ -147,7 +147,16 @@ def _returning_user_flow(
     print()
     print("是否进行个性化配置? 或使用 skill 时遇到问题? /")
     print("Personalize configuration? Encountered issues during skill usage?")
-    if _ask_yes_no("", input_func):
+    personalize = _ask_yes_no("", input_func)
+
+    if not update_basic and not personalize:
+        # User declined both: no changes needed.
+        print()
+        print("配置未变更。如需更新 AI 维护区，请使用 `iterate refresh`。")
+        print("No changes made. Use `iterate refresh` to update AI-maintained sections.")
+        return None
+
+    if personalize:
         from iterate_cli.personalize import (
             load_personalization_from_config,
             run_personalize_wizard,
@@ -164,6 +173,12 @@ def _returning_user_flow(
         )
         if personalization is not None:
             data.personalization = personalization
+        elif not update_basic:
+            # User declined basic update AND cancelled personalization: nothing to write.
+            print()
+            print("个性化配置已取消，基础配置未更新。无变更。")
+            print("Personalization cancelled, basic config not updated. No changes.")
+            return None
 
     return data
 

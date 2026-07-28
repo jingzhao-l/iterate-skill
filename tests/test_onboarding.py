@@ -813,7 +813,7 @@ class TestReturningUserFlow:
     """Tests for the multi-path wizard when ITERATE.md already exists."""
 
     def test_skip_basic_keep_existing_config(self, fake_project: Path) -> None:
-        """Returning user declines basic update and personalization."""
+        """Returning user declines basic update and personalization → None (no changes)."""
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
 
@@ -822,9 +822,8 @@ class TestReturningUserFlow:
             "n",          # personalization: no
         ])
         result = run_wizard(fake_project, input_func=lambda _: next(responses))
-        assert result is not None
-        assert result.channel == "cli"
-        assert "correctness" in result.dimensions
+        # Declining both means no changes needed; wizard returns None.
+        assert result is None
 
     def test_update_basic_config(self, fake_project: Path) -> None:
         """Returning user updates basic config."""
@@ -2010,54 +2009,71 @@ class TestRefreshPreservesPersonalization:
 class TestReturningUserPreservesData:
     """Regression tests: returning user flow must not overwrite existing data."""
 
-    def test_skip_basic_preserves_user_section(self, fake_project: Path) -> None:
-        """Returning user declines basic update — user section must be preserved."""
+    def test_skip_both_returns_none(self, fake_project: Path) -> None:
+        """Returning user declines both basic update and personalization → None."""
         data = _build_onboarding_data(fake_project)
         data.project_description = "My important project description"
         data.code_conventions = "Use 4-space indent\nsnake_case functions"
         write_onboarding_outputs(data, fake_project)
 
-        # Verify content exists before re-onboarding.
+        # Returning user: decline basic update, decline personalization.
+        responses = iter(["n", "n"])
+        result = run_wizard(fake_project, input_func=lambda _: next(responses))
+        assert result is None  # No changes needed.
+
+    def test_skip_both_preserves_files(self, fake_project: Path) -> None:
+        """When returning user declines both, ITERATE.md and config must be untouched."""
+        data = _build_onboarding_data(fake_project)
+        data.project_description = "My important project description"
+        data.code_conventions = "Use 4-space indent"
+        write_onboarding_outputs(data, fake_project)
+
         md_before = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
-        assert "My important project description" in md_before
+        config_before = (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
 
-        # Returning user: decline basic update, decline personalization.
+        # Returning user: decline both.
         responses = iter(["n", "n"])
-        result = run_wizard(fake_project, input_func=lambda _: next(responses))
-        assert result is not None
+        run_wizard(fake_project, input_func=lambda _: next(responses))
 
-        # Write outputs as _cmd_onboard would.
-        write_onboarding_outputs(result, fake_project)
-
-        # Verify user section content is preserved (not overwritten with empty).
+        # Files must be unchanged (no write_onboarding_outputs called).
         md_after = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
-        # The description might be regenerated from scan, but user section
-        # (code_conventions) must be preserved.
-        assert USER_START_MARKER in md_after
-        assert USER_END_MARKER in md_after
+        config_after = (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        assert md_after == md_before
+        assert config_after == config_before
 
-    def test_skip_basic_preserves_config_dimensions(self, fake_project: Path) -> None:
-        """Returning user declines basic update — config dimensions must be preserved."""
+    def test_skip_basic_cancel_personalization_returns_none(self, fake_project: Path) -> None:
+        """Returning user declines basic, cancels personalization → None."""
         data = _build_onboarding_data(fake_project)
-        data.dimensions = ["correctness", "security", "performance"]
         write_onboarding_outputs(data, fake_project)
 
-        # Returning user: decline basic update, decline personalization.
-        responses = iter(["n", "n"])
+        # Decline basic, accept personalization, but cancel at start.
+        responses = iter(["n", "y", "n"])
         result = run_wizard(fake_project, input_func=lambda _: next(responses))
-        assert result is not None
-        assert result.dimensions == ["correctness", "security", "performance"]
+        assert result is None
 
-    def test_skip_basic_preserves_target_branch(self, fake_project: Path) -> None:
-        """Returning user declines basic update — target branch must be preserved."""
+    def test_skip_basic_with_personalization_returns_data(self, fake_project: Path) -> None:
+        """Returning user declines basic but completes personalization → data."""
         data = _build_onboarding_data(fake_project)
-        data.target_branch = "develop"
+        data.code_conventions = "Use 4-space indent"
         write_onboarding_outputs(data, fake_project)
 
-        responses = iter(["n", "n"])
+        # Decline basic, accept personalization, complete wizard.
+        responses = iter([
+            "n",          # update basic: no
+            "y",          # personalization: yes
+            "y",          # start personalization
+            # Step 1: protected paths
+            "a",          # add
+            "legacy/**",  # path
+            "s",          # skip
+            # Step 2-9: skip all
+            "s", "s", "s", "", "s", "s", "s", "s", "s",
+            "y",          # confirm save
+        ])
         result = run_wizard(fake_project, input_func=lambda _: next(responses))
         assert result is not None
-        assert result.target_branch == "develop"
+        assert result.personalization is not None
+        assert "legacy/**" in result.personalization.protected_paths
 
     def test_load_existing_onboarding_data_logs_error(self, fake_project: Path, capsys) -> None:
         """_load_existing_onboarding_data should log errors, not silently swallow."""
@@ -2075,3 +2091,206 @@ class TestReturningUserPreservesData:
         assert result is None
         captured = capsys.readouterr()
         assert "Failed to load" in captured.err or "not found" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# merge_user_sections tests (personalization content merge)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeUserSections:
+    """Tests for merge_user_sections: preserve manual content, replace personalization."""
+
+    def test_empty_existing_appends_new(self) -> None:
+        from iterate_cli.personalize import merge_user_sections
+
+        new_md = "## Iterate 注意点 / Iterate Notes\n\n- Don't touch migrations\n"
+        result = merge_user_sections("", new_md)
+        assert "Don't touch migrations" in result
+
+    def test_empty_new_preserves_existing(self) -> None:
+        from iterate_cli.personalize import merge_user_sections
+
+        existing = "## My Manual Notes\n\n- Custom content\n"
+        result = merge_user_sections(existing, "")
+        assert "My Manual Notes" in result
+        assert "Custom content" in result
+
+    def test_replaces_old_personalization_sections(self) -> None:
+        from iterate_cli.personalize import merge_user_sections
+
+        existing = (
+            "## Iterate 注意点 / Iterate Notes\n\n- Old note\n\n"
+            "## My Manual Notes\n\n- Custom content\n"
+        )
+        new_md = "## Iterate 注意点 / Iterate Notes\n\n- New note\n"
+        result = merge_user_sections(existing, new_md)
+
+        # Old personalization content should be gone.
+        assert "Old note" not in result
+        # New personalization content should be present.
+        assert "New note" in result
+        # Manual content should be preserved.
+        assert "My Manual Notes" in result
+        assert "Custom content" in result
+
+    def test_replaces_multiple_personalization_sections(self) -> None:
+        from iterate_cli.personalize import merge_user_sections
+
+        existing = (
+            "## 自定义代码约定 / Custom Code Conventions\n\n- Old convention\n\n"
+            "## 禁区与风险区 / Restricted & Risk Areas\n\n- `legacy/**`\n\n"
+            "## My Manual Notes\n\n- Custom content\n"
+        )
+        new_md = (
+            "## 自定义代码约定 / Custom Code Conventions\n\n- New convention\n"
+        )
+        result = merge_user_sections(existing, new_md)
+
+        assert "Old convention" not in result
+        assert "legacy/**" not in result
+        assert "New convention" in result
+        assert "My Manual Notes" in result
+        assert "Custom content" in result
+
+    def test_preserves_user_sections_between_personalization(self) -> None:
+        from iterate_cli.personalize import merge_user_sections
+
+        existing = (
+            "## Iterate 注意点 / Iterate Notes\n\n- Old note\n\n"
+            "## My Section\n\n- My content\n\n"
+            "## 禁止的修复方式 / Forbidden Fixes\n\n- # noqa\n"
+        )
+        new_md = "## Iterate 注意点 / Iterate Notes\n\n- New note\n"
+        result = merge_user_sections(existing, new_md)
+
+        assert "Old note" not in result
+        assert "# noqa" not in result
+        assert "New note" in result
+        assert "My Section" in result
+        assert "My content" in result
+
+    def test_no_personalization_in_existing_appends_all(self) -> None:
+        from iterate_cli.personalize import merge_user_sections
+
+        existing = "## My Manual Notes\n\n- Custom content\n"
+        new_md = "## Iterate 注意点 / Iterate Notes\n\n- New note\n"
+        result = merge_user_sections(existing, new_md)
+
+        assert "My Manual Notes" in result
+        assert "Custom content" in result
+        assert "New note" in result
+
+
+# ---------------------------------------------------------------------------
+# _add_known_intentional invalid dimension tests
+# ---------------------------------------------------------------------------
+
+
+class TestAddKnownIntentionalValidation:
+    """Tests for _add_known_intentional dimension validation."""
+
+    def test_invalid_dimension_number_returns_none(self) -> None:
+        from iterate_cli.personalize import _add_known_intentional
+
+        responses = iter([
+            "db.py",    # file
+            "10",       # line
+            "99",       # invalid dimension number (out of range)
+        ])
+        result = _add_known_intentional(input_func=lambda _: next(responses))
+        assert result is None
+
+    def test_non_numeric_dimension_returns_none(self) -> None:
+        from iterate_cli.personalize import _add_known_intentional
+
+        responses = iter([
+            "db.py",    # file
+            "10",       # line
+            "abc",      # non-numeric input
+        ])
+        result = _add_known_intentional(input_func=lambda _: next(responses))
+        assert result is None
+
+    def test_empty_file_returns_none(self) -> None:
+        from iterate_cli.personalize import _add_known_intentional
+
+        responses = iter([""])
+        result = _add_known_intentional(input_func=lambda _: next(responses))
+        assert result is None
+
+    def test_valid_dimension_returns_entry(self) -> None:
+        from iterate_cli.personalize import _add_known_intentional
+
+        responses = iter([
+            "db.py",    # file
+            "10",       # line
+            "2",        # dimension number (security)
+            "intentional",
+        ])
+        result = _add_known_intentional(input_func=lambda _: next(responses))
+        assert result is not None
+        assert result.file == "db.py"
+        assert result.line == 10
+        assert result.dimension == "security"
+
+
+# ---------------------------------------------------------------------------
+# Schema enum validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestPersonalizationSchemaEnum:
+    """Tests for schema enum validation on dimension fields."""
+
+    def test_valid_dimension_focus_passes_schema(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            dimension_focus=[
+                DimensionFocusOverride(dimension="security", focus="SQL injection"),
+            ],
+            fix_priority_order=["security", "correctness"],
+        )
+        yaml_text = generate_config_yaml(data)
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(yaml_text, encoding="utf-8")
+
+        schema_path = REPO_ROOT / "config" / "config.schema.json"
+        import validate
+        errors = validate.validate_config(config_path, schema_path)
+        assert errors == [], f"Schema validation errors: {errors}"
+
+    def test_invalid_dimension_focus_fails_schema(self, fake_project: Path) -> None:
+        """dimension_focus with invalid dimension name should fail schema."""
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "dimensions:\n  - correctness\n"
+            "personalization:\n"
+            "  dimension_focus:\n"
+            "    - dimension: 'invalid-dim'\n"
+            "      focus: 'test'\n",
+            encoding="utf-8",
+        )
+
+        schema_path = REPO_ROOT / "config" / "config.schema.json"
+        import validate
+        errors = validate.validate_config(config_path, schema_path)
+        assert len(errors) > 0
+        assert any("invalid-dim" in e or "enum" in e.lower() for e in errors)
+
+    def test_invalid_fix_priority_fails_schema(self, fake_project: Path) -> None:
+        """fix_priority_order with invalid dimension name should fail schema."""
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "dimensions:\n  - correctness\n"
+            "personalization:\n"
+            "  fix_priority_order:\n"
+            "    - 'invalid-dim'\n",
+            encoding="utf-8",
+        )
+
+        schema_path = REPO_ROOT / "config" / "config.schema.json"
+        import validate
+        errors = validate.validate_config(config_path, schema_path)
+        assert len(errors) > 0
+        assert any("invalid-dim" in e or "enum" in e.lower() for e in errors)

@@ -250,7 +250,18 @@
             "properties": {
               "dimension": {
                 "type": "string",
-                "description": "Dimension key (e.g. security, performance)."
+                "description": "Dimension key (e.g. security, performance).",
+                "enum": [
+                  "correctness",
+                  "security",
+                  "performance",
+                  "architecture",
+                  "style-tests",
+                  "tech-debt",
+                  "spec-compliance",
+                  "frontend-backend",
+                  "ui-ux"
+                ]
               },
               "focus": {
                 "type": "string",
@@ -264,7 +275,18 @@
           "type": "array",
           "description": "Dimension fix priority order (high to low). Dimensions listed first are fixed first.",
           "items": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "correctness",
+              "security",
+              "performance",
+              "architecture",
+              "style-tests",
+              "tech-debt",
+              "spec-compliance",
+              "frontend-backend",
+              "ui-ux"
+            ]
           },
           "uniqueItems": true
         },
