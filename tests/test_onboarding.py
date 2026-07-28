@@ -720,6 +720,72 @@ class TestIncrementalRefresh:
         assert incremental_refresh(empty_project) is False
 
 
+class TestLoadOnboardingConfigErrorHandling:
+    """Tests for load_onboarding_config error handling (I-6-2 regression)."""
+
+    def test_returns_none_when_config_missing(self, empty_project: Path) -> None:
+        """Missing config file returns None (not raises)."""
+        assert load_onboarding_config(empty_project) is None
+
+    def test_returns_none_on_invalid_yaml(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """Invalid YAML returns None and logs to stderr."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("dimensions: [unclosed bracket", encoding="utf-8")
+
+        result = load_onboarding_config(fake_project)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "Failed to parse" in captured.err
+
+    def test_returns_none_on_non_utf8_bytes(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """Non-UTF-8 bytes return None instead of raising UnicodeDecodeError.
+
+        Regression: UnicodeDecodeError inherits ValueError, not OSError,
+        so it must be caught explicitly alongside OSError.
+        """
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        # Write raw invalid UTF-8 bytes (Latin-1 high bytes).
+        config_path.write_bytes(b"\xff\xfe\x00invalid: [")
+
+        result = load_onboarding_config(fake_project)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "Failed to read" in captured.err
+
+    def test_returns_none_on_permission_denied(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """Permission-denied file returns None instead of raising OSError.
+
+        Regression: OSError must be caught so callers fall back to defaults.
+        """
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        # Remove read permission (chmod 000).
+        config_path.chmod(0o000)
+        try:
+            result = load_onboarding_config(fake_project)
+        finally:
+            # Restore permission so cleanup works.
+            config_path.chmod(0o644)
+
+        assert result is None
+        captured = capsys.readouterr()
+        assert "Failed to read" in captured.err
+
+
 class TestFullReonboard:
     def test_creates_backup(self, fake_project: Path) -> None:
         data = _build_onboarding_data(fake_project)
@@ -812,8 +878,6 @@ class TestCLIStatus:
         self, fake_project: Path, capsys
     ) -> None:
         """version field must be excluded from personalization rule count."""
-        from iterate_cli.cli import _count_personalization_rules
-
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
 
@@ -841,8 +905,6 @@ class TestCLIStatus:
         self, fake_project: Path, capsys
     ) -> None:
         """extra_validation_commands (dict) must be counted, not skipped."""
-        from iterate_cli.cli import _count_personalization_rules
-
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
 
@@ -2122,6 +2184,88 @@ class TestRefreshPreservesPersonalization:
         )
         # personalization may or may not be present, but refresh should not fail.
         assert config["onboarding"]["channel"] == "cli"
+
+    def test_refresh_preserves_project_description_in_config(
+        self, fake_project: Path
+    ) -> None:
+        """Refresh must not lose project_description persisted in onboarding section.
+
+        Regression for I-6-6: ``_build_refresh_data`` reads
+        project_description/code_conventions from the onboarding section
+        of the existing config, so refresh should keep them in the config.
+        """
+        data = _build_onboarding_data(fake_project)
+        data.project_description = "My precious project description"
+        data.code_conventions = "Use 4-space indent\nsnake_case for functions"
+        write_onboarding_outputs(data, fake_project)
+
+        # Sanity check: persisted before refresh.
+        config_before = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert (
+            config_before["onboarding"]["project_description"]
+            == "My precious project description"
+        )
+        assert (
+            config_before["onboarding"]["code_conventions"]
+            == "Use 4-space indent\nsnake_case for functions"
+        )
+
+        # Run incremental refresh.
+        assert incremental_refresh(fake_project) is True
+
+        # project_description / code_conventions must survive in the
+        # onboarding section of the refreshed config.
+        config_after = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert (
+            config_after["onboarding"]["project_description"]
+            == "My precious project description"
+        )
+        assert (
+            config_after["onboarding"]["code_conventions"]
+            == "Use 4-space indent\nsnake_case for functions"
+        )
+
+    def test_refresh_preserves_project_description_in_iterate_md(
+        self, fake_project: Path
+    ) -> None:
+        """Refresh must regenerate AI-maintained section with same project_description.
+
+        The AI-maintained Project Overview section is regenerated from
+        OnboardingData.project_description; refresh must reproduce the
+        same description rather than dropping it or duplicating it.
+        """
+        data = _build_onboarding_data(fake_project)
+        data.project_description = "Stable description across refresh"
+        write_onboarding_outputs(data, fake_project)
+
+        # Count occurrences before refresh.
+        md_before = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        before_count = md_before.count("Stable description across refresh")
+        assert before_count == 1  # Exactly once in AI-maintained section.
+
+        assert incremental_refresh(fake_project) is True
+
+        # After refresh: still exactly one occurrence (no duplication, no loss).
+        md_after = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        after_count = md_after.count("Stable description across refresh")
+        assert after_count == 1
+
+    def test_refresh_preserves_code_conventions_in_iterate_md(
+        self, fake_project: Path
+    ) -> None:
+        """Refresh must keep code_conventions rendered in AI-maintained section."""
+        data = _build_onboarding_data(fake_project)
+        data.code_conventions = "All functions return Result[T, E]"
+        write_onboarding_outputs(data, fake_project)
+
+        assert incremental_refresh(fake_project) is True
+
+        md_after = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        assert "All functions return Result[T, E]" in md_after
 
 
 # ---------------------------------------------------------------------------

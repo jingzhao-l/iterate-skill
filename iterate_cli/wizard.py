@@ -240,8 +240,6 @@ def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingDat
     instead of silently swallowing them.
     """
     try:
-        from iterate_cli.scan import scan_project
-
         config_path = project_root / "iterate.config.yaml"
         if not config_path.is_file():
             print("⚠️  iterate.config.yaml not found, cannot load existing config.", file=sys.stderr)

@@ -384,10 +384,9 @@ def merge_personalization_into_config(
                 # Auto-add command prefix to whitelist if not present.
                 # "bandit -r src/" → prefix "bandit"
                 parts = cmd.strip().split(None, 1)
-                if parts:
-                    prefix = parts[0]
-                    if prefix not in whitelist:
-                        whitelist.append(prefix)
+                prefix = parts[0] if parts else ""
+                if prefix and prefix not in whitelist:
+                    whitelist.append(prefix)
             commands[module] = existing
 
         validation["commands"] = commands
@@ -704,6 +703,9 @@ def _run_validation_commands_step(
             module = input_func("  模块名 / Module name (e.g. python, swift): ").strip()
             if not module:
                 print("  ⏭️  空模块名，跳过 / Empty module, skipped")
+                continue
+            if not MODULE_NAME_PATTERN.match(module):
+                print("  ⚠️  无效模块名（仅允许字母、数字、._-）/ Invalid module name")
                 continue
             cmd = input_func(f"  {module} 命令 / command: ").strip()
             if cmd:

@@ -448,7 +448,7 @@ Summary
 | `personalization.forbidden_fixes` | list | `[]` | 禁止的修复方式（如 `# noqa`、`try-catch 吞错`） |
 | `personalization.version` | string | `"1.0"` | personalization schema 版本（自动管理，勿手动编辑） |
 
-> **补充验证命令**：`personalization.extra_validation_commands` 在向导中收集，合并到 `validation.commands`，命令前缀自动加入 `validation.command_whitelist`。不单独存放在 personalization 段。
+> **补充验证命令**：`personalization.extra_validation_commands` 在向导中收集，同时存放在 `personalization.extra_validation_commands`（用于 round-trip）和 `validation.commands`（用于 runner 执行），命令前缀自动加入 `validation.command_whitelist`。
 
 ### Master + Overrides 配置模式
 
