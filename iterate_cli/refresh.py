@@ -207,7 +207,7 @@ def incremental_refresh(project_root: Path) -> bool:
             try:
                 config_path.write_text(backup_config, encoding="utf-8")
             except OSError:
-                pass
+                pass  # Best-effort rollback; primary error already logged above.
         return False
 
     return True

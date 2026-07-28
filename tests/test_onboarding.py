@@ -859,12 +859,19 @@ class TestIncrementalRefreshAtomicity:
         md_before = iterate_md.read_text(encoding="utf-8")
         config_before = config_path.read_text(encoding="utf-8")
 
-        # Make config file read-only to force write failure.
-        config_path.chmod(0o444)
-        try:
-            result = incremental_refresh(fake_project)
-        finally:
-            config_path.chmod(0o644)
+        # Force write_text to fail on the config file only.
+        # Using monkeypatch instead of chmod so the test is stable even
+        # when run as root (root bypasses the read-only bit).
+        original_write_text = Path.write_text
+
+        def failing_write_text(self, data, encoding=None, errors=None):
+            if self == config_path:
+                raise OSError("simulated write failure")
+            return original_write_text(self, data, encoding, errors)
+
+        monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+        result = incremental_refresh(fake_project)
 
         assert result is False
 
