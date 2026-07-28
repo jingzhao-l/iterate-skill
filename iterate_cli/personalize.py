@@ -13,6 +13,7 @@ user-owned section of ``ITERATE.md``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -29,6 +30,11 @@ from iterate_cli.wizard import (
 # Personalization schema version. Increment when the personalization
 # data model changes, so future migrations can detect old configs.
 PERSONALIZATION_VERSION = "1.0"
+
+# Module name pattern for extra_validation_commands keys.
+# Only allow alphanumeric, dash, underscore, dot — prevents shell
+# metacharacter injection via module key.
+MODULE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -104,6 +110,11 @@ class PersonalizationData:
         Only structured rules are included; ``iterate_notes`` and
         ``code_conventions`` are handled separately (written to
         ITERATE.md user-owned section).
+
+        ``extra_validation_commands`` is persisted here so that
+        ``load_personalization_from_config`` can round-trip it; the
+        merge step additionally copies these commands into
+        ``validation.commands`` for the actual validation runner.
         """
         return {
             "version": PERSONALIZATION_VERSION,
@@ -126,6 +137,10 @@ class PersonalizationData:
             ],
             "fix_priority_order": list(self.fix_priority_order),
             "forbidden_fixes": list(self.forbidden_fixes),
+            "extra_validation_commands": {
+                module: list(cmds)
+                for module, cmds in self.extra_validation_commands.items()
+            },
         }
 
     def to_user_md_sections(self) -> str:
@@ -185,6 +200,17 @@ PERSONALIZATION_SECTION_HEADERS: tuple[str, ...] = (
 )
 
 
+def _is_personalization_header(line: str) -> bool:
+    """Return True if line exactly matches a personalization section header.
+
+    Uses exact match (not startswith) to avoid clobbering user-written
+    sections whose titles happen to begin with a personalization header
+    prefix (e.g. "## 自定义代码约定 / Custom Code Conventions — 后端组").
+    """
+    stripped = line.strip()
+    return stripped in PERSONALIZATION_SECTION_HEADERS
+
+
 def merge_user_sections(existing_content: str, new_personalization_md: str) -> str:
     """Merge personalization-generated sections into existing user content.
 
@@ -205,28 +231,22 @@ def merge_user_sections(existing_content: str, new_personalization_md: str) -> s
     skip_until_next_header = False
 
     for line in lines:
-        # Check if this line starts a personalization section header.
-        is_personalization_header = any(
-            line.strip().startswith(header) for header in PERSONALIZATION_SECTION_HEADERS
-        )
-
-        if is_personalization_header:
-            # Start skipping this section.
+        if _is_personalization_header(line):
             skip_until_next_header = True
             continue
 
+        if skip_until_next_header and line.strip().startswith("## "):
+            # Hit a new section header: stop skipping.
+            skip_until_next_header = False
+            if _is_personalization_header(line):
+                # Another personalization section to remove.
+                skip_until_next_header = True
+                continue
+            result_lines.append(line)
+            continue
+
         if skip_until_next_header:
-            # Skip lines until we hit a new ## header (any section).
-            if line.strip().startswith("## "):
-                skip_until_next_header = False
-                # Don't skip this line — it's a new section.
-                if any(
-                    line.strip().startswith(h) for h in PERSONALIZATION_SECTION_HEADERS
-                ):
-                    skip_until_next_header = True
-                    continue
-                result_lines.append(line)
-            # Otherwise skip (part of old personalization section).
+            # Inside a section being removed.
             continue
 
         result_lines.append(line)
@@ -277,10 +297,16 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     known: list[KnownIntentional] = []
     for item in raw.get("known_intentional") or []:
         if isinstance(item, dict) and "file" in item:
+            # Defensive parse of line: YAML may contain non-integer strings
+            # if manually edited. Fall back to 0 (whole-file suppression).
+            try:
+                line = int(item.get("line", 0))
+            except (TypeError, ValueError):
+                line = 0
             known.append(
                 KnownIntentional(
                     file=str(item["file"]),
-                    line=int(item.get("line", 0)),
+                    line=line,
                     dimension=str(item.get("dimension", "")),
                     reason=str(item.get("reason", "")),
                 )
@@ -299,10 +325,19 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     fix_order = [str(d) for d in raw.get("fix_priority_order") or []]
     forbidden = [str(f) for f in raw.get("forbidden_fixes") or []]
 
+    # Module name pattern: only allow alphanumeric, dash, underscore, dot.
+    # Prevents shell metacharacter injection via module key.
     extra_cmds: dict[str, list[str]] = {}
     for module, cmds in (raw.get("extra_validation_commands") or {}).items():
+        module_str = str(module)
+        if not MODULE_NAME_PATTERN.match(module_str):
+            # Skip entries with unsafe module names.
+            continue
         if isinstance(cmds, list):
-            extra_cmds[str(module)] = [str(c) for c in cmds]
+            # Only keep string commands; skip non-string entries silently.
+            extra_cmds[module_str] = [
+                str(c) for c in cmds if isinstance(c, str) and c.strip()
+            ]
 
     return PersonalizationData(
         protected_paths=protected,
@@ -734,7 +769,7 @@ def _add_known_intentional(input_func: InputFunc) -> Optional[KnownIntentional]:
             print("  ⚠️  无效维度编号，已取消 / Invalid dimension number, cancelled")
             return None
         dimension = ALL_DIMENSIONS[dim_idx]
-    except (ValueError, IndexError):
+    except ValueError:
         print("  ⚠️  无效输入，已取消 / Invalid input, cancelled")
         return None
     reason = input_func("  原因 / Reason: ").strip()
@@ -754,7 +789,7 @@ def _add_dimension_focus(input_func: InputFunc) -> Optional[DimensionFocusOverri
         if not (0 <= dim_idx < len(ALL_DIMENSIONS)):
             return None
         dimension = ALL_DIMENSIONS[dim_idx]
-    except (ValueError, IndexError):
+    except ValueError:
         return None
     focus = input_func(f"  追加 focus 内容 / Extra focus text for [{dimension}]: ").strip()
     if not focus:

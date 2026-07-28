@@ -156,6 +156,10 @@ def generate_config_yaml(data: OnboardingData) -> str:
             "skill_version": SKILL_VERSION,
             "drift_check": True,
             "fingerprints": fingerprints_to_dict(data.fingerprints),
+            # Persist user-entered text so returning users who decline basic
+            # update don't lose their previously entered description/conventions.
+            "project_description": data.project_description,
+            "code_conventions": data.code_conventions,
         },
     }
 

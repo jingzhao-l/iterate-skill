@@ -5,6 +5,23 @@
   "description": "Schema for iterate.config.yaml used by the iterate-skill AI coding assistant skill.",
   "type": "object",
   "additionalProperties": false,
+  "$defs": {
+    "dimension": {
+      "type": "string",
+      "description": "Review dimension key.",
+      "enum": [
+        "correctness",
+        "security",
+        "performance",
+        "architecture",
+        "style-tests",
+        "tech-debt",
+        "spec-compliance",
+        "frontend-backend",
+        "ui-ux"
+      ]
+    }
+  },
   "properties": {
     "goal": {
       "type": "string",
@@ -25,18 +42,7 @@
       "type": "array",
       "description": "Enabled review dimensions. Values are defined in config/dimensions.yaml.",
       "items": {
-        "type": "string",
-        "enum": [
-          "correctness",
-          "security",
-          "performance",
-          "architecture",
-          "style-tests",
-          "tech-debt",
-          "spec-compliance",
-          "frontend-backend",
-          "ui-ux"
-        ]
+        "$ref": "#/$defs/dimension"
       },
       "minItems": 1,
       "uniqueItems": true
@@ -175,6 +181,14 @@
             },
             "required": ["path", "sha256"]
           }
+        },
+        "project_description": {
+          "type": "string",
+          "description": "User-entered project description from the onboarding wizard. Persisted so returning users who decline basic update don't lose their input."
+        },
+        "code_conventions": {
+          "type": "string",
+          "description": "User-entered code conventions from the onboarding wizard. Persisted so returning users who decline basic update don't lose their input."
         }
       }
     },
@@ -235,19 +249,8 @@
                 "description": "Line number (0 means the entire file)."
               },
               "dimension": {
-                "type": "string",
                 "description": "Review dimension to suppress (e.g. tech-debt, security).",
-                "enum": [
-                  "correctness",
-                  "security",
-                  "performance",
-                  "architecture",
-                  "style-tests",
-                  "tech-debt",
-                  "spec-compliance",
-                  "frontend-backend",
-                  "ui-ux"
-                ]
+                "$ref": "#/$defs/dimension"
               },
               "reason": {
                 "type": "string",
@@ -265,19 +268,8 @@
             "additionalProperties": false,
             "properties": {
               "dimension": {
-                "type": "string",
                 "description": "Dimension key (e.g. security, performance).",
-                "enum": [
-                  "correctness",
-                  "security",
-                  "performance",
-                  "architecture",
-                  "style-tests",
-                  "tech-debt",
-                  "spec-compliance",
-                  "frontend-backend",
-                  "ui-ux"
-                ]
+                "$ref": "#/$defs/dimension"
               },
               "focus": {
                 "type": "string",
@@ -291,18 +283,7 @@
           "type": "array",
           "description": "Dimension fix priority order (high to low). Dimensions listed first are fixed first.",
           "items": {
-            "type": "string",
-            "enum": [
-              "correctness",
-              "security",
-              "performance",
-              "architecture",
-              "style-tests",
-              "tech-debt",
-              "spec-compliance",
-              "frontend-backend",
-              "ui-ux"
-            ]
+            "$ref": "#/$defs/dimension"
           },
           "uniqueItems": true
         },
@@ -314,6 +295,17 @@
             "minLength": 1
           },
           "uniqueItems": true
+        },
+        "extra_validation_commands": {
+          "type": "object",
+          "description": "Project-specific validation commands grouped by module. Merged into validation.commands by merge_personalization_into_config.",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     }
