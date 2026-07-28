@@ -214,6 +214,13 @@ def _build_refresh_data(
     command_whitelist = (existing_config.get("validation") or {}).get("command_whitelist") or []
     language = existing_config.get("language", "en")
 
+    # Preserve existing personalization so refresh does not lose it.
+    personalization = None
+    if existing_config.get("personalization"):
+        from iterate_cli.personalize import load_personalization_from_config
+
+        personalization = load_personalization_from_config(existing_config)
+
     # Capture fresh fingerprints.
     fingerprints = capture_fingerprints(project_root)
 
@@ -234,6 +241,7 @@ def _build_refresh_data(
         fingerprints=fingerprints,
         iterate_notes=user_content,
         language=language,
+        personalization=personalization,
     )
 
 

@@ -200,13 +200,20 @@ Summary
 用户也可以在终端中运行 `iterate onboard` 完成相同流程：
 
 ```bash
-iterate onboard     # 交互式向导
+iterate onboard      # 交互式向导（多路引导：首次/非首次自动分支）
+iterate personalize  # 个性化配置（项目中途追加约束，9 步向导）
 iterate status       # 查看 onboarding 状态和漂移检测
 iterate refresh      # 增量刷新（保留用户手写区）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
 ```
 
 CLI 通道适用于对项目有清晰认知的用户；AI 通道适用于需要自动扫描代码库的场景。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。
+
+**多路引导 / Multi-Path Flow**：
+- **首次 onboarding**（无 ITERATE.md）：确认手动配置 → 基础 onboarding → 询问是否需要个性化配置。
+- **非首次 onboarding**（已有 ITERATE.md）：询问是否更新基础配置（不建议手动改）→ 询问是否进行个性化配置。
+
+**个性化配置 / Personalization**：捕获 AI 扫描不到的项目专属约束（禁区、风险区、已知意图、维度定制等 9 类）。运行 `iterate personalize` 可在项目中途随时追加，无需重做 onboarding。详见 README。
 
 安装 CLI：`pip install .` 或 `pipx install .`（从本仓库根目录）。
 
@@ -234,22 +241,32 @@ CLI 通道适用于对项目有清晰认知的用户；AI 通道适用于需要�
    - 若项目根目录不存在 Overrides，则完全使用 Master。
    - 将配置合并到运行参数；若合并后配置无法通过 schema 校验，立即报告错误并中止迭代。
 
-5. **读取项目上下文 / Read project context**
+5. **读取个性化配置 / Load personalization**
+   - 读取合并后配置中的 `personalization` 段（由 `iterate onboard` 或 `iterate personalize` 写入）。
+   - 将以下字段加载到运行参数，后续 Phase 必须严格遵守：
+     - `personalization.protected_paths`：glob 模式列表，**禁止修改匹配的文件**（Phase 2/3 修复时必须跳过）。
+     - `personalization.risk_areas`：`[{path, reason}]`，修改这些路径前必须通过 `AskUserQuestion` 获得用户明确批准。
+     - `personalization.known_intentional`：`[{file, line, dimension, reason}]`，Phase 1 汇总后必须过滤掉匹配的 findings（line=0 表示整个文件）。
+     - `personalization.dimension_focus`：`[{dimension, focus}]`，Phase 1 启动 reviewer 时将对应 focus 追加到维度 prompt。
+     - `personalization.fix_priority_order`：维度优先级列表（从高到低），Phase 2 排序时按此顺序优先修复。
+     - `personalization.forbidden_fixes`：字符串列表，Phase 2/3 修复时**禁止使用**这些方式（如 `# noqa`、`try-catch 吞错`）。
+   - 若 `personalization` 段不存在或为空，跳过本步，不影响正常流程。
+
+6. **读取项目上下文 / Read project context**
    - 按优先级查找项目根目录的上下文文件：`ITERATE.md` → `CLAUDE.md` → `PROJECT.md` → `README.md`。
    - 提取项目名、架构、技术栈、代码规范、审查注意点；若都不存在，使用简要描述。
    - 构造 `projectContext` 字符串供后续使用。
    - 绝不读取 `.env`、`.env.*`、`*.{key,pem,p12,crt,cer}`、`credentials.json`、`.aws/`、`.ssh/` 等敏感文件。
 
-6. **创建隔离环境 / Create isolated environment**
+7. **创建隔离环境 / Create isolated environment**
    - 检查 `git status`，工作区必须干净（无未跟踪文件、无未提交修改、无未解决冲突）。
    - 若工作区不干净，询问用户是否 commit/stash；若用户拒绝或取消，**中止本次迭代**。
    - 记录当前分支名，作为迭代结束后的返回目标。
    - 创建迭代分支：`iterate/<goal-slug>-<timestamp>`。
    - 或创建 git worktree：`git worktree add ../<name> -b iterate/<goal-slug>-<timestamp>`。
    - 若分支/worktree 创建失败（如名称冲突），尝试追加递增序号后重试，最多 3 次；仍失败则中止并告知用户。
-   - 所有后续操作都在该分支/worktree 中进行。
 
-7. **初始化决策日志 / Initialize decision log**
+8. **初始化决策日志 / Initialize decision log**
    - 在隔离环境根目录创建 `.iterate_decisions.md`，写入文件头。
    - Initialize `deferredArchitectural = []` for cross-round carry-over.
 
@@ -322,6 +339,13 @@ Return strictly as JSON: { "findings": [...] }
 Each finding object must contain: file, severity, dimension, summary, failure_scenario, suggested_fix, is_atomic.
 If no issues are found, return { "findings": [] }.
 ```
+
+> **个性化维度 focus / Personalization dimension focus**：若 `personalization.dimension_focus` 中存在当前维度的条目，将其 `focus` 文本追加到上述 prompt 的 `Focus:` 段之后，例如：
+> ```
+> Focus: {focus description}
+> 
+> Extra focus (from personalization): {personalization.dimension_focus[dimension].focus}
+> ```
 
 #### 工具映射 / Tool Mapping
 
@@ -400,10 +424,11 @@ Steps:
 1. PARSE each reviewer output as JSON; if invalid and reviewer.output_schema_validation is true, retry that reviewer up to 2 times.
 2. REMOVE duplicates (same defect, same file → keep most detailed)
 3. REMOVE false positives (clearly wrong or unactionable)
-4. RE-VALIDATE is_atomic flag for each finding
-5. CLASSIFY into atomic and architectural
-6. SORT each group by severity (critical → high → medium → low)
-7. TRIM each group to 20 max
+4. **FILTER known intentional**：若 `personalization.known_intentional` 非空，移除匹配的 findings。匹配规则：finding 的 `file` 与条目的 `file` 相同，且（条目 `line` 为 0，或 finding 的 `line` 与条目 `line` 相同），且 `dimension` 相同。被过滤的 finding 数量记入决策日志。
+5. RE-VALIDATE is_atomic flag for each finding
+6. CLASSIFY into atomic and architectural
+7. SORT each group by severity (critical → high → medium → low)
+8. TRIM each group to 20 max
 
 Return: { "empty": boolean, "atomic": [...], "architectural": [...] }
 ```
@@ -429,16 +454,33 @@ if empty AND deferredArchitectural is empty:
    - 分析所有原子 findings。
    - 合并对同一文件的修改。
    - 按严重程度和依赖排序。
+   - **应用个性化优先级**：若 `personalization.fix_priority_order` 非空，按其指定的维度顺序重新排序（列在前面的维度优先修复），同维度内仍按严重程度排序。
    - 输出简短计划列表告知用户。
 
 2. **顺序执行 / Execute sequentially**
 
    ```text
    for each atomic finding:
+       # Protected paths check
+       if finding.file matches any pattern in personalization.protected_paths:
+           skip this finding, log "skipped: protected path {finding.file}"
+           continue
+
+       # Risk areas check
+       if finding.file is under any personalization.risk_areas[].path:
+           use AskUserQuestion to get explicit user approval before modifying
+           if user declines: skip, log "skipped: risk area not approved"
+
+       # Forbidden fixes check
+       ensure the planned fix does not use any approach in personalization.forbidden_fixes
+       if it would: skip, log "skipped: forbidden fix approach"
+
        Read target file
        Apply fix using Edit/Write (ensure ≤ atomic.max_lines, single function scope)
        Record completion status
    ```
+
+   > **禁区/风险区/禁止方式 / Protected / Risk / Forbidden**：这三项检查在每次修改文件前都必须执行。`protected_paths` 是 glob 模式（如 `legacy/**`），用 `fnmatch` 或等价方式匹配。`risk_areas` 路径是目录或文件前缀匹配。`forbidden_fixes` 是字符串描述，AI 判断修复方式是否匹配。
 
 3. **验证原子修复 / Validate atomic fixes**
 
@@ -503,6 +545,15 @@ if empty AND deferredArchitectural is empty:
 
    ```text
    for each task in executableArchitectural:
+       # Protected paths check (same as Phase 2)
+       if any file in task.files matches personalization.protected_paths:
+           defer this task, log "deferred: protected path"
+
+       # Risk areas check (same as Phase 2)
+       if any file in task.files is under personalization.risk_areas[].path:
+           use AskUserQuestion to get explicit user approval
+           if declined: defer, log "deferred: risk area not approved"
+
        Use sub-agent with prompt:
 
        "You are fixing an architectural issue.
@@ -511,6 +562,10 @@ if empty AND deferredArchitectural is empty:
        Project context: {projectContext}
 
        Task: {task description with file paths, findings, approach}
+
+       Constraints (from personalization):
+       - Forbidden fix approaches: {personalization.forbidden_fixes or 'none'}
+       - Do NOT use any of these approaches in your fix.
 
        Workflow:
        1. Read all affected files, their callers, and callees.
@@ -779,6 +834,14 @@ iterate/
 | `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
 | `validation.commands.<module>` | list | 示例命令 | 各模块验证命令 |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
+| `personalization.protected_paths` | list | `[]` | 禁区 glob 模式，iterate 不得修改 |
+| `personalization.risk_areas` | list | `[]` | 风险区（path + reason），改动需用户审批 |
+| `personalization.known_intentional` | list | `[]` | 已知意图（file:line + dimension），Phase 1 过滤误报 |
+| `personalization.dimension_focus` | list | `[]` | 维度定制（dimension + focus），追加到 reviewer prompt |
+| `personalization.fix_priority_order` | list | `[]` | 修复优先级顺序（从高到低） |
+| `personalization.forbidden_fixes` | list | `[]` | 禁止的修复方式（如 `# noqa`） |
+
+> **个性化配置由 `iterate onboard` 或 `iterate personalize` 写入**，捕获 AI 扫描不到的项目专属约束。详见 README 中的"个性化配置 / Personalization"章节。
 | `onboarding.version` | string | `"1.0"` | 指纹 schema 版本 |
 | `onboarding.completed_at` | string | — | 上次 onboarding/刷新的 ISO 8601 时间戳 |
 | `onboarding.channel` | string | — | onboarding 通道：`cli` / `ai` |

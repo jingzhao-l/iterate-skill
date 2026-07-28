@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import yaml
 
@@ -21,6 +21,9 @@ from iterate_cli.fingerprint import (
     fingerprints_to_dict,
 )
 from iterate_cli.scan import ScanResult
+
+if TYPE_CHECKING:
+    from iterate_cli.personalize import PersonalizationData
 
 # Partition markers in ITERATE.md.
 AI_START_MARKER = "<!-- ITERATE:AI-MAINTAINED:START -->"
@@ -68,7 +71,7 @@ class OnboardingData:
     fingerprints: list[FingerprintEntry] = field(default_factory=list)
     iterate_notes: str = ""
     language: str = "en"
-    personalization: Optional[Any] = None  # PersonalizationData, typed as Any to avoid circular import
+    personalization: Optional["PersonalizationData"] = None
 
     def completed_at(self) -> str:
         """ISO 8601 timestamp of onboarding completion."""
