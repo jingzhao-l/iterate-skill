@@ -110,7 +110,37 @@ python scripts/install.py update --ai trae --target /path/to/project --force
 python scripts/install.py update --ai trae --target /path/to/project --token ghp_xxx
 ```
 
-### 方式三：手动克隆
+### 方式三：安装 iterate CLI（onboarding 命令行工具）
+
+```bash
+# 从仓库安装（提供 iterate 命令）
+pip install .
+# 或使用 pipx 隔离安装
+pipx install .
+
+# 验证安装
+iterate --version
+```
+
+安装后可在任何项目目录中使用 `iterate` 命令：
+
+```bash
+# 交互式 onboarding 向导（生成 ITERATE.md + iterate.config.yaml）
+iterate onboard
+
+# 查看 onboarding 状态和漂移检测
+iterate status
+
+# 增量刷新（重新扫描，保留用户手写区）
+iterate refresh
+
+# 完整重新 onboarding（备份旧文件后重做）
+iterate reonboard
+```
+
+> CLI onboarding 适用于对项目有清晰认知的用户；AI onboarding（在 AI 工具中调用 `/iterate`）适用于需要自动扫描代码库的场景。两者产出相同格式的文件。
+
+### 方式四：手动克隆
 
 #### Trae
 
@@ -186,6 +216,49 @@ validation:
 
 ---
 
+## Onboarding（项目知识库初始化）
+
+首次在项目中调用 `/iterate` 时，skill 会检查项目根目录是否存在 `ITERATE.md`。若不存在，将触发 onboarding 流程，为当前项目生成定制化知识库与配置。
+
+### 两条通道 / Two Channels
+
+| 通道 / Channel | 适用场景 / Suitable When | 产出 / Output |
+|----------------|-------------------------|---------------|
+| **AI Onboarding**（在 AI 工具中触发） | 用户希望 AI 自动扫描代码库、识别技术栈 | `ITERATE.md` + `iterate.config.yaml`（含指纹） |
+| **CLI Onboarding**（终端运行 `iterate onboard`） | 用户对项目有清晰认知，愿手动确认技术栈和命令 | 同上，格式完全一致 |
+
+### AI Onboarding 流程
+
+1. AI 扫描 manifest 文件、目录树、`specs/`、`tests/`、`README.md` 等（只读，不碰敏感文件）。
+2. 参考 `templates/onboarding-playbook.md` 中的映射表（**仅供参考，按项目实况调整**）。
+3. 草拟 `ITERATE.md`（AI 维护区 + 用户维护区）和 `iterate.config.yaml`。
+4. 展示摘要（含拟写入的 `validation.commands` 逐条），用户确认后才写入。
+5. 写入后继续正常迭代。
+
+### 漂移检测 / Drift Detection
+
+每次调用 `/iterate` 时，若 `onboarding.drift_check: true`，会重新计算 manifest 文件（`package.json`、`pyproject.toml` 等）的 SHA-256 并与配置中存储的指纹比对：
+
+- **无漂移** → 静默通过。
+- **有漂移**（新增/删除/内容变更）→ 非阻塞警告，用户可选：
+  - **继续**：照旧使用现有知识库。
+  - **增量刷新**：AI 重新扫描，只更新 `ITERATE.md` 的 AI 维护区，保留用户手写区。
+  - **完整重新 onboarding**：备份旧文件后重做。
+
+### ITERATE.md 结构
+
+文件分为两个区域，刷新时只更新 AI 维护区：
+
+- `<!-- ITERATE:AI-MAINTAINED:START -->` ~ `END`：项目概述、技术栈、模块地图、推荐维度、iterate 注意点。
+- `<!-- ITERATE:USER-OWNED:START -->` ~ `END`：自定义代码约定、禁区与风险区、手动批注。
+
+### 全局安装 vs 项目级安装
+
+- **全局安装**的 skill：每个项目首次调用都会触发单项目 onboarding。
+- **项目级安装**的 skill：onboarding 完成后，后续调用直接复用 `ITERATE.md`。
+
+---
+
 ## 目录结构 / Directory Structure
 
 ```text
@@ -194,8 +267,10 @@ iterate-skill/
 ├── README.md                         # 本文件
 ├── LICENSE                           # MIT 许可证
 ├── CONTRIBUTING.md                   # 开源贡献指南
+├── pyproject.toml                    # iterate CLI 包定义
+├── skills.sh.json                    # skills.sh 仓库分组配置
 ├── config/
-│   ├── iterate.config.yaml           # 默认配置（Master）
+│   ├── iterate.config.yaml           # 默认配置（Master，含 onboarding 段）
 │   ├── config.schema.json            # iterate.config.yaml 的 JSON Schema
 │   ├── dimensions.yaml               # 聚合版维度定义（兼容旧版）
 │   └── dimensions/                   # 数据驱动的维度定义
@@ -213,7 +288,18 @@ iterate-skill/
 │   ├── swift-project.md              # Swift 项目示例
 │   └── typescript-project.md         # TypeScript 项目示例
 ├── templates/
+│   ├── ITERATE.template.md           # 项目知识库模板（AI + 用户双区）
+│   ├── onboarding-playbook.md        # AI onboarding 参考映射表
 │   └── iterate-decisions.template.md # 决策日志模板
+├── iterate_cli/                      # onboarding CLI 源码
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── cli.py                        # 入口：onboard/refresh/reonboard/status
+│   ├── wizard.py                     # 交互式 CLI 向导
+│   ├── scan.py                       # 项目技术栈扫描
+│   ├── fingerprint.py                # manifest SHA-256 指纹
+│   ├── generator.py                  # ITERATE.md / config 生成
+│   └── refresh.py                    # 增量刷新与重新 onboarding
 ├── scripts/
 │   ├── install.py                    # CLI：安装、卸载、配置、校验
 │   ├── validate.py                   # 配置、决策日志、维度校验脚本
@@ -223,10 +309,12 @@ iterate-skill/
 │   ├── SKILL.claude.md               # Claude Code 专属实现示例
 │   └── SKILL.cursor.md               # Cursor / Generic 实现示例
 ├── tests/
-│   └── test_validate.py              # 单元测试
+│   ├── test_validate.py              # 校验脚本单元测试
+│   └── test_onboarding.py            # onboarding CLI 单元测试
 └── .github/
     └── workflows/
-        └── ci.yml                    # GitHub Actions CI
+        ├── ci.yml                    # GitHub Actions CI
+        └── release.yml               # 发布工作流
 ```
 
 ---
@@ -234,12 +322,16 @@ iterate-skill/
 ## 核心流程 / Core Workflow
 
 ```text
+Step 0 — Onboarding Check
+  └─ 定位项目根 → 检查 ITERATE.md → 漂移检测 →（缺失则触发 AI Onboarding）
+
 Setup
-  └─ 读取项目上下文 → 创建隔离分支/ worktree
+  └─ 提取 goal → 加载配置 → 读取项目上下文（ITERATE.md → CLAUDE.md → …）→ 创建隔离分支/worktree
 
 Loop (round = 1 .. max_rounds)
-  ├─ Phase 1: N 维度并行审查（N = len(dimensions)）
-  ├─ Phase 2: 原子问题直接修复
+  ├─ Phase 0: 维度规划（仅第 1 轮，goal 指定范围时 → 调整 focus → 用户确认）
+  ├─ Phase 1: N 维度并行审查（N = len(dimensions)，默认 9）
+  ├─ Phase 2: 原子问题直接修复（单文件/单函数/≤20 行）
   ├─ Phase 3: 架构问题用户批准 → 子代理串行执行
   ├─ Phase 4: 记录本轮结果
   └─ Phase 5: 验证 → merge 回主分支 → push
@@ -272,6 +364,9 @@ Summary
 | `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
 | `validation.commands` | object | 示例命令 | 各模块验证命令（**由使用者完全自定义**） |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
+| `onboarding.version` | string | `"1.0"` | onboarding 指纹 schema 版本 |
+| `onboarding.drift_check` | bool | `true` | 每次调用时是否检查 manifest 漂移 |
+| `onboarding.fingerprints` | list | `[]` | manifest 文件 SHA-256 指纹（onboarding 后自动填充） |
 
 ### Master + Overrides 配置模式
 
