@@ -1,7 +1,7 @@
 ---
 name: iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review.
-version: 1.0.0
+version: 2.0.0
 ---
 
 # /iterate `<goal>` `[rounds]` `[no-limit]`
