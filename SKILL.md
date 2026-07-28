@@ -113,10 +113,14 @@ Architectural issues **require user approval** and are executed by sub-agents se
 ## 核心流程 / Core Workflow
 
 ```text
+Step 0 — Onboarding Check
+  └─ Locate project root → check ITERATE.md → drift detection → (onboard if needed)
+
 Setup
-  └─ Extract goal → load config → read project context → create isolated branch/worktree
+  └─ Extract goal → load config → read project context (ITERATE.md → CLAUDE.md → …) → create isolated branch/worktree
 
 Loop (round = 1 .. max_rounds)
+  ├─ Phase 0: Dimension Planning (if goal specifies scope → propose dimensions → user confirms)
   ├─ Phase 1: N-dimension parallel review (N = enabled dimensions count, default 9)
   ├─ Phase 2: Atomic fixes (direct)
   ├─ Phase 3: Architectural fixes (approval → serial sub-agents)
@@ -125,6 +129,86 @@ Loop (round = 1 .. max_rounds)
 
 Summary
 ```
+
+---
+
+## Step 0 — Onboarding 检查 / Onboarding Check
+
+每次调用 `/iterate` 时，**首先**执行 onboarding 检查。Onboarding 是为当前项目生成定制化知识库（`ITERATE.md`）和项目级配置（`iterate.config.yaml` 中的 `onboarding` 段）的过程。
+
+### 为什么需要 Onboarding
+
+- **validation.commands 精准化**：默认配置中的验证命令只是示例，onboarding 根据项目实际技术栈生成正确的命令。
+- **维度定制化**：无前端的项目不需要 `ui-ux` 维度，无 specs/ 的项目不需要 `spec-compliance`——onboarding 避免空转浪费算力。
+- **项目知识沉淀**：`ITERATE.md` 记录项目概述、技术栈、模块地图、审查注意点，供后续每轮审查参考。
+
+### 检查流程
+
+1. **定位项目根目录 / Locate project root**
+   - 以当前工作目录为起点，向上查找包含 `.git`、`iterate.config.yaml` 或 `ITERATE.md` 的目录。
+   - 若向上查找到文件系统根仍未找到，则使用当前工作目录作为项目根目录。
+
+2. **检查 onboarding 状态 / Check onboarding status**
+   - 检查项目根目录下是否存在 `ITERATE.md`。
+   - **存在** → 进入漂移检测（下一步）。
+   - **不存在** → 暂停迭代，进入 **AI Onboarding 流程**（见下文）。完成后继续 Step 1。
+
+3. **漂移检测 / Drift detection**（仅在 `onboarding.drift_check` 为 `true` 时执行）
+   - 读取 `iterate.config.yaml` 中的 `onboarding.fingerprints`（manifest 文件的 SHA-256 哈希）。
+   - 重新计算当前 manifest 文件的哈希并比对。
+   - **无漂移** → 静默通过，进入 Step 1。
+   - **有漂移**（manifest 新增/删除/内容变更）→ **非阻塞**警告，使用 `AskUserQuestion` 询问用户：
+     - **继续（continue）**：本轮照旧使用现有 ITERATE.md。
+     - **增量刷新（refresh）**：AI 重新扫描项目，更新 ITERATE.md 的 AI 维护区（用户手写区保留），更新指纹。
+     - **完整重新 onboarding（reonboard）**：备份旧文件后走完整 onboarding 流程。
+
+> 漂移检测是**非阻塞**的——即使用户选择"继续"，迭代也会正常进行，只是使用可能过时的知识库。
+
+### AI Onboarding 流程 / AI Onboarding Flow
+
+当 `ITERATE.md` 不存在时，AI 执行以下流程（类似 Claude Code 首次生成 `CLAUDE.md`）：
+
+1. **告知并确认 / Inform and confirm**
+   - 告知用户将扫描代码库生成 `ITERATE.md` 和配置。
+   - 同时提示 CLI 备选：用户也可以运行 `iterate onboard` 在命令行中完成。
+   - 参考 `templates/onboarding-playbook.md` 中的扫描清单和映射表（**仅供参考，需按项目实况调整**）。
+
+2. **扫描 / Scan**（并行只读）
+   - 读取 manifest 文件（`package.json` / `pyproject.toml` / `Package.swift` / `go.mod` / `Cargo.toml` 等）。
+   - 读取 2-3 层目录树，识别模块结构。
+   - 检查 `specs/`、`tests/`、CI 配置的存在性。
+   - 读取已有 `README.md` / `CLAUDE.md` 提取项目描述。
+   - **绝不读取** `.env`、`.env.*`、`*.{key,pem,p12,crt,cer}`、`credentials.json`、`.aws/`、`.ssh/` 等敏感文件。
+
+3. **草拟 / Draft**
+   - 基于扫描结果 + playbook 映射表草拟：
+     - `ITERATE.md`：项目概述、技术栈、模块地图、推荐维度、iterate 注意点。
+     - `iterate.config.yaml`：启用的 dimensions、`validation.commands`、`validation.command_whitelist`、指纹数据。
+   - ITERATE.md 分为 **AI 维护区**（`<!-- ITERATE:AI-MAINTAINED:START -->` ~ `END`）和 **用户维护区**（`<!-- ITERATE:USER-OWNED:START -->` ~ `END`）。刷新时只更新 AI 维护区。
+
+4. **用户确认 / User confirmation**
+   - 展示摘要：识别的技术栈、拟启用维度及理由、**拟写入的 validation.commands 逐条列出**。
+   - 用户可选：全部接受 / 修改 / 重扫。
+   - **validation.commands 涉及后续自动执行，必须经用户显式确认。**
+
+5. **写入产物 / Write outputs**
+   - 写入 `ITERATE.md` 和 `iterate.config.yaml`（含 `onboarding.fingerprints`）。
+   - 继续正常迭代流程（Step 1）。
+
+### CLI Onboarding（命令行通道）
+
+用户也可以在终端中运行 `iterate onboard` 完成相同流程：
+
+```bash
+iterate onboard     # 交互式向导
+iterate status       # 查看 onboarding 状态和漂移检测
+iterate refresh      # 增量刷新（保留用户手写区）
+iterate reonboard    # 完整重新 onboarding（备份旧文件）
+```
+
+CLI 通道适用于对项目有清晰认知的用户；AI 通道适用于需要自动扫描代码库的场景。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。
+
+安装 CLI：`pip install .` 或 `pipx install .`（从本仓库根目录）。
 
 ---
 
@@ -151,8 +235,8 @@ Summary
    - 将配置合并到运行参数；若合并后配置无法通过 schema 校验，立即报告错误并中止迭代。
 
 5. **读取项目上下文 / Read project context**
-   - 按优先级查找项目根目录的上下文文件：`CLAUDE.md` → `PROJECT.md` → `README.md`。
-   - 提取项目名、架构、技术栈、代码规范；若都不存在，使用简要描述。
+   - 按优先级查找项目根目录的上下文文件：`ITERATE.md` → `CLAUDE.md` → `PROJECT.md` → `README.md`。
+   - 提取项目名、架构、技术栈、代码规范、审查注意点；若都不存在，使用简要描述。
    - 构造 `projectContext` 字符串供后续使用。
    - 绝不读取 `.env`、`.env.*`、`*.{key,pem,p12,crt,cer}`、`credentials.json`、`.aws/`、`.ssh/` 等敏感文件。
 
@@ -177,6 +261,20 @@ Summary
 round = 1
 while round <= maxRounds:
 ```
+
+### Phase 0 — 维度规划 / Dimension Planning
+
+**仅在第 1 轮执行**。根据用户当次调用 `/iterate` 的 goal 内容决定是否触发：
+
+- **goal 为空或泛化**（如 "improve code quality"）→ 直接使用 `iterate.config.yaml` 中的 `dimensions`，不增加摩擦。
+- **goal 指定了具体范围/需求**（如 "fix authentication bugs in the API layer"）→ AI 读取 `ITERATE.md` 中的定制维度 + 当次 goal，输出本轮维度方案：
+  1. 从配置的 `dimensions` 中筛选与 goal 最相关的维度。
+  2. 对每个维度的 focus 进行针对性调整（例如 goal 涉及认证 → security 维度的 focus 加入 "auth/session/JWT"）。
+  3. 如需新增临时维度（不在默认 9 个中），在方案中说明理由。
+  4. 使用 `AskUserQuestion` 向用户展示方案并请求确认。
+  5. 用户确认后，本轮审查使用调整后的维度方案；用户拒绝则回退到配置中的默认维度。
+
+> Dimension Planning 只调整维度的 focus prompt 和启用列表，不改变 atomic/architectural 分类标准、git 隔离、验证流程等核心机制。
 
 ### Phase 1 — 并行审查 / Parallel Review
 
@@ -616,6 +714,7 @@ Branch: {iteration-branch}
 ```text
 iterate/
 ├── SKILL.md                          # 技能入口与使用说明
+├── pyproject.toml                    # Python 包定义（iterate CLI entry point）
 ├── config/
 │   ├── iterate.config.yaml           # 默认配置
 │   ├── config.schema.json            # iterate.config.yaml 的 JSON Schema
@@ -630,18 +729,30 @@ iterate/
 │       ├── spec-compliance.yaml
 │       ├── frontend-backend.yaml
 │       └── ui-ux.yaml
+├── iterate_cli/                      # iterate CLI 包（onboarding 命令行工具）
+│   ├── __init__.py
+│   ├── __main__.py                   # python -m iterate_cli 入口
+│   ├── cli.py                        # argparse 子命令（onboard/refresh/reonboard/status）
+│   ├── fingerprint.py                # manifest 哈希与漂移检测
+│   ├── scan.py                       # 项目扫描（技术栈/目录/特性检测）
+│   ├── wizard.py                     # CLI 交互式 onboarding 向导
+│   ├── generator.py                  # ITERATE.md + iterate.config.yaml 生成器
+│   └── refresh.py                    # 增量刷新与完整重 onboarding
 ├── scripts/
 │   ├── install.py                    # CLI：安装、卸载、配置、校验
 │   ├── validate.py                   # 配置、决策日志、维度校验脚本
 │   └── requirements.txt              # 校验脚本依赖
 ├── templates/
-│   └── iterate-decisions.template.md # 决策日志模板
+│   ├── iterate-decisions.template.md # 决策日志模板
+│   ├── ITERATE.template.md           # 项目知识库模板（分区：AI 维护 + 用户维护）
+│   └── onboarding-playbook.md        # AI onboarding 参考映射（仅供参考）
 ├── tools/
 │   ├── SKILL.trae.md                 # Trae 专属 prompt/workflow 示例
 │   ├── SKILL.claude.md               # Claude Code 专属 workflow 示例
 │   └── SKILL.cursor.md               # Cursor 专属 prompt 示例
 ├── tests/
-│   └── test_validate.py              # pytest 测试
+│   ├── test_validate.py              # 校验脚本测试
+│   └── test_onboarding.py            # onboarding 模块测试
 └── README.md / CONTRIBUTING.md       # 用户与贡献者文档
 ```
 
@@ -668,6 +779,11 @@ iterate/
 | `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
 | `validation.commands.<module>` | list | 示例命令 | 各模块验证命令 |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
+| `onboarding.version` | string | `"1.0"` | 指纹 schema 版本 |
+| `onboarding.completed_at` | string | — | 上次 onboarding/刷新的 ISO 8601 时间戳 |
+| `onboarding.channel` | string | — | onboarding 通道：`cli` / `ai` |
+| `onboarding.drift_check` | bool | `true` | 是否在每次调用时检查 manifest 漂移 |
+| `onboarding.fingerprints` | list | — | manifest 文件的 SHA-256 哈希列表（自动生成） |
 
 ---
 

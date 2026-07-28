@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "iterate-skill"
+version = "1.0.0"
+description = "Iterate skill CLI — onboarding and project knowledge management for the iterate AI coding assistant skill."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "iterate-skill contributors"},
+]
+keywords = ["ai", "code-review", "onboarding", "skill", "iterate"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "PyYAML==6.0.2",
+]
+
+[project.scripts]
+iterate = "iterate_cli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jingzhao-l/iterate-skill"
+Repository = "https://github.com/jingzhao-l/iterate-skill"
+
+[tool.setuptools]
+packages = ["iterate_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
