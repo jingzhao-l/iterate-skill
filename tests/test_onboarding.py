@@ -7,7 +7,6 @@ normal paths, error paths, and boundary scenarios.
 from __future__ import annotations
 
 import hashlib
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -51,7 +50,7 @@ from iterate_cli.generator import (
     write_onboarding_outputs,
 )
 from iterate_cli.wizard import (
-    ALL_DIMENSIONS,
+    NO_CHANGES_NEEDED,
     run_wizard,
     _parse_dimension_selection,
     _ask_yes_no,
@@ -893,7 +892,6 @@ class TestIncrementalRefreshAtomicity:
 
         iterate_md = fake_project / "ITERATE.md"
         config_path = fake_project / "iterate.config.yaml"
-        md_before = iterate_md.read_text(encoding="utf-8")
         config_before = config_path.read_text(encoding="utf-8")
 
         # Force write_text to fail on ITERATE.md only.
@@ -922,9 +920,6 @@ class TestIncrementalRefreshAtomicity:
         """Rollback failure must be logged to stderr (M-10-1)."""
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
-
-        iterate_md = fake_project / "ITERATE.md"
-        config_path = fake_project / "iterate.config.yaml"
 
         # Make ALL write_text calls fail — both initial write and rollback.
         def always_failing_write_text(self, data, encoding=None, errors=None):
@@ -1308,7 +1303,7 @@ class TestReturningUserFlow:
     """Tests for the multi-path wizard when ITERATE.md already exists."""
 
     def test_skip_basic_keep_existing_config(self, fake_project: Path) -> None:
-        """Returning user declines basic update and personalization → None (no changes)."""
+        """Returning user declines basic update and personalization → NO_CHANGES_NEEDED."""
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
 
@@ -1317,8 +1312,8 @@ class TestReturningUserFlow:
             "n",          # personalization: no
         ])
         result = run_wizard(fake_project, input_func=lambda _: next(responses))
-        # Declining both means no changes needed; wizard returns None.
-        assert result is None
+        # Declining both means no changes needed; wizard returns sentinel.
+        assert result is NO_CHANGES_NEEDED
 
     def test_update_basic_config(self, fake_project: Path) -> None:
         """Returning user updates basic config."""
@@ -2643,7 +2638,7 @@ class TestReturningUserPreservesData:
     """Regression tests: returning user flow must not overwrite existing data."""
 
     def test_skip_both_returns_none(self, fake_project: Path) -> None:
-        """Returning user declines both basic update and personalization → None."""
+        """Returning user declines both basic update and personalization → NO_CHANGES_NEEDED."""
         data = _build_onboarding_data(fake_project)
         data.project_description = "My important project description"
         data.code_conventions = "Use 4-space indent\nsnake_case functions"
@@ -2652,7 +2647,7 @@ class TestReturningUserPreservesData:
         # Returning user: decline basic update, decline personalization.
         responses = iter(["n", "n"])
         result = run_wizard(fake_project, input_func=lambda _: next(responses))
-        assert result is None  # No changes needed.
+        assert result is NO_CHANGES_NEEDED  # No changes needed.
 
     def test_skip_both_preserves_files(self, fake_project: Path) -> None:
         """When returning user declines both, ITERATE.md and config must be untouched."""
@@ -2675,14 +2670,14 @@ class TestReturningUserPreservesData:
         assert config_after == config_before
 
     def test_skip_basic_cancel_personalization_returns_none(self, fake_project: Path) -> None:
-        """Returning user declines basic, cancels personalization → None."""
+        """Returning user declines basic, cancels personalization → NO_CHANGES_NEEDED."""
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
 
         # Decline basic, accept personalization, but cancel at start.
         responses = iter(["n", "y", "n"])
         result = run_wizard(fake_project, input_func=lambda _: next(responses))
-        assert result is None
+        assert result is NO_CHANGES_NEEDED
 
     def test_skip_basic_with_personalization_returns_data(self, fake_project: Path) -> None:
         """Returning user declines basic but completes personalization → data."""
@@ -2738,8 +2733,8 @@ class TestReturningUserPreservesData:
             "n",          # personalization: no
         ])
         result = run_wizard(fake_project, input_func=lambda _: next(responses))
-        # Wizard returns None when no changes requested.
-        assert result is None
+        # Wizard returns sentinel when no changes requested.
+        assert result is NO_CHANGES_NEEDED
 
         # Verify config still has the persisted description.
         config = yaml.safe_load(
@@ -2763,9 +2758,9 @@ class TestReturningUserPreservesData:
             "n",          # start personalization: no (cancel)
         ])
         result = run_wizard(fake_project, input_func=lambda _: next(responses))
-        # Wizard returns None because user cancelled personalization and
+        # Wizard returns sentinel because user cancelled personalization and
         # declined basic update — no changes to write.
-        assert result is None
+        assert result is NO_CHANGES_NEEDED
 
         # But the config file must still have the persisted description.
         config = yaml.safe_load(
@@ -3187,3 +3182,153 @@ class TestPersonalizationConsistencyValidation:
         }
         errors = validate.validate_personalization_consistency(config)
         assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Round 11 regression tests
+# ---------------------------------------------------------------------------
+
+class TestLoadOnboardingConfigNonDict:
+    """Tests for load_onboarding_config with non-dict YAML (M-11-1)."""
+
+    def test_returns_none_on_yaml_list(self, fake_project: Path, capsys) -> None:
+        """A YAML list in the config must not crash callers (M-11-1)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("- item1\n- item2\n", encoding="utf-8")
+
+        result = load_onboarding_config(fake_project)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "not a YAML mapping" in captured.err
+
+    def test_returns_none_on_yaml_scalar(self, fake_project: Path, capsys) -> None:
+        """A YAML scalar in the config must not crash callers (M-11-1)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("just a string\n", encoding="utf-8")
+
+        result = load_onboarding_config(fake_project)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "not a YAML mapping" in captured.err
+
+    def test_empty_file_returns_none(self, fake_project: Path) -> None:
+        """An empty config file returns None (not a crash)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("", encoding="utf-8")
+
+        result = load_onboarding_config(fake_project)
+        # Empty file → yaml.safe_load returns None → callers use ``or {}``.
+        assert result is None
+
+    def test_incremental_refresh_survives_non_dict_config(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """incremental_refresh must not crash when config is a YAML list."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Corrupt the config into a YAML list.
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("- not a dict\n", encoding="utf-8")
+
+        # load_onboarding_config returns None for non-dict YAML; callers
+        # fall back to {} via ``or {}``. Refresh should succeed (True),
+        # not crash with AttributeError.
+        result = incremental_refresh(fake_project)
+        assert result is True  # refresh still succeeds with empty config
+
+
+class TestLoadExistingOnboardingDataNonDict:
+    """Tests for _load_existing_onboarding_data with non-dict YAML (M-11-2)."""
+
+    def test_returns_none_on_yaml_list(self, fake_project: Path, capsys) -> None:
+        """A YAML list in the config must return None, not crash (M-11-2)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("- item1\n- item2\n", encoding="utf-8")
+
+        from iterate_cli.wizard import _load_existing_onboarding_data
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "not a YAML mapping" in captured.err
+
+    def test_returns_none_on_yaml_scalar(self, fake_project: Path, capsys) -> None:
+        """A YAML scalar in the config must return None, not crash (M-11-2)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("just a string\n", encoding="utf-8")
+
+        from iterate_cli.wizard import _load_existing_onboarding_data
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "not a YAML mapping" in captured.err
+
+
+class TestCmdOnboardNoChangesExitCode:
+    """Tests for _cmd_onboard exit code: cancelled vs no-changes (M-11-3, M-14-1)."""
+
+    def test_returns_zero_when_no_changes_and_onboarding_complete(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        """Returning user who declines both should get exit 0, not 1 (M-11-3)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Simulate returning user declining both basic update and
+        # personalization. The wizard returns NO_CHANGES_NEEDED.
+        monkeypatch.setattr(
+            "iterate_cli.cli.run_wizard", lambda project_root: NO_CHANGES_NEEDED
+        )
+
+        ret = cli_main(["onboard", "-p", str(fake_project)])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "No changes made" in captured.out
+
+    def test_returns_one_when_cancelled_and_not_onboarded(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """First-time user who cancels should still get exit 1."""
+        # No ITERATE.md → first-time flow. None means cancelled.
+        monkeypatch.setattr(
+            "iterate_cli.cli.run_wizard", lambda project_root: None
+        )
+
+        ret = cli_main(["onboard", "-p", str(fake_project)])
+        assert ret == 1
+
+    def test_returns_one_when_cancelled_mid_wizard_with_iterate_md(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """Returning user who starts update but cancels mid-wizard → exit 1 (M-14-1).
+
+        Previously, _cmd_onboard returned 0 whenever ITERATE.md existed and
+        run_wizard returned None, conflating "declined all" with "cancelled
+        mid-wizard". The NO_CHANGES_NEEDED sentinel fixes this.
+        """
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Simulate user accepting "update basic config" then cancelling
+        # mid-wizard. run_wizard returns None (cancelled), NOT sentinel.
+        monkeypatch.setattr(
+            "iterate_cli.cli.run_wizard", lambda project_root: None
+        )
+
+        ret = cli_main(["onboard", "-p", str(fake_project)])
+        assert ret == 1

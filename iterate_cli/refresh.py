@@ -47,14 +47,16 @@ def load_onboarding_config(project_root: Path) -> dict[str, Any] | None:
         project_root: The project root directory.
 
     Returns:
-        Parsed config dict, or None if the file does not exist or cannot
-        be parsed (errors are logged to stderr).
+        Parsed config dict, or None if the file does not exist, cannot
+        be parsed, or is not a YAML mapping (errors are logged to stderr).
+        Returning None for non-mapping content prevents AttributeError
+        crashes in callers that call ``.get()`` on the result.
     """
     config_path = project_root / CONFIG_YAML
     if not config_path.is_file():
         return None
     try:
-        return yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         print(f"⚠️  Failed to parse {config_path}: {exc}", file=sys.stderr)
         return None
@@ -66,6 +68,18 @@ def load_onboarding_config(project_root: Path) -> dict[str, Any] | None:
         # Either way: log and return None so callers fall back to defaults.
         print(f"⚠️  Failed to read {config_path}: {exc}", file=sys.stderr)
         return None
+
+    # yaml.safe_load returns None for an empty file (handled by ``or {}``
+    # in callers) but a list/scalar for malformed content like ``- item``
+    # or ``just a string``. Such non-dict results would crash callers
+    # that call ``.get()``, so reject them here.
+    if config is not None and not isinstance(config, dict):
+        print(
+            f"⚠️  {config_path} is not a YAML mapping (got {type(config).__name__})",
+            file=sys.stderr,
+        )
+        return None
+    return config
 
 
 def get_stored_fingerprints(config: dict[str, Any]) -> list[dict[str, str]]:
