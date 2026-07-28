@@ -786,6 +786,156 @@ class TestLoadOnboardingConfigErrorHandling:
         assert "Failed to read" in captured.err
 
 
+class TestGetStoredFingerprints:
+    """Tests for get_stored_fingerprints defensive branches (S-8-4)."""
+
+    def test_returns_empty_when_no_onboarding_section(self) -> None:
+        from iterate_cli.refresh import get_stored_fingerprints
+        assert get_stored_fingerprints({}) == []
+
+    def test_returns_empty_when_fingerprints_not_list(self) -> None:
+        from iterate_cli.refresh import get_stored_fingerprints
+        config = {"onboarding": {"fingerprints": "not a list"}}
+        assert get_stored_fingerprints(config) == []
+
+    def test_returns_empty_when_item_not_dict(self) -> None:
+        from iterate_cli.refresh import get_stored_fingerprints
+        config = {"onboarding": {"fingerprints": ["not a dict", 42]}}
+        assert get_stored_fingerprints(config) == []
+
+    def test_returns_empty_when_item_missing_path(self) -> None:
+        from iterate_cli.refresh import get_stored_fingerprints
+        config = {"onboarding": {"fingerprints": [{"sha256": "abc"}]}}
+        assert get_stored_fingerprints(config) == []
+
+    def test_returns_empty_when_item_missing_sha256(self) -> None:
+        from iterate_cli.refresh import get_stored_fingerprints
+        config = {"onboarding": {"fingerprints": [{"path": "foo.py"}]}}
+        assert get_stored_fingerprints(config) == []
+
+    def test_returns_valid_fingerprints(self) -> None:
+        from iterate_cli.refresh import get_stored_fingerprints
+        config = {
+            "onboarding": {
+                "fingerprints": [
+                    {"path": "src/a.py", "sha256": "aaa"},
+                    {"path": "src/b.py", "sha256": "bbb"},
+                ]
+            }
+        }
+        result = get_stored_fingerprints(config)
+        assert len(result) == 2
+        assert result[0] == {"path": "src/a.py", "sha256": "aaa"}
+        assert result[1] == {"path": "src/b.py", "sha256": "bbb"}
+
+
+class TestIncrementalRefreshAtomicity:
+    """Tests for incremental_refresh atomic write and rollback (B-8-1)."""
+
+    def test_refresh_returns_false_on_non_utf8_iterate_md(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """Non-UTF-8 ITERATE.md returns False instead of crashing."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        iterate_md = fake_project / "ITERATE.md"
+        iterate_md.write_bytes(b"\xff\xfe\x00invalid utf-8")
+
+        result = incremental_refresh(fake_project)
+        assert result is False
+        captured = capsys.readouterr()
+        assert "Failed to read" in captured.err
+
+    def test_refresh_rolls_back_on_config_write_failure(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """If config write fails, ITERATE.md must be rolled back to original."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        iterate_md = fake_project / "ITERATE.md"
+        config_path = fake_project / "iterate.config.yaml"
+        md_before = iterate_md.read_text(encoding="utf-8")
+        config_before = config_path.read_text(encoding="utf-8")
+
+        # Make config file read-only to force write failure.
+        config_path.chmod(0o444)
+        try:
+            result = incremental_refresh(fake_project)
+        finally:
+            config_path.chmod(0o644)
+
+        assert result is False
+
+        # ITERATE.md must be restored to original content.
+        md_after = iterate_md.read_text(encoding="utf-8")
+        assert md_after == md_before
+
+        # Config must also be unchanged.
+        config_after = config_path.read_text(encoding="utf-8")
+        assert config_after == config_before
+
+
+class TestLoadExistingOnboardingDataUnicode:
+    """Tests for _load_existing_onboarding_data with non-UTF-8 config (B-8-2)."""
+
+    def test_returns_none_on_non_utf8_config(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """Non-UTF-8 config returns None instead of raising UnicodeDecodeError."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_bytes(b"\xff\xfe\x00invalid: [")
+
+        from iterate_cli.wizard import _load_existing_onboarding_data
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "Failed to load" in captured.err
+
+
+class TestMergePersonalizationFiltersEmptyCommands:
+    """Tests for merge_personalization_into_config empty command filtering (M-8-2)."""
+
+    def test_empty_string_commands_are_filtered(self) -> None:
+        """Empty or whitespace-only commands must not appear in validation.commands."""
+        from iterate_cli.personalize import (
+            PersonalizationData,
+            merge_personalization_into_config,
+        )
+
+        config: dict[str, Any] = {"validation": {"commands": {}}}
+        data = PersonalizationData(
+            extra_validation_commands={
+                "python": ["ruff check src/", "", "   ", "pytest"],
+            }
+        )
+        result = merge_personalization_into_config(config, data)
+        commands = result["validation"]["commands"]["python"]
+        assert "ruff check src/" in commands
+        assert "pytest" in commands
+        assert "" not in commands
+        assert "   " not in commands
+
+    def test_empty_commands_not_added_to_whitelist(self) -> None:
+        """Empty commands must not pollute the command_whitelist."""
+        from iterate_cli.personalize import (
+            PersonalizationData,
+            merge_personalization_into_config,
+        )
+
+        config: dict[str, Any] = {"validation": {"commands": {}}}
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["", "   "]}
+        )
+        result = merge_personalization_into_config(config, data)
+        # All commands were empty, so whitelist should remain unchanged.
+        assert result["validation"]["command_whitelist"] == []
+
+
 class TestFullReonboard:
     def test_creates_backup(self, fake_project: Path) -> None:
         data = _build_onboarding_data(fake_project)
