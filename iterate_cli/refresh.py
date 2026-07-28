@@ -134,17 +134,29 @@ def incremental_refresh(project_root: Path) -> bool:
     ITERATE.md while preserving user-owned sections. Also updates the
     fingerprints in iterate.config.yaml.
 
+    The refresh is atomic with respect to the two output files: if
+    either write fails, the other is rolled back so ITERATE.md and
+    iterate.config.yaml never diverge.
+
     Args:
         project_root: The project root directory.
 
     Returns:
-        True if refresh succeeded, False if ITERATE.md does not exist.
+        True if refresh succeeded, False if ITERATE.md does not exist
+        or cannot be read.
     """
     iterate_md_path = project_root / ITERATE_MD
     if not iterate_md_path.is_file():
         return False
 
-    existing_md = iterate_md_path.read_text(encoding="utf-8")
+    # Read existing ITERATE.md defensively (file may have been removed
+    # between is_file() and read_text(), or contain non-UTF-8 bytes).
+    try:
+        existing_md = iterate_md_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"⚠️  Failed to read {iterate_md_path}: {exc}", file=sys.stderr)
+        return False
+
     scan = scan_project(project_root)
 
     # Load existing config to preserve user-confirmed settings.
@@ -155,12 +167,74 @@ def incremental_refresh(project_root: Path) -> bool:
 
     # Generate refreshed ITERATE.md preserving user sections.
     refreshed_md = generate_refreshed_md(data, existing_md)
-    iterate_md_path.write_text(refreshed_md, encoding="utf-8")
 
-    # Update config with new fingerprints but keep other settings.
-    _update_config_fingerprints(project_root, existing_config, data.fingerprints)
+    # Prepare new config content (do not write yet).
+    new_config = _build_refreshed_config(existing_config, data.fingerprints)
+
+    # Atomic commit: write both files, rollback on failure.
+    config_path = project_root / CONFIG_YAML
+    # existing_md is the pre-refresh ITERATE.md content (already read
+    # above) — reuse it as the rollback target.
+    backup_md = existing_md
+    backup_config: str | None = None
+
+    try:
+        # Back up current config content so we can rollback on failure.
+        try:
+            backup_config = config_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            backup_config = None  # File may not exist yet.
+
+        iterate_md_path.write_text(refreshed_md, encoding="utf-8")
+        config_path.write_text(
+            yaml.safe_dump(
+                new_config,
+                default_flow_style=False,
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        # Rollback both files to their pre-refresh state.
+        print(f"⚠️  Failed to write refresh outputs: {exc}", file=sys.stderr)
+        if backup_md is not None:
+            try:
+                iterate_md_path.write_text(backup_md, encoding="utf-8")
+            except OSError:
+                pass  # Best-effort rollback; nothing more we can do.
+        if backup_config is not None:
+            try:
+                config_path.write_text(backup_config, encoding="utf-8")
+            except OSError:
+                pass
+        return False
 
     return True
+
+
+def _build_refreshed_config(
+    existing_config: dict[str, Any],
+    new_fingerprints: list,
+) -> dict[str, Any]:
+    """Build a refreshed config dict with updated fingerprints.
+
+    Does not write to disk; the caller is responsible for writing
+    (typically as part of an atomic refresh).
+
+    Args:
+        existing_config: The existing parsed config dict.
+        new_fingerprints: Fresh FingerprintEntry list.
+
+    Returns:
+        New config dict with fingerprints and completed_at updated.
+    """
+    config = dict(existing_config)
+    onboarding = dict(config.get("onboarding") or {})
+    onboarding["fingerprints"] = fingerprints_to_dict(new_fingerprints)
+    onboarding["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    config["onboarding"] = onboarding
+    return config
 
 
 def full_reonboard(
@@ -251,29 +325,4 @@ def _build_refresh_data(
         fingerprints=fingerprints,
         language=language,
         personalization=personalization,
-    )
-
-
-def _update_config_fingerprints(
-    project_root: Path,
-    existing_config: dict[str, Any],
-    new_fingerprints: list,
-) -> None:
-    """Update the fingerprints in iterate.config.yaml without changing other fields.
-
-    Args:
-        project_root: The project root directory.
-        existing_config: The existing parsed config dict.
-        new_fingerprints: Fresh FingerprintEntry list.
-    """
-    config = dict(existing_config)
-    onboarding = dict(config.get("onboarding") or {})
-    onboarding["fingerprints"] = fingerprints_to_dict(new_fingerprints)
-    onboarding["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    config["onboarding"] = onboarding
-
-    config_path = project_root / CONFIG_YAML
-    config_path.write_text(
-        yaml.safe_dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
     )

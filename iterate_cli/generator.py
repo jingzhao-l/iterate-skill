@@ -250,6 +250,12 @@ def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
     regenerated from new scan data, while user-owned sections are kept
     exactly as the user left them.
 
+    Personalization content in the user-owned section is NOT regenerated
+    during refresh — ``iterate personalize`` already keeps config.yaml
+    and ITERATE.md in sync, so refresh only needs to preserve the
+    existing user-owned section verbatim. To update personalization
+    content in ITERATE.md, run ``iterate personalize``.
+
     Args:
         data: Updated OnboardingData with fresh scan results.
         existing_md: The existing ITERATE.md content to preserve user sections from.

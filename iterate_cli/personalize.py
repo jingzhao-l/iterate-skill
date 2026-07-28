@@ -379,6 +379,10 @@ def merge_personalization_into_config(
         for module, cmds in data.extra_validation_commands.items():
             existing = list(commands.get(module) or [])
             for cmd in cmds:
+                # Skip empty/whitespace-only commands to keep generated
+                # config compliant with schema (minLength: 1).
+                if not cmd or not cmd.strip():
+                    continue
                 if cmd not in existing:
                     existing.append(cmd)
                 # Auto-add command prefix to whitelist if not present.

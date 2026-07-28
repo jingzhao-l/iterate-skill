@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 import yaml
 
-from iterate_cli.fingerprint import FingerprintEntry, capture_fingerprints
+from iterate_cli.fingerprint import capture_fingerprints
 from iterate_cli.generator import OnboardingData
 from iterate_cli.scan import (
     ScanResult,
@@ -270,7 +270,7 @@ def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingDat
             fingerprints=capture_fingerprints(project_root),
             language=config.get("language", "en"),
         )
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         print(f"⚠️  Failed to load existing config: {exc}", file=sys.stderr)
         return None
 
@@ -496,12 +496,12 @@ def _confirm_summary(data: OnboardingData, input_func: InputFunc) -> bool:
     print(f"  审查范围 / Scope:       {data.review_scope}")
     print(f"  每轮 push / Push:       {data.push_per_round}")
     if data.validation_commands:
-        print(f"  验证命令 / Validation:")
+        print("  验证命令 / Validation:")
         for module, cmds in data.validation_commands.items():
             for cmd in cmds:
                 print(f"    [{module}] {cmd}")
     else:
-        print(f"  验证命令 / Validation:  (无 / none)")
+        print("  验证命令 / Validation:  (无 / none)")
     if data.fingerprints:
         print(f"  指纹 / Fingerprints:    {len(data.fingerprints)} manifest(s)")
     print()
