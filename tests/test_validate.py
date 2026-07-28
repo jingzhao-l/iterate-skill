@@ -994,7 +994,7 @@ class TestSkillMarkdownFile:
         assert meta.get("name") == "iterate"
         assert isinstance(meta.get("description"), str)
         assert meta.get("description")
-        assert meta.get("version") == "1.0.0"
+        assert meta.get("version") == "2.0.0"
 
     def test_skill_md_body_is_non_empty(self) -> None:
         text = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
