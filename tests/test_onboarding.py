@@ -2294,3 +2294,197 @@ class TestPersonalizationSchemaEnum:
         errors = validate.validate_config(config_path, schema_path)
         assert len(errors) > 0
         assert any("invalid-dim" in e or "enum" in e.lower() for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# command_whitelist auto-update tests
+# ---------------------------------------------------------------------------
+
+
+class TestCommandWhitelistAutoUpdate:
+    """Tests that merge_personalization_into_config auto-updates whitelist."""
+
+    def test_new_command_prefix_added_to_whitelist(self) -> None:
+        from iterate_cli.personalize import merge_personalization_into_config
+
+        config = {
+            "validation": {
+                "command_whitelist": ["ruff", "pytest"],
+                "commands": {"python": ["ruff check src/"]},
+            }
+        }
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["bandit -r src/"]}
+        )
+        result = merge_personalization_into_config(config, data)
+        assert "bandit" in result["validation"]["command_whitelist"]
+        assert "bandit -r src/" in result["validation"]["commands"]["python"]
+
+    def test_existing_prefix_not_duplicated(self) -> None:
+        from iterate_cli.personalize import merge_personalization_into_config
+
+        config = {
+            "validation": {
+                "command_whitelist": ["ruff", "pytest"],
+                "commands": {"python": ["ruff check src/"]},
+            }
+        }
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["ruff check src/ --fix"]}
+        )
+        result = merge_personalization_into_config(config, data)
+        # ruff should not be duplicated.
+        assert result["validation"]["command_whitelist"].count("ruff") == 1
+
+    def test_multiple_new_prefixes_added(self) -> None:
+        from iterate_cli.personalize import merge_personalization_into_config
+
+        config = {"validation": {"command_whitelist": [], "commands": {}}}
+        data = PersonalizationData(
+            extra_validation_commands={
+                "python": ["bandit -r src/", "mypy src/"],
+                "go": ["go vet ./..."],
+            }
+        )
+        result = merge_personalization_into_config(config, data)
+        whitelist = result["validation"]["command_whitelist"]
+        assert "bandit" in whitelist
+        assert "mypy" in whitelist
+        assert "go" in whitelist
+
+    def test_extra_validation_commands_pass_whitelist_validation(
+        self, fake_project: Path
+    ) -> None:
+        """Config with extra_validation_commands should pass validate_config."""
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            extra_validation_commands={"python": ["bandit -r src/"]}
+        )
+        yaml_text = generate_config_yaml(data)
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(yaml_text, encoding="utf-8")
+
+        schema_path = REPO_ROOT / "config" / "config.schema.json"
+        import validate
+        errors = validate.validate_config(config_path, schema_path)
+        assert errors == [], f"Validation errors: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# Personalization version tests
+# ---------------------------------------------------------------------------
+
+
+class TestPersonalizationVersion:
+    """Tests for personalization schema version field."""
+
+    def test_to_config_dict_includes_version(self) -> None:
+        from iterate_cli.personalize import PERSONALIZATION_VERSION
+
+        data = PersonalizationData()
+        config_dict = data.to_config_dict()
+        assert "version" in config_dict
+        assert config_dict["version"] == PERSONALIZATION_VERSION
+
+    def test_version_is_valid_format(self) -> None:
+        import re
+        from iterate_cli.personalize import PERSONALIZATION_VERSION
+
+        assert re.match(r"^\d+\.\d+$", PERSONALIZATION_VERSION), (
+            f"Version {PERSONALIZATION_VERSION} does not match X.Y format"
+        )
+
+    def test_version_in_generated_config(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(protected_paths=["legacy/**"])
+        yaml_text = generate_config_yaml(data)
+
+        config = yaml.safe_load(yaml_text)
+        assert config["personalization"]["version"] == "1.0"
+
+
+# ---------------------------------------------------------------------------
+# Personalization consistency validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestPersonalizationConsistencyValidation:
+    """Tests for validate_personalization_consistency in validate.py."""
+
+    def test_valid_config_no_errors(self) -> None:
+        import validate
+
+        config = {
+            "dimensions": ["correctness", "security"],
+            "personalization": {
+                "fix_priority_order": ["security", "correctness"],
+                "dimension_focus": [{"dimension": "security", "focus": "SQL injection"}],
+                "known_intentional": [
+                    {"file": "db.py", "line": 10, "dimension": "security", "reason": "ok"}
+                ],
+            },
+        }
+        errors = validate.validate_personalization_consistency(config)
+        assert errors == []
+
+    def test_fix_priority_with_disabled_dimension(self) -> None:
+        import validate
+
+        config = {
+            "dimensions": ["correctness"],
+            "personalization": {
+                "fix_priority_order": ["security"],  # security not in dimensions
+            },
+        }
+        errors = validate.validate_personalization_consistency(config)
+        assert len(errors) == 1
+        assert "security" in errors[0]
+        assert "fix_priority_order" in errors[0]
+
+    def test_dimension_focus_with_disabled_dimension(self) -> None:
+        import validate
+
+        config = {
+            "dimensions": ["correctness"],
+            "personalization": {
+                "dimension_focus": [
+                    {"dimension": "performance", "focus": "latency"}
+                ],
+            },
+        }
+        errors = validate.validate_personalization_consistency(config)
+        assert len(errors) == 1
+        assert "performance" in errors[0]
+        assert "dimension_focus" in errors[0]
+
+    def test_known_intentional_with_disabled_dimension(self) -> None:
+        import validate
+
+        config = {
+            "dimensions": ["correctness"],
+            "personalization": {
+                "known_intentional": [
+                    {"file": "db.py", "line": 0, "dimension": "tech-debt", "reason": "ok"}
+                ],
+            },
+        }
+        errors = validate.validate_personalization_consistency(config)
+        assert len(errors) == 1
+        assert "tech-debt" in errors[0]
+        assert "known_intentional" in errors[0]
+
+    def test_no_personalization_no_errors(self) -> None:
+        import validate
+
+        config = {"dimensions": ["correctness"]}
+        errors = validate.validate_personalization_consistency(config)
+        assert errors == []
+
+    def test_no_dimensions_no_errors(self) -> None:
+        import validate
+
+        config = {
+            "personalization": {"fix_priority_order": ["security"]},
+        }
+        errors = validate.validate_personalization_consistency(config)
+        assert errors == []

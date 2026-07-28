@@ -26,6 +26,10 @@ from iterate_cli.wizard import (
     _ask_yes_no,
 )
 
+# Personalization schema version. Increment when the personalization
+# data model changes, so future migrations can detect old configs.
+PERSONALIZATION_VERSION = "1.0"
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -102,6 +106,7 @@ class PersonalizationData:
         ITERATE.md user-owned section).
         """
         return {
+            "version": PERSONALIZATION_VERSION,
             "protected_paths": list(self.protected_paths),
             "risk_areas": [
                 {"path": r.path, "reason": r.reason} for r in self.risk_areas
@@ -316,7 +321,9 @@ def merge_personalization_into_config(
 ) -> dict[str, Any]:
     """Write personalization structured fields into a config dict.
 
-    Also merges ``extra_validation_commands`` into ``validation.commands``.
+    Also merges ``extra_validation_commands`` into ``validation.commands``
+    and auto-adds new command prefixes to ``validation.command_whitelist``
+    so that schema validation does not fail.
 
     Args:
         config: The existing parsed config dict (will be copied, not mutated).
@@ -332,13 +339,24 @@ def merge_personalization_into_config(
     if data.extra_validation_commands:
         validation = dict(result.get("validation") or {})
         commands = dict(validation.get("commands") or {})
+        whitelist = list(validation.get("command_whitelist") or [])
+
         for module, cmds in data.extra_validation_commands.items():
             existing = list(commands.get(module) or [])
             for cmd in cmds:
                 if cmd not in existing:
                     existing.append(cmd)
+                # Auto-add command prefix to whitelist if not present.
+                # "bandit -r src/" → prefix "bandit"
+                parts = cmd.strip().split(None, 1)
+                if parts:
+                    prefix = parts[0]
+                    if prefix not in whitelist:
+                        whitelist.append(prefix)
             commands[module] = existing
+
         validation["commands"] = commands
+        validation["command_whitelist"] = whitelist
         result["validation"] = validation
 
     return result
@@ -633,6 +651,8 @@ def _run_validation_commands_step(
         print("--- 补充验证命令 / Extra Validation Commands ---")
         print("项目特有的验证命令，会合并到 validation.commands。")
         print("Project-specific validation commands, merged into validation.commands.")
+        print("命令前缀会自动加入 command_whitelist。")
+        print("Command prefixes are auto-added to command_whitelist.")
         print()
         if result:
             for module, cmds in result.items():

@@ -183,6 +183,11 @@
       "description": "User-defined project-specific constraints and rules that AI scanning cannot discover. Managed by 'iterate personalize' or the onboarding wizard's personalization step.",
       "additionalProperties": false,
       "properties": {
+        "version": {
+          "type": "string",
+          "description": "Personalization schema version, for future compatibility checks.",
+          "pattern": "^\\d+\\.\\d+$"
+        },
         "protected_paths": {
           "type": "array",
           "description": "Glob patterns of files/dirs iterate must never modify.",
@@ -231,7 +236,18 @@
               },
               "dimension": {
                 "type": "string",
-                "description": "Review dimension to suppress (e.g. tech-debt, security)."
+                "description": "Review dimension to suppress (e.g. tech-debt, security).",
+                "enum": [
+                  "correctness",
+                  "security",
+                  "performance",
+                  "architecture",
+                  "style-tests",
+                  "tech-debt",
+                  "spec-compliance",
+                  "frontend-backend",
+                  "ui-ux"
+                ]
               },
               "reason": {
                 "type": "string",

@@ -105,6 +105,9 @@ onboarding:
 # 运行 `iterate personalize` 或在 onboarding 向导中选择个性化配置来填充。
 # Run `iterate personalize` or choose personalization in the onboarding wizard.
 personalization:
+  # 版本号 / Schema version (auto-managed, do not edit manually)
+  # version: "1.0"
+
   # 禁区 / Protected files — iterate 不得修改（glob 模式）
   # protected_paths:
   #   - "legacy/**"

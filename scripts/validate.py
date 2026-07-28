@@ -211,6 +211,61 @@ def validate_dimension_consistency(
     return errors
 
 
+def validate_personalization_consistency(config: dict[str, Any]) -> list[str]:
+    """校验 personalization 段的语义一致性。
+
+    检查：
+    - fix_priority_order 中的维度应出现在 dimensions 列表中（启用的维度才有意义）。
+    - dimension_focus 中的维度应出现在 dimensions 列表中。
+    - known_intentional 中的维度应出现在 dimensions 列表中。
+    """
+    errors: list[str] = []
+
+    personalization = config.get("personalization") or {}
+    if not isinstance(personalization, dict):
+        return errors
+
+    enabled_dims = set(config.get("dimensions") or [])
+    if not enabled_dims:
+        return errors
+
+    # fix_priority_order: dimensions should be in enabled dimensions.
+    fix_priority = personalization.get("fix_priority_order") or []
+    if isinstance(fix_priority, list):
+        for dim in fix_priority:
+            if isinstance(dim, str) and dim not in enabled_dims:
+                errors.append(
+                    f"personalization.fix_priority_order contains '{dim}' "
+                    f"which is not in enabled dimensions {sorted(enabled_dims)}"
+                )
+
+    # dimension_focus: dimensions should be in enabled dimensions.
+    dim_focus = personalization.get("dimension_focus") or []
+    if isinstance(dim_focus, list):
+        for item in dim_focus:
+            if isinstance(item, dict):
+                dim = item.get("dimension", "")
+                if dim and dim not in enabled_dims:
+                    errors.append(
+                        f"personalization.dimension_focus contains '{dim}' "
+                        f"which is not in enabled dimensions {sorted(enabled_dims)}"
+                    )
+
+    # known_intentional: dimensions should be in enabled dimensions.
+    known_intentional = personalization.get("known_intentional") or []
+    if isinstance(known_intentional, list):
+        for idx, item in enumerate(known_intentional):
+            if isinstance(item, dict):
+                dim = item.get("dimension", "")
+                if dim and dim not in enabled_dims:
+                    errors.append(
+                        f"personalization.known_intentional[{idx}] dimension '{dim}' "
+                        f"is not in enabled dimensions {sorted(enabled_dims)}"
+                    )
+
+    return errors
+
+
 def validate_config(
     path: Path, schema_path: Path | None = None, dimensions_dir: Path | None = None
 ) -> list[str]:
@@ -234,6 +289,7 @@ def validate_config(
     schema = load_schema(schema_path or DEFAULT_SCHEMA_PATH)
     errors.extend(validate_config_against_schema(config, schema))
     errors.extend(validate_command_whitelist(config))
+    errors.extend(validate_personalization_consistency(config))
 
     resolved_dimensions_dir = dimensions_dir or (path.parent / "dimensions")
     if resolved_dimensions_dir.exists():
