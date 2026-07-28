@@ -20,13 +20,10 @@ from iterate_cli.fingerprint import (
     DriftResult,
     capture_fingerprints,
     check_drift,
-    fingerprints_from_dict,
     fingerprints_to_dict,
 )
 from iterate_cli.generator import (
     OnboardingData,
-    extract_user_owned_section,
-    generate_config_yaml,
     generate_refreshed_md,
     write_onboarding_outputs,
 )
@@ -35,7 +32,6 @@ from iterate_cli.scan import (
     scan_project,
     suggest_command_whitelist,
     suggest_dimensions,
-    suggest_validation_commands,
 )
 from iterate_cli.wizard import run_wizard
 
@@ -61,6 +57,14 @@ def load_onboarding_config(project_root: Path) -> dict[str, Any] | None:
         return yaml.safe_load(config_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         print(f"⚠️  Failed to parse {config_path}: {exc}", file=sys.stderr)
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        # OSError: permission denied, file removed between is_file() and
+        #   read_text(), filesystem errors, etc.
+        # UnicodeDecodeError: file contains non-UTF-8 bytes (inherits
+        #   ValueError, not OSError, so listed explicitly).
+        # Either way: log and return None so callers fall back to defaults.
+        print(f"⚠️  Failed to read {config_path}: {exc}", file=sys.stderr)
         return None
 
 
@@ -147,7 +151,7 @@ def incremental_refresh(project_root: Path) -> bool:
     existing_config = load_onboarding_config(project_root) or {}
 
     # Build refreshed data from existing config + fresh scan.
-    data = _build_refresh_data(project_root, scan, existing_config, existing_md)
+    data = _build_refresh_data(project_root, scan, existing_config)
 
     # Generate refreshed ITERATE.md preserving user sections.
     refreshed_md = generate_refreshed_md(data, existing_md)
@@ -205,12 +209,8 @@ def _build_refresh_data(
     project_root: Path,
     scan: ScanResult,
     existing_config: dict[str, Any],
-    existing_md: str,
 ) -> OnboardingData:
     """Build OnboardingData for a refresh, preserving existing settings."""
-    # Extract user-owned content to pass as conventions.
-    user_content = extract_user_owned_section(existing_md)
-
     # Preserve existing dimensions, target_branch, etc.
     dimensions = existing_config.get("dimensions") or suggest_dimensions(scan)
     target_branch = (existing_config.get("git") or {}).get("target_branch", "main")
@@ -230,14 +230,18 @@ def _build_refresh_data(
     # Capture fresh fingerprints.
     fingerprints = capture_fingerprints(project_root)
 
-    # Preserve channel from existing config or default to "cli".
+    # Preserve channel and user-entered text from existing config.
     onboarding_section = existing_config.get("onboarding") or {}
     channel = onboarding_section.get("channel", "cli")
+    project_description = str(onboarding_section.get("project_description") or "")
+    code_conventions = str(onboarding_section.get("code_conventions") or "")
 
     return OnboardingData(
         project_root=project_root,
         channel=channel,
         scan=scan,
+        project_description=project_description,
+        code_conventions=code_conventions,
         dimensions=dimensions,
         target_branch=target_branch,
         review_scope=review_scope,
@@ -245,7 +249,6 @@ def _build_refresh_data(
         validation_commands=validation_commands,
         command_whitelist=command_whitelist if command_whitelist else suggest_command_whitelist(scan),
         fingerprints=fingerprints,
-        iterate_notes=user_content,
         language=language,
         personalization=personalization,
     )

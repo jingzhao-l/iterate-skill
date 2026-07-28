@@ -119,7 +119,7 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
     # Validate whitelist entries: only allow alphanumeric, dash, underscore,
     # dot, and space (for multi-word commands like "npm run").
     # This prevents shell metacharacter injection via whitelist entries.
-    _WHITELIST_ENTRY_PATTERN = re.compile(r"^[A-Za-z0-9_.\s-]+$")
+    _WHITELIST_ENTRY_PATTERN = re.compile(r"^[A-Za-z0-9_. -]+$")
     for idx, entry in enumerate(whitelist):
         if not isinstance(entry, str) or not _WHITELIST_ENTRY_PATTERN.match(entry):
             errors.append(
