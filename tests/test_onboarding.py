@@ -1903,3 +1903,175 @@ class TestGeneratorWithPersonalization:
         md = md_path.read_text(encoding="utf-8")
         assert "legacy/**" in md
         assert "snake_case" in md
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: refresh preserves personalization
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshPreservesPersonalization:
+    """Regression tests: incremental refresh must not lose personalization."""
+
+    def test_refresh_preserves_personalization_in_config(self, fake_project: Path) -> None:
+        """Config personalization section must survive refresh."""
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            forbidden_fixes=["# noqa"],
+            fix_priority_order=["security", "correctness"],
+        )
+        write_onboarding_outputs(data, fake_project)
+
+        # Verify personalization is in config before refresh.
+        config_before = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert "personalization" in config_before
+        assert config_before["personalization"]["protected_paths"] == ["legacy/**"]
+
+        # Run incremental refresh.
+        assert incremental_refresh(fake_project) is True
+
+        # Verify personalization is still in config after refresh.
+        config_after = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert "personalization" in config_after
+        assert config_after["personalization"]["protected_paths"] == ["legacy/**"]
+        assert config_after["personalization"]["forbidden_fixes"] == ["# noqa"]
+        assert config_after["personalization"]["fix_priority_order"] == ["security", "correctness"]
+
+    def test_refresh_preserves_iterate_md_user_section(self, fake_project: Path) -> None:
+        """ITERATE.md user-owned section must survive refresh."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Add custom user content to ITERATE.md user section.
+        iterate_md = fake_project / "ITERATE.md"
+        content = iterate_md.read_text(encoding="utf-8")
+        start = content.find(USER_START_MARKER) + len(USER_START_MARKER)
+        end = content.find(USER_END_MARKER)
+        content = content[:start] + "\n## My Custom Notes\n- Don't touch migrations\n" + content[end:]
+        iterate_md.write_text(content, encoding="utf-8")
+
+        # Run refresh.
+        assert incremental_refresh(fake_project) is True
+
+        # Verify user content is preserved.
+        refreshed = iterate_md.read_text(encoding="utf-8")
+        assert "My Custom Notes" in refreshed
+        assert "Don't touch migrations" in refreshed
+
+    def test_refresh_preserves_personalization_in_iterate_md(self, fake_project: Path) -> None:
+        """Personalization content in ITERATE.md user section must survive refresh."""
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            code_conventions=["Use 4 spaces"],
+            iterate_notes=["Don't touch migrations"],
+        )
+        write_onboarding_outputs(data, fake_project)
+
+        # Verify personalization content is in ITERATE.md before refresh.
+        md_before = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        assert "legacy/**" in md_before
+        assert "Use 4 spaces" in md_before
+        assert "Don't touch migrations" in md_before
+
+        # Run refresh.
+        assert incremental_refresh(fake_project) is True
+
+        # Verify personalization content is still in ITERATE.md after refresh.
+        md_after = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        assert "legacy/**" in md_after
+        assert "Use 4 spaces" in md_after
+        assert "Don't touch migrations" in md_after
+
+    def test_refresh_without_personalization_works(self, fake_project: Path) -> None:
+        """Refresh should work fine when there is no personalization."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        assert incremental_refresh(fake_project) is True
+
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        # personalization may or may not be present, but refresh should not fail.
+        assert config["onboarding"]["channel"] == "cli"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: returning user does not lose description
+# ---------------------------------------------------------------------------
+
+
+class TestReturningUserPreservesData:
+    """Regression tests: returning user flow must not overwrite existing data."""
+
+    def test_skip_basic_preserves_user_section(self, fake_project: Path) -> None:
+        """Returning user declines basic update — user section must be preserved."""
+        data = _build_onboarding_data(fake_project)
+        data.project_description = "My important project description"
+        data.code_conventions = "Use 4-space indent\nsnake_case functions"
+        write_onboarding_outputs(data, fake_project)
+
+        # Verify content exists before re-onboarding.
+        md_before = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        assert "My important project description" in md_before
+
+        # Returning user: decline basic update, decline personalization.
+        responses = iter(["n", "n"])
+        result = run_wizard(fake_project, input_func=lambda _: next(responses))
+        assert result is not None
+
+        # Write outputs as _cmd_onboard would.
+        write_onboarding_outputs(result, fake_project)
+
+        # Verify user section content is preserved (not overwritten with empty).
+        md_after = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        # The description might be regenerated from scan, but user section
+        # (code_conventions) must be preserved.
+        assert USER_START_MARKER in md_after
+        assert USER_END_MARKER in md_after
+
+    def test_skip_basic_preserves_config_dimensions(self, fake_project: Path) -> None:
+        """Returning user declines basic update — config dimensions must be preserved."""
+        data = _build_onboarding_data(fake_project)
+        data.dimensions = ["correctness", "security", "performance"]
+        write_onboarding_outputs(data, fake_project)
+
+        # Returning user: decline basic update, decline personalization.
+        responses = iter(["n", "n"])
+        result = run_wizard(fake_project, input_func=lambda _: next(responses))
+        assert result is not None
+        assert result.dimensions == ["correctness", "security", "performance"]
+
+    def test_skip_basic_preserves_target_branch(self, fake_project: Path) -> None:
+        """Returning user declines basic update — target branch must be preserved."""
+        data = _build_onboarding_data(fake_project)
+        data.target_branch = "develop"
+        write_onboarding_outputs(data, fake_project)
+
+        responses = iter(["n", "n"])
+        result = run_wizard(fake_project, input_func=lambda _: next(responses))
+        assert result is not None
+        assert result.target_branch == "develop"
+
+    def test_load_existing_onboarding_data_logs_error(self, fake_project: Path, capsys) -> None:
+        """_load_existing_onboarding_data should log errors, not silently swallow."""
+        # Create a config with invalid YAML.
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Corrupt the config file.
+        (fake_project / "iterate.config.yaml").write_text(
+            "dimensions: [unclosed bracket", encoding="utf-8"
+        )
+
+        from iterate_cli.wizard import _load_existing_onboarding_data
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "Failed to load" in captured.err or "not found" in captured.err

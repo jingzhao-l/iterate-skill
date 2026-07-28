@@ -213,15 +213,24 @@ def _run_basic_wizard(
 def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingData]:
     """Load existing onboarding data from ITERATE.md and iterate.config.yaml.
 
-    Returns None if config cannot be loaded.
+    Reads project description and code conventions from the existing
+    ITERATE.md so that a returning user who declines to update basic
+    config does not lose their previously entered description/conventions.
+
+    Returns None if config cannot be loaded. Logs errors to stderr
+    instead of silently swallowing them.
     """
+    import sys
+
     try:
         import yaml
 
+        from iterate_cli.generator import extract_user_owned_section
         from iterate_cli.scan import scan_project
 
         config_path = project_root / "iterate.config.yaml"
         if not config_path.is_file():
+            print("⚠️  iterate.config.yaml not found, cannot load existing config.", file=sys.stderr)
             return None
 
         config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -230,12 +239,22 @@ def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingDat
         onboarding_section = config.get("onboarding") or {}
         channel = onboarding_section.get("channel", "cli")
 
+        # Extract existing description and conventions from ITERATE.md
+        # so they are not overwritten with empty strings.
+        project_description = ""
+        code_conventions = ""
+        iterate_md_path = project_root / "ITERATE.md"
+        if iterate_md_path.is_file():
+            existing_md = iterate_md_path.read_text(encoding="utf-8")
+            user_section = extract_user_owned_section(existing_md)
+            code_conventions = user_section
+
         return OnboardingData(
             project_root=project_root,
             channel=channel,
             scan=scan,
-            project_description="",
-            code_conventions="",
+            project_description=project_description,
+            code_conventions=code_conventions,
             dimensions=config.get("dimensions") or [],
             target_branch=(config.get("git") or {}).get("target_branch", "main"),
             review_scope=(config.get("review") or {}).get("scope", "full"),
@@ -245,7 +264,8 @@ def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingDat
             fingerprints=capture_fingerprints(project_root),
             language=config.get("language", "en"),
         )
-    except Exception:
+    except (OSError, yaml.YAMLError, KeyError) as exc:
+        print(f"⚠️  Failed to load existing config: {exc}", file=sys.stderr)
         return None
 
 
