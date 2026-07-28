@@ -1057,7 +1057,10 @@ class TestPersonalizationDataModel:
         # iterate_notes and code_conventions are free-form, not in config dict
         assert "iterate_notes" not in d
         assert "code_conventions" not in d
-        assert "extra_validation_commands" not in d
+        # extra_validation_commands IS persisted in config dict so that
+        # load_personalization_from_config can round-trip it.
+        assert "extra_validation_commands" in d
+        assert d["extra_validation_commands"] == data.extra_validation_commands
 
     def test_to_user_md_sections_empty(self) -> None:
         data = PersonalizationData()
@@ -1222,6 +1225,39 @@ class TestLoadPersonalizationFromConfig:
         assert "python" not in data.extra_validation_commands
         assert data.extra_validation_commands["swift"] == ["swift build"]
 
+    def test_load_line_non_integer_falls_back_to_zero(self) -> None:
+        """line field with non-numeric string should fall back to 0, not crash (B-4)."""
+        config = {
+            "personalization": {
+                "known_intentional": [
+                    {"file": "ok.py", "line": "not-a-number", "dimension": "security", "reason": "ok"},
+                    {"file": "ok2.py", "line": "42abc", "dimension": "security", "reason": "ok2"},
+                    {"file": "ok3.py", "line": 42, "dimension": "security", "reason": "ok3"},
+                ],
+            },
+        }
+        data = load_personalization_from_config(config)
+        assert len(data.known_intentional) == 3
+        assert data.known_intentional[0].line == 0
+        assert data.known_intentional[1].line == 0
+        assert data.known_intentional[2].line == 42
+
+    def test_load_extra_validation_commands_unsafe_module_name_skipped(self) -> None:
+        """Module names with shell metacharacters should be skipped (S-16)."""
+        config = {
+            "personalization": {
+                "extra_validation_commands": {
+                    "python; rm": ["bad"],
+                    "safe_module": ["good"],
+                    "node &": ["also bad"],
+                },
+            },
+        }
+        data = load_personalization_from_config(config)
+        assert "python; rm" not in data.extra_validation_commands
+        assert "node &" not in data.extra_validation_commands
+        assert data.extra_validation_commands["safe_module"] == ["good"]
+
 
 class TestMergePersonalizationIntoConfig:
     def test_merge_creates_personalization_section(self) -> None:
@@ -1335,6 +1371,26 @@ class TestSavePersonalizationToConfig:
         assert loaded.risk_areas[0].path == original.risk_areas[0].path
         assert loaded.forbidden_fixes == original.forbidden_fixes
         assert loaded.fix_priority_order == original.fix_priority_order
+
+    def test_save_roundtrip_extra_validation_commands(self, fake_project: Path) -> None:
+        """extra_validation_commands must survive save/load roundtrip (B-3)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        original = PersonalizationData(
+            extra_validation_commands={
+                "python": ["bandit -r src/", "pip-audit"],
+                "node": ["npm audit"],
+            },
+        )
+        save_personalization_to_config(fake_project, original)
+
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        loaded = load_personalization_from_config(config)
+
+        assert loaded.extra_validation_commands == original.extra_validation_commands
 
     def test_save_merges_extra_commands(self, fake_project: Path) -> None:
         data = _build_onboarding_data(fake_project)
@@ -2159,6 +2215,54 @@ class TestReturningUserPreservesData:
         captured = capsys.readouterr()
         assert "Failed to load" in captured.err or "not found" in captured.err
 
+    def test_returning_user_preserves_project_description(self, fake_project: Path) -> None:
+        """Returning user who declines basic update keeps project_description (B-1)."""
+        data = _build_onboarding_data(fake_project)
+        data.project_description = "My custom project description"
+        data.code_conventions = "Use 4-space indent"
+        write_onboarding_outputs(data, fake_project)
+
+        # Decline basic update and personalization.
+        responses = iter([
+            "n",          # update basic: no
+            "n",          # personalization: no
+        ])
+        result = run_wizard(fake_project, input_func=lambda _: next(responses))
+        # Wizard returns None when no changes requested.
+        assert result is None
+
+        # Verify config still has the persisted description.
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert config["onboarding"]["project_description"] == "My custom project description"
+        assert config["onboarding"]["code_conventions"] == "Use 4-space indent"
+
+    def test_returning_user_loads_project_description_for_personalize(
+        self, fake_project: Path
+    ) -> None:
+        """Returning user: declined basic + accepted personalize but cancelled →
+        wizard returns None, but config file retains description (B-1)."""
+        data = _build_onboarding_data(fake_project)
+        data.project_description = "Original description"
+        write_onboarding_outputs(data, fake_project)
+
+        responses = iter([
+            "n",          # update basic: no
+            "y",          # personalization: yes
+            "n",          # start personalization: no (cancel)
+        ])
+        result = run_wizard(fake_project, input_func=lambda _: next(responses))
+        # Wizard returns None because user cancelled personalization and
+        # declined basic update — no changes to write.
+        assert result is None
+
+        # But the config file must still have the persisted description.
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert config["onboarding"]["project_description"] == "Original description"
+
 
 # ---------------------------------------------------------------------------
 # merge_user_sections tests (personalization content merge)
@@ -2247,6 +2351,24 @@ class TestMergeUserSections:
         assert "My Manual Notes" in result
         assert "Custom content" in result
         assert "New note" in result
+
+    def test_preserves_user_section_with_similar_header_prefix(self) -> None:
+        """User section whose title starts with a personalization header
+        prefix should be preserved (exact match, not startswith) — S-1."""
+        from iterate_cli.personalize import merge_user_sections
+
+        existing = (
+            "## 自定义代码约定 / Custom Code Conventions — 后端组\n\n"
+            "- Our backend-specific rule\n\n"
+        )
+        new_md = "## 自定义代码约定 / Custom Code Conventions\n\n- New convention\n"
+        result = merge_user_sections(existing, new_md)
+
+        # User's section with suffix should be preserved.
+        assert "后端组" in result
+        assert "Our backend-specific rule" in result
+        # New personalization content should be appended.
+        assert "New convention" in result
 
 
 # ---------------------------------------------------------------------------

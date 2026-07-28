@@ -268,10 +268,16 @@ def _count_personalization_rules(personalization: dict[str, Any]) -> int:
 
     Args:
         personalization: The ``personalization`` section of iterate.config.yaml.
+            May be None or non-dict if the config was manually edited;
+            in that case 0 is returned.
 
     Returns:
         Total number of structured personalization rules across all categories.
     """
+    # Defensive: caller may pass None if config was manually edited.
+    if not isinstance(personalization, dict):
+        return 0
+
     # Fields that are metadata, not rules — excluded from the count.
     META_FIELDS: frozenset[str] = frozenset({"version"})
 

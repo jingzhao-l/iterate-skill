@@ -9,6 +9,7 @@ Handles two refresh modes:
 from __future__ import annotations
 
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,12 +51,17 @@ def load_onboarding_config(project_root: Path) -> dict[str, Any] | None:
         project_root: The project root directory.
 
     Returns:
-        Parsed config dict, or None if the file does not exist.
+        Parsed config dict, or None if the file does not exist or cannot
+        be parsed (errors are logged to stderr).
     """
     config_path = project_root / CONFIG_YAML
     if not config_path.is_file():
         return None
-    return yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    try:
+        return yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        print(f"⚠️  Failed to parse {config_path}: {exc}", file=sys.stderr)
+        return None
 
 
 def get_stored_fingerprints(config: dict[str, Any]) -> list[dict[str, str]]:

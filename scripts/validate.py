@@ -93,7 +93,11 @@ def command_is_whitelisted(command: str, whitelist: list[str]) -> bool:
 
 
 def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
-    """校验 validation.commands 中的命令是否在白名单内。"""
+    """校验 validation.commands 中的命令是否在白名单内。
+
+    同时校验白名单条目本身不含 shell 特殊字符（; | & $ ` 等），
+    避免恶意白名单条目绕过前缀匹配。
+    """
     errors: list[str] = []
     validation = config.get("validation", {})
 
@@ -111,6 +115,16 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
     if not isinstance(commands_by_module, dict):
         errors.append("validation.commands must be a mapping")
         return errors
+
+    # Validate whitelist entries: only allow alphanumeric, dash, underscore,
+    # dot, and space (for multi-word commands like "npm run").
+    # This prevents shell metacharacter injection via whitelist entries.
+    _WHITELIST_ENTRY_PATTERN = re.compile(r"^[A-Za-z0-9_.\s-]+$")
+    for idx, entry in enumerate(whitelist):
+        if not isinstance(entry, str) or not _WHITELIST_ENTRY_PATTERN.match(entry):
+            errors.append(
+                f"validation.command_whitelist[{idx}] contains unsafe characters: {entry!r}"
+            )
 
     for module, commands in commands_by_module.items():
         if not isinstance(commands, list):
@@ -179,11 +193,26 @@ def validate_dimensions(path: Path) -> list[str]:
 
 
 def _dimension_enum_from_schema(schema: dict[str, Any]) -> set[str] | None:
-    """从 JSON Schema 中提取 dimensions 的允许取值。"""
+    """从 JSON Schema 中提取 dimensions 的允许取值。
+
+    支持两种写法：
+    - inline enum: {"items": {"type": "string", "enum": [...]}}
+    - $ref: {"items": {"$ref": "#/$defs/dimension"}}，从 $defs 解析。
+    """
     try:
-        enum = schema["properties"]["dimensions"]["items"]["enum"]
+        items = schema["properties"]["dimensions"]["items"]
+        # Inline enum.
+        enum = items.get("enum")
         if isinstance(enum, list):
             return set(enum)
+        # $ref to $defs/dimension.
+        ref = items.get("$ref", "")
+        if ref == "#/$defs/dimension":
+            defs = schema.get("$defs") or {}
+            dim_def = defs.get("dimension") or {}
+            ref_enum = dim_def.get("enum")
+            if isinstance(ref_enum, list):
+                return set(ref_enum)
     except (KeyError, TypeError):
         pass
     return None

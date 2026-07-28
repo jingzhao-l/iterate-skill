@@ -176,6 +176,37 @@ class TestValidateConfig:
         errors = validate.validate_config(path, schema_path)
         assert any("validation must be a mapping" in e for e in errors) or any("Schema error" in e for e in errors)
 
+    def test_whitelist_unsafe_characters_rejected(
+        self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path
+    ) -> None:
+        """Whitelist entries with shell metacharacters should be flagged (S-15)."""
+        valid_config["validation"]["command_whitelist"].append("ruff; rm")
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        assert any("unsafe characters" in e for e in errors)
+
+    def test_whitelist_pipe_character_rejected(
+        self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path
+    ) -> None:
+        """Pipe character in whitelist entry should be flagged."""
+        valid_config["validation"]["command_whitelist"].append("cat | sh")
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        assert any("unsafe characters" in e for e in errors)
+
+    def test_load_onboarding_config_handles_corrupt_yaml(self, tmp_path: Path, capsys) -> None:
+        """load_onboarding_config should return None and log error for corrupt YAML (S-5)."""
+        from iterate_cli.refresh import load_onboarding_config
+
+        config_path = tmp_path / "iterate.config.yaml"
+        config_path.write_text("dimensions: [unclosed", encoding="utf-8")
+        result = load_onboarding_config(tmp_path)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "Failed to parse" in captured.err
+
 
 class TestValidateDimensions:
     def test_valid_dimensions_directory(self, tmp_path: Path) -> None:
