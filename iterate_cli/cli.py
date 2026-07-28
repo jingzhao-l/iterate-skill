@@ -259,6 +259,34 @@ def _cmd_reonboard(project_root: Path) -> int:
         return 1
 
 
+def _count_personalization_rules(personalization: dict[str, Any]) -> int:
+    """Count structured personalization rules for status display.
+
+    Excludes the ``version`` field (schema metadata, not a rule) and
+    properly handles ``extra_validation_commands`` which is a dict of
+    module → command list (each command counts as one rule).
+
+    Args:
+        personalization: The ``personalization`` section of iterate.config.yaml.
+
+    Returns:
+        Total number of structured personalization rules across all categories.
+    """
+    # Fields that are metadata, not rules — excluded from the count.
+    META_FIELDS: frozenset[str] = frozenset({"version"})
+
+    total = 0
+    for key, value in personalization.items():
+        if key in META_FIELDS:
+            continue
+        if isinstance(value, list):
+            total += len(value)
+        elif isinstance(value, dict):
+            # extra_validation_commands: {module: [cmd, ...]}
+            total += sum(len(cmds) for cmds in value.values() if isinstance(cmds, list))
+    return total
+
+
 def _cmd_status(project_root: Path) -> int:
     """Handle the 'status' subcommand."""
     print(f"Project: {project_root}")
@@ -280,12 +308,12 @@ def _cmd_status(project_root: Path) -> int:
         print(f"  Channel:   {channel}")
 
         # Show personalization summary.
+        # Count structured rules, excluding the schema "version" field
+        # (metadata, not a rule) and properly handling
+        # extra_validation_commands (a dict of module → command list).
         personalization = config.get("personalization") or {}
         if personalization:
-            total = sum(
-                len(v) if isinstance(v, list) else 0
-                for v in personalization.values()
-            )
+            total = _count_personalization_rules(personalization)
             print(f"  Personalization: {total} rule(s)")
 
         # Check drift.
