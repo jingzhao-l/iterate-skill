@@ -42,3 +42,6 @@ packages = ["iterate_cli"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # sys.path manipulation before imports is a standard test pattern

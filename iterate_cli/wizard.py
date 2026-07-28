@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import yaml
 
@@ -29,6 +29,13 @@ from iterate_cli.scan import (
 
 # Type alias for the input function used throughout the wizard.
 InputFunc = Callable[[str], str]
+
+# Sentinel returned by ``run_wizard`` when a returning user explicitly
+# declines all updates (no changes needed). This is distinct from ``None``
+# which means the user *cancelled* mid-flow (e.g. started the basic wizard
+# then aborted). Callers use this to pick the right exit code: 0 for
+# "no changes needed", 1 for "cancelled".
+NO_CHANGES_NEEDED: Any = object()
 
 # All selectable dimensions in display order.
 ALL_DIMENSIONS: list[str] = [
@@ -72,7 +79,10 @@ def run_wizard(
         input_func: Callable used to read user input (defaults to ``input``).
 
     Returns:
-        OnboardingData if the user completes the wizard, None if cancelled.
+        OnboardingData if the user completes the wizard,
+        None if the user cancelled mid-flow,
+        NO_CHANGES_NEEDED if a returning user explicitly declined all
+            updates (no files need to be written).
     """
     _print_welcome()
 
@@ -157,7 +167,7 @@ def _returning_user_flow(
         print()
         print("配置未变更。如需更新 AI 维护区，请使用 `iterate refresh`。")
         print("No changes made. Use `iterate refresh` to update AI-maintained sections.")
-        return None
+        return NO_CHANGES_NEEDED
 
     if personalize:
         from iterate_cli.personalize import (
@@ -181,7 +191,7 @@ def _returning_user_flow(
             print()
             print("个性化配置已取消，基础配置未更新。无变更。")
             print("Personalization cancelled, basic config not updated. No changes.")
-            return None
+            return NO_CHANGES_NEEDED
 
     return data
 
@@ -246,6 +256,14 @@ def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingDat
             return None
 
         config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        # Reject non-dict YAML (e.g. ``- item`` or ``just a string``) so
+        # that ``config.get(...)`` below does not raise AttributeError.
+        if not isinstance(config, dict):
+            print(
+                f"⚠️  {config_path} is not a YAML mapping (got {type(config).__name__}).",
+                file=sys.stderr,
+            )
+            return None
         scan = scan_project(project_root)
 
         onboarding_section = config.get("onboarding") or {}

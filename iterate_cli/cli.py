@@ -29,7 +29,7 @@ from iterate_cli.refresh import (
     is_onboarding_complete,
     load_onboarding_config,
 )
-from iterate_cli.wizard import run_wizard
+from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -131,16 +131,22 @@ def _build_parser() -> argparse.ArgumentParser:
 def _cmd_onboard(project_root: Path) -> int:
     """Handle the 'onboard' subcommand with multi-path branching."""
     data = run_wizard(project_root)
+    if data is NO_CHANGES_NEEDED:
+        # Returning user explicitly declined all updates.
+        print("No changes made. Onboarding is already complete.")
+        return 0
     if data is None:
+        # User cancelled mid-flow (gate, basic wizard, or personalization
+        # that was accepted but then aborted).
         return 1
 
     iterate_md, config_yaml = write_onboarding_outputs(data, project_root)
     print()
-    print(f"✅ Onboarding complete!")
+    print("✅ Onboarding complete!")
     print(f"   Written: {iterate_md}")
     print(f"   Written: {config_yaml}")
     if data.personalization is not None:
-        print(f"   Personalization: applied")
+        print("   Personalization: applied")
     print()
     print("You can now use /iterate in your AI coding tool.")
     return 0
@@ -182,7 +188,7 @@ def _cmd_personalize(project_root: Path) -> int:
     _update_iterate_md_user_section(project_root, personalization)
 
     print()
-    print(f"✅ Personalization saved!")
+    print("✅ Personalization saved!")
     print(f"   Updated: {config_path}")
     print(f"   Updated: {project_root / 'ITERATE.md'}")
     return 0
