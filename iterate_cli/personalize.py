@@ -1,0 +1,782 @@
+"""Personalization configuration wizard.
+
+This module captures user knowledge that AI scanning cannot discover:
+protected files, risk areas, known intentional patterns, dimension focus
+overrides, fix priority order, forbidden fixes, iterate notes, code
+conventions, and extra validation commands.
+
+The wizard provides a consistent add/remove/skip interface for each
+category. Structured rules are stored in ``iterate.config.yaml`` under
+the ``personalization`` key; free-form notes are written to the
+user-owned section of ``ITERATE.md``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+import yaml
+
+from iterate_cli.wizard import (
+    ALL_DIMENSIONS,
+    DIMENSION_LABELS,
+    InputFunc,
+    _ask_yes_no,
+)
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RiskArea:
+    """A fragile file or directory that needs extra care."""
+
+    path: str
+    reason: str
+
+
+@dataclass
+class KnownIntentional:
+    """A finding to suppress because the pattern is intentional.
+
+    Matching granularity: file:line + dimension.  When ``line`` is 0
+    the suppression applies to the entire file for that dimension.
+    """
+
+    file: str
+    line: int
+    dimension: str
+    reason: str
+
+
+@dataclass
+class DimensionFocusOverride:
+    """Extra focus text appended to a dimension's prompt."""
+
+    dimension: str
+    focus: str
+
+
+@dataclass
+class PersonalizationData:
+    """All personalization categories collected by the wizard.
+
+    ``iterate_notes`` and ``code_conventions`` are free-form text
+    destined for the ITERATE.md user-owned section.  All other fields
+    are structured rules stored in iterate.config.yaml.
+    """
+
+    protected_paths: list[str] = field(default_factory=list)
+    risk_areas: list[RiskArea] = field(default_factory=list)
+    known_intentional: list[KnownIntentional] = field(default_factory=list)
+    dimension_focus: list[DimensionFocusOverride] = field(default_factory=list)
+    fix_priority_order: list[str] = field(default_factory=list)
+    forbidden_fixes: list[str] = field(default_factory=list)
+    iterate_notes: list[str] = field(default_factory=list)
+    code_conventions: list[str] = field(default_factory=list)
+    extra_validation_commands: dict[str, list[str]] = field(default_factory=dict)
+
+    def is_empty(self) -> bool:
+        """Return True if every category is empty."""
+        return (
+            not self.protected_paths
+            and not self.risk_areas
+            and not self.known_intentional
+            and not self.dimension_focus
+            and not self.fix_priority_order
+            and not self.forbidden_fixes
+            and not self.iterate_notes
+            and not self.code_conventions
+            and not self.extra_validation_commands
+        )
+
+    def to_config_dict(self) -> dict[str, Any]:
+        """Serialise structured fields to a dict for iterate.config.yaml.
+
+        Only structured rules are included; ``iterate_notes`` and
+        ``code_conventions`` are handled separately (written to
+        ITERATE.md user-owned section).
+        """
+        return {
+            "protected_paths": list(self.protected_paths),
+            "risk_areas": [
+                {"path": r.path, "reason": r.reason} for r in self.risk_areas
+            ],
+            "known_intentional": [
+                {
+                    "file": k.file,
+                    "line": k.line,
+                    "dimension": k.dimension,
+                    "reason": k.reason,
+                }
+                for k in self.known_intentional
+            ],
+            "dimension_focus": [
+                {"dimension": d.dimension, "focus": d.focus}
+                for d in self.dimension_focus
+            ],
+            "fix_priority_order": list(self.fix_priority_order),
+            "forbidden_fixes": list(self.forbidden_fixes),
+        }
+
+    def to_user_md_sections(self) -> str:
+        """Render iterate_notes and code_conventions as Markdown for ITERATE.md."""
+        sections: list[str] = []
+
+        if self.code_conventions:
+            sections.append("## 自定义代码约定 / Custom Code Conventions\n")
+            for conv in self.code_conventions:
+                sections.append(f"- {conv}")
+            sections.append("")
+
+        if self.protected_paths or self.risk_areas:
+            sections.append("## 禁区与风险区 / Restricted & Risk Areas\n")
+            if self.protected_paths:
+                sections.append("### 禁区 / Protected (不可修改 / Do not modify)\n")
+                for p in self.protected_paths:
+                    sections.append(f"- `{p}`")
+                sections.append("")
+            if self.risk_areas:
+                sections.append("### 风险区 / Risk Areas (改动需审批 / Changes need approval)\n")
+                for r in self.risk_areas:
+                    sections.append(f"- `{r.path}` — {r.reason}")
+                sections.append("")
+
+        if self.iterate_notes:
+            sections.append("## Iterate 注意点 / Iterate Notes\n")
+            for note in self.iterate_notes:
+                sections.append(f"- {note}")
+            sections.append("")
+
+        if self.known_intentional:
+            sections.append("## 已知意图 / Known Intentional (抑制误报 / Suppress false positives)\n")
+            for k in self.known_intentional:
+                loc = f"{k.file}:{k.line}" if k.line > 0 else k.file
+                sections.append(f"- `{loc}` [{k.dimension}] — {k.reason}")
+            sections.append("")
+
+        if self.forbidden_fixes:
+            sections.append("## 禁止的修复方式 / Forbidden Fixes\n")
+            for f in self.forbidden_fixes:
+                sections.append(f"- {f}")
+            sections.append("")
+
+        return "\n".join(sections)
+
+
+# ---------------------------------------------------------------------------
+# Load / save helpers
+# ---------------------------------------------------------------------------
+
+
+def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationData:
+    """Parse the ``personalization`` section of a config dict.
+
+    Args:
+        config: Parsed iterate.config.yaml content (or a sub-dict).
+
+    Returns:
+        PersonalizationData with structured fields populated.
+        Free-form notes are not stored in config.yaml and will be empty;
+        they are loaded separately from ITERATE.md.
+    """
+    raw = config.get("personalization") or {}
+
+    protected = [str(p) for p in raw.get("protected_paths") or []]
+
+    risk_areas: list[RiskArea] = []
+    for item in raw.get("risk_areas") or []:
+        if isinstance(item, dict) and "path" in item:
+            risk_areas.append(
+                RiskArea(
+                    path=str(item["path"]),
+                    reason=str(item.get("reason", "")),
+                )
+            )
+
+    known: list[KnownIntentional] = []
+    for item in raw.get("known_intentional") or []:
+        if isinstance(item, dict) and "file" in item:
+            known.append(
+                KnownIntentional(
+                    file=str(item["file"]),
+                    line=int(item.get("line", 0)),
+                    dimension=str(item.get("dimension", "")),
+                    reason=str(item.get("reason", "")),
+                )
+            )
+
+    dim_focus: list[DimensionFocusOverride] = []
+    for item in raw.get("dimension_focus") or []:
+        if isinstance(item, dict) and "dimension" in item:
+            dim_focus.append(
+                DimensionFocusOverride(
+                    dimension=str(item["dimension"]),
+                    focus=str(item.get("focus", "")),
+                )
+            )
+
+    fix_order = [str(d) for d in raw.get("fix_priority_order") or []]
+    forbidden = [str(f) for f in raw.get("forbidden_fixes") or []]
+
+    extra_cmds: dict[str, list[str]] = {}
+    for module, cmds in (raw.get("extra_validation_commands") or {}).items():
+        if isinstance(cmds, list):
+            extra_cmds[str(module)] = [str(c) for c in cmds]
+
+    return PersonalizationData(
+        protected_paths=protected,
+        risk_areas=risk_areas,
+        known_intentional=known,
+        dimension_focus=dim_focus,
+        fix_priority_order=fix_order,
+        forbidden_fixes=forbidden,
+        extra_validation_commands=extra_cmds,
+    )
+
+
+def merge_personalization_into_config(
+    config: dict[str, Any],
+    data: PersonalizationData,
+) -> dict[str, Any]:
+    """Write personalization structured fields into a config dict.
+
+    Also merges ``extra_validation_commands`` into ``validation.commands``.
+
+    Args:
+        config: The existing parsed config dict (will be copied, not mutated).
+        data: PersonalizationData to write.
+
+    Returns:
+        New config dict with personalization section updated.
+    """
+    result = dict(config)
+    result["personalization"] = data.to_config_dict()
+
+    # Merge extra validation commands into validation.commands.
+    if data.extra_validation_commands:
+        validation = dict(result.get("validation") or {})
+        commands = dict(validation.get("commands") or {})
+        for module, cmds in data.extra_validation_commands.items():
+            existing = list(commands.get(module) or [])
+            for cmd in cmds:
+                if cmd not in existing:
+                    existing.append(cmd)
+            commands[module] = existing
+        validation["commands"] = commands
+        result["validation"] = validation
+
+    return result
+
+
+def save_personalization_to_config(
+    project_root: Path,
+    data: PersonalizationData,
+) -> Path:
+    """Update the personalization section of iterate.config.yaml in-place.
+
+    Reads the existing config, merges personalization, and writes back.
+    Preserves all other config fields.
+
+    Args:
+        project_root: Project root directory containing iterate.config.yaml.
+        data: PersonalizationData to save.
+
+    Returns:
+        Path to the written config file.
+
+    Raises:
+        FileNotFoundError: If iterate.config.yaml does not exist.
+    """
+    config_path = project_root / "iterate.config.yaml"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    updated = merge_personalization_into_config(existing, data)
+
+    config_path.write_text(
+        yaml.safe_dump(updated, default_flow_style=False, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+# ---------------------------------------------------------------------------
+# Wizard
+# ---------------------------------------------------------------------------
+
+
+def run_personalize_wizard(
+    project_root: Path,
+    input_func: InputFunc = input,
+    existing: PersonalizationData | None = None,
+) -> Optional[PersonalizationData]:
+    """Run the 9-step personalization configuration wizard.
+
+    Each step supports view / add / remove / skip.  The wizard loads
+    existing personalization data (if provided) so users can incrementally
+    add or modify entries.
+
+    Args:
+        project_root: Project root directory (for path validation context).
+        input_func: Callable used to read user input.
+        existing: Existing PersonalizationData to pre-populate (for editing).
+
+    Returns:
+        PersonalizationData if the user completes the wizard, None if cancelled.
+    """
+    data = existing or PersonalizationData()
+
+    _print_personalize_welcome()
+
+    if not _ask_yes_no("开始个性化配置? / Start personalization?", input_func):
+        _print_cancelled()
+        return None
+
+    # Step 1: Protected paths
+    data.protected_paths = _run_string_list_step(
+        title="禁区 / Protected Files",
+        description="iterate 不得修改的文件或目录（支持 glob）。\n"
+        "Files/dirs iterate must never modify (glob patterns supported).",
+        items=data.protected_paths,
+        add_prompt="输入 glob 路径 / Enter glob pattern (e.g. legacy/**, vendor/**)",
+        input_func=input_func,
+    )
+
+    # Step 2: Risk areas
+    data.risk_areas = _run_typed_list_step(
+        title="风险区 / Risk Areas",
+        description="改动需架构审批的文件/目录。\n"
+        "Files/dirs where changes require architectural approval.",
+        items=data.risk_areas,
+        formatter=lambda r: f"`{r.path}` — {r.reason}",
+        add_func=_add_risk_area,
+        input_func=input_func,
+    )
+
+    # Step 3: Known intentional (suppress false positives)
+    data.known_intentional = _run_typed_list_step(
+        title="已知意图 / Known Intentional",
+        description="抑制特定 finding（文件:行号 + 维度）。\n"
+        "Suppress specific findings (file:line + dimension).",
+        items=data.known_intentional,
+        formatter=lambda k: f"`{k.file}:{k.line}` [{k.dimension}] — {k.reason}",
+        add_func=_add_known_intentional,
+        input_func=input_func,
+    )
+
+    # Step 4: Dimension focus overrides
+    data.dimension_focus = _run_typed_list_step(
+        title="维度定制 / Dimension Focus Overrides",
+        description="为特定维度追加 focus 内容。\n"
+        "Append extra focus text to specific dimensions.",
+        items=data.dimension_focus,
+        formatter=lambda d: f"[{d.dimension}] {d.focus}",
+        add_func=_add_dimension_focus,
+        input_func=input_func,
+    )
+
+    # Step 5: Fix priority order
+    data.fix_priority_order = _run_fix_priority_step(data.fix_priority_order, input_func)
+
+    # Step 6: Forbidden fixes
+    data.forbidden_fixes = _run_string_list_step(
+        title="禁止的修复方式 / Forbidden Fixes",
+        description="iterate 不得使用的修复手法。\n"
+        "Fix approaches iterate must never use.",
+        items=data.forbidden_fixes,
+        add_prompt="输入禁止方式 / Enter forbidden fix (e.g. 'try-catch 吞错', '# noqa')",
+        input_func=input_func,
+    )
+
+    # Step 7: Iterate notes
+    data.iterate_notes = _run_string_list_step(
+        title="Iterate 注意点 / Iterate Notes",
+        description="经验教训、已知陷阱、给 iterate 的提示。\n"
+        "Lessons, pitfalls, tips for iterate.",
+        items=data.iterate_notes,
+        add_prompt="输入注意点 / Enter note",
+        input_func=input_func,
+    )
+
+    # Step 8: Custom code conventions
+    data.code_conventions = _run_string_list_step(
+        title="自定义代码约定 / Custom Code Conventions",
+        description="项目特有的代码规范。\n"
+        "Project-specific code conventions.",
+        items=data.code_conventions,
+        add_prompt="输入约定 / Enter convention",
+        input_func=input_func,
+    )
+
+    # Step 9: Extra validation commands
+    data.extra_validation_commands = _run_validation_commands_step(
+        data.extra_validation_commands, input_func
+    )
+
+    if not _confirm_personalization_summary(data, input_func):
+        _print_cancelled()
+        return None
+
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Step helpers
+# ---------------------------------------------------------------------------
+
+
+def _run_string_list_step(
+    title: str,
+    description: str,
+    items: list[str],
+    add_prompt: str,
+    input_func: InputFunc,
+) -> list[str]:
+    """Run a step that manages a simple list of strings.
+
+    Shows current items, allows add/remove/skip in a loop.
+    """
+    current = list(items)
+    while True:
+        print()
+        print(f"--- {title} ---")
+        print(description)
+        print()
+        _print_numbered_list(current)
+        print()
+        choice = input_func("[a]dd / [r]emove / [s]kip > ").strip().lower()
+        if choice in ("s", ""):
+            return current
+        if choice == "a":
+            value = input_func(f"  {add_prompt}: ").strip()
+            if value:
+                current.append(value)
+                print("  ✅ 已添加 / Added")
+            else:
+                print("  ⏭️  空输入，跳过 / Empty, skipped")
+        elif choice == "r" and current:
+            idx = _read_index(current, input_func)
+            if idx is not None:
+                current.pop(idx)
+                print("  ✅ 已删除 / Removed")
+        else:
+            _print_invalid_choice()
+
+
+def _run_typed_list_step(
+    title: str,
+    description: str,
+    items: list[Any],
+    formatter: Callable[[Any], str],
+    add_func: Callable[[InputFunc], Optional[Any]],
+    input_func: InputFunc,
+) -> list[Any]:
+    """Run a step that manages a list of typed objects.
+
+    ``add_func`` is called with ``input_func`` and must return a new
+    object or None if the user cancels input.  ``formatter`` renders
+    each item for display.
+    """
+    current = list(items)
+    while True:
+        print()
+        print(f"--- {title} ---")
+        print(description)
+        print()
+        _print_numbered_list([formatter(item) for item in current])
+        print()
+        choice = input_func("[a]dd / [r]emove / [s]kip > ").strip().lower()
+        if choice in ("s", ""):
+            return current
+        if choice == "a":
+            new_item = add_func(input_func)
+            if new_item is not None:
+                current.append(new_item)
+                print("  ✅ 已添加 / Added")
+        elif choice == "r" and current:
+            idx = _read_index(current, input_func)
+            if idx is not None:
+                current.pop(idx)
+                print("  ✅ 已删除 / Removed")
+        else:
+            _print_invalid_choice()
+
+
+def _run_fix_priority_step(
+    current_order: list[str],
+    input_func: InputFunc,
+) -> list[str]:
+    """Run the fix priority ordering step.
+
+    Lets the user specify which dimensions to fix first.
+    """
+    print()
+    print("--- 优先修复顺序 / Fix Priority Order ---")
+    print("指定维度修复优先级（从高到低）。留空跳过保持默认。")
+    print("Specify dimension fix priority (high to low). Leave empty to skip.")
+    print()
+    if current_order:
+        print("当前顺序 / Current order:")
+        for i, dim in enumerate(current_order, 1):
+            print(f"  {i}. {dim}")
+        print()
+
+    print("可用维度 / Available dimensions:")
+    for i, dim in enumerate(ALL_DIMENSIONS, 1):
+        print(f"  {i}. {DIMENSION_LABELS[dim]}")
+    print()
+
+    raw = input_func("输入维度编号（逗号分隔，按优先级从高到低）/ Enter numbers (comma-separated, high to low priority): ").strip()
+    if not raw:
+        return list(current_order)
+
+    selected = _parse_dimension_numbers(raw)
+    if not selected:
+        print("无效输入，保持原顺序 / Invalid input, keeping current order.")
+        return list(current_order)
+
+    print()
+    print("新顺序 / New order:")
+    for i, dim in enumerate(selected, 1):
+        print(f"  {i}. {dim}")
+    print()
+    if _ask_yes_no("确认? / Confirm?", input_func, default=True):
+        return selected
+    return list(current_order)
+
+
+def _run_validation_commands_step(
+    current: dict[str, list[str]],
+    input_func: InputFunc,
+) -> dict[str, list[str]]:
+    """Run the extra validation commands step."""
+    result = {k: list(v) for k, v in current.items()}
+    while True:
+        print()
+        print("--- 补充验证命令 / Extra Validation Commands ---")
+        print("项目特有的验证命令，会合并到 validation.commands。")
+        print("Project-specific validation commands, merged into validation.commands.")
+        print()
+        if result:
+            for module, cmds in result.items():
+                print(f"  [{module}]")
+                for cmd in cmds:
+                    print(f"    - {cmd}")
+        else:
+            print("  (空 / empty)")
+        print()
+        choice = input_func("[a]dd / [r]emove / [s]kip > ").strip().lower()
+        if choice in ("s", ""):
+            return result
+        if choice == "a":
+            module = input_func("  模块名 / Module name (e.g. python, swift): ").strip()
+            if not module:
+                print("  ⏭️  空模块名，跳过 / Empty module, skipped")
+                continue
+            cmd = input_func(f"  {module} 命令 / command: ").strip()
+            if cmd:
+                existing = result.get(module, [])
+                if cmd not in existing:
+                    existing.append(cmd)
+                    result[module] = existing
+                    print("  ✅ 已添加 / Added")
+                else:
+                    print("  ⏭️  命令已存在 / Command already exists")
+            else:
+                print("  ⏭️  空命令，跳过 / Empty command, skipped")
+        elif choice == "r" and result:
+            modules = list(result.keys())
+            print("  选择模块 / Select module:")
+            for i, m in enumerate(modules, 1):
+                print(f"    {i}. {m}")
+            idx = _read_index(modules, input_func, prompt="  模块编号 / Module number")
+            if idx is not None:
+                result.pop(modules[idx])
+                print("  ✅ 已删除 / Removed")
+        else:
+            _print_invalid_choice()
+
+
+# ---------------------------------------------------------------------------
+# Typed add helpers
+# ---------------------------------------------------------------------------
+
+
+def _add_risk_area(input_func: InputFunc) -> Optional[RiskArea]:
+    """Collect a single RiskArea from the user."""
+    path = input_func("  路径 / Path (e.g. src/auth/): ").strip()
+    if not path:
+        return None
+    reason = input_func("  原因 / Reason: ").strip()
+    if not reason:
+        reason = "(未说明 / unspecified)"
+    return RiskArea(path=path, reason=reason)
+
+
+def _add_known_intentional(input_func: InputFunc) -> Optional[KnownIntentional]:
+    """Collect a single KnownIntentional entry from the user."""
+    file_path = input_func("  文件路径 / File path (e.g. db/queries.py): ").strip()
+    if not file_path:
+        return None
+    line_str = input_func("  行号 / Line number (0 或留空表示整个文件 / 0 or empty for whole file): ").strip()
+    try:
+        line = int(line_str) if line_str else 0
+    except ValueError:
+        line = 0
+    print("  选择维度 / Select dimension:")
+    for i, dim in enumerate(ALL_DIMENSIONS, 1):
+        print(f"    {i}. {dim}")
+    dim_str = input_func("  维度编号 / Dimension number: ").strip()
+    try:
+        dim_idx = int(dim_str) - 1
+        dimension = ALL_DIMENSIONS[dim_idx] if 0 <= dim_idx < len(ALL_DIMENSIONS) else ""
+    except (ValueError, IndexError):
+        print("  ⚠️  无效维度，使用空 / Invalid dimension, using empty")
+        dimension = ""
+    reason = input_func("  原因 / Reason: ").strip()
+    if not reason:
+        reason = "(未说明 / unspecified)"
+    return KnownIntentional(file=file_path, line=line, dimension=dimension, reason=reason)
+
+
+def _add_dimension_focus(input_func: InputFunc) -> Optional[DimensionFocusOverride]:
+    """Collect a single DimensionFocusOverride from the user."""
+    print("  选择维度 / Select dimension:")
+    for i, dim in enumerate(ALL_DIMENSIONS, 1):
+        print(f"    {i}. {DIMENSION_LABELS[dim]}")
+    dim_str = input_func("  维度编号 / Dimension number: ").strip()
+    try:
+        dim_idx = int(dim_str) - 1
+        if not (0 <= dim_idx < len(ALL_DIMENSIONS)):
+            return None
+        dimension = ALL_DIMENSIONS[dim_idx]
+    except (ValueError, IndexError):
+        return None
+    focus = input_func(f"  追加 focus 内容 / Extra focus text for [{dimension}]: ").strip()
+    if not focus:
+        return None
+    return DimensionFocusOverride(dimension=dimension, focus=focus)
+
+
+# ---------------------------------------------------------------------------
+# Display helpers
+# ---------------------------------------------------------------------------
+
+
+def _print_personalize_welcome() -> None:
+    """Print the personalization wizard welcome banner."""
+    print()
+    print("=" * 60)
+    print("  Iterate Skill — 个性化配置 / Personalization")
+    print("  捕获 AI 扫描不到的项目专属约束和经验")
+    print("  Capture project-specific constraints AI scanning misses")
+    print("=" * 60)
+    print()
+    print("本向导收集 9 类个性化配置：")
+    print("This wizard collects 9 categories of personalization:")
+    print("  1. 禁区/保护文件          — iterate 不得修改")
+    print("  2. 风险区                 — 改动需架构审批")
+    print("  3. 已知意图               — 抑制误报")
+    print("  4. 维度定制               — 追加 focus")
+    print("  5. 优先修复顺序           — 修复优先级")
+    print("  6. 禁止的修复方式         — 不可使用的修复手法")
+    print("  7. Iterate 注意点         — 经验教训")
+    print("  8. 自定义代码约定         — 项目特有规范")
+    print("  9. 补充验证命令           — 合并到 validation.commands")
+    print()
+    print("每步可跳过。结构化规则写入 iterate.config.yaml，")
+    print("自由文本写入 ITERATE.md 用户区。")
+    print()
+
+
+def _print_numbered_list(items: list[Any]) -> None:
+    """Print a numbered list or empty placeholder."""
+    if not items:
+        print("  (空 / empty)")
+        return
+    for i, item in enumerate(items, 1):
+        print(f"  {i}. {item}")
+
+
+def _read_index(
+    items: list[Any],
+    input_func: InputFunc,
+    prompt: str = "删除编号 / Remove number",
+) -> Optional[int]:
+    """Read a 1-based index from user input and convert to 0-based.
+
+    Returns None if the input is invalid or out of range.
+    """
+    raw = input_func(f"  {prompt} (1-{len(items)}): ").strip()
+    try:
+        idx = int(raw) - 1
+        if 0 <= idx < len(items):
+            return idx
+        print(f"  ❌ 超出范围 / Out of range (1-{len(items)})")
+        return None
+    except ValueError:
+        print("  ❌ 无效输入 / Invalid input")
+        return None
+
+
+def _parse_dimension_numbers(raw: str) -> list[str]:
+    """Parse comma-separated dimension numbers into a list of dimension keys."""
+    result: list[str] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            num = int(part)
+        except ValueError:
+            return []
+        if num < 1 or num > len(ALL_DIMENSIONS):
+            return []
+        dim = ALL_DIMENSIONS[num - 1]
+        if dim not in result:
+            result.append(dim)
+    return result
+
+
+def _confirm_personalization_summary(
+    data: PersonalizationData,
+    input_func: InputFunc,
+) -> bool:
+    """Show a summary of personalization data and ask for confirmation."""
+    print()
+    print("=" * 60)
+    print("  确认个性化配置 / Confirm Personalization")
+    print("=" * 60)
+    print()
+    print(f"  禁区 / Protected:          {len(data.protected_paths)}")
+    print(f"  风险区 / Risk areas:       {len(data.risk_areas)}")
+    print(f"  已知意图 / Intentional:    {len(data.known_intentional)}")
+    print(f"  维度定制 / Dim focus:      {len(data.dimension_focus)}")
+    print(f"  优先顺序 / Fix priority:   {len(data.fix_priority_order)}")
+    print(f"  禁止方式 / Forbidden:      {len(data.forbidden_fixes)}")
+    print(f"  注意点 / Notes:            {len(data.iterate_notes)}")
+    print(f"  代码约定 / Conventions:    {len(data.code_conventions)}")
+    print(f"  验证命令 / Extra cmds:     {sum(len(v) for v in data.extra_validation_commands.values())}")
+    print()
+    if data.is_empty():
+        print("  ⚠️  所有类别为空 / All categories empty")
+        print()
+    return _ask_yes_no("确认保存? / Confirm and save?", input_func)
+
+
+def _print_cancelled() -> None:
+    """Print cancellation message."""
+    print()
+    print("已取消 / Cancelled.")
+    print()
+
+
+def _print_invalid_choice() -> None:
+    """Print invalid choice message."""
+    print("  请输入 a / r / s / Please enter a / r / s")

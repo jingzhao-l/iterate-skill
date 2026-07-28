@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -68,6 +68,7 @@ class OnboardingData:
     fingerprints: list[FingerprintEntry] = field(default_factory=list)
     iterate_notes: str = ""
     language: str = "en"
+    personalization: Optional[Any] = None  # PersonalizationData, typed as Any to avoid circular import
 
     def completed_at(self) -> str:
         """ISO 8601 timestamp of onboarding completion."""
@@ -76,6 +77,10 @@ class OnboardingData:
 
 def generate_iterate_md(data: OnboardingData) -> str:
     """Render the ITERATE.md content from onboarding data and template.
+
+    If ``data.personalization`` is set, the user-owned section is populated
+    with personalization content (conventions, notes, risk areas, etc.).
+    Otherwise the default user-owned section template is used.
 
     Args:
         data: OnboardingData with scan results and user inputs.
@@ -104,6 +109,13 @@ def generate_iterate_md(data: OnboardingData) -> str:
     content = template
     for placeholder, value in replacements.items():
         content = content.replace(placeholder, value)
+
+    # If personalization data is present, replace the default user-owned
+    # section with the personalised content.
+    if data.personalization is not None:
+        user_md = data.personalization.to_user_md_sections()
+        if user_md.strip():
+            content = _replace_user_owned_section(content, user_md)
 
     return content
 
@@ -143,6 +155,12 @@ def generate_config_yaml(data: OnboardingData) -> str:
             "fingerprints": fingerprints_to_dict(data.fingerprints),
         },
     }
+
+    # Merge personalization structured fields into config.
+    if data.personalization is not None:
+        from iterate_cli.personalize import merge_personalization_into_config
+
+        config = merge_personalization_into_config(config, data.personalization)
 
     return yaml.safe_dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
@@ -195,6 +213,27 @@ def extract_user_owned_section(existing_md: str) -> str:
         return DEFAULT_USER_OWNED_SECTION
 
     return after_start[:end_in_after].strip("\n")
+
+
+def _replace_user_owned_section(content: str, new_user_content: str) -> str:
+    """Replace the user-owned section in ITERATE.md content.
+
+    Args:
+        content: The full ITERATE.md content with markers.
+        new_user_content: New content to place between the markers.
+
+    Returns:
+        Updated content with the user-owned section replaced.
+    """
+    start_idx = content.find(USER_START_MARKER)
+    end_idx = content.find(USER_END_MARKER)
+
+    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+        return content
+
+    before = content[: start_idx + len(USER_START_MARKER)]
+    after = content[end_idx:]
+    return f"{before}\n{new_user_content}\n{after}"
 
 
 def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
