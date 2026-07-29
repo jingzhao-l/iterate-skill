@@ -533,6 +533,22 @@ def _build_minimal_source(tmp_path: Path) -> Path:
     (source / "templates" / "iterate-decisions.template.md").write_text(
         "template", encoding="utf-8"
     )
+    # v2.0.0: CLI onboarding system files are now in REQUIRED_FILES,
+    # so the minimal source must include stubs for them.
+    (source / "iterate_cli").mkdir()
+    (source / "iterate_cli" / "__init__.py").write_text(
+        '"""iterate CLI package."""\n', encoding="utf-8"
+    )
+    (source / "pyproject.toml").write_text(
+        '[project]\nname = "iterate-skill"\nversion = "0.0.0"\n',
+        encoding="utf-8",
+    )
+    (source / "templates" / "ITERATE.template.md").write_text(
+        "# ITERATE template\n", encoding="utf-8"
+    )
+    (source / "templates" / "onboarding-playbook.md").write_text(
+        "# Onboarding playbook\n", encoding="utf-8"
+    )
     return source
 
 
@@ -994,7 +1010,7 @@ class TestSkillMarkdownFile:
         assert meta.get("name") == "iterate"
         assert isinstance(meta.get("description"), str)
         assert meta.get("description")
-        assert meta.get("version") == "2.0.0"
+        assert meta.get("version") == "2.0.1"
 
     def test_skill_md_body_is_non_empty(self) -> None:
         text = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")

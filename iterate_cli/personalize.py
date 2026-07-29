@@ -36,6 +36,81 @@ PERSONALIZATION_VERSION = "1.0"
 # metacharacter injection via module key.
 MODULE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
+# Allowed command prefixes for extra_validation_commands.
+# These cover common test/lint/type-check/build tooling. Commands
+# starting with one of these prefixes are accepted without warning.
+# Anything else triggers a confirmation prompt to make the operator
+# explicitly aware that an unusual command will be persisted into
+# executable validation configuration.
+KNOWN_SAFE_COMMAND_PREFIXES: tuple[str, ...] = (
+    "pytest", "py.test", "unittest", "tox", "nox",
+    "ruff", "flake8", "pylint", "mypy", "bandit",
+    "black", "isort", "pyupgrade",
+    "coverage", "pytest-cov",
+    "npm", "pnpm", "yarn", "npx",
+    "tsc", "eslint", "prettier", "jest", "vitest", "ava", "mocha",
+    "swift", "swiftc", "xcodebuild", "swift test",
+    "cargo", "rustc",
+    "go", "gofmt", "golangci-lint",
+    "make", "cmake",
+    "gradle", "mvn", "java",
+    "dotnet",
+    "shellcheck", "shfmt",
+    "pre-commit",
+)
+
+# Characters that should not appear in validation commands at all.
+# These are shell metacharacters that allow command chaining, which
+# would let a "validation command" smuggle arbitrary side effects.
+FORBIDDEN_COMMAND_CHARS: tuple[str, ...] = (";", "|", "&", "`", "$", ">", "<", "\n", "\r")
+
+
+def _is_known_safe_command(cmd: str) -> bool:
+    """Return True if cmd starts with one of the known safe tool prefixes."""
+    stripped = cmd.strip()
+    if not stripped:
+        return False
+    first_token = stripped.split(None, 1)[0]
+    # Handle "python -m pytest" style invocations: accept if the
+    # *effective* tool (after -m) is whitelisted.
+    if first_token in ("python", "python3", "py") and " -m " in stripped:
+        parts = stripped.split(" -m ", 1)
+        if len(parts) == 2:
+            inner = parts[1].strip().split(None, 1)[0]
+            return inner in KNOWN_SAFE_COMMAND_PREFIXES
+    return first_token in KNOWN_SAFE_COMMAND_PREFIXES
+
+
+def _has_forbidden_chars(cmd: str) -> bool:
+    """Return True if cmd contains shell-chaining metacharacters."""
+    return any(ch in cmd for ch in FORBIDDEN_COMMAND_CHARS)
+
+
+def validate_extra_command(cmd: str) -> tuple[bool, str]:
+    """Validate a single extra validation command string.
+
+    Returns (is_valid, reason). When is_valid is False the caller MUST
+    refuse to persist the command. When is_valid is True but the command
+    is unusual, reason carries a warning the caller should surface to
+    the user before persisting.
+    """
+    if not cmd or not cmd.strip():
+        return False, "empty command"
+    if _has_forbidden_chars(cmd):
+        return False, (
+            "command contains forbidden shell metacharacters "
+            f"({FORBIDDEN_COMMAND_CHARS}); command chaining is not allowed "
+            "in extra validation commands"
+        )
+    if _is_known_safe_command(cmd):
+        return True, ""
+    return True, (
+        "command does not start with a known-safe tool prefix "
+        f"({sorted(KNOWN_SAFE_COMMAND_PREFIXES)[:6]}...); it will still be "
+        "accepted if you confirm, but make sure you trust this command "
+        "because it will run automatically during validation"
+    )
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -712,16 +787,34 @@ def _run_validation_commands_step(
                 print("  ⚠️  无效模块名（仅允许字母、数字、._-）/ Invalid module name")
                 continue
             cmd = input_func(f"  {module} 命令 / command: ").strip()
-            if cmd:
-                existing = result.get(module, [])
-                if cmd not in existing:
-                    existing.append(cmd)
-                    result[module] = existing
-                    print("  ✅ 已添加 / Added")
-                else:
-                    print("  ⏭️  命令已存在 / Command already exists")
-            else:
+            if not cmd:
                 print("  ⏭️  空命令，跳过 / Empty command, skipped")
+                continue
+
+            # v2.0.1: validate command before persisting. Refuses
+            # shell-chaining metacharacters; warns on unknown prefixes.
+            is_valid, reason = validate_extra_command(cmd)
+            if not is_valid:
+                print(f"  ❌ 拒绝 / Rejected: {reason}")
+                continue
+            if reason:
+                print(f"  ⚠️  警告 / Warning: {reason}")
+                confirmed = _ask_yes_no(
+                    "  仍要添加此命令? / Still add this command?",
+                    default=False,
+                    input_func=input_func,
+                )
+                if not confirmed:
+                    print("  ⏭️  已跳过 / Skipped")
+                    continue
+
+            existing = result.get(module, [])
+            if cmd not in existing:
+                existing.append(cmd)
+                result[module] = existing
+                print("  ✅ 已添加 / Added")
+            else:
+                print("  ⏭️  命令已存在 / Command already exists")
         elif choice == "r" and result:
             modules = list(result.keys())
             print("  选择模块 / Select module:")

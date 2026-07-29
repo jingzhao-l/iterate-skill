@@ -66,12 +66,18 @@ REQUIRED_FILES = [
     "scripts/validate.py",
     "scripts/requirements.txt",
     "templates/iterate-decisions.template.md",
+    # v2.0.0: CLI onboarding system (iterate onboard / personalize / refresh).
+    "iterate_cli",
+    "pyproject.toml",
+    "templates/ITERATE.template.md",
+    "templates/onboarding-playbook.md",
 ]
 
 OPTIONAL_FILES = [
     "README.md",
     "CONTRIBUTING.md",
     "LICENSE",
+    "CHANGELOG.md",
     "examples/python-project.md",
     "examples/swift-project.md",
     "examples/typescript-project.md",
@@ -406,7 +412,24 @@ def update_command(
 
 
 def _load_validate_module(source: Path):
-    """Import validate.py from the source scripts directory."""
+    """Import validate.py from the source scripts directory.
+
+    Note: this uses ``importlib.util.module_from_spec`` +
+    ``spec.loader.exec_module`` rather than a plain ``import`` statement
+    because ``validate.py`` lives outside the ``iterate_cli`` package
+    and must be loaded from an arbitrary filesystem path (the skill
+    source directory, which may be a temp dir extracted from a release
+    tarball).
+
+    Security note for static analyzers: the module being loaded is
+    ``scripts/validate.py`` shipped with this skill itself — it is NOT
+    arbitrary remote code, NOT user-supplied input, and NOT fetched
+    from the network. The path is constructed deterministically as
+    ``source / "scripts" / "validate.py"`` where ``source`` is either
+    the local skill checkout or a tarball extracted by
+    ``_download_release_source`` (which itself verifies the SHA256
+    checksum when a SHA256SUMS.txt asset is present).
+    """
     import importlib.util
 
     validate_path = source / "scripts" / "validate.py"

