@@ -1,7 +1,15 @@
 ---
 name: iterate
-description: Fully automated multi-round code iteration with configurable N-dimension parallel review.
-version: 2.0.0
+description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer.
+version: 2.0.1
+permissions:
+  file_read: true
+  file_write: true
+  shell: true
+  git: true
+  network: "github.com only (release tarball + checksum verification)"
+  sensitive_files:
+    skip: [".env", ".env.*", "*.key", "*.pem", "*.p12", "*.crt", "*.cer", "credentials.json", ".aws/", ".ssh/"]
 ---
 
 # /iterate `<goal>` `[rounds]` `[no-limit]`
@@ -502,7 +510,7 @@ if empty AND deferredArchitectural is empty:
    若验证失败：
    - 追加 `.iterate_decisions.md`：`Atomic fix validation failed: {details}`
    - 输出：`❌ Round {round}: atomic fix validation failed, stopping iteration`
-   - **回滚本轮所有原子修改**：`git reset --hard HEAD`（仍在迭代分支上，不影响 main/master）。
+   - **回滚本轮所有原子修改**：`git reset --hard HEAD`。**仅限 `iterate/*` 分支，严禁对 `main`/`master` 执行 reset --hard**（仍在迭代分支上，不影响 main/master）。
    - 将本轮已识别但未执行的架构问题保留在 `deferredArchitectural` 中，供下次 `/iterate` 会话处理。
    - `break`
 
@@ -589,7 +597,7 @@ if empty AND deferredArchitectural is empty:
    若失败：
    - 追加 `.iterate_decisions.md`：`Full validation failed: {details}`
    - 输出：`❌ Round {round}: full validation failed, stopping iteration`
-   - **回滚本轮所有修改**（原子 + 已执行架构）：`git reset --hard iterate/round-{round}-backup`（或 `git reset --hard HEAD`），仍在迭代分支上，不影响 main/master。
+   - **回滚本轮所有修改**（原子 + 已执行架构）：`git reset --hard iterate/round-{round}-backup`（或 `git reset --hard HEAD`）。**仅限 `iterate/*` 分支，严禁对 `main`/`master` 执行 reset --hard**（仍在迭代分支上，不影响 main/master）。
    - 将未执行的架构问题保留在 `deferredArchitectural` 中。
    - `break`
 
@@ -614,19 +622,21 @@ if empty AND deferredArchitectural is empty:
 
 1. **Backup tag / 备份标签**
    - 在 commit 前为当前迭代分支打标签：`git tag iterate/round-{round}-backup`
-   - 若后续需要回滚，可 `git reset --hard iterate/round-{round}-backup`（仅用于迭代分支，不用于 main/master）。
+   - 若后续需要回滚，可 `git reset --hard iterate/round-{round}-backup`。**仅限 `iterate/*` 分支，严禁对 `main`/`master` 执行 reset --hard**（仅用于迭代分支，不用于 main/master）。
 
 2. **Commit / 提交**
    - `git add <changed files>`
    - `git commit -m "fix: iterate round {round} — {brief summary}"`
 
-3. **Merge / 合并**
+3. **Merge / 合并** ⚠️ **高风险动作 / High-risk action**
+   - **风险提示 / Risk notice**：自动 merge 回 `target_branch`（通常为 `main`）会将本轮所有修改立即推到主分支历史。建议在重要仓库设置 `git.push_per_round: false` + `git.auto_merge: false`（见 Step 5 配置表），改为创建 PR 由人工 review；或为 `main` 启用分支保护。
    - `git checkout {target_branch}`
    - `git merge iterate/<goal-slug>-<timestamp>`
    - 如有冲突，先尝试自动解决；若无法自动解决，**停止合并并询问用户**手动解决或跳过本轮。
    - 冲突解决后重新验证，验证失败则切回迭代分支，**不推进 main/master**。
 
-4. **Push / 推送**
+4. **Push / 推送** ⚠️ **高风险动作 / High-risk action**
+   - **风险提示 / Risk notice**：自动 push 到 `target_branch` 会立即对外可见，且后续轮次会基于已 push 的状态继续迭代。建议生产仓库设置 `push_per_round: false`，仅在会话结束时一次性 push；或改为 `auto_merge: false` 只创建 PR。
    - 若 `git.push_per_round` 为 `true`：
      - `git push origin {target_branch}`
      - 若被拒绝，先 `git pull --rebase`，解决冲突，重新验证，再 push。
