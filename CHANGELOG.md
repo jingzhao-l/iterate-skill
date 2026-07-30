@@ -5,6 +5,65 @@
 
 ---
 
+## [2.0.2] — 2026-07-29
+
+### 安全 / Security
+
+针对 ClawHub SkillSpector 审计报告的剩余 findings 进行第二轮修复。本次涉及**行为变更**（默认值从 `true` 改为 `false`）和**命令安全策略升级**（从"警告+确认"改为"硬拒绝"）。
+
+- **`extra_validation_commands` 改为硬白名单 / Strict whitelist enforcement**（Finding 1: Context-Inappropriate Capability）：
+  - `iterate_cli/personalize.py` 的 `validate_extra_command` 从"未知前缀警告但可确认添加"改为"未知前缀**直接拒绝**"。
+  - wizard 步骤移除确认分支，不再提供绕过白名单的路径。
+  - 只有 `KNOWN_SAFE_COMMAND_PREFIXES` 中列出的 30+ 常见 test/lint/type-check/build 工具前缀才会被接受。
+  - 测试同步更新：`test_unknown_prefix_warns_but_accepts` → `test_unknown_prefix_rejected`，`test_python_m_with_unknown_module_warns` → `test_python_m_with_unknown_module_rejected`，`test_add_extra_validation_commands` 验证 `safety check` 被拒绝。
+
+- **`git reset --hard` 全部替换为非破坏性命令 / Non-destructive rollback**（Findings 11-14: Tool Parameter Abuse）：
+  - Phase 2 原子修复回滚：`git reset --hard HEAD` → `git restore --staged --worktree .`
+  - Phase 3 全量验证回滚：`git reset --hard iterate/round-{round}-backup` → `git reset --mixed iterate/round-{round}-backup && git restore --worktree .`
+  - Phase 5 备份标签回滚引用：同上替换。
+  - `--mixed` 只移动分支指针不改工作区，`git restore` 再恢复文件，避免了 `--hard` 的数据丢失风险。
+
+- **`push_per_round` 和 `auto_merge` 默认值改为 `false` / Secure-by-default**（Findings 7-10: Missing User Warnings）：
+  - `config/iterate.config.yaml`：`push_per_round: true` → `false`，新增 `auto_merge: false`。
+  - `config/config.schema.json`：新增 `auto_merge` 字段定义（boolean, default: false）。
+  - `iterate_cli/generator.py`：`OnboardingData.push_per_round` 默认值 `True` → `False`，生成配置新增 `auto_merge: False`。
+  - `iterate_cli/wizard.py`：`_collect_git_config` 的 `_ask_yes_no` 默认值 `True` → `False`；`_load_existing_data` 的 fallback `True` → `False`。
+  - `scripts/install.py`：`config --interactive` 的 `push_per_round` fallback `True` → `False`。
+  - SKILL.md Phase 5 Merge/Push 步骤改为条件化：仅在配置显式设为 `true` 时才执行自动 merge/push。
+
+- **架构修复审批门禁显式化 / Explicit approval gate**（Finding 5）：
+  - SKILL.md Phase 3 用户审批步骤标注为 **强制门禁 / Mandatory gate**。
+  - 新增安全约束说明：此门禁不可跳过、不可自动绕过，独立于 merge/push 流程。
+
+- **命令白名单双层强制执行说明 / Dual-layer whitelist enforcement**（Finding 6）：
+  - SKILL.md 安全章节更新：明确标注配置时校验（validate.py）和个性化硬白名单（validate_extra_command）双层执行。
+  - 个性化硬白名单部分明确说明"不在白名单中的命令**直接拒绝**，不可通过用户确认绕过"。
+
+- **`description` 补充 update 能力 / Description accuracy**（Finding 2）：
+  - SKILL.md frontmatter description 从 "cross-assistant installer" 扩展为 "cross-assistant installer/update system with mandatory SHA256 checksum verification"。
+  - Update 命令远程下载说明从"若包含 SHA256SUMS.txt 则校验"改为"**强制校验**，缺失则拒绝下载"。
+
+- **`scripts/install.py` 强制 SHA256 校验 / Mandatory checksum verification**（延续 v2.0.1 未提交变更）：
+  - `_download_release_source` 在 `checksum_url` 为 None 时拒绝下载。
+  - `_run_validate_subprocess` 替换 `_load_validate_module`，用 subprocess 替代 exec_module 消除 static analysis 误报。
+
+### Breaking Changes
+
+- **`push_per_round` 默认值从 `true` 改为 `false`**：新 onboarding 生成的配置不再自动 push。已有配置不受影响（值已显式写入）。
+- **`auto_merge` 新增字段，默认 `false`**：新 onboarding 生成的配置不自动 merge。已有配置无此字段时视为 `false`。
+- **`extra_validation_commands` 未知前缀从"警告+确认"改为"拒绝"**：之前可通过确认添加非白名单命令，现在直接拒绝。
+
+### 升级 / Upgrade
+
+```bash
+python scripts/install.py update --ai trae --target /path/to/project
+```
+
+或直接从 GitHub Release 下载 v2.0.2 source code：
+https://github.com/jingzhao-l/iterate-skill/releases/tag/v2.0.2
+
+---
+
 ## [2.0.1] — 2026-07-29
 
 ### 安全 / Security

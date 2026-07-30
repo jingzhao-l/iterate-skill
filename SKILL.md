@@ -1,7 +1,7 @@
 ---
 name: iterate
-description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer.
-version: 2.0.1
+description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
+version: 2.0.2
 permissions:
   file_read: true
   file_write: true
@@ -510,7 +510,7 @@ if empty AND deferredArchitectural is empty:
    若验证失败：
    - 追加 `.iterate_decisions.md`：`Atomic fix validation failed: {details}`
    - 输出：`❌ Round {round}: atomic fix validation failed, stopping iteration`
-   - **回滚本轮所有原子修改**：`git reset --hard HEAD`。**仅限 `iterate/*` 分支，严禁对 `main`/`master` 执行 reset --hard**（仍在迭代分支上，不影响 main/master）。
+   - **回滚本轮所有原子修改**：`git restore --staged --worktree .`（非破坏性回滚，恢复暂存区和工作区到 HEAD 状态）。**仅限 `iterate/*` 分支执行**（仍在迭代分支上，不影响 main/master）。
    - 将本轮已识别但未执行的架构问题保留在 `deferredArchitectural` 中，供下次 `/iterate` 会话处理。
    - `break`
 
@@ -532,7 +532,9 @@ if empty AND deferredArchitectural is empty:
    - 检测 `executableArchitectural` 内部 task 之间的文件重叠；如有重叠，按依赖顺序拆分为串行 task 或合并为单一 task。
    - 最终确保不同 task 之间的文件集互不重叠。
 
-3. **用户审批 / User approval**
+3. **用户审批 / User approval** — **强制门禁 / Mandatory gate**
+
+   > **安全约束 / Security constraint**：架构修复**必须**经用户显式批准后方可执行。此门禁不可跳过、不可自动绕过。即使用户在配置中启用了 `auto_merge: true`，架构修复的审批仍然独立于 merge/push 流程，必须单独获得用户确认。
 
    呈现给用户：
 
@@ -597,7 +599,7 @@ if empty AND deferredArchitectural is empty:
    若失败：
    - 追加 `.iterate_decisions.md`：`Full validation failed: {details}`
    - 输出：`❌ Round {round}: full validation failed, stopping iteration`
-   - **回滚本轮所有修改**（原子 + 已执行架构）：`git reset --hard iterate/round-{round}-backup`（或 `git reset --hard HEAD`）。**仅限 `iterate/*` 分支，严禁对 `main`/`master` 执行 reset --hard**（仍在迭代分支上，不影响 main/master）。
+   - **回滚本轮所有修改**（原子 + 已执行架构）：`git reset --mixed iterate/round-{round}-backup && git restore --worktree .`（非破坏性回滚：`--mixed` 移动分支指针但不改工作区，`git restore` 再恢复工作区文件）。**仅限 `iterate/*` 分支执行**（仍在迭代分支上，不影响 main/master）。
    - 将未执行的架构问题保留在 `deferredArchitectural` 中。
    - `break`
 
@@ -622,28 +624,34 @@ if empty AND deferredArchitectural is empty:
 
 1. **Backup tag / 备份标签**
    - 在 commit 前为当前迭代分支打标签：`git tag iterate/round-{round}-backup`
-   - 若后续需要回滚，可 `git reset --hard iterate/round-{round}-backup`。**仅限 `iterate/*` 分支，严禁对 `main`/`master` 执行 reset --hard**（仅用于迭代分支，不用于 main/master）。
+   - 若后续需要回滚，可 `git reset --mixed iterate/round-{round}-backup && git restore --worktree .`（非破坏性回滚）。**仅限 `iterate/*` 分支执行**（仅用于迭代分支，不用于 main/master）。
 
 2. **Commit / 提交**
    - `git add <changed files>`
    - `git commit -m "fix: iterate round {round} — {brief summary}"`
 
 3. **Merge / 合并** ⚠️ **高风险动作 / High-risk action**
-   - **风险提示 / Risk notice**：自动 merge 回 `target_branch`（通常为 `main`）会将本轮所有修改立即推到主分支历史。建议在重要仓库设置 `git.push_per_round: false` + `git.auto_merge: false`（见 Step 5 配置表），改为创建 PR 由人工 review；或为 `main` 启用分支保护。
-   - `git checkout {target_branch}`
-   - `git merge iterate/<goal-slug>-<timestamp>`
-   - 如有冲突，先尝试自动解决；若无法自动解决，**停止合并并询问用户**手动解决或跳过本轮。
-   - 冲突解决后重新验证，验证失败则切回迭代分支，**不推进 main/master**。
+   - **默认安全 / Secure by default**：`git.auto_merge` 默认为 `false`，即不自动 merge。仅当用户在配置中显式设为 `true` 时才执行以下 merge 步骤。
+   - **风险提示 / Risk notice**：若启用自动 merge，回 `target_branch`（通常为 `main`）会将本轮所有修改立即推到主分支历史。建议保持 `auto_merge: false`，改为创建 PR 由人工 review；或为 `main` 启用分支保护。
+   - 若 `git.auto_merge` 为 `true`：
+     - `git checkout {target_branch}`
+     - `git merge iterate/<goal-slug>-<timestamp>`
+     - 如有冲突，先尝试自动解决；若无法自动解决，**停止合并并询问用户**手动解决或跳过本轮。
+     - 冲突解决后重新验证，验证失败则切回迭代分支，**不推进 main/master**。
+   - 若 `git.auto_merge` 为 `false`（默认）：
+     - 不执行 merge，修改保留在迭代分支上。
+     - 可使用 `AskUserQuestion` 询问用户是否在本轮手动 merge 或留到会话结束时统一处理。
 
 4. **Push / 推送** ⚠️ **高风险动作 / High-risk action**
-   - **风险提示 / Risk notice**：自动 push 到 `target_branch` 会立即对外可见，且后续轮次会基于已 push 的状态继续迭代。建议生产仓库设置 `push_per_round: false`，仅在会话结束时一次性 push；或改为 `auto_merge: false` 只创建 PR。
+   - **默认安全 / Secure by default**：`git.push_per_round` 默认为 `false`，即不自动 push。
+   - **风险提示 / Risk notice**：若启用自动 push，会立即对外可见，且后续轮次会基于已 push 的状态继续迭代。建议保持 `push_per_round: false`，仅在会话结束时一次性 push。
    - 若 `git.push_per_round` 为 `true`：
      - `git push origin {target_branch}`
      - 若被拒绝，先 `git pull --rebase`，解决冲突，重新验证，再 push。
      - push-pull-rebase 循环最多执行 3 次；超过仍失败则停止并告知用户手动处理。
      - **绝不 force-push 到 main/master**。
-   - 若 `git.push_per_round` 为 `false`：
-     - 本轮回不 push，只保留本地 merge。
+   - 若 `git.push_per_round` 为 `false`（默认）：
+     - 本轮回不 push，只保留本地 merge（若 `auto_merge` 也为 false，则仅保留在迭代分支）。
      - 在最后一轮或会话结束时，一次性 `git push origin {target_branch}`；同样遵循 3 次循环限制。
 
 5. **切回迭代分支 / Switch back**
@@ -840,7 +848,8 @@ iterate/
 | `atomic.max_adjacent_methods` | int | `3` | 相邻方法数上限 |
 | `git.target_branch` | string | `"main"` | 合并目标分支 |
 | `git.use_worktree` | bool | `false` | 是否使用 worktree |
-| `git.push_per_round` | bool | `true` | 每轮通过后是否立即 push |
+| `git.push_per_round` | bool | `false` | 每轮通过后是否立即 push（默认 false，安全） |
+| `git.auto_merge` | bool | `false` | 每轮验证后是否自动 merge 回 target_branch（默认 false，安全） |
 | `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
 | `validation.commands.<module>` | list | 示例命令 | 各模块验证命令 |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
@@ -869,9 +878,10 @@ iterate/
    - `projectContext` 中不得包含 API 密钥、密码、Token、数据库连接字符串、私钥内容。
    - 执行命令时避免将敏感文件作为参数或输出内容。
 
-2. **命令白名单 / Command whitelist**
+2. **命令白名单 / Command whitelist — 双层强制执行 / Dual-layer enforcement**
+   - **配置时校验 / Config-time validation**：`scripts/validate.py` 在校验配置时检查 `validation.commands` 中的每条命令是否以 `validation.command_whitelist` 中的前缀开头。不在白名单中的命令会报错，配置校验失败。
+   - **个性化硬白名单 / Personalization strict whitelist**：`iterate personalize` 中添加 `extra_validation_commands` 时，使用 `validate_extra_command` 进行硬白名单校验——拒绝 shell 链接元字符（`;`、`|`、`&` 等），且只接受预批准的工具前缀（pytest/ruff/mypy/eslint/swift/cargo 等 30+ 常见 test/lint/build 工具）。不在白名单中的命令**直接拒绝**，不可通过用户确认绕过。
    - 默认白名单：`ruff`, `mypy`, `pytest`, `swift`, `npm run`, `yarn`, `pnpm`, `go test`, `cargo`, `python`, `python3` 等已知前缀。
-   - 不在白名单中的 `validation.commands` 必须经用户二次确认后方可执行。
    - 可用 `python scripts/validate.py config <path>` 提前检查命令合规性。
 
 3. **修改范围审计 / Modification scope audit**
@@ -891,7 +901,7 @@ iterate/
 6. **Update 命令远程下载说明 / Update command remote download**
    - `scripts/install.py update` 会从 GitHub Release 下载最新源码并安装到 AI 助手技能目录。
    - 下载前会提示确认（可用 `--yes` 跳过）。
-   - 若 release 包含 `SHA256SUMS.txt` asset，会自动校验 tarball 完整性；若无，则给出警告并提示风险。
+   - **强制校验 / Mandatory checksum verification**：下载 release tarball 时**必须**验证 SHA256 校验和。若 release 缺少 `SHA256SUMS.txt` asset 或校验和不匹配，**拒绝下载并回退到本地源码**。绝不会在未校验完整性的情况下安装远程代码。
 
 ## Reviewer Prompt 质量检查清单 / Reviewer Prompt Quality Checklist
 

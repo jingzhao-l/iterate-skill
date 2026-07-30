@@ -65,7 +65,7 @@ class OnboardingData:
     dimensions: list[str] = field(default_factory=list)
     target_branch: str = "main"
     review_scope: str = "full"
-    push_per_round: bool = True
+    push_per_round: bool = False
     validation_commands: dict[str, list[str]] = field(default_factory=dict)
     command_whitelist: list[str] = field(default_factory=list)
     fingerprints: list[FingerprintEntry] = field(default_factory=list)
@@ -143,6 +143,7 @@ def generate_config_yaml(data: OnboardingData) -> str:
             "target_branch": data.target_branch,
             "use_worktree": False,
             "push_per_round": data.push_per_round,
+            "auto_merge": False,
         },
         "validation": {
             "command_whitelist": data.command_whitelist,

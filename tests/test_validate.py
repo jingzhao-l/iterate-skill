@@ -895,7 +895,11 @@ class TestUpdateCommand:
         monkeypatch.setattr(
             install,
             "_fetch_latest_release_info",
-            lambda _token: {"tag": "v1.2.3", "tarball_url": "https://example.com/release.tar.gz"},
+            lambda _token: {
+                "tag": "v1.2.3",
+                "tarball_url": "https://example.com/release.tar.gz",
+                "checksum_url": "https://example.com/SHA256SUMS.txt",
+            },
         )
         monkeypatch.setattr(
             install, "_download_release_source", lambda _url, _checksum_url, _token: release_source
@@ -1010,7 +1014,7 @@ class TestSkillMarkdownFile:
         assert meta.get("name") == "iterate"
         assert isinstance(meta.get("description"), str)
         assert meta.get("description")
-        assert meta.get("version") == "2.0.1"
+        assert meta.get("version") == "2.0.2"
 
     def test_skill_md_body_is_non_empty(self) -> None:
         text = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
