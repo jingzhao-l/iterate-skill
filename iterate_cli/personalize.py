@@ -90,9 +90,16 @@ def validate_extra_command(cmd: str) -> tuple[bool, str]:
     """Validate a single extra validation command string.
 
     Returns (is_valid, reason). When is_valid is False the caller MUST
-    refuse to persist the command. When is_valid is True but the command
-    is unusual, reason carries a warning the caller should surface to
-    the user before persisting.
+    refuse to persist the command. When is_valid is True the command
+    passed both the blacklist (shell metacharacter) and whitelist
+    (known-safe prefix) checks.
+
+    v2.0.2: switched from "warn but accept with confirmation" to a
+    **strict whitelist** — commands that do not start with a known-safe
+    tool prefix are rejected outright. This eliminates the
+    Context-Inappropriate Capability finding from the ClawHub audit
+    by ensuring no arbitrary command can be persisted into executable
+    validation configuration, even with user confirmation.
     """
     if not cmd or not cmd.strip():
         return False, "empty command"
@@ -104,11 +111,12 @@ def validate_extra_command(cmd: str) -> tuple[bool, str]:
         )
     if _is_known_safe_command(cmd):
         return True, ""
-    return True, (
+    return False, (
         "command does not start with a known-safe tool prefix "
-        f"({sorted(KNOWN_SAFE_COMMAND_PREFIXES)[:6]}...); it will still be "
-        "accepted if you confirm, but make sure you trust this command "
-        "because it will run automatically during validation"
+        f"({sorted(KNOWN_SAFE_COMMAND_PREFIXES)[:6]}...); only pre-approved "
+        "test/lint/type-check/build tooling is allowed in extra validation "
+        "commands. To add a new tool, extend KNOWN_SAFE_COMMAND_PREFIXES "
+        "in iterate_cli/personalize.py"
     )
 
 # ---------------------------------------------------------------------------
@@ -791,22 +799,13 @@ def _run_validation_commands_step(
                 print("  ⏭️  空命令，跳过 / Empty command, skipped")
                 continue
 
-            # v2.0.1: validate command before persisting. Refuses
-            # shell-chaining metacharacters; warns on unknown prefixes.
+            # v2.0.2: strict whitelist — rejects shell-chaining
+            # metacharacters AND unknown command prefixes. No
+            # confirmation bypass; only pre-approved tooling is allowed.
             is_valid, reason = validate_extra_command(cmd)
             if not is_valid:
                 print(f"  ❌ 拒绝 / Rejected: {reason}")
                 continue
-            if reason:
-                print(f"  ⚠️  警告 / Warning: {reason}")
-                confirmed = _ask_yes_no(
-                    "  仍要添加此命令? / Still add this command?",
-                    default=False,
-                    input_func=input_func,
-                )
-                if not confirmed:
-                    print("  ⏭️  已跳过 / Skipped")
-                    continue
 
             existing = result.get(module, [])
             if cmd not in existing:

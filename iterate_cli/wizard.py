@@ -282,7 +282,7 @@ def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingDat
             dimensions=config.get("dimensions") or [],
             target_branch=(config.get("git") or {}).get("target_branch", "main"),
             review_scope=(config.get("review") or {}).get("scope", "full"),
-            push_per_round=(config.get("git") or {}).get("push_per_round", True),
+            push_per_round=(config.get("git") or {}).get("push_per_round", False),
             validation_commands=(config.get("validation") or {}).get("commands") or {},
             command_whitelist=(config.get("validation") or {}).get("command_whitelist") or [],
             fingerprints=capture_fingerprints(project_root),
@@ -491,7 +491,7 @@ def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
     scope_choice = input_func("选择 / Select (1/2, 默认 1): ").strip()
     review_scope = "changed-only" if scope_choice == "2" else "full"
 
-    push = _ask_yes_no("每轮通过后立即 push? / Push after each round?", input_func, default=True)
+    push = _ask_yes_no("每轮通过后立即 push? / Push after each round?", input_func, default=False)
 
     return target_branch, review_scope, push
 

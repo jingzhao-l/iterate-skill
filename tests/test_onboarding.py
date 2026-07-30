@@ -2189,11 +2189,13 @@ class TestRunPersonalizeWizard:
             # Step 9: extra validation commands
             "a",              # add
             "python",         # module
-            "bandit -r src/", # command (whitelisted, no confirmation needed)
+            "bandit -r src/", # command (whitelisted, accepted)
             "a",              # add another
             "python",         # module
-            "safety check",   # command (NOT whitelisted, triggers warning)
-            "y",              # confirm adding non-whitelisted command (v2.0.1)
+            "safety check",   # command (NOT whitelisted → rejected v2.0.2)
+            "a",              # add another
+            "python",         # module
+            "mypy iterate_cli/",  # command (whitelisted, accepted)
             "s",              # skip
             "y",              # confirm save
         ])
@@ -2203,7 +2205,9 @@ class TestRunPersonalizeWizard:
         assert result is not None
         assert "python" in result.extra_validation_commands
         assert "bandit -r src/" in result.extra_validation_commands["python"]
-        assert "safety check" in result.extra_validation_commands["python"]
+        assert "mypy iterate_cli/" in result.extra_validation_commands["python"]
+        # safety check was rejected, must NOT be in the result
+        assert "safety check" not in result.extra_validation_commands.get("python", [])
 
     def test_add_validation_command_duplicate_skipped(self, fake_project: Path) -> None:
         responses = iter([
@@ -3424,16 +3428,17 @@ class TestValidateExtraCommand:
             "sh test.sh",
         ],
     )
-    def test_unknown_prefix_warns_but_accepts(self, cmd: str) -> None:
+    def test_unknown_prefix_rejected(self, cmd: str) -> None:
+        """v2.0.2: unknown prefixes are rejected, not warned+accepted."""
         is_valid, reason = validate_extra_command(cmd)
-        assert is_valid is True
-        assert reason != ""  # warning present
-        assert "known-safe" in reason or "trust" in reason.lower()
+        assert is_valid is False
+        assert "known-safe" in reason or "pre-approved" in reason
 
-    def test_python_m_with_unknown_module_warns(self) -> None:
+    def test_python_m_with_unknown_module_rejected(self) -> None:
+        """v2.0.2: python -m with unknown module is rejected."""
         is_valid, reason = validate_extra_command("python -m evil_module")
-        assert is_valid is True
-        assert reason != ""  # warning because evil_module not whitelisted
+        assert is_valid is False
+        assert "known-safe" in reason or "pre-approved" in reason
 
     def test_python_m_with_metacharacter_rejected(self) -> None:
         is_valid, reason = validate_extra_command("python -m pytest; rm -rf /")

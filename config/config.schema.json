@@ -91,7 +91,13 @@
         },
         "push_per_round": {
           "type": "boolean",
-          "description": "Push to remote after every round (true) or only at the end (false)."
+          "description": "Push to remote after every round (true) or only at the end (false).",
+          "default": false
+        },
+        "auto_merge": {
+          "type": "boolean",
+          "description": "Automatically merge iteration branch into target_branch after each round (true) or leave on iteration branch for manual merge (false).",
+          "default": false
         }
       }
     },

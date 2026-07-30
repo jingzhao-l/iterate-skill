@@ -45,9 +45,13 @@ git:
   target_branch: main
   use_worktree: false
   # 每轮修复验证通过后是否立即 push。
-  # true:  每轮都 push（旧行为）。
-  # false: 只在本地合并，最后一次性 push。
-  push_per_round: true
+  # true:  每轮都 push（旧行为，高风险）。
+  # false: 只在本地合并，最后一次性 push（默认，安全）。
+  push_per_round: false
+  # 是否在每轮验证通过后自动 merge 回 target_branch。
+  # true:  每轮自动 merge（旧行为，高风险）。
+  # false: 不自动 merge，仅保留在迭代分支上，由用户决定何时合并（默认，安全）。
+  auto_merge: false
 
 # 验证命令安全 / Validation command safety
 # 白名单中的命令前缀无需二次确认即可执行。
