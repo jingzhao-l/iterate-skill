@@ -204,6 +204,48 @@ async function cleanup(dir) {
 }
 
 /**
+ * Install the iterate CLI (the `iterate` command) so the user can run
+ * `iterate onboard` / `iterate status` / `iterate refresh` right after
+ * installation, making the one-command flow actually end-to-end.
+ *
+ * The CLI is not required for the AI-assistant skill itself, so a failure
+ * here is non-fatal: we warn and let the user install it later.
+ *
+ * Strategy: prefer ``pipx`` (isolated global install) when available,
+ * otherwise fall back to ``python -m pip install --user``. If ``iterate``
+ * already exists on PATH, skip entirely.
+ */
+async function installCli(pythonBin, sourceDir) {
+  if (await commandExists('iterate')) {
+    success('iterate CLI already available.');
+    return;
+  }
+
+  step('Installing iterate CLI (for `iterate onboard` / status / refresh)');
+  try {
+    if (await commandExists('pipx')) {
+      await runCommand('pipx', ['install', '--force', '.', '-q'], { cwd: sourceDir });
+      success('iterate CLI installed via pipx.');
+    } else {
+      await runCommand(pythonBin, ['-m', 'pip', 'install', '--user', '--quiet', '.'], {
+        cwd: sourceDir,
+      });
+      success('iterate CLI installed via pip --user.');
+    }
+  } catch (err) {
+    warning(`Could not install iterate CLI: ${err.message}`);
+    hint('Install it later with: pipx install <repo>  or  pip install .');
+    return;
+  }
+
+  if (await commandExists('iterate')) {
+    success('iterate CLI is ready to use.');
+  } else {
+    hint('Ensure ~/.local/bin (or pipx bin) is on your PATH.');
+  }
+}
+
+/**
  * Ask the user a yes/no question on the terminal.
  *
  * Used to decide whether the current directory should be treated as the
@@ -389,6 +431,10 @@ async function main(options = {}) {
     info('Starting skill installation (Python installer)...');
     await runPythonInstall(venvPython, installScript, installArgs, { cwd: sourceDir });
     success('iterate-skill installation finished.');
+
+    // Install the iterate CLI so `iterate onboard` works right after install.
+    await installCli(pythonBin, sourceDir);
+
     frameSection('Done', [
       `\x1b[32m✓\x1b[0m iterate-skill ${tag} installed`,
       `  Run \x1b[36miterate onboard\x1b[0m in your project to initialize.`,

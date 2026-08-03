@@ -1,7 +1,7 @@
 ---
 name: iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.2.0
+version: 2.2.1
 permissions:
   file_read: true
   file_write: true
@@ -215,7 +215,7 @@ iterate refresh      # 增量刷新（保留用户手写区）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
 ```
 
-CLI 通道适用于对项目有清晰认知的用户；AI 通道适用于需要自动扫描代码库的场景。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。
+CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适合希望手动控制 onboarding 过程的用户；AI 通道则完全由 AI 自动扫描生成。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。
 
 **多路引导 / Multi-Path Flow**：
 - **首次 onboarding**（无 ITERATE.md）：确认手动配置 → 基础 onboarding → 询问是否需要个性化配置。
@@ -223,7 +223,7 @@ CLI 通道适用于对项目有清晰认知的用户；AI 通道适用于需要�
 
 **个性化配置 / Personalization**：捕获 AI 扫描不到的项目专属约束（禁区、风险区、已知意图、维度定制等 9 类）。运行 `iterate personalize` 可在项目中途随时追加，无需重做 onboarding。详见 README。
 
-安装 CLI：`pip install .` 或 `pipx install .`（从本仓库根目录）。
+安装 CLI：`npx iterate-skill-installer` 会自动安装 `iterate` CLI；也可手动 `pip install .` 或 `pipx install .`（从本仓库根目录）。
 
 ---
 
