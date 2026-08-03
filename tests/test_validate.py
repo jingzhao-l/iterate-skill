@@ -696,6 +696,71 @@ class TestArrowSelectState:
         assert "◉" in rendered
         assert "Done" in rendered
 
+    def test_preselected_only_when_provided(self) -> None:
+        from install import _ArrowSelectState
+
+        # Only the preselected option starts selected.
+        state = _ArrowSelectState(["a", "b", "c"], preselected={"a"})
+        assert state.result == ["a"]
+
+        # Unknown options in the preselected set are ignored.
+        state = _ArrowSelectState(["a", "b", "c"], preselected={"a", "x"})
+        assert state.result == ["a"]
+
+        # default_all is ignored when preselected is provided.
+        state = _ArrowSelectState(["a", "b", "c"], default_all=True, preselected={"b"})
+        assert state.result == ["b"]
+
+
+class TestMultiSelectPreselect:
+    def test_prompt_multi_select_preselects_only_detected(self) -> None:
+        from install import _prompt_multi_select
+
+        inputs = iter([""])  # just press Enter to confirm
+        result = _prompt_multi_select(["a", "b", "c"], lambda _: next(inputs), preselected={"a"})
+        assert result == ["a"]
+
+    def test_prompt_multi_select_no_preselect_selects_all_by_default(self) -> None:
+        from install import _prompt_multi_select
+
+        inputs = iter([""])
+        result = _prompt_multi_select(["a", "b"], lambda _: next(inputs))
+        assert result == ["a", "b"]
+
+
+class TestInteractiveSelectionPreselect:
+    def test_preselects_only_detected_tools(self, tmp_path, monkeypatch) -> None:
+        from install import Path as IPath, interactive_select_assistants
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        (fake_home / ".trae" / "skills").mkdir(parents=True)
+        (fake_home / ".cursor" / "skills").mkdir(parents=True)
+
+        monkeypatch.setattr(IPath, "home", lambda: fake_home)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        inputs = iter([""])  # just press Enter to confirm
+        result = interactive_select_assistants(fake_home, lambda _: next(inputs))
+        assert "trae" in result
+        assert "cursor" in result
+        assert "claude" not in result  # not detected -> not pre-selected
+
+
+class TestInstallCancelExitCode:
+    def test_cancel_returns_nonzero(self, tmp_path: Path, monkeypatch) -> None:
+        from install import install_command
+
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        monkeypatch.setattr("install.interactive_select_assistants", lambda *a, **k: [])
+        # No assistants selected -> installation cancelled -> non-zero exit.
+        assert (
+            install_command(None, target, False, source, False, False, input) == 1
+        )
+
 
 class TestConfigCommand:
     def test_config_init_copies_master(self, tmp_path: Path) -> None:

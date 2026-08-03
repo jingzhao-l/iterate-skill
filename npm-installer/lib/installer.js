@@ -185,11 +185,10 @@ function runPythonInstall(pythonBin, installScript, args, options = {}) {
       ...options,
     });
     child.on('close', (code) => {
-      if (code === 0) {
-        resolve(code);
-      } else {
-        reject(new InstallerError(`Python install exited with code ${code}`));
-      }
+      // Resolve with the exit code (rather than rejecting) so the caller can
+      // distinguish "real failure" from "user cancelled the selection" and
+      // avoid reporting a false success.
+      resolve(code);
     });
     child.on('error', reject);
   });
@@ -429,7 +428,14 @@ async function main(options = {}) {
     if (globalInstall) installArgs.push('--global');
 
     info('Starting skill installation (Python installer)...');
-    await runPythonInstall(venvPython, installScript, installArgs, { cwd: sourceDir });
+    const installExit = await runPythonInstall(venvPython, installScript, installArgs, { cwd: sourceDir });
+    if (installExit !== 0) {
+      // The Python installer prints a specific reason (e.g. "No assistants
+      // selected. Installation cancelled."). Do not proceed to the CLI install
+      // or print a success box — the install was cancelled or failed.
+      warning('Skill installation was cancelled or failed; stopping.');
+      return installExit;
+    }
     success('iterate-skill installation finished.');
 
     // Install the iterate CLI so `iterate onboard` works right after install.

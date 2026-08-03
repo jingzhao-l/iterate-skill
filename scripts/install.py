@@ -355,6 +355,7 @@ def _prompt_multi_select(
     input_func: InputFunc,
     title: str = "Select items",
     default_all: bool = True,
+    preselected: set[str] | None = None,
 ) -> list[str]:
     """Present a simple text-based multi-select prompt.
 
@@ -366,12 +367,18 @@ def _prompt_multi_select(
         options: List of option identifiers (e.g. assistant keys).
         input_func: Callable used to read user input.
         title: Prompt title.
-        default_all: Whether all options start selected.
+        default_all: Whether all options start selected (ignored when
+            ``preselected`` is provided).
+        preselected: Optional set of options to start selected (e.g. the
+            auto-detected tools). When provided, only these are pre-checked.
 
     Returns:
         List of selected option identifiers.
     """
-    selected = set(options) if default_all else set()
+    if preselected is not None:
+        selected = set(preselected) & set(options)
+    else:
+        selected = set(options) if default_all else set()
 
     while True:
         _tui_print(f"\n{title}", style="iterate.primary")
@@ -430,11 +437,22 @@ class _ArrowSelectState:
     unit-tested without a TTY.
     """
 
-    def __init__(self, options: list[str], default_all: bool = True) -> None:
+    def __init__(
+        self,
+        options: list[str],
+        default_all: bool = True,
+        preselected: set[str] | None = None,
+    ) -> None:
         self.options = list(options)
         self.rows: list[str | None] = self.options + [None]
         self.index = 0
-        self.selected: set[str] = set(self.options) if default_all else set()
+        if preselected is not None:
+            # Pre-select only the given options (e.g. auto-detected tools).
+            # Options not in the preselected set are still shown but start
+            # unchecked, so the user must explicitly opt in to them.
+            self.selected: set[str] = set(preselected) & set(self.options)
+        else:
+            self.selected = set(self.options) if default_all else set()
         self.finished = False
 
     def move(self, delta: int) -> None:
@@ -512,6 +530,7 @@ def _prompt_arrow_multi_select(
     options: list[str],
     title: str = "Select items",
     default_all: bool = True,
+    preselected: set[str] | None = None,
 ) -> list[str]:
     """Present an arrow-key multi-select menu (requires a TTY).
 
@@ -522,7 +541,10 @@ def _prompt_arrow_multi_select(
     Args:
         options: List of option identifiers (e.g. assistant keys).
         title: Menu title.
-        default_all: Whether all options start selected.
+        default_all: Whether all options start selected (ignored when
+            ``preselected`` is provided).
+        preselected: Optional set of options to start selected (e.g. the
+            auto-detected tools). When provided, only these are pre-checked.
 
     Returns:
         List of selected option identifiers (empty if cancelled).
@@ -531,7 +553,7 @@ def _prompt_arrow_multi_select(
     import termios
     import tty
 
-    state = _ArrowSelectState(options, default_all)
+    state = _ArrowSelectState(options, default_all, preselected)
 
     def redraw() -> None:
         total_lines = len(state.rows) + 2
@@ -600,17 +622,20 @@ def interactive_select_assistants(
         for assistant in installed:
             _success(f"  {AI_DISPLAY_NAMES.get(assistant, assistant)}")
         options = installed + sorted(a for a in SUPPORTED_AI if a not in installed)
-        default_all = True
+        # Pre-select only the detected (installed) tools; the rest are shown
+        # but unchecked so the user can opt in explicitly. This matches the
+        # "detect and pre-select" intent instead of pre-selecting every tool.
+        preselected = set(installed)
     else:
         _warning("未检测到已安装的 AI 工具 / No supported AI assistants detected.")
         _hint("可手动选择要安装的工具 / You can select tools manually below.")
         options = sorted(SUPPORTED_AI.keys())
-        default_all = False
+        preselected = set()
 
     title = "选择要安装的 AI 工具 / Select AI assistants to install to"
     if sys.stdin.isatty():
-        return _prompt_arrow_multi_select(options, title, default_all)
-    return _prompt_multi_select(options, input_func, title, default_all)
+        return _prompt_arrow_multi_select(options, title, preselected=preselected)
+    return _prompt_multi_select(options, input_func, title, preselected=preselected)
 
 
 def install_command(
@@ -643,7 +668,8 @@ def install_command(
         selected = interactive_select_assistants(effective_target, input_func)
         if not selected:
             _hint("No assistants selected. Installation cancelled.")
-            return 0
+            # Non-zero so the npx wrapper does not report a false success.
+            return 1
         targets = selected
     else:
         targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
