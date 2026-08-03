@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import shutil
 import sys
 import tarfile
@@ -52,8 +53,14 @@ try:
         "iterate.title": "bold cyan",
         "iterate.label": "bold",
     })
-    _CONSOLE = Console(theme=_THEME, force_terminal=None)
-    _ERR_CONSOLE = Console(theme=_THEME, stderr=True, force_terminal=None)
+    # Respect FORCE_COLOR like other CLI tools; default to auto-detect (TTY).
+    _force_color = os.environ.get("FORCE_COLOR", "")
+    if _force_color in ("", "0", "false", "False"):
+        _force_terminal = None
+    else:
+        _force_terminal = True
+    _CONSOLE = Console(theme=_THEME, force_terminal=_force_terminal)
+    _ERR_CONSOLE = Console(theme=_THEME, stderr=True, force_terminal=_force_terminal)
     _RICH_AVAILABLE = True
 except ImportError:
     _CONSOLE = None
