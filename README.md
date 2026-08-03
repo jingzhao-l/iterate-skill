@@ -20,7 +20,7 @@
 2. 发现的问题分为两类：
    - **原子问题（Atomic）**：单文件、单函数、≤20 行，直接自动修复。
    - **架构问题（Architectural）**：跨文件、改接口、新增模块，需要用户批准后执行。
-3. 每轮修复后自动验证、合并、推送。
+3. 每轮修复后自动验证；合并与推送由配置控制（默认不自动 merge/push，secure-by-default）。
 4. 循环直到零 findings 或达到轮数上限。
 
 **Iterate Skill** enables your AI assistant to act as a rigorous senior engineer:
@@ -29,7 +29,7 @@
 2. Classify findings into:
    - **Atomic issues**: single file, single function, ≤20 lines — fixed automatically.
    - **Architectural issues**: cross-file, API changes, new modules — executed only after user approval.
-3. Validate, merge, and push after each round.
+3. Validate after each round; merge and push are config-controlled (default: no auto merge/push, secure-by-default).
 4. Loop until zero findings or max rounds reached.
 
 ---
@@ -39,6 +39,9 @@
 - **可配置多维审查 / Configurable Multi-Dimension Review**：默认 9 维度，可通过 `dimensions` 列表启用/禁用。
 - **双轨修复 / Two-Track Fixing**：原子问题自动修，架构问题经审批后修。
 - **Git 隔离 / Git Isolation**：每轮在独立分支或 worktree 中完成，通过 merge 回主分支，绝不直接提交到 main/master。
+- **Secure-by-default**：`push_per_round` 和 `auto_merge` 默认 `false`，不自动 push/merge；回滚使用非破坏性 `git restore`，避免数据丢失。
+- **命令白名单双层强制 / Dual-Layer Command Whitelist**：配置时校验 + 个性化硬白名单，拒绝 shell 链接元字符和非白名单命令前缀。
+- **强制校验和验证 / Mandatory Checksum Verification**：`update` 命令下载 release tarball 时强制 SHA256 校验，缺失或不匹配则拒绝下载。
 - **多框架适配 / Multi-Framework Adaptation**：支持 Trae、Claude Code、Cursor、Windsurf、GitHub Copilot、Codex、Roo Code 等 13+ 工具，核心流程与工具细节解耦。
 - **可配置 / Configurable**：通过 `iterate.config.yaml` 自定义审查维度、验证命令、轮数、语言等。
 - **完整审计 / Full Audit Trail**：每轮结果写入 `.iterate_decisions.md`，可追溯、可复盘。
@@ -122,7 +125,7 @@ pipx install .
 iterate --version
 ```
 
-安装后可在任何项目目录中使用 `iterate` 命令：
+安装后可在任何项目目录中使用 `iterate` 命令。模板文件（`ITERATE.template.md`）已打包进 wheel，无需额外配置：
 
 ```bash
 # 交互式 onboarding 向导（多路引导：首次/非首次自动分支）
@@ -372,7 +375,9 @@ iterate-skill/
 │   ├── scan.py                       # 项目技术栈扫描
 │   ├── fingerprint.py                # manifest SHA-256 指纹
 │   ├── generator.py                  # ITERATE.md / config 生成
-│   └── refresh.py                    # 增量刷新与重新 onboarding
+│   ├── refresh.py                    # 增量刷新与重新 onboarding
+│   └── data/
+│       └── ITERATE.template.md       # 打包到 wheel 的模板副本（pip install 后使用）
 ├── scripts/
 │   ├── install.py                    # CLI：安装、卸载、配置、校验
 │   ├── validate.py                   # 配置、决策日志、维度校验脚本
@@ -407,7 +412,7 @@ Loop (round = 1 .. max_rounds)
   ├─ Phase 2: 原子问题直接修复（单文件/单函数/≤20 行）
   ├─ Phase 3: 架构问题用户批准 → 子代理串行执行
   ├─ Phase 4: 记录本轮结果
-  └─ Phase 5: 验证 → merge 回主分支 → push
+  └─ Phase 5: 验证 → merge（若 auto_merge=true）→ push（若 push_per_round=true）
 
 Summary
 ```
@@ -433,7 +438,8 @@ Summary
 | `review.scope` | string | `"full"` | 审查范围：`changed-only` 增量 / `full` 全量 |
 | `atomic.max_lines` | int | `20` | 原子问题最大行数 |
 | `git.target_branch` | string | `main` | 合并目标分支 |
-| `git.push_per_round` | bool | `true` | 每轮通过后是否立即 push |
+| `git.push_per_round` | bool | `false` | 每轮通过后是否立即 push（默认 false，安全） |
+| `git.auto_merge` | bool | `false` | 每轮验证后是否自动 merge 回 target_branch（默认 false，安全） |
 | `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
 | `validation.commands` | object | 示例命令 | 各模块验证命令（**由使用者完全自定义**） |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
@@ -463,7 +469,7 @@ Summary
 2. 若项目根目录存在 `iterate.config.yaml`，则递归覆盖 Master 中的同名字段。
 3. `dimensions` 列表如需完全替换而非追加，在 Overrides 中直接写完整列表。
 
-示例：项目只需要 correctness / security 两个维度，且关闭每轮 push：
+示例：项目只需要 correctness / security 两个维度，且关闭每轮 push 和自动 merge：
 
 ```yaml
 dimensions:
@@ -472,6 +478,7 @@ dimensions:
 
 git:
   push_per_round: false
+  auto_merge: false
 ```
 
 ### 命令行配置 / CLI Configuration
@@ -519,9 +526,12 @@ python scripts/install.py validate --target /path/to/project
 ## 安全说明 / Security
 
 - **高自主性**：本 skill 会自主执行文件编辑、`git` 操作以及 `validation.commands` 中配置的命令。所有修改先在隔离分支/worktree 中进行，架构修复必须经用户批准。
-- **命令白名单**：执行 `validation.commands` 前会检查 `validation.command_whitelist`，不在白名单中的命令需要二次确认。请只配置你信任的命令。
+- **Secure-by-default Git 操作**：`push_per_round` 和 `auto_merge` 默认均为 `false`——不会自动 push 到远程，也不会自动 merge 回主分支。需用户在配置中显式设为 `true` 才会执行。回滚操作使用非破坏性命令（`git restore`），避免 `git reset --hard` 的数据丢失风险。
+- **命令白名单（双层强制）**：
+  - **配置时校验**：`scripts/validate.py` 检查 `validation.commands` 中每条命令是否以 `validation.command_whitelist` 中的前缀开头，不合规则报错。
+  - **个性化硬白名单**：`iterate personalize` 中添加 `extra_validation_commands` 时，只接受 30+ 预批准的工具前缀（pytest/ruff/mypy/eslint/swift/cargo 等），拒绝 shell 链接元字符（`;`、`|`、`&` 等），不在白名单中的命令**直接拒绝**，不可通过确认绕过。
 - **敏感文件**：skill 运行过程中不会读取 `.env`、密钥、凭证等敏感文件；`projectContext` 中也不得包含密钥内容。
-- **Update 命令**：`python scripts/install.py update` 会从 GitHub Release 下载最新源码。下载前会提示确认（`--yes` 跳过），若 release 提供 `SHA256SUMS.txt` 则会自动校验 tarball 完整性。
+- **Update 命令**：`python scripts/install.py update` 会从 GitHub Release 下载最新源码。下载前会提示确认（`--yes` 跳过）。**强制 SHA256 校验**：下载 release tarball 时必须验证校验和，若 release 缺少 `SHA256SUMS.txt` 或校验和不匹配，拒绝下载并回退到本地源码。
 
 ## 许可证 / License
 
