@@ -1,7 +1,7 @@
 ---
 name: iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.2.5
+version: 2.2.6
 permissions:
   file_read: true
   file_write: true
@@ -200,7 +200,7 @@ Summary
    - **validation.commands 涉及后续自动执行，必须经用户显式确认。**
 
 5. **写入产物 / Write outputs**
-   - 写入 `ITERATE.md` 和 `iterate.config.yaml`（含 `onboarding.fingerprints`）。
+   - 写入 `ITERATE.md` 和 `iterate.config.yaml`，其中 `onboarding` 段必须包含 `channel: "ai"`、`completed_at`（ISO 8601 时间戳）与 `fingerprints`，与 CLI 通道产出保持一致（否则 `iterate status` 会显示 `Channel: unknown`）。
    - 继续正常迭代流程（Step 1）。
 
 ### CLI Onboarding（命令行通道）

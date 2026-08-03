@@ -5,6 +5,20 @@
 
 ---
 
+## [2.2.6] — 2026-08-03
+
+### 修复 / Bug Fixes
+
+- **macOS 上 CLI 自动安装的 PEP 668 降级提示**：当系统 Python 为 externally-managed（如 Homebrew Python）导致 `pip install --user` 被拒时，安装器现在能识别该错误并给出明确的下一步指引（安装 pipx 或 `--break-system-packages`），而不是仅输出笼统的失败信息。
+- **SKILL.md 的 AI Onboarding 明确写入 `channel`/`completed_at`**：此前 AI 通道生成的 `iterate.config.yaml` 未明确要求写 `onboarding.channel` 与 `onboarding.completed_at`，导致 `iterate status` 对 AI-onboarded 项目显示 `Channel: unknown`。现已与 CLI 通道产出对齐。
+
+### 维护 / Maintenance
+
+- **同步发布 npm 包至 `2.2.6`**：此前 npm 包停留在 `2.1.6`，用户 `npx iterate-skill-installer` 会拉到旧版安装器。本次将 npm 包与 GitHub Release 版本对齐并重新发布。
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.2.6`。
+
+---
+
 ## [2.2.5] — 2026-08-03
 
 ### 修复 / Bug Fixes

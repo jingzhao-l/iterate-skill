@@ -226,10 +226,25 @@ async function installCli(pythonBin, sourceDir) {
       await runCommand('pipx', ['install', '--force', '.', '-q'], { cwd: sourceDir });
       success('iterate CLI installed via pipx.');
     } else {
-      await runCommand(pythonBin, ['-m', 'pip', 'install', '--user', '--quiet', '.'], {
-        cwd: sourceDir,
-      });
-      success('iterate CLI installed via pip --user.');
+      // No pipx: fall back to `pip install --user`. On macOS/Linux this can
+      // fail with a PEP 668 "externally-managed-environment" error (e.g.
+      // Homebrew Python). Detect that and give the user an actionable next
+      // step instead of a generic failure message.
+      try {
+        await runCommand(pythonBin, ['-m', 'pip', 'install', '--user', '--quiet', '.'], {
+          cwd: sourceDir,
+        });
+        success('iterate CLI installed via pip --user.');
+      } catch (err) {
+        const msg = err && err.message ? err.message : '';
+        if (msg.includes('externally-managed')) {
+          warning('System Python is externally managed (PEP 668); `pip install --user` was blocked.');
+          hint('Install pipx and retry:  brew install pipx && pipx install .');
+          hint('Or override the check:  python3 -m pip install --user --break-system-packages .');
+        } else {
+          throw err;
+        }
+      }
     }
   } catch (err) {
     warning(`Could not install iterate CLI: ${err.message}`);
