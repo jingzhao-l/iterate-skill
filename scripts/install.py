@@ -122,20 +122,68 @@ RELEASE_API_URL = (
 CHECKSUMS_ASSET_NAME = "SHA256SUMS.txt"
 EXPECTED_TARBALL_FILENAME = "iterate-skill.tar.gz"
 
-SUPPORTED_AI = {
-    "trae": ".trae/skills/iterate",
+SUPPORTED_AI: dict[str, str] = {
+    # Universal / 通用 AI 编程工具（skills.sh 热门支持）
     "claude": ".claude/skills/iterate",
+    "claude-code": ".claude/skills/iterate",
     "cursor": ".cursor/skills/iterate",
+    "trae": ".trae/skills/iterate",
     "windsurf": ".windsurf/skills/iterate",
     "copilot": ".github/skills/iterate",
     "codex": ".codex/skills/iterate",
+    "gemini": ".gemini/skills/iterate",
+    "gemini-cli": ".gemini/skills/iterate",
+    "opencode": ".opencode/skills/iterate",
+    "aider": ".aider/skills/iterate",
+    "aiderdesk": ".aiderdesk/skills/iterate",
+    "zed": ".zed/skills/iterate",
+    "warp": ".warp/skills/iterate",
+    "continue": ".continue/skills/iterate",
+    "cline": ".cline/skills/iterate",
     "roocode": ".roo/skills/iterate",
     "qoder": ".qoder/skills/iterate",
-    "gemini": ".gemini/skills/iterate",
-    "opencode": ".opencode/skills/iterate",
-    "continue": ".continue/skills/iterate",
     "augment": ".augment/skills/iterate",
-    "warp": ".warp/skills/iterate",
+    "openclaw": "skills/iterate",
+    "autohand": ".autohand/skills/iterate",
+    "bob": ".bob/skills/iterate",
+    "codearts": ".codeartsdoer/skills/iterate",
+    "antigravity": ".antigravity/skills/iterate",
+    "amp": ".amp/skills/iterate",
+    "deepagents": ".deepagents/skills/iterate",
+    "kimi": ".kimi/skills/iterate",
+    "astral": ".astral/skills/iterate",
+}
+
+# 显示名称映射：让交互菜单更友好
+AI_DISPLAY_NAMES: dict[str, str] = {
+    "claude": "Claude",
+    "claude-code": "Claude Code",
+    "cursor": "Cursor",
+    "trae": "Trae",
+    "windsurf": "Windsurf",
+    "copilot": "GitHub Copilot",
+    "codex": "Codex",
+    "gemini": "Gemini",
+    "gemini-cli": "Gemini CLI",
+    "opencode": "OpenCode",
+    "aider": "Aider",
+    "aiderdesk": "AiderDesk",
+    "zed": "Zed",
+    "warp": "Warp",
+    "continue": "Continue",
+    "cline": "Cline",
+    "roocode": "Roo Code",
+    "qoder": "Qoder",
+    "augment": "Augment",
+    "openclaw": "OpenClaw",
+    "autohand": "Autohand Code CLI",
+    "bob": "IBM Bob",
+    "codearts": "CodeArts Agent",
+    "antigravity": "Antigravity",
+    "amp": "Amp",
+    "deepagents": "Deep Agents",
+    "kimi": "Kimi Code CLI",
+    "astral": "Astral",
 }
 
 REQUIRED_FILES = [
@@ -226,13 +274,171 @@ def copy_skill_files(
     return copied
 
 
+def detect_installed_assistants(effective_target: Path) -> list[str]:
+    """Detect which supported AI assistants appear to be installed.
+
+    Heuristic: check whether the assistant's configuration / skill parent
+    directory exists under ``effective_target``. A tool is considered
+    installed if its parent directory (e.g. ``.trae/skills``) exists.
+
+    Args:
+        effective_target: Base directory to inspect (home or project).
+
+    Returns:
+        Sorted list of assistant keys that appear installed.
+    """
+    found: list[str] = []
+    for assistant, relative_dir in SUPPORTED_AI.items():
+        # Use the skill directory's parent as the marker (e.g. .trae/skills).
+        marker = effective_target / relative_dir
+        if marker.parent.exists():
+            found.append(assistant)
+    return sorted(set(found))
+
+
+def _prompt_multi_select(
+    options: list[str],
+    input_func: InputFunc,
+    title: str = "Select items",
+    default_all: bool = True,
+) -> list[str]:
+    """Present a simple text-based multi-select prompt.
+
+    This intentionally avoids extra dependencies (e.g. simple-term-menu)
+    so the installer remains a single standalone script. The interaction
+    mimics skills.sh: numbers toggle selection, Enter confirms.
+
+    Args:
+        options: List of option identifiers (e.g. assistant keys).
+        input_func: Callable used to read user input.
+        title: Prompt title.
+        default_all: Whether all options start selected.
+
+    Returns:
+        List of selected option identifiers.
+    """
+    selected = set(options) if default_all else set()
+
+    while True:
+        _tui_print(f"\n{title}", style="iterate.primary")
+        _hint("Enter numbers to toggle (comma-separated), or press Enter to confirm.")
+        _hint("Tip: prefix with 'a' to select all, 'n' to select none.")
+        for i, opt in enumerate(options, 1):
+            display = AI_DISPLAY_NAMES.get(opt, opt)
+            marker = "[✓]" if opt in selected else "[ ]"
+            _tui_print(f"  {marker} {i}. {display}", style="iterate.label" if opt in selected else "")
+
+        raw = input_func("  \u2514 ").strip()
+        if not raw:
+            break
+
+        if raw.lower() == "a":
+            selected = set(options)
+            continue
+        if raw.lower() == "n":
+            selected = set()
+            continue
+
+        changed = False
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                idx = int(part) - 1
+            except ValueError:
+                _warning(f"Invalid input: '{part}'")
+                continue
+            if not (0 <= idx < len(options)):
+                _warning(f"Out of range: '{part}'")
+                continue
+            opt = options[idx]
+            if opt in selected:
+                selected.remove(opt)
+            else:
+                selected.add(opt)
+            changed = True
+
+        if not changed:
+            # User typed something but nothing valid; keep looping.
+            _hint("No valid selection; try again or press Enter to confirm.")
+
+    return sorted(selected)
+
+
+def interactive_select_assistants(
+    effective_target: Path,
+    input_func: InputFunc = input,
+) -> list[str]:
+    """Interactively select AI assistants to install to.
+
+    Auto-detects installed assistants and pre-selects them. Falls back to
+    listing all supported assistants if none are detected.
+
+    Args:
+        effective_target: Base directory to inspect (home or project).
+        input_func: Callable used to read user input.
+
+    Returns:
+        Sorted list of selected assistant keys. Empty list means the user
+        cancelled or selected nothing.
+    """
+    installed = detect_installed_assistants(effective_target)
+    if installed:
+        _tui_print("Detected AI assistants on this machine:", style="iterate.primary")
+        for assistant in installed:
+            _success(f"  {AI_DISPLAY_NAMES.get(assistant, assistant)}")
+        options = installed + sorted(a for a in SUPPORTED_AI if a not in installed)
+        default_all = True
+    else:
+        _warning("Could not auto-detect any supported AI assistants.")
+        _hint("You can still select tools manually below.")
+        options = sorted(SUPPORTED_AI.keys())
+        default_all = False
+
+    selected = _prompt_multi_select(
+        options,
+        input_func,
+        title="Which agents do you want to install to?",
+        default_all=default_all,
+    )
+    return selected
+
+
 def install_command(
-    ai: str, target: Path, dry_run: bool, source: Path, force: bool, global_install: bool
+    ai: str | None,
+    target: Path,
+    dry_run: bool,
+    source: Path,
+    force: bool,
+    global_install: bool,
+    input_func: InputFunc = input,
 ) -> int:
-    """Install the skill for one or more AI assistants."""
-    targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
+    """Install the skill for one or more AI assistants.
+
+    Args:
+        ai: Target assistant key, "all", or None for interactive selection.
+        target: Project or home directory.
+        dry_run: Print what would be copied without copying.
+        source: Source directory containing skill files.
+        force: Overwrite existing skill files.
+        global_install: Install into home directory instead of project.
+        input_func: Callable used to read user input (interactive mode).
+
+    Returns:
+        Exit code: 0 for success, 1 for error/cancel.
+    """
     effective_target = Path.home() if global_install else target
     mode_label = " (global)" if global_install else ""
+
+    if ai is None:
+        selected = interactive_select_assistants(effective_target, input_func)
+        if not selected:
+            _hint("No assistants selected. Installation cancelled.")
+            return 0
+        targets = selected
+    else:
+        targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
 
     for assistant in targets:
         relative_dir = SUPPORTED_AI[assistant]
@@ -255,12 +461,40 @@ def install_command(
 
 
 def uninstall_command(
-    ai: str, target: Path, global_install: bool, yes: bool = False
+    ai: str | None,
+    target: Path,
+    global_install: bool,
+    yes: bool = False,
+    input_func: InputFunc = input,
 ) -> int:
-    """Remove the skill for one or more AI assistants."""
-    targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
+    """Remove the skill for one or more AI assistants.
+
+    Args:
+        ai: Target assistant key, "all", or None for auto-detect.
+        target: Project or home directory.
+        global_install: Uninstall from home directory instead of project.
+        yes: Skip confirmation prompt.
+        input_func: Callable used to read user input.
+
+    Returns:
+        Exit code: 0 for success, 1 for error/cancel.
+    """
     effective_target = Path.home() if global_install else target
     mode_label = " (global)" if global_install else ""
+
+    if ai is None:
+        # Auto-detect existing iterate-skill installations.
+        existing_keys = [
+            assistant
+            for assistant in SUPPORTED_AI
+            if (effective_target / SUPPORTED_AI[assistant]).exists()
+        ]
+        if not existing_keys:
+            _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
+            return 0
+        targets = existing_keys
+    else:
+        targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
 
     existing = [
         (assistant, effective_target / SUPPORTED_AI[assistant])
@@ -275,7 +509,7 @@ def uninstall_command(
         _tui_print("The following installations will be removed:", style="iterate.primary")
         for assistant, destination in existing:
             _hint(f"- {assistant}{mode_label}: {destination}")
-        answer = input("  \u2514 Proceed? [y/N]: ").strip().lower()
+        answer = input_func("  \u2514 Proceed? [y/N]: ").strip().lower()
         if answer not in ("y", "yes"):
             _hint("Uninstall cancelled.")
             return 0
@@ -473,7 +707,7 @@ def update_command(
     update_source = release_source if release_source else source
 
     if ai is None:
-        assistants = _detect_installed_assistants(effective_target)
+        assistants = detect_installed_assistants(effective_target)
         if not assistants:
             _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
             _hint("Run 'install --ai <assistant>' first, or use 'update --ai <assistant>'.")
@@ -488,7 +722,14 @@ def update_command(
 
     try:
         for assistant in assistants:
-            install_command(assistant, target, False, update_source, force, global_install)
+            install_command(
+                ai=assistant,
+                target=target,
+                dry_run=False,
+                source=update_source,
+                force=force,
+                global_install=global_install,
+            )
     finally:
         if release_source:
             shutil.rmtree(release_source, ignore_errors=True)
@@ -892,7 +1133,9 @@ def _add_install_parser(subparsers) -> None:
         "install", help="Install the skill into an AI assistant's skills directory."
     )
     parser.add_argument(
-        "--ai", required=True, choices=AI_CHOICES, help="Target AI assistant (or 'all')."
+        "--ai",
+        choices=AI_CHOICES,
+        help="Target AI assistant (or 'all'). If omitted, auto-detect installed assistants and prompt.",
     )
     parser.add_argument(
         "--target",
@@ -919,7 +1162,7 @@ def _add_uninstall_parser(subparsers) -> None:
         "uninstall", help="Remove the skill from an AI assistant's skills directory."
     )
     parser.add_argument(
-        "--ai", required=True, choices=AI_CHOICES, help="Target AI assistant (or 'all')."
+        "--ai", choices=AI_CHOICES, help="Target AI assistant (or 'all'). If omitted, auto-detect installed assistants."
     )
     parser.add_argument(
         "--target",
@@ -1085,6 +1328,7 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
                 source,
                 args.force,
                 args.global_install,
+                input,
             )
         except FileNotFoundError as exc:
             _error(f"Error: {exc}")
@@ -1092,7 +1336,7 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
 
     if args.command == "uninstall":
         return uninstall_command(
-            args.ai, args.target.resolve(), args.global_install, args.yes
+            args.ai, args.target.resolve(), args.global_install, args.yes, input
         )
 
     if args.command == "validate":
