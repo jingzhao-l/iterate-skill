@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "PyYAML==6.0.2",
+    "rich==13.7.1",
 ]
 
 [project.scripts]

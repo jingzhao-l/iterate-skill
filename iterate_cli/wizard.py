@@ -5,13 +5,15 @@ Guides the user through project setup step by step. Uses a pluggable
 inject mock responses without touching stdin.
 
 The wizard uses multi-path branching:
-- **First-time** (no ITERATE.md): gate → basic onboarding → offer personalization.
-- **Returning user** (ITERATE.md exists): offer config update → offer personalization.
+- **First-time** (no ITERATE.md): gate -> basic onboarding -> offer personalization.
+- **Returning user** (ITERATE.md exists): offer config update -> offer personalization.
+
+All visual output is routed through the unified TUI layer (``iterate_cli.tui``)
+for consistent skills.sh / Claude Code style styling.
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -26,6 +28,7 @@ from iterate_cli.scan import (
     suggest_dimensions,
     suggest_validation_commands,
 )
+from iterate_cli.tui import tui
 
 # Type alias for the input function used throughout the wizard.
 InputFunc = Callable[[str], str]
@@ -71,8 +74,8 @@ def run_wizard(
     """Run the interactive CLI onboarding wizard with multi-path branching.
 
     The flow depends on whether ``ITERATE.md`` already exists:
-    - **First-time**: gate question → basic onboarding → offer personalization.
-    - **Returning user**: offer config update → offer personalization.
+    - **First-time**: gate question -> basic onboarding -> offer personalization.
+    - **Returning user**: offer config update -> offer personalization.
 
     Args:
         project_root: The project root directory to onboard.
@@ -99,10 +102,9 @@ def _first_time_flow(
     input_func: InputFunc,
 ) -> Optional[OnboardingData]:
     """Handle first-time onboarding (no ITERATE.md exists)."""
-    print("首次 onboarding / First-time onboarding.")
-    print("AI 工具可自动扫描代码库生成基础配置；CLI 适合手动配置 + 个性化约束。")
-    print("AI tools can auto-scan; CLI suits manual config + personalization.")
-    print()
+    tui.info("首次 onboarding / First-time onboarding.")
+    tui.hint("AI 工具可自动扫描代码库生成基础配置；CLI 适合手动配置 + 个性化约束。")
+    tui.empty_line()
 
     if not _gate_question(input_func):
         return None
@@ -112,7 +114,7 @@ def _first_time_flow(
         return None
 
     # Offer personalization after basic onboarding.
-    print()
+    tui.empty_line()
     if _ask_yes_no(
         "是否有 iterate 场景的个性化要求? / Any personalization requirements?",
         input_func,
@@ -131,13 +133,13 @@ def _returning_user_flow(
     input_func: InputFunc,
 ) -> Optional[OnboardingData]:
     """Handle returning user (ITERATE.md already exists)."""
-    print("检测到已有 ITERATE.md / ITERATE.md already exists.")
-    print()
+    tui.info("检测到已有 ITERATE.md / ITERATE.md already exists.")
+    tui.empty_line()
 
     # Ask about updating basic config.
-    print("⚠️  不建议手动更新基础配置，建议使用 `iterate refresh` 进行增量刷新。")
-    print("    Manual update is discouraged; use `iterate refresh` for incremental update.")
-    print()
+    tui.warning("不建议手动更新基础配置，建议使用 `iterate refresh` 进行增量刷新。")
+    tui.hint("Manual update is discouraged; use `iterate refresh` for incremental update.", indent=4)
+    tui.empty_line()
     update_basic = _ask_yes_no(
         "是否需要更新基础配置? / Update basic config?",
         input_func,
@@ -151,22 +153,23 @@ def _returning_user_flow(
         # Load existing config to preserve settings.
         data = _load_existing_onboarding_data(project_root)
         if data is None:
-            print("无法加载现有配置，转为基础 onboarding / Could not load existing config, falling back to basic.")
+            tui.warning("无法加载现有配置，转为基础 onboarding / Could not load existing config, falling back to basic.")
             data = _run_basic_wizard(project_root, input_func)
             if data is None:
                 return None
 
     # Ask about personalization.
-    print()
-    print("是否进行个性化配置? 或使用 skill 时遇到问题? /")
-    print("Personalize configuration? Encountered issues during skill usage?")
-    personalize = _ask_yes_no("", input_func)
+    tui.empty_line()
+    personalize = _ask_yes_no(
+        "是否进行个性化配置? 或使用 skill 时遇到问题? / Personalize configuration?",
+        input_func,
+    )
 
     if not update_basic and not personalize:
         # User declined both: no changes needed.
-        print()
-        print("配置未变更。如需更新 AI 维护区，请使用 `iterate refresh`。")
-        print("No changes made. Use `iterate refresh` to update AI-maintained sections.")
+        tui.empty_line()
+        tui.info("配置未变更。如需更新 AI 维护区，请使用 `iterate refresh`。")
+        tui.hint("No changes made. Use `iterate refresh` to update AI-maintained sections.", indent=2)
         return NO_CHANGES_NEEDED
 
     if personalize:
@@ -188,9 +191,9 @@ def _returning_user_flow(
             data.personalization = personalization
         elif not update_basic:
             # User declined basic update AND cancelled personalization: nothing to write.
-            print()
-            print("个性化配置已取消，基础配置未更新。无变更。")
-            print("Personalization cancelled, basic config not updated. No changes.")
+            tui.empty_line()
+            tui.info("个性化配置已取消，基础配置未更新。无变更。")
+            tui.hint("Personalization cancelled, basic config not updated. No changes.", indent=2)
             return NO_CHANGES_NEEDED
 
     return data
@@ -201,7 +204,8 @@ def _run_basic_wizard(
     input_func: InputFunc,
 ) -> Optional[OnboardingData]:
     """Run the basic onboarding wizard (tech stack, dimensions, git, etc.)."""
-    scan = scan_project(project_root)
+    with tui.status("正在扫描项目 / Scanning project..."):
+        scan = scan_project(project_root)
     _print_scan_results(scan)
 
     confirmed_langs = _confirm_tech_stack(scan, input_func)
@@ -252,16 +256,15 @@ def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingDat
     try:
         config_path = project_root / "iterate.config.yaml"
         if not config_path.is_file():
-            print("⚠️  iterate.config.yaml not found, cannot load existing config.", file=sys.stderr)
+            tui.error("iterate.config.yaml not found, cannot load existing config.")
             return None
 
         config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         # Reject non-dict YAML (e.g. ``- item`` or ``just a string``) so
         # that ``config.get(...)`` below does not raise AttributeError.
         if not isinstance(config, dict):
-            print(
-                f"⚠️  {config_path} is not a YAML mapping (got {type(config).__name__}).",
-                file=sys.stderr,
+            tui.error(
+                f"{config_path} is not a YAML mapping (got {type(config).__name__})."
             )
             return None
         scan = scan_project(project_root)
@@ -289,18 +292,16 @@ def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingDat
             language=config.get("language", "en"),
         )
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        print(f"⚠️  Failed to load existing config: {exc}", file=sys.stderr)
+        tui.error(f"Failed to load existing config: {exc}")
         return None
 
 
 def _print_welcome() -> None:
     """Print the wizard welcome banner."""
-    print()
-    print("=" * 60)
-    print("  Iterate Skill — Onboarding")
-    print("  项目知识库初始化 / Project Knowledge Base Setup")
-    print("=" * 60)
-    print()
+    tui.intro(
+        "Iterate Skill — Onboarding",
+        "项目知识库初始化 / Project Knowledge Base Setup",
+    )
 
 
 def _gate_question(input_func: InputFunc) -> bool:
@@ -309,48 +310,45 @@ def _gate_question(input_func: InputFunc) -> bool:
     If the user is not confident, suggests using the AI tool instead.
     Returns True to continue CLI onboarding, False to abort.
     """
-    print("本向导将在命令行中收集项目信息以生成 ITERATE.md 和 iterate.config.yaml。")
-    print("This wizard collects project info to generate ITERATE.md and iterate.config.yaml.")
-    print()
-    print("⚠️  命令行向导无法扫描代码库，只能基于你的回答生成配置。")
-    print("    The CLI wizard cannot scan your codebase; it only uses your answers.")
-    print()
-    print("如果你对项目的技术栈、模块结构和构建/测试命令有清晰认知，可继续。")
-    print("If you have a clear understanding of your project's tech stack,")
-    print("module structure, and build/test commands, you can continue.")
-    print()
-    print("否则建议在 AI 编程工具中直接调用 /iterate，由 AI 自动扫描代码库完成 onboarding。")
-    print("Otherwise, use /iterate in your AI coding tool for automated AI onboarding.")
-    print()
+    tui.info("本向导将在命令行中收集项目信息以生成 ITERATE.md 和 iterate.config.yaml。")
+    tui.empty_line()
+    tui.warning("命令行向导无法扫描代码库，只能基于你的回答生成配置。")
+    tui.hint("The CLI wizard cannot scan your codebase; it only uses your answers.", indent=4)
+    tui.empty_line()
+    tui.info("如果你对项目的技术栈、模块结构和构建/测试命令有清晰认知，可继续。")
+    tui.hint("If you have a clear understanding of your project's tech stack, module structure, and build/test commands, you can continue.", indent=2)
+    tui.empty_line()
+    tui.info("否则建议在 AI 编程工具中直接调用 /iterate，由 AI 自动扫描代码库完成 onboarding。")
+    tui.hint("Otherwise, use /iterate in your AI coding tool for automated AI onboarding.", indent=2)
+    tui.empty_line()
 
     answer = _ask_yes_no("是否继续命令行 onboarding? / Continue CLI onboarding?", input_func)
     if not answer:
-        print()
-        print("💡 建议在 AI 编程工具中调用 /iterate 完成 onboarding。")
-        print("   Suggestion: run /iterate in your AI coding tool for AI onboarding.")
-        print()
+        tui.empty_line()
+        tui.info("建议在 AI 编程工具中调用 /iterate 完成 onboarding。")
+        tui.hint("Suggestion: run /iterate in your AI coding tool for AI onboarding.", indent=2)
+        tui.empty_line()
         return False
     return True
 
 
 def _confirm_tech_stack(scan: ScanResult, input_func: InputFunc) -> list[str]:
     """Show detected tech stack and let user confirm or override."""
-    print()
-    print("--- 技术栈 / Tech Stack ---")
+    tui.section("技术栈 / Tech Stack")
 
     if scan.detected_languages:
-        print(f"检测到的语言 / Detected languages: {', '.join(scan.detected_languages)}")
-        print(f"检测到的包管理器 / Detected package managers: {', '.join(scan.detected_package_managers)}")
-        print(f"Manifest 文件 / Manifest files: {', '.join(scan.manifests)}")
-        print()
+        tui.key_value("语言 / Languages", ", ".join(scan.detected_languages))
+        tui.key_value("包管理器 / Pkg managers", ", ".join(scan.detected_package_managers))
+        tui.key_value("Manifest 文件 / Manifests", ", ".join(scan.manifests))
+        tui.empty_line()
         if _ask_yes_no("检测结果是否正确? / Is this correct?", input_func):
             return list(scan.detected_languages)
     else:
-        print("未检测到已知 manifest 文件 / No known manifest files detected.")
-        print()
+        tui.hint("未检测到已知 manifest 文件 / No known manifest files detected.")
+        tui.empty_line()
 
-    print("请手动输入主要语言（逗号分隔）/ Enter main languages (comma-separated):")
-    raw = input_func("  > ").strip()
+    tui.question("请手动输入主要语言（逗号分隔）/ Enter main languages (comma-separated):")
+    raw = input_func("  └ ").strip()
     if not raw:
         return ["Unknown"]
     return [lang.strip() for lang in raw.split(",") if lang.strip()]
@@ -361,20 +359,19 @@ def _collect_validation_commands(
     input_func: InputFunc,
 ) -> dict[str, list[str]]:
     """Collect validation commands from the user, with suggestions."""
-    print()
-    print("--- 验证命令 / Validation Commands ---")
-    print("这些命令会在每轮修复后自动执行。请确保它们正确且安全。")
-    print("These commands run automatically after each round. Ensure they are correct and safe.")
-    print()
+    tui.section("验证命令 / Validation Commands")
+    tui.info("这些命令会在每轮修复后自动执行。请确保它们正确且安全。")
+    tui.hint("These commands run automatically after each round. Ensure they are correct and safe.", indent=2)
+    tui.empty_line()
 
     suggested = suggest_validation_commands(scan)
     if suggested:
-        print("建议的命令（基于检测到的技术栈）/ Suggested commands (based on detected tech stack):")
+        tui.info("建议的命令（基于检测到的技术栈）/ Suggested commands:")
         for module, cmds in suggested.items():
-            print(f"  [{module}]")
+            tui.bullet(f"[{module}]", indent=4)
             for cmd in cmds:
-                print(f"    - {cmd}")
-        print()
+                tui.info(f"- {cmd}", indent=6)
+        tui.empty_line()
 
         if _ask_yes_no("使用这些命令? / Use these commands?", input_func):
             return suggested
@@ -386,23 +383,23 @@ def _manual_collect_commands(input_func: InputFunc) -> dict[str, list[str]]:
     """Manually collect validation commands from the user."""
     from iterate_cli.personalize import MODULE_NAME_PATTERN
 
-    print("手动输入验证命令（每行一条，空行结束该模块）/")
-    print("Enter commands manually (one per line, empty line to finish a module):")
-    print()
+    tui.info("手动输入验证命令（每行一条，空行结束该模块）/")
+    tui.hint("Enter commands manually (one per line, empty line to finish a module)", indent=2)
+    tui.empty_line()
 
     commands: dict[str, list[str]] = {}
     while True:
-        module = input_func("模块名 / Module name (如 python, swift, typescript; 留空结束 / empty to finish): ").strip()
+        module = input_func("  └ 模块名 / Module name (留空结束 / empty to finish): ").strip()
         if not module:
             break
         if not MODULE_NAME_PATTERN.match(module):
-            print(f"⚠️  模块名只能包含字母、数字、下划线、连字符、点。跳过 '{module}'。")
-            print(f"    Module name may only contain letters, digits, underscore, dash, dot. Skipping '{module}'.")
+            tui.warning(f"模块名只能包含字母、数字、下划线、连字符、点。跳过 '{module}'。", indent=4)
+            tui.hint(f"Module name may only contain letters, digits, underscore, dash, dot. Skipping '{module}'.", indent=6)
             continue
 
         cmds: list[str] = []
         while True:
-            cmd = input_func(f"  {module} 命令 / command (留空结束 / empty to finish): ").strip()
+            cmd = input_func(f"  └ {module} 命令 / command (留空结束 / empty to finish): ").strip()
             if not cmd:
                 break
             cmds.append(cmd)
@@ -415,28 +412,30 @@ def _manual_collect_commands(input_func: InputFunc) -> dict[str, list[str]]:
 
 def _collect_dimensions(scan: ScanResult, input_func: InputFunc) -> list[str]:
     """Let the user select review dimensions, with suggested defaults."""
-    print()
-    print("--- 审查维度 / Review Dimensions ---")
+    tui.section("审查维度 / Review Dimensions")
 
     suggested = suggest_dimensions(scan)
-    print(f"推荐维度 / Suggested: {', '.join(suggested)}")
-    print()
-    print("可用维度 / Available dimensions:")
-    for i, dim in enumerate(ALL_DIMENSIONS, 1):
-        marker = " ✓" if dim in suggested else ""
-        print(f"  {i}. {DIMENSION_LABELS[dim]}{marker}")
+    tui.info(f"推荐维度 / Suggested: {', '.join(suggested)}")
+    tui.empty_line()
+    tui.info("可用维度 / Available dimensions:")
+    items = []
+    markers = []
+    for dim in ALL_DIMENSIONS:
+        items.append(DIMENSION_LABELS[dim])
+        markers.append("✓" if dim in suggested else "")
+    tui.numbered_list(items, indent=4, markers=markers)
 
-    print()
-    print("输入编号选择/取消维度（逗号分隔），直接回车使用推荐项 /")
-    print("Enter numbers to toggle (comma-separated), or press Enter for suggested:")
-    raw = input_func("  > ").strip()
+    tui.empty_line()
+    tui.question("输入编号选择/取消维度（逗号分隔），直接回车使用推荐项 /")
+    tui.hint("Enter numbers to toggle (comma-separated), or press Enter for suggested:", indent=2)
+    raw = input_func("  └ ").strip()
 
     if not raw:
         return suggested
 
     selected = _parse_dimension_selection(raw)
     if not selected:
-        print("无效输入，使用推荐项 / Invalid input, using suggestions.")
+        tui.warning("无效输入，使用推荐项 / Invalid input, using suggestions.", indent=4)
         return suggested
 
     return selected
@@ -478,17 +477,18 @@ def _parse_dimension_selection(raw: str) -> list[str]:
 
 def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
     """Collect git-related configuration."""
-    print()
-    print("--- Git 配置 / Git Configuration ---")
+    tui.section("Git 配置 / Git Configuration")
 
-    target_branch = input_func("目标分支 / Target branch (默认 main, 留空用 main): ").strip()
+    target_branch = input_func("  └ 目标分支 / Target branch (默认 main, 留空用 main): ").strip()
     if not target_branch:
         target_branch = "main"
 
-    print("审查范围 / Review scope:")
-    print("  1. full — 全量审查（默认）/ Full review (default)")
-    print("  2. changed-only — 增量审查 / Changed files only")
-    scope_choice = input_func("选择 / Select (1/2, 默认 1): ").strip()
+    tui.info("审查范围 / Review scope:")
+    tui.numbered_list([
+        "full — 全量审查（默认）/ Full review (default)",
+        "changed-only — 增量审查 / Changed files only",
+    ], indent=4)
+    scope_choice = input_func("  └ 选择 / Select (1/2, 默认 1): ").strip()
     review_scope = "changed-only" if scope_choice == "2" else "full"
 
     push = _ask_yes_no("每轮通过后立即 push? / Push after each round?", input_func, default=False)
@@ -498,15 +498,14 @@ def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
 
 def _collect_project_info(input_func: InputFunc) -> tuple[str, str]:
     """Collect project description and code conventions."""
-    print()
-    print("--- 项目信息 / Project Info ---")
+    tui.section("项目信息 / Project Info")
 
-    description = input_func("一句话描述项目 / One-line project description: ").strip()
+    description = input_func("  └ 一句话描述项目 / One-line project description: ").strip()
 
-    print("代码约定（多行，空行结束）/ Code conventions (multi-line, empty line to finish):")
+    tui.info("代码约定（多行，空行结束）/ Code conventions (multi-line, empty line to finish):")
     conv_lines: list[str] = []
     while True:
-        line = input_func("  > ").strip()
+        line = input_func("  └ ").strip()
         if not line:
             break
         conv_lines.append(line)
@@ -517,59 +516,50 @@ def _collect_project_info(input_func: InputFunc) -> tuple[str, str]:
 
 def _confirm_summary(data: OnboardingData, input_func: InputFunc) -> bool:
     """Show a summary of collected data and ask for confirmation."""
-    print()
-    print("=" * 60)
-    print("  确认 / Confirmation")
-    print("=" * 60)
-    print()
-    print(f"  通道 / Channel:         {data.channel}")
-    print(f"  语言 / Languages:       {', '.join(data.scan.detected_languages) or 'N/A'}")
-    print(f"  维度 / Dimensions:      {', '.join(data.dimensions)}")
-    print(f"  目标分支 / Branch:      {data.target_branch}")
-    print(f"  审查范围 / Scope:       {data.review_scope}")
-    print(f"  每轮 push / Push:       {data.push_per_round}")
+    tui.section("确认 / Confirmation")
+    tui.key_value("通道 / Channel", data.channel)
+    tui.key_value("语言 / Languages", ", ".join(data.scan.detected_languages) or "N/A")
+    tui.key_value("维度 / Dimensions", ", ".join(data.dimensions))
+    tui.key_value("目标分支 / Branch", data.target_branch)
+    tui.key_value("审查范围 / Scope", data.review_scope)
+    tui.key_value("每轮 push / Push", str(data.push_per_round))
     if data.validation_commands:
-        print("  验证命令 / Validation:")
+        tui.info("验证命令 / Validation:", indent=2)
         for module, cmds in data.validation_commands.items():
             for cmd in cmds:
-                print(f"    [{module}] {cmd}")
+                tui.bullet(f"[{module}] {cmd}", indent=4)
     else:
-        print("  验证命令 / Validation:  (无 / none)")
+        tui.key_value("验证命令 / Validation", "(无 / none)")
     if data.fingerprints:
-        print(f"  指纹 / Fingerprints:    {len(data.fingerprints)} manifest(s)")
-    print()
-    print("将写入 / Will write: ITERATE.md + iterate.config.yaml")
-    print()
+        tui.key_value("指纹 / Fingerprints", f"{len(data.fingerprints)} manifest(s)")
+    tui.empty_line()
+    tui.hint("将写入 / Will write: ITERATE.md + iterate.config.yaml")
+    tui.empty_line()
 
     return _ask_yes_no("确认生成? / Confirm and generate?", input_func)
 
 
 def _print_scan_results(scan: ScanResult) -> None:
     """Print a summary of scan results."""
-    print()
-    print("--- 扫描结果 / Scan Results ---")
-    if scan.manifests:
-        print(f"  Manifest: {', '.join(scan.manifests)}")
-    else:
-        print("  Manifest: (无 / none)")
+    tui.section("扫描结果 / Scan Results")
+    tui.key_value("Manifest", ", ".join(scan.manifests) if scan.manifests else "(无 / none)")
     if scan.detected_languages:
-        print(f"  Languages: {', '.join(scan.detected_languages)}")
+        tui.key_value("Languages", ", ".join(scan.detected_languages))
     if scan.top_level_dirs:
-        print(f"  Directories: {', '.join(scan.top_level_dirs[:10])}")
+        dirs = scan.top_level_dirs[:10]
+        tui.key_value("Directories", ", ".join(dirs))
         if len(scan.top_level_dirs) > 10:
-            print(f"    ... and {len(scan.top_level_dirs) - 10} more")
-    print(f"  Specs: {'yes' if scan.has_specs else 'no'}")
-    print(f"  Tests: {'yes' if scan.has_tests else 'no'}")
-    print(f"  CI: {'yes' if scan.has_ci else 'no'}")
-    print(f"  Frontend: {'yes' if scan.has_frontend else 'no'}")
-    print()
+            tui.hint(f"... and {len(scan.top_level_dirs) - 10} more", indent=4)
+    tui.key_value("Specs", "yes" if scan.has_specs else "no")
+    tui.key_value("Tests", "yes" if scan.has_tests else "no")
+    tui.key_value("CI", "yes" if scan.has_ci else "no")
+    tui.key_value("Frontend", "yes" if scan.has_frontend else "no")
+    tui.empty_line()
 
 
 def _print_cancelled() -> None:
     """Print cancellation message."""
-    print()
-    print("已取消 / Cancelled.")
-    print()
+    tui.cancel()
 
 
 def _ask_yes_no(
@@ -578,6 +568,9 @@ def _ask_yes_no(
     default: bool = False,
 ) -> bool:
     """Ask a yes/no question.
+
+    Uses TUI question marker for the question header and a connector
+    line for the input prompt, matching skills.sh / Claude Code style.
 
     Args:
         question: The question text.
@@ -588,12 +581,14 @@ def _ask_yes_no(
         True for yes, False for no.
     """
     hint = "[Y/n]" if default else "[y/N]"
+    if question:
+        tui.question(question)
     while True:
-        raw = input_func(f"{question} {hint} ").strip().lower()
+        raw = input_func(f"  └ {hint} ").strip().lower()
         if not raw:
             return default
         if raw in ("y", "yes"):
             return True
         if raw in ("n", "no"):
             return False
-        print("请输入 y 或 n / Please enter y or n.")
+        tui.warning("请输入 y 或 n / Please enter y or n.", indent=4)
