@@ -49,8 +49,13 @@ DEFAULT_USER_OWNED_SECTION = """
 <!-- Any additional information you want iterate to know. -->
 """
 
-# Template path relative to the repo root (this file is in iterate_cli/).
-TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "ITERATE.template.md"
+# Template path: prefer bundled data (inside the installed package at
+# iterate_cli/data/), fall back to the repo-relative templates/ dir so
+# running from source still works. The bundled copy is shipped in the
+# wheel via [tool.setuptools.package-data] in pyproject.toml.
+_BUNDLED_TEMPLATE = Path(__file__).resolve().parent / "data" / "ITERATE.template.md"
+_REPO_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "ITERATE.template.md"
+TEMPLATE_PATH = _BUNDLED_TEMPLATE if _BUNDLED_TEMPLATE.exists() else _REPO_TEMPLATE
 
 
 @dataclass

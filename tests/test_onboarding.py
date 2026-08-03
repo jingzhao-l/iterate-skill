@@ -372,6 +372,25 @@ class TestSuggestCommandWhitelist:
 # ---------------------------------------------------------------------------
 
 class TestGenerateIterateMd:
+    def test_template_path_exists(self) -> None:
+        """TEMPLATE_PATH must resolve to a readable file.
+
+        Regression test: pip-installed wheels must bundle the template
+        via [tool.setuptools.package-data] so that TEMPLATE_PATH resolves
+        inside the installed package (iterate_cli/data/), not to a
+        non-existent site-packages/templates/ directory.
+        """
+        from iterate_cli.generator import TEMPLATE_PATH
+
+        assert TEMPLATE_PATH.exists(), (
+            f"TEMPLATE_PATH does not exist: {TEMPLATE_PATH}. "
+            "Ensure templates are bundled in iterate_cli/data/ via "
+            "pyproject.toml [tool.setuptools.package-data]."
+        )
+        # Must be readable and non-empty.
+        content = TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert len(content) > 0
+
     def test_contains_partition_markers(self, fake_project: Path) -> None:
         data = _build_onboarding_data(fake_project)
         md = generate_iterate_md(data)
