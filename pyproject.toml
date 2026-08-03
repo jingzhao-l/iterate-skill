@@ -40,6 +40,9 @@ Repository = "https://github.com/jingzhao-l/iterate-skill"
 [tool.setuptools]
 packages = ["iterate_cli"]
 
+[tool.setuptools.package-data]
+iterate_cli = ["data/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
