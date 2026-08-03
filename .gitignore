@@ -28,6 +28,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
 # Test coverage
 coverage/
 htmlcov/
