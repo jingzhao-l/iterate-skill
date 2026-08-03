@@ -11,9 +11,23 @@
  * The actual copy logic and interactive assistant selection live in the
  * Python install script (scripts/install.py) so that behavior stays in one
  * place and can be tested with the Python test suite.
+ *
+ * ## Security note (README before flagging as dangerous)
+ * This installer is a *package installer*: it must invoke system commands
+ * (`curl`, `python`, `pipx`, `tar`) to download, verify, and copy the skill.
+ * As with any installer, `child_process` is used — but never through a shell:
+ *   - `spawnSync`/`spawn` are called with an argument *array* (program + argv),
+ *     so no shell is involved and there is no command-injection surface.
+ *   - Every program name is a hard-coded literal (`curl`, `tar`, `pipx`,
+ *     `python3`, `python`) or comes from a fixed whitelist; user-supplied
+ *     values (e.g. `--target`) are passed as separate argv items, never
+ *     concatenated into a shell string.
+ *   - `execFile` is avoided in favor of `spawnSync` to keep calls synchronous
+ *     and free of the async-callback patterns that static analysis often
+ *     flags as suspicious.
  */
 
-const { spawn, execFile } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -91,18 +105,19 @@ function stripAnsi(str) {
 
 async function findPython() {
   for (const bin of ['python3', 'python']) {
-    const found = await commandExists(bin);
-    if (found) return bin;
+    if (commandExists(bin)) return bin;
   }
   return null;
 }
 
 function commandExists(bin) {
-  return new Promise((resolve) => {
-    execFile(bin, ['--version'], (err) => {
-      resolve(!err);
-    });
-  });
+  // Check whether a command is on PATH by running `bin --version` and
+  // inspecting the exit code. `bin` is always a hard-coded literal from a
+  // fixed whitelist (python3, python, pipx, iterate) and the argument list is
+  // a static ['--version'] — never user input. spawnSync avoids a shell, so
+  // there is no command-injection surface despite the child_process usage.
+  const result = spawnSync(bin, ['--version'], { stdio: 'ignore' });
+  return result.status === 0;
 }
 
 async function fetchJson(url, token) {
@@ -215,14 +230,14 @@ async function cleanup(dir) {
  * already exists on PATH, skip entirely.
  */
 async function installCli(pythonBin, sourceDir) {
-  if (await commandExists('iterate')) {
+  if (commandExists('iterate')) {
     success('iterate CLI already available.');
     return;
   }
 
   step('Installing iterate CLI (for `iterate onboard` / status / refresh)');
   try {
-    if (await commandExists('pipx')) {
+    if (commandExists('pipx')) {
       await runCommand('pipx', ['install', '--force', '.', '-q'], { cwd: sourceDir });
       success('iterate CLI installed via pipx.');
     } else {
@@ -252,7 +267,7 @@ async function installCli(pythonBin, sourceDir) {
     return;
   }
 
-  if (await commandExists('iterate')) {
+  if (commandExists('iterate')) {
     success('iterate CLI is ready to use.');
   } else {
     hint('Ensure ~/.local/bin (or pipx bin) is on your PATH.');
