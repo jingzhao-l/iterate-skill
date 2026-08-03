@@ -25,6 +25,10 @@ function parseArgs(argv) {
     target: null,
     force: false,
     token: process.env.GITHUB_TOKEN || null,
+    // Track whether the user explicitly chose global/project mode so the
+    // installer can later ask about the current directory's project intent.
+    globalExplicit: false,
+    targetExplicit: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -47,11 +51,13 @@ function parseArgs(argv) {
         }
         options.target = next;
         options.global = false;
+        options.targetExplicit = true;
         i++;
         break;
       case '--global':
         options.global = true;
         options.target = null;
+        options.globalExplicit = true;
         break;
       case '--force':
         options.force = true;

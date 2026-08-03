@@ -1,6 +1,6 @@
 {
   "name": "iterate-skill-installer",
-  "version": "2.1.6",
+  "version": "2.2.0",
   "description": "One-command installer for iterate-skill across AI coding assistants",
   "main": "lib/installer.js",
   "bin": {
@@ -8,7 +8,7 @@
     "iterate-skill": "bin/cli.js"
   },
   "scripts": {
-    "test": "node --check bin/cli.js && node --check lib/installer.js"
+    "test": "node --check bin/cli.js && node --check lib/installer.js && node test/mode.test.js"
   },
   "keywords": [
     "iterate-skill",

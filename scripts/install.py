@@ -31,8 +31,13 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 import yaml
+
+# Type alias for the input callable used across interactive prompts so tests
+# can inject mock responses without touching stdin.
+InputFunc = Callable[[str], str]
 
 # --- Lightweight TUI helpers (skills.sh style) -----------------------------
 # install.py runs as a standalone script (often before iterate_cli is pip
@@ -415,43 +420,197 @@ def _prompt_multi_select(
     return sorted(selected)
 
 
+class _ArrowSelectState:
+    """State for the arrow-key multi-select menu.
+
+    The visible list is ``options + [None]`` where ``None`` is the trailing
+    "Done" confirmation row. Arrow keys move the highlight, Space / Enter
+    toggle the current option (or confirm when on the Done row), and ``q``
+    cancels. Kept as a plain state machine so the key-handling logic can be
+    unit-tested without a TTY.
+    """
+
+    def __init__(self, options: list[str], default_all: bool = True) -> None:
+        self.options = list(options)
+        self.rows: list[str | None] = self.options + [None]
+        self.index = 0
+        self.selected: set[str] = set(self.options) if default_all else set()
+        self.finished = False
+
+    def move(self, delta: int) -> None:
+        """Move the highlight by ``delta`` (wrap around)."""
+        self.index = (self.index + delta) % len(self.rows)
+
+    def toggle_current(self) -> None:
+        """Toggle the highlighted option; on the Done row, finish instead."""
+        opt = self.rows[self.index]
+        if opt is None:
+            self.finished = True
+            return
+        if opt in self.selected:
+            self.selected.remove(opt)
+        else:
+            self.selected.add(opt)
+
+    def cancel(self) -> None:
+        """Cancel the selection (empty result, finished)."""
+        self.finished = True
+        self.selected = set()
+
+    @property
+    def result(self) -> list[str]:
+        """Ordered, sorted list of selected option identifiers."""
+        return sorted(self.selected)
+
+
+def _read_arrow_key(stdin) -> str | None:
+    """Decode one raw keypress into a command name.
+
+    Commands: ``up``, ``down``, ``toggle`` (Space / Enter), ``cancel`` (q/Q).
+    Returns ``None`` for unrecognized keys. Raises ``KeyboardInterrupt`` on
+    Ctrl+C so the caller can restore the terminal and cancel.
+    """
+    ch = stdin.read(1)
+    if ch == "\x1b":
+        # Escape sequence: ESC [ A (up) / B (down).
+        seq = stdin.read(2)
+        if seq == "[A":
+            return "up"
+        if seq == "[B":
+            return "down"
+        return None
+    if ch in ("\r", "\n", " "):
+        return "toggle"
+    if ch in ("q", "Q"):
+        return "cancel"
+    if ch == "\x03":
+        raise KeyboardInterrupt
+    return None
+
+
+def _render_arrow_select(state: _ArrowSelectState, title: str) -> str:
+    """Render the arrow-select menu as an ANSI string."""
+    lines = [
+        f"\x1b[36m◆ {title}\x1b[0m",
+        "\x1b[2m    ↑/↓ 移动 · 空格/回车 勾选 · Done 确认 · q 取消\x1b[0m",
+    ]
+    for i, opt in enumerate(state.rows):
+        if opt is None:
+            marker = "\x1b[36m→\x1b[0m" if i == state.index else "  "
+            lines.append(f"{marker} \x1b[1mDone / 完成\x1b[0m")
+        else:
+            display = AI_DISPLAY_NAMES.get(opt, opt)
+            check = "\x1b[32m◉\x1b[0m" if opt in state.selected else "\x1b[90m○\x1b[0m"
+            if i == state.index:
+                lines.append(f"\x1b[7m  {check} {display}\x1b[0m")
+            else:
+                lines.append(f"  {check} {display}")
+    return "\n".join(lines)
+
+
+def _prompt_arrow_multi_select(
+    options: list[str],
+    title: str = "Select items",
+    default_all: bool = True,
+) -> list[str]:
+    """Present an arrow-key multi-select menu (requires a TTY).
+
+    Uses raw terminal mode to read arrow keys, Space and Enter. On a non-TTY
+    stdin (pipes, tests) this function is not used; callers fall back to
+    ``_prompt_multi_select`` instead.
+
+    Args:
+        options: List of option identifiers (e.g. assistant keys).
+        title: Menu title.
+        default_all: Whether all options start selected.
+
+    Returns:
+        List of selected option identifiers (empty if cancelled).
+    """
+    import sys as _sys
+    import termios
+    import tty
+
+    state = _ArrowSelectState(options, default_all)
+
+    def redraw() -> None:
+        total_lines = len(state.rows) + 2
+        _sys.stdout.write(f"\x1b[{total_lines}A")
+        _sys.stdout.write("\x1b[0J")
+        _sys.stdout.write(_render_arrow_select(state, title))
+        _sys.stdout.flush()
+
+    _sys.stdout.write(_render_arrow_select(state, title))
+    _sys.stdout.flush()
+
+    fd = _sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        while not state.finished:
+            cmd = _read_arrow_key(_sys.stdin)
+            if cmd is None:
+                continue
+            if cmd == "up":
+                state.move(-1)
+            elif cmd == "down":
+                state.move(1)
+            elif cmd == "toggle":
+                state.toggle_current()
+            elif cmd == "cancel":
+                state.cancel()
+            redraw()
+    except KeyboardInterrupt:
+        state.cancel()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _sys.stdout.write("\n")
+        _sys.stdout.flush()
+
+    return state.result
+
+
 def interactive_select_assistants(
     effective_target: Path,
     input_func: InputFunc = input,
 ) -> list[str]:
     """Interactively select AI assistants to install to.
 
-    Auto-detects installed assistants and pre-selects them. Falls back to
-    listing all supported assistants if none are detected.
+    Auto-detects the AI tools installed on the user's machine (by inspecting
+    the home directory) and pre-selects them. Tools that are not auto-detected
+    are still listed so the user can pick them manually. When no tool is
+    detected, all supported tools are offered for manual selection.
+
+    On an interactive TTY an arrow-key / Space multi-select menu is shown;
+    otherwise it falls back to the number-based ``_prompt_multi_select`` so
+    the behavior stays testable.
 
     Args:
-        effective_target: Base directory to inspect (home or project).
-        input_func: Callable used to read user input.
+        effective_target: Unused for detection (kept for call compatibility);
+            detection always inspects the user's home directory.
+        input_func: Callable used to read user input (non-TTY fallback).
 
     Returns:
         Sorted list of selected assistant keys. Empty list means the user
         cancelled or selected nothing.
     """
-    installed = detect_installed_assistants(effective_target)
+    installed = detect_installed_assistants(Path.home())
     if installed:
-        _tui_print("Detected AI assistants on this machine:", style="iterate.primary")
+        _tui_print("检测到本机已安装的 AI 工具 / Detected AI assistants:", style="iterate.primary")
         for assistant in installed:
             _success(f"  {AI_DISPLAY_NAMES.get(assistant, assistant)}")
         options = installed + sorted(a for a in SUPPORTED_AI if a not in installed)
         default_all = True
     else:
-        _warning("Could not auto-detect any supported AI assistants.")
-        _hint("You can still select tools manually below.")
+        _warning("未检测到已安装的 AI 工具 / No supported AI assistants detected.")
+        _hint("可手动选择要安装的工具 / You can select tools manually below.")
         options = sorted(SUPPORTED_AI.keys())
         default_all = False
 
-    selected = _prompt_multi_select(
-        options,
-        input_func,
-        title="Which agents do you want to install to?",
-        default_all=default_all,
-    )
-    return selected
+    title = "选择要安装的 AI 工具 / Select AI assistants to install to"
+    if sys.stdin.isatty():
+        return _prompt_arrow_multi_select(options, title, default_all)
+    return _prompt_multi_select(options, input_func, title, default_all)
 
 
 def install_command(

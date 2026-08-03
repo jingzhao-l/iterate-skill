@@ -18,6 +18,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const readline = require('node:readline');
 
 const GITHUB_OWNER = 'jingzhao-l';
 const GITHUB_REPO = 'iterate-skill';
@@ -202,6 +203,54 @@ async function cleanup(dir) {
   }
 }
 
+/**
+ * Ask the user a yes/no question on the terminal.
+ *
+ * Used to decide whether the current directory should be treated as the
+ * target project when the installer is launched from a non-home directory.
+ * Falls back to ``defaultNo`` if the input is unrecognized.
+ */
+function askYesNo(question, defaultNo = false) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const hint = defaultNo ? '[y/N]' : '[Y/n]';
+    rl.question(`\x1b[36m◆\x1b[0m  ${question} ${hint} `, (answer) => {
+      rl.close();
+      const a = answer.trim().toLowerCase();
+      if (a === 'y' || a === 'yes') resolve(true);
+      else if (a === 'n' || a === 'no') resolve(false);
+      else resolve(defaultNo);
+    });
+  });
+}
+
+/**
+ * Resolve the install mode (global vs project) before any download happens.
+ *
+ * Rules:
+ *   - If the user passed --target or --global explicitly, honor it.
+ *   - Otherwise ("global" by default), if the current directory is NOT the
+ *     user's home directory, ask whether it is the target project directory.
+ *     If so, switch to a project-level install into the current directory.
+ */
+async function resolveInstallMode(options, ask = askYesNo) {
+  if (options.targetExplicit || options.globalExplicit) {
+    return options;
+  }
+  const cwd = process.cwd();
+  const home = os.homedir();
+  if (cwd !== home) {
+    const answer = await ask(
+      `当前目录 ${cwd} 看起来是项目目录，是否安装到此项目？(选择否则全局安装到用户目录)`,
+    );
+    if (answer) {
+      options.target = cwd;
+      options.global = false;
+    }
+  }
+  return options;
+}
+
 function getVenvPython(venvDir) {
   const isWindows = process.platform === 'win32';
   const pythonName = isWindows ? 'python.exe' : 'python';
@@ -218,9 +267,14 @@ async function installRequirements(pythonBin, requirementsPath) {
 }
 
 async function main(options = {}) {
-  const { global: globalInstall = true, ai = null, token = null, target = null, force = false } = options;
-
   printBanner();
+
+  // Resolve global vs project mode before downloading. If the user launched
+  // the installer from a non-home directory without explicit flags, ask
+  // whether that directory is the target project.
+  options = await resolveInstallMode(options);
+
+  const { global: globalInstall = true, ai = null, token = null, target = null, force = false } = options;
 
   step('Checking environment');
   const pythonBin = await findPython();
@@ -349,4 +403,6 @@ module.exports = {
   main,
   ITERATE_BANNER,
   InstallerError,
+  resolveInstallMode,
+  askYesNo,
 };
