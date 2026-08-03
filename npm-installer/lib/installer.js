@@ -35,13 +35,9 @@ const ITERATE_BANNER = [
 class InstallerError extends Error {}
 
 function printBanner() {
-  const cols = process.stdout.columns || 80;
-  const width = ITERATE_BANNER[0].length;
-  const pad = Math.max(2, Math.floor((cols - width) / 2));
-  const prefix = ' '.repeat(pad);
   console.log();
   for (const line of ITERATE_BANNER) {
-    console.log(`\x1b[36m${prefix}${line}\x1b[0m`);
+    console.log(`\x1b[36m${line}\x1b[0m`);
   }
   console.log();
 }
