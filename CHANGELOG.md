@@ -5,6 +5,22 @@
 
 ---
 
+## [2.2.4] — 2026-08-03
+
+### 修复 / Bug Fixes
+
+- **`iterate onboard` 的引导默认值改为「继续」**：此前用户显式运行 `iterate onboard` 时，gate 问题、技术栈确认、建议校验命令等关键提示默认值为「否」，用户直接回车会中止流程或退回手动输入，体验反直觉。现在这些提示在用户显式发起 onboarding 时默认「是」，直接回车即可按推荐流程继续。
+
+### 测试 / Tests
+
+- 新增 `test_gate_defaults_to_continue_on_empty` 回归测试，验证 gate 问题在空回车时默认继续进入 onboarding。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.2.4`。
+
+---
+
 ## [2.2.3] — 2026-08-03
 
 ### 修复 / Bug Fixes

@@ -594,6 +594,28 @@ class TestRunWizard:
         data = run_wizard(fake_project, input_func=lambda _: next(responses))
         assert data is None
 
+    def test_gate_defaults_to_continue_on_empty(self, fake_project: Path) -> None:
+        """Pressing Enter on the gate question should continue onboarding.
+
+        The user explicitly ran `iterate onboard`, so the gate defaults to
+        "continue" (Y) rather than aborting on an empty Enter.
+        """
+        responses = iter([
+            "",           # gate: continue (default)
+            "y",          # tech stack correct
+            "y",          # use suggested commands
+            "",           # default dimensions
+            "",           # default branch
+            "",           # default scope
+            "n",          # push: no
+            "Desc",       # description
+            "",           # conventions: empty
+            "y",          # confirm and generate
+            "n",          # personalization offer: no
+        ])
+        data = run_wizard(fake_project, input_func=lambda _: next(responses))
+        assert data is not None
+
     def test_cancel_at_confirmation(self, fake_project: Path) -> None:
         responses = iter([
             "y",          # gate: continue
