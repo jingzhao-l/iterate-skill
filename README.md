@@ -66,7 +66,28 @@ npx skills add jingzhao-l/iterate-skill --agent trae
 
 skills.sh 会自动将 `SKILL.md`、配置和脚本复制到对应 AI 助手的技能目录。
 
-### 方式二：CLI 脚本
+### 方式二：npm 一键安装器
+
+如果你不想手动克隆仓库，可以直接用我们发布的 npm 包，一条命令完成下载、校验、安装：
+
+```bash
+# 全局安装（自动检测 AI 助手并交互选择）
+npx iterate-skill-installer
+
+# 仅安装到指定助手
+npx iterate-skill-installer --ai trae
+npx iterate-skill-installer --ai cursor
+
+# 安装到指定项目目录
+npx iterate-skill-installer --target /path/to/project
+
+# 强制覆盖已安装的技能
+npx iterate-skill-installer --ai trae --global --force
+```
+
+该安装器会自动从 GitHub latest release 下载源码，校验 SHA256 校验和，创建隔离的 Python 环境并安装依赖，最后调用 `scripts/install.py` 完成安装。
+
+### 方式三：CLI 脚本
 
 ```bash
 # 克隆到本地
@@ -113,7 +134,7 @@ python scripts/install.py update --ai trae --target /path/to/project --force
 python scripts/install.py update --ai trae --target /path/to/project --token ghp_xxx
 ```
 
-### 方式三：安装 iterate CLI（onboarding 命令行工具）
+### 方式四：安装 iterate CLI（onboarding 命令行工具）
 
 ```bash
 # 从仓库安装（提供 iterate 命令）
@@ -152,7 +173,7 @@ iterate reonboard
 >
 > **个性化配置 / Personalization**：捕获 AI 扫描不到的项目专属约束（禁区、风险区、已知意图、维度定制等 9 类）。运行 `iterate personalize` 可在项目中途随时追加，无需重做 onboarding。
 
-### 方式四：手动克隆
+### 方式五：手动克隆
 
 #### Trae
 
