@@ -126,19 +126,13 @@ class TUI:
     def banner(self) -> None:
         """输出 ITERATE 立体 ASCII 横幅 — 仿 skills.sh 顶部 Logo.
 
-        居中显示在终端宽度内；若终端过窄则左对齐。
+        横幅左对齐行首，不居中，与后续列表/步骤的缩进保持一致。
         可通过 ``--no-banner`` 或环境变量 ``ITERATE_NO_BANNER=1`` 禁用。
         """
-        # 横幅原始宽度
-        banner_width = max(len(line) for line in _ITERATE_BANNER_LINES)
-        term_width = self.console.width or banner_width
-        # 计算左侧 padding，至少为 2，避免贴边
-        padding = max(2, (term_width - banner_width) // 2)
-        prefix = " " * padding
         self.console.print()
         for line in _ITERATE_BANNER_LINES:
             self.console.print(
-                f"{prefix}[iterate.primary]{line}[/]",
+                f"[iterate.primary]{line}[/]",
                 soft_wrap=True,
             )
         self.console.print()
