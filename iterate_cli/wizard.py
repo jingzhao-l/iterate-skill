@@ -174,13 +174,13 @@ def _returning_user_flow(
 
     if personalize:
         from iterate_cli.personalize import (
-            load_personalization_from_config,
+            load_existing_personalization,
             run_personalize_wizard,
         )
         from iterate_cli.refresh import load_onboarding_config
 
         existing_config = load_onboarding_config(project_root) or {}
-        existing_personalization = load_personalization_from_config(existing_config)
+        existing_personalization = load_existing_personalization(project_root, existing_config)
 
         personalization = run_personalize_wizard(
             project_root,

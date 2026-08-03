@@ -362,7 +362,9 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     Returns:
         PersonalizationData with structured fields populated.
         Free-form notes are not stored in config.yaml and will be empty;
-        they are loaded separately from ITERATE.md.
+        they are loaded separately from ITERATE.md via
+        ``load_personalization_from_iterate_md`` (or its combined wrapper
+        ``load_existing_personalization``).
     """
     raw = config.get("personalization") or {}
 
@@ -432,6 +434,83 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
         forbidden_fixes=forbidden,
         extra_validation_commands=extra_cmds,
     )
+
+
+def load_personalization_from_iterate_md(
+    project_root: Path,
+) -> tuple[list[str], list[str]]:
+    """Load free-form ``iterate_notes`` and ``code_conventions`` from ITERATE.md.
+
+    These two categories are written to the user-owned section of
+    ITERATE.md (not to iterate.config.yaml), so they must be read back
+    from ITERATE.md whenever existing personalization is loaded for
+    editing. Without this, re-running ``iterate personalize`` (or
+    re-personalizing during ``iterate onboard``) would start with empty
+    notes/conventions and ``merge_user_sections`` would silently wipe
+    the sections the user had previously entered.
+
+    Args:
+        project_root: Project root directory containing ITERATE.md.
+
+    Returns:
+        A ``(iterate_notes, code_conventions)`` tuple of bullet items.
+        Empty lists are returned if ITERATE.md is missing or unreadable.
+    """
+    from iterate_cli.generator import extract_user_owned_section
+
+    iterate_md_path = project_root / "ITERATE.md"
+    if not iterate_md_path.is_file():
+        return [], []
+    try:
+        content = iterate_md_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return [], []
+
+    user_content = extract_user_owned_section(content)
+
+    notes: list[str] = []
+    conventions: list[str] = []
+    current_section: str | None = None
+
+    for line in user_content.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            current_section = stripped
+            continue
+        if stripped.startswith("- ") and len(stripped) > 2:
+            item = stripped[2:].strip()
+            if current_section == "## Iterate 注意点 / Iterate Notes":
+                notes.append(item)
+            elif current_section == "## 自定义代码约定 / Custom Code Conventions":
+                conventions.append(item)
+
+    return notes, conventions
+
+
+def load_existing_personalization(
+    project_root: Path,
+    config: dict[str, Any],
+) -> PersonalizationData:
+    """Load the full existing personalization for editing.
+
+    Structured rules come from iterate.config.yaml (``personalization``
+    section); free-form ``iterate_notes`` and ``code_conventions`` are
+    read back from the ITERATE.md user-owned section. Merging both
+    ensures re-running the wizard preserves previously entered content
+    instead of silently dropping it.
+
+    Args:
+        project_root: Project root directory containing ITERATE.md.
+        config: Parsed iterate.config.yaml content.
+
+    Returns:
+        A PersonalizationData populated from both sources.
+    """
+    data = load_personalization_from_config(config)
+    notes, conventions = load_personalization_from_iterate_md(project_root)
+    data.iterate_notes = notes
+    data.code_conventions = conventions
+    return data
 
 
 def merge_personalization_into_config(
