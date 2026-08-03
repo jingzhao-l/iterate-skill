@@ -15,6 +15,7 @@ All user-facing output is routed through the unified TUI layer
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,19 @@ from iterate_cli.tui import tui
 from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
 
 
+def _should_show_banner(args: argparse.Namespace) -> bool:
+    """Determine whether the ASCII banner should be shown.
+
+    Banner is disabled by ``--no-banner`` or the ``ITERATE_NO_BANNER``
+    environment variable (any non-empty value).
+    """
+    if getattr(args, "no_banner", False):
+        return False
+    if os.environ.get("ITERATE_NO_BANNER", "").strip():
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point.
 
@@ -48,6 +62,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if args.version:
+        tui.banner()
+        tui.info(f"iterate {__version__}")
+        tui.empty_line()
+        tui.hint("Install the skill across AI assistants: npx iterate-skill-installer")
+        tui.hint("Initialize a project: iterate onboard")
+        raise SystemExit(0)
+
     project_root = Path(args.project).resolve()
 
     if not project_root.is_dir():
@@ -55,14 +77,24 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.command == "onboard":
+        if _should_show_banner(args):
+            tui.banner()
         return _cmd_onboard(project_root)
     elif args.command == "personalize":
+        if _should_show_banner(args):
+            tui.banner()
         return _cmd_personalize(project_root)
     elif args.command == "refresh":
+        if _should_show_banner(args):
+            tui.banner()
         return _cmd_refresh(project_root)
     elif args.command == "reonboard":
+        if _should_show_banner(args):
+            tui.banner()
         return _cmd_reonboard(project_root)
     elif args.command == "status":
+        if _should_show_banner(args):
+            tui.banner()
         return _cmd_status(project_root)
     else:
         parser.print_help()
@@ -75,7 +107,18 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="iterate",
         description="Iterate skill onboarding and project knowledge management.",
     )
-    parser.add_argument("--version", action="version", version=f"iterate {__version__}")
+    parser.add_argument(
+        "-v", "--version",
+        action="store_true",
+        default=False,
+        help="Show version and exit.",
+    )
+    parser.add_argument(
+        "--no-banner",
+        action="store_true",
+        default=False,
+        help="Disable the ITERATE ASCII art banner at startup.",
+    )
     parser.add_argument(
         "-p", "--project",
         default=".",
