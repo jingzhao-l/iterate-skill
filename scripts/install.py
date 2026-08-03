@@ -128,6 +128,13 @@ def _strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
+def _strip_markup(text: str) -> str:
+    """Remove rich markup tags for the plain-text fallback."""
+    import re
+
+    return re.sub(r"\[/?[a-zA-Z0-9_\-:. ]+\]", "", text)
+
+
 def _frame_box(title: str, lines: list[str]) -> None:
     """Print a skills.sh-style framed box.
 
@@ -150,8 +157,9 @@ def _frame_box(title: str, lines: list[str]) -> None:
     else:
         print(top)
         for line, visible in zip(lines, visible_lines):
+            plain_line = _strip_markup(line)
             padding = " " * (inner_width - len(visible))
-            print(f"│ {line}{padding}│")
+            print(f"│ {plain_line}{padding}│")
         print(bottom)
 
 
