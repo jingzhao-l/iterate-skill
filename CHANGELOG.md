@@ -5,6 +5,18 @@
 
 ---
 
+## [2.2.7] — 2026-08-03
+
+### 安全 / Security
+
+- **降低安装器 `child_process` 的静态分析误报**：VirusTotal 的 `suspicious.dangerous_exec` 将调用 `child_process` 的安装器标记为可疑，属于对"包安装器"的启发式误报。本次将 `commandExists` 由 `execFile` 改为 `spawnSync`（同步、无异步回调特征），并在文件顶部补充安全设计说明，明确：所有子进程以参数数组调用（不经 shell、无命令注入面）、程序名均为固定白名单字面量、用户输入（如 `--target`）作为独立 argv 传递而非拼入 shell 字符串。安装器调用系统命令（curl/python/pipx/tar）是必要行为，无法完全消除该标记，但本次改动可降低误报概率。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.2.7`。
+
+---
+
 ## [2.2.6] — 2026-08-03
 
 ### 修复 / Bug Fixes
