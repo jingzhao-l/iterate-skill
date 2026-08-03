@@ -12,8 +12,10 @@ import yaml
 # Make scripts/validate.py importable as a module.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+sys.path.insert(0, str(REPO_ROOT))
 
 import validate
+from iterate_cli import __version__ as ITERATE_VERSION
 
 
 @pytest.fixture
@@ -1014,7 +1016,7 @@ class TestSkillMarkdownFile:
         assert meta.get("name") == "iterate"
         assert isinstance(meta.get("description"), str)
         assert meta.get("description")
-        assert meta.get("version") == "2.0.2"
+        assert meta.get("version") == ITERATE_VERSION
 
     def test_skill_md_body_is_non_empty(self) -> None:
         text = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
