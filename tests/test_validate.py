@@ -614,6 +614,89 @@ class TestInstallScript:
         assert (target / ".claude" / "skills" / "iterate").exists()
 
 
+class TestArrowSelectState:
+    """Unit tests for the arrow-key multi-select state machine."""
+
+    def test_default_all_selected(self) -> None:
+        from install import _ArrowSelectState
+
+        state = _ArrowSelectState(["a", "b", "c"])
+        assert state.result == ["a", "b", "c"]
+        assert state.rows == ["a", "b", "c", None]
+
+    def test_default_none_selected(self) -> None:
+        from install import _ArrowSelectState
+
+        state = _ArrowSelectState(["a", "b"], default_all=False)
+        assert state.result == []
+
+    def test_move_wraps(self) -> None:
+        from install import _ArrowSelectState
+
+        state = _ArrowSelectState(["a", "b"])
+        state.move(1)
+        assert state.index == 1
+        state.move(1)  # wraps onto the Done row
+        assert state.index == 2
+        state.move(-1)
+        assert state.index == 1
+
+    def test_toggle_current(self) -> None:
+        from install import _ArrowSelectState
+
+        state = _ArrowSelectState(["a", "b"], default_all=False)
+        state.toggle_current()
+        assert state.result == ["a"]
+        state.toggle_current()
+        assert state.result == []
+
+    def test_toggle_on_done_row_finishes(self) -> None:
+        from install import _ArrowSelectState
+
+        state = _ArrowSelectState(["a", "b"])
+        state.index = 2  # Done row
+        state.toggle_current()
+        assert state.finished is True
+
+    def test_cancel_clears_and_finishes(self) -> None:
+        from install import _ArrowSelectState
+
+        state = _ArrowSelectState(["a", "b"])
+        state.cancel()
+        assert state.finished is True
+        assert state.result == []
+
+    def test_result_sorted(self) -> None:
+        from install import _ArrowSelectState
+
+        state = _ArrowSelectState(["b", "a"])
+        assert state.result == ["a", "b"]
+
+    def test_read_arrow_key_decodes(self) -> None:
+        import io
+
+        from install import _read_arrow_key
+
+        assert _read_arrow_key(io.StringIO("\x1b[A")) == "up"
+        assert _read_arrow_key(io.StringIO("\x1b[B")) == "down"
+        assert _read_arrow_key(io.StringIO(" ")) == "toggle"
+        assert _read_arrow_key(io.StringIO("\r")) == "toggle"
+        assert _read_arrow_key(io.StringIO("q")) == "cancel"
+        assert _read_arrow_key(io.StringIO("x")) is None
+
+    def test_render_arrow_select_marks_selected(self) -> None:
+        from install import _ArrowSelectState, _render_arrow_select
+
+        state = _ArrowSelectState(["a", "b"], default_all=False)
+        rendered = _render_arrow_select(state, "title")
+        assert "○" in rendered
+        assert "◉" not in rendered
+        state.toggle_current()  # select "a"
+        rendered = _render_arrow_select(state, "title")
+        assert "◉" in rendered
+        assert "Done" in rendered
+
+
 class TestConfigCommand:
     def test_config_init_copies_master(self, tmp_path: Path) -> None:
         source = _build_minimal_source(tmp_path)
