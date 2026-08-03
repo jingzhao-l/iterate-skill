@@ -132,7 +132,7 @@ def _strip_markup(text: str) -> str:
     """Remove rich markup tags for the plain-text fallback."""
     import re
 
-    return re.sub(r"\[/?[a-zA-Z0-9_\-:. ]+\]", "", text)
+    return re.sub(r"\[/?[a-zA-Z0-9_\-:. ]*\]", "", text)
 
 
 def _frame_box(title: str, lines: list[str]) -> None:
@@ -141,7 +141,7 @@ def _frame_box(title: str, lines: list[str]) -> None:
     Uses single-line box drawing characters so the frame stays aligned
     across terminals that render these glyphs consistently.
     """
-    visible_lines = [_strip_ansi(line) for line in lines]
+    visible_lines = [_strip_markup(_strip_ansi(line)) for line in lines]
     max_len = max(len(title), *(len(line) for line in visible_lines), 1)
     inner_width = max_len + 2
 
