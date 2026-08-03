@@ -3385,6 +3385,76 @@ class TestCmdOnboardNoChangesExitCode:
         assert ret == 1
 
 
+class TestCmdOnboardPreservesUserSections:
+    """Returning-user ``onboard`` must preserve the ITERATE.md user-owned section.
+
+    Regression: re-onboarding an existing project previously overwrote the
+    user-owned section with the default (or personalization) content, losing
+    manual edits. ``write_onboarding_outputs`` now accepts the existing
+    ITERATE.md content and reuses its user-owned section.
+    """
+
+    def test_basic_update_preserves_user_section(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """Returning user updates basic config → manual user edits survive."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Add a manual edit to the user-owned section of ITERATE.md.
+        md_path = fake_project / "ITERATE.md"
+        md = md_path.read_text(encoding="utf-8")
+        md = md.replace(
+            "## 手动批注 / Manual Annotations",
+            "## 手动批注 / Manual Annotations\n\n手动添加的内容 - must be preserved",
+        )
+        md_path.write_text(md, encoding="utf-8")
+
+        # Simulate a returning user who updates basic config (returns a fresh
+        # OnboardingData with no personalization).
+        monkeypatch.setattr(
+            "iterate_cli.cli.run_wizard",
+            lambda project_root: _build_onboarding_data(project_root),
+        )
+
+        ret = cli_main(["onboard", "-p", str(fake_project)])
+        assert ret == 0
+
+        after = md_path.read_text(encoding="utf-8")
+        assert "手动添加的内容 - must be preserved" in after
+
+    def test_basic_update_with_personalization_merges_content(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """Returning user updates basic + personalizes → edits + new notes survive."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        md_path = fake_project / "ITERATE.md"
+        md = md_path.read_text(encoding="utf-8")
+        md = md.replace(
+            "## 手动批注 / Manual Annotations",
+            "## 手动批注 / Manual Annotations\n\n手动内容 - keep",
+        )
+        md_path.write_text(md, encoding="utf-8")
+
+        fresh = _build_onboarding_data(fake_project)
+        fresh.personalization = PersonalizationData(
+            iterate_notes=["新注意点 - reflected"],
+        )
+
+        monkeypatch.setattr(
+            "iterate_cli.cli.run_wizard", lambda project_root: fresh
+        )
+
+        ret = cli_main(["onboard", "-p", str(fake_project)])
+        assert ret == 0
+
+        after = md_path.read_text(encoding="utf-8")
+        assert "手动内容 - keep" in after
+        assert "新注意点 - reflected" in after
+
+
 class TestValidateExtraCommand:
     """Tests for iterate_cli.personalize.validate_extra_command (v2.0.1).
 

@@ -187,7 +187,17 @@ def _cmd_onboard(project_root: Path) -> int:
         # that was accepted but then aborted).
         return 1
 
-    iterate_md, config_yaml = write_onboarding_outputs(data, project_root)
+    # Preserve the user-owned section of ITERATE.md when re-onboarding an
+    # existing project, so manual edits and personalization content survive.
+    existing_md: str | None = None
+    existing_md_path = project_root / "ITERATE.md"
+    if existing_md_path.is_file():
+        try:
+            existing_md = existing_md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            existing_md = None
+
+    iterate_md, config_yaml = write_onboarding_outputs(data, project_root, existing_md)
     tui.empty_line()
     tui.success("Onboarding complete!")
     tui.key_value("Written", str(iterate_md))
