@@ -197,6 +197,17 @@ def _cmd_onboard(project_root: Path) -> int:
         except (OSError, UnicodeDecodeError):
             existing_md = None
 
+    # Preserve existing personalization when the user did not re-personalize,
+    # so a basic-config update does not silently drop structured rules
+    # (protected paths, risk areas, extra validation commands, etc.).
+    if data.personalization is None:
+        from iterate_cli.personalize import load_personalization_from_config
+
+        existing_config = load_onboarding_config(project_root) or {}
+        existing_personalization = load_personalization_from_config(existing_config)
+        if not existing_personalization.is_empty():
+            data.personalization = existing_personalization
+
     iterate_md, config_yaml = write_onboarding_outputs(data, project_root, existing_md)
     tui.empty_line()
     tui.success("Onboarding complete!")

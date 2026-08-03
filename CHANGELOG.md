@@ -5,6 +5,22 @@
 
 ---
 
+## [2.2.2] — 2026-08-03
+
+### 修复 / Bug Fixes
+
+- **修复 `iterate onboard` 重新 onboarding 时丢失 `personalization` 结构化规则**：此前返回用户仅更新基础配置（未重新个性化）时，`iterate.config.yaml` 会被整体重新生成，导致原有的 `personalization` 结构化规则（受保护路径 `protected_paths`、风险区域、额外校验命令 `extra_validation_commands` 等）被静默丢弃。现在 `_cmd_onboard` 会在用户未重新个性化时，从现有配置加载并保留 `personalization`，保证基础配置更新不丢失结构化规则。
+
+### 测试 / Tests
+
+- 新增 `TestCmdOnboardPreservesConfigPersonalization` 回归测试，验证返回用户仅更新基础配置时，`protected_paths` 与 `extra_validation_commands` 等结构化规则在 `iterate.config.yaml` 中得以保留。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.2.2`。
+
+---
+
 ## [2.2.1] — 2026-08-03
 
 ### 修复 / Bug Fixes

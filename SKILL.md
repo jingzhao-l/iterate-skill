@@ -1,7 +1,7 @@
 ---
 name: iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.2.1
+version: 2.2.2
 permissions:
   file_read: true
   file_write: true
