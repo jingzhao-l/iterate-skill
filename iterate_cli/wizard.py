@@ -322,7 +322,12 @@ def _gate_question(input_func: InputFunc) -> bool:
     tui.hint("Alternatively, use /iterate in your AI coding tool for fully automated AI onboarding.", indent=2)
     tui.empty_line()
 
-    answer = _ask_yes_no("是否继续命令行 onboarding? / Continue CLI onboarding?", input_func)
+    # User explicitly ran `iterate onboard`, so default to continue (Y).
+    answer = _ask_yes_no(
+        "是否继续命令行 onboarding? / Continue CLI onboarding?",
+        input_func,
+        default=True,
+    )
     if not answer:
         tui.empty_line()
         tui.info("建议在 AI 编程工具中调用 /iterate 完成 onboarding。")
@@ -341,7 +346,8 @@ def _confirm_tech_stack(scan: ScanResult, input_func: InputFunc) -> list[str]:
         tui.key_value("包管理器 / Pkg managers", ", ".join(scan.detected_package_managers))
         tui.key_value("Manifest 文件 / Manifests", ", ".join(scan.manifests))
         tui.empty_line()
-        if _ask_yes_no("检测结果是否正确? / Is this correct?", input_func):
+        # Auto-detection is usually correct; default to accepting it (Y).
+        if _ask_yes_no("检测结果是否正确? / Is this correct?", input_func, default=True):
             return list(scan.detected_languages)
     else:
         tui.hint("未检测到已知 manifest 文件 / No known manifest files detected.")
@@ -373,7 +379,8 @@ def _collect_validation_commands(
                 tui.info(f"- {cmd}", indent=6)
         tui.empty_line()
 
-        if _ask_yes_no("使用这些命令? / Use these commands?", input_func):
+        # Suggested commands are tailored to the detected stack; default to using them (Y).
+        if _ask_yes_no("使用这些命令? / Use these commands?", input_func, default=True):
             return suggested
 
     return _manual_collect_commands(input_func)
