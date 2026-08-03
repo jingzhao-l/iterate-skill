@@ -5,6 +5,22 @@
 
 ---
 
+## [2.2.5] — 2026-08-03
+
+### 修复 / Bug Fixes
+
+- **重新个性化时保留 ITERATE.md 中的自由文本备注与代码约定**：`iterate personalize` 或重新 onboarding 时，此前结构化规则从 `iterate.config.yaml` 加载，但自由文本的 `iterate_notes` 与 `code_conventions` 只存在于 ITERATE.md 的用户自有区块，未读回导致重新保存时 `merge_user_sections` 静默清空用户此前填写的内容。现在新增 `load_personalization_from_iterate_md` 与 `load_existing_personalization`，合并两个来源后再进入编辑，避免内容丢失。
+
+### 测试 / Tests
+
+- 新增 `TestLoadPersonalizationFromIterateMd` 回归测试，验证从 ITERATE.md 用户自有区块正确解析备注与代码约定。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.2.5`。
+
+---
+
 ## [2.2.4] — 2026-08-03
 
 ### 修复 / Bug Fixes
