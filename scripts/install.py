@@ -114,6 +114,40 @@ def _key_value(key: str, value: str) -> None:
         print(f"  {padded} {value}")
 
 
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences for width calculation."""
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+def _frame_box(title: str, lines: list[str]) -> None:
+    """Print a skills.sh-style framed box.
+
+    Uses single-line box drawing characters so the frame stays aligned
+    across terminals that render these glyphs consistently.
+    """
+    visible_lines = [_strip_ansi(line) for line in lines]
+    max_len = max(len(title), *(len(line) for line in visible_lines), 1)
+    inner_width = max_len + 2
+
+    top = f"┌─ {title} {'─' * max(0, inner_width - len(title) - 2)}┐"
+    bottom = f"└{'─' * (inner_width + 1)}┘"
+
+    if _RICH_AVAILABLE:
+        _CONSOLE.print(f"[iterate.primary]{top}[/]")
+        for line, visible in zip(lines, visible_lines):
+            padding = " " * (inner_width - len(visible))
+            _CONSOLE.print(f"[iterate.primary]│[/] {line}{padding}[iterate.primary]│[/]")
+        _CONSOLE.print(f"[iterate.primary]{bottom}[/]")
+    else:
+        print(top)
+        for line, visible in zip(lines, visible_lines):
+            padding = " " * (inner_width - len(visible))
+            print(f"│ {line}{padding}│")
+        print(bottom)
+
+
 GITHUB_REPO_OWNER = "jingzhao-l"
 GITHUB_REPO_NAME = "iterate-skill"
 RELEASE_API_URL = (
@@ -440,6 +474,7 @@ def install_command(
     else:
         targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
 
+    installed: list[tuple[str, str, Path]] = []
     for assistant in targets:
         relative_dir = SUPPORTED_AI[assistant]
         destination = effective_target / relative_dir
@@ -453,10 +488,29 @@ def install_command(
         for item in copied:
             _hint(item)
 
+        if copied or dry_run:
+            display_name = AI_DISPLAY_NAMES.get(assistant, assistant)
+            installed.append((assistant, display_name, destination))
+
     if dry_run:
         _success("Dry run complete; no files were copied.")
-    else:
-        _success("Installation complete.")
+        return 0
+
+    _success("Installation complete.")
+    if installed:
+        summary_lines: list[str] = [
+            f"[iterate.success]✓[/] Installed to {len(installed)} assistant(s){mode_label}",
+            "",
+        ]
+        for _assistant, display_name, destination in installed:
+            summary_lines.append(
+                f"  [iterate.label]{display_name}:[/] {destination}"
+            )
+        summary_lines.append("")
+        summary_lines.append(
+            "[iterate.hint]Run `iterate onboard` in your project to initialize.[/]"
+        )
+        _frame_box("Installation Summary", summary_lines)
     return 0
 
 

@@ -66,6 +66,28 @@ function step(message) {
   console.log(`\x1b[36m◆\x1b[0m  ${message}`);
 }
 
+function frameSection(title, lines) {
+  const maxLen = Math.max(
+    title.length,
+    ...lines.map((l) => stripAnsi(l).length),
+  );
+  const innerWidth = maxLen + 2;
+  const top = `┌─ ${title} ${'─'.repeat(Math.max(0, innerWidth - title.length - 2))}┐`;
+  const bottom = `└${'─'.repeat(innerWidth + 1)}┘`;
+  console.log(top);
+  for (const line of lines) {
+    const visibleLen = stripAnsi(line).length;
+    const padding = ' '.repeat(Math.max(0, innerWidth - visibleLen));
+    console.log(`│ ${line}${padding}│`);
+  }
+  console.log(bottom);
+}
+
+function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 async function findPython() {
   for (const bin of ['python3', 'python']) {
     const found = await commandExists(bin);
@@ -207,6 +229,10 @@ async function main(options = {}) {
     return 1;
   }
   success(`Found Python: ${pythonBin}`);
+  frameSection('Environment', [
+    `\x1b[32m✓\x1b[0m Python: ${pythonBin}`,
+    `\x1b[34mℹ\x1b[0m Install mode: ${globalInstall ? 'global' : 'project'}`,
+  ]);
 
   info('Fetching latest release from GitHub...');
   let release;
@@ -261,6 +287,10 @@ async function main(options = {}) {
       return 1;
     }
     success('Checksum verified.');
+    frameSection('Release', [
+      `\x1b[32m✓\x1b[0m Version: ${tag}`,
+      `\x1b[32m✓\x1b[0m SHA256 checksum verified`,
+    ]);
 
     info('Extracting release...');
     const sourceDir = path.join(tmpDir, 'source');
@@ -304,6 +334,10 @@ async function main(options = {}) {
     info('Starting skill installation (Python installer)...');
     await runPythonInstall(venvPython, installScript, installArgs, { cwd: sourceDir });
     success('iterate-skill installation finished.');
+    frameSection('Done', [
+      `\x1b[32m✓\x1b[0m iterate-skill ${tag} installed`,
+      `  Run \x1b[36miterate onboard\x1b[0m in your project to initialize.`,
+    ]);
     return 0;
   } finally {
     await cleanup(tmpDir);
