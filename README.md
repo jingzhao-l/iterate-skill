@@ -5,35 +5,23 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](./LICENSE)
 [![npm](https://img.shields.io/badge/-npm-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/iterate-skill-installer)
+[![GitHub release](https://img.shields.io/github/v/release/jingzhao-l/iterate-skill)](https://github.com/jingzhao-l/iterate-skill/releases)
 [![ClawHub](https://img.shields.io/badge/-ClawHub.ai-4285F4?logo=cloudflare&logoColor=white)](https://clawhub.ai/jingzhao-l/skills/iterate-skill)
 [![SkillHub CN](https://img.shields.io/badge/-SkillHub.cn-2385bb?logo=codeberg&logoColor=white)](https://www.skillhub.cn/skills/jingzhao-l/iterate-skill)
 [![ModelScope](https://img.shields.io/badge/-ModelScope-624aff?logo=alibabacloud&logoColor=white)](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)
 
 ---
 
-## 简介 / Introduction
+## 30 秒了解 / At a Glance
 
 **Iterate Skill** 让 AI 助手像一位严谨的资深工程师一样，对代码库进行多轮审查与修复。
-
-每轮它会并行审查整个项目，区分两类问题：
-
-- **原子问题（Atomic）**：单文件、单函数、≤20 行，直接自动修复。
-- **架构问题（Architectural）**：跨文件、改接口、新增模块，需要用户批准后执行。
-
-修复后自动验证，循环直到零问题或达到轮数上限。合并与推送默认关闭，安全优先。
-
-**Iterate Skill** enables your AI assistant to act as a rigorous senior engineer. Each round it reviews the entire codebase in parallel, classifies findings as atomic (auto-fixed) or architectural (user-approved), validates fixes, and loops until clean or the round limit is reached. Merge and push are opt-in by default.
-
----
-
-## 一分钟了解 / At a Glance
 
 | 能力 | 说明 |
 |---|---|
 | **9 维度并行审查** | correctness、security、performance、architecture、style-tests、tech-debt、spec-compliance、frontend-backend、ui-ux |
-| **双轨修复** | 小问题自动修，大问题先问你再修 |
-| **Git 隔离** | 每轮在独立分支/worktree 中完成，不直接写 main/master |
-| **Secure-by-default** | `push_per_round` 和 `auto_merge` 默认 `false` |
+| **双轨修复** | 原子问题（≤20 行、单文件）自动修；架构问题经你批准后再修 |
+| **Git 隔离** | 每轮在独立 `iterate/*` 分支或 worktree 中完成，不直接写 main/master |
+| **Secure-by-default** | `push_per_round` 和 `auto_merge` 默认均为 `false` |
 | **命令白名单** | 配置时 + 个性化时双层校验，拒绝危险 shell 元字符 |
 | **校验和验证** | 从 GitHub Release 更新时强制 SHA256 校验 |
 | **多助手支持** | Trae、Claude Code、Cursor、Windsurf、GitHub Copilot、Codex、Roo Code 等 25+ 工具 |
@@ -41,20 +29,58 @@
 
 ---
 
-## 安装 / Installation
+## 3 分钟上手 / Quick Start
 
-### 推荐方式一：npm 一键安装器（一条命令）
-
-适合大多数用户。无需克隆仓库，自动从 GitHub Release 下载、校验、安装：
+### 1. 安装技能
 
 ```bash
-# 全局安装（自动检测已安装的 AI 助手并交互选择）
+npx iterate-skill-installer
+```
+
+运行后会自动检测你已安装的 AI 编程工具，交互选择要安装到哪些助手。支持 `--ai <name>` 直接指定单个助手。
+
+### 2. 进入项目并完成 onboarding
+
+```bash
+cd /path/to/your-project
+iterate onboard
+```
+
+`iterate onboard` 会生成本项目的知识库：
+
+- `ITERATE.md`：技术栈、模块地图、约定、禁区等
+- `iterate.config.yaml`：迭代目标、审查维度、验证命令等
+
+### 3. 开始迭代
+
+在 AI 助手对话中输入：
+
+```text
+/iterate "提升代码质量，确保所有函数 ≤80 行且测试通过"
+```
+
+或在终端里直接启动 CLI：
+
+```bash
+iterate status      # 查看 onboarding 状态和漂移
+iterate refresh     # 增量刷新 ITERATE.md
+iterate personalize # 追加项目专属约束
+```
+
+---
+
+## 安装 / Installation
+
+### 推荐：npx 一键安装（适合绝大多数用户）
+
+无需克隆仓库，无需手动配置 Python 环境，一条命令完成下载、校验、安装：
+
+```bash
+# 自动检测已安装的 AI 助手并交互选择
 npx iterate-skill-installer
 
-# 仅安装到指定助手
+# 仅安装到 Trae
 npx iterate-skill-installer --ai trae
-npx iterate-skill-installer --ai cursor
-npx iterate-skill-installer --ai claude
 
 # 安装到指定项目目录
 npx iterate-skill-installer --target /path/to/project
@@ -63,59 +89,47 @@ npx iterate-skill-installer --target /path/to/project
 npx iterate-skill-installer --ai trae --global --force
 ```
 
-> 该安装器会自动创建隔离的 Python 环境、安装依赖、调用 `scripts/install.py` 完成安装。需要 Python 3.10+。
+常用选项：
 
-### 推荐方式二：安装 iterate CLI
+| 选项 | 说明 |
+|---|---|
+| `--ai <name>` | 仅安装到指定助手，如 `trae`、`claude`、`cursor` |
+| `--target <path>` | 项目级安装到指定目录 |
+| `--global` | 安装到用户主目录（默认） |
+| `--force` | 覆盖已存在的 skill 文件 |
+| `--token <token>` | GitHub token，用于提高 API 速率限制 |
+| `-h, --help` | 查看帮助 |
+| `-v, --version` | 查看版本 |
 
-如果你更喜欢在终端里完成 onboarding 和个性化配置：
+> 安装器需要 Node.js 18+ 和 Python 3.10+。它会自动创建隔离的 Python 虚拟环境、安装依赖、调用 `scripts/install.py` 完成文件复制。
 
-```bash
-# 克隆仓库后安装
-pip install .
-# 或使用 pipx 隔离安装
-pipx install .
+### 其他安装方式
 
-# 验证
-iterate --version
-```
+如果你无法使用 npm，或者希望完全控制安装过程，可选用以下方式。
 
-安装后可在任意项目目录使用：
+#### 方式 A：本地安装 iterate CLI
 
-```bash
-iterate onboard      # 交互式 onboarding 向导
-iterate personalize  # 9 步个性化配置
-iterate status       # 查看 onboarding 状态和漂移
-iterate refresh      # 增量刷新
-iterate reonboard    # 完整重新 onboarding
-```
-
-### 手动方式：源码脚本
-
-适合开发者或需要完全控制安装过程：
+适合希望在终端里完整体验 onboarding、个性化配置和状态管理的用户。
 
 ```bash
 git clone https://github.com/jingzhao-l/iterate-skill.git
 cd iterate-skill
 
-# 安装到指定助手
-python scripts/install.py install --ai trae --target /path/to/project
+# 推荐用 pipx 隔离安装
+pipx install .
 
-# 全局安装
-python scripts/install.py install --ai trae --global
+# 或直接用 pip
+pip install .
 
-# 覆盖更新
-python scripts/install.py install --ai trae --global --force
-
-# 从 GitHub Release 刷新
-python scripts/install.py update --ai trae --target /path/to/project
-
-# 卸载
-python scripts/install.py uninstall --ai trae --target /path/to/project --yes
+# 验证
+iterate --version
 ```
 
-### 最简方式：复制 SKILL.md
+安装后可在任意项目目录使用 `iterate onboard`、`iterate personalize`、`iterate status`、`iterate refresh`、`iterate reonboard`。
 
-如果只需要让某个 AI 助手认识这个 skill，把 `SKILL.md` 复制到对应目录即可：
+#### 方式 B：手动复制 SKILL.md
+
+如果你只想让某个 AI 助手认识这个 skill，把 [`SKILL.md`](./SKILL.md) 复制到对应目录即可：
 
 ```bash
 # Trae
@@ -131,42 +145,42 @@ mkdir -p ~/.cursor/skills/iterate
 cp SKILL.md ~/.cursor/skills/iterate/SKILL.md
 ```
 
-具体路径请参考 [`SKILL.md`](./SKILL.md) 中的“工具映射表”。
+更多工具的路径请参考 [`SKILL.md`](./SKILL.md) 中的“工具映射表”。
+
+#### 方式 C：源码脚本（开发者）
+
+```bash
+git clone https://github.com/jingzhao-l/iterate-skill.git
+cd iterate-skill
+
+python scripts/install.py install --ai trae --global
+python scripts/install.py update --ai trae --target /path/to/project
+python scripts/install.py uninstall --ai trae --target /path/to/project --yes
+```
 
 ### 全局安装 vs 项目级安装
 
-- **全局安装**：skill 文件放在用户主目录（如 `~/.trae/skills/iterate`），每个项目首次调用 `/iterate` 都会触发一次 onboarding。
-- **项目级安装**：skill 文件放在项目内的 `.trae/skills/iterate` 等目录，onboarding 完成后直接复用项目根目录的 `ITERATE.md`。
+| 安装范围 | 路径示例 | 效果 |
+|---|---|---|
+| **全局安装** | `~/.trae/skills/iterate/` | 所有项目首次调用 `/iterate` 都会触发 onboarding |
+| **项目级安装** | `/project/.trae/skills/iterate/` | onboarding 完成后直接复用项目根目录的 `ITERATE.md` |
+
+建议：先在全局安装一次，让助手认识你；再在重要项目里做一次项目级安装，避免重复 onboarding。
+
+### 为什么不推荐 skills.sh 安装？
+
+本项目早期曾在 skills.sh / SkillHub 等平台分发。从 v2.1 起，**推荐统一使用 `npx iterate-skill-installer`**，原因如下：
+
+1. **一条命令完成**：自动下载、SHA256 校验、环境准备、助手选择，无需手动克隆或复制文件。
+2. **版本一致**：始终从 GitHub Release 安装，避免平台缓存导致的版本错乱。
+3. **跨助手统一**：同一份安装逻辑支持 25+ AI 助手，而不是每个平台各自维护。
+4. **安全可验证**：强制校验 SHA256SUMS.txt，校验失败则拒绝安装。
+
+skills.sh 等市场页面仍会保留，用于展示和发现，但不再作为首选安装入口。
 
 ---
 
-## 快速开始 / Quick Start
-
-安装完成后，在目标项目根目录执行 onboarding：
-
-```bash
-# 方式 A：使用 AI 助手（自动扫描代码库）
-# 在 AI 助手对话中输入 /iterate，首次会触发 onboarding
-
-# 方式 B：使用终端（适合对项目已有清晰了解）
-cd /path/to/project
-iterate onboard
-```
-
-onboarding 会生成两个文件：
-
-- `ITERATE.md`：项目知识库（技术栈、模块地图、约定、禁区等）
-- `iterate.config.yaml`：迭代配置（目标、维度、验证命令等）
-
-然后就可以开始迭代：
-
-```text
-/iterate "提升代码质量，确保所有函数 ≤80 行且测试通过"
-```
-
----
-
-## 使用方式 / Usage
+## 日常使用 / Daily Usage
 
 ### 在 AI 助手中
 
@@ -178,6 +192,8 @@ onboarding 会生成两个文件：
 /iterate "你的目标" no-limit
 ```
 
+首次调用会自动触发 onboarding（如果项目还没有 `ITERATE.md`）。
+
 ### 在终端中
 
 ```bash
@@ -187,7 +203,7 @@ iterate onboard
 # 中途追加个性化约束
 iterate personalize
 
-# 查看状态和漂移检测
+# 查看 onboarding 状态和漂移检测
 iterate status
 
 # 增量刷新（保留 ITERATE.md 用户手写区）
@@ -199,38 +215,32 @@ iterate reonboard
 
 ---
 
-## Onboarding（项目知识库初始化）
+## 它如何工作 / How It Works
 
-首次调用 `/iterate` 时，skill 会检查项目根目录是否存在 `ITERATE.md`。若不存在，触发 onboarding。
+### Onboarding（项目知识库初始化）
 
-### 两条通道
+每次调用 `/iterate` 时，skill 会检查项目根目录是否存在 `ITERATE.md`。若不存在，触发 onboarding。
 
 | 通道 | 适用场景 | 产出 |
 |---|---|---|
 | **AI Onboarding** | 希望 AI 自动扫描代码库、识别技术栈 | `ITERATE.md` + `iterate.config.yaml` |
 | **CLI Onboarding** | 对项目有清晰认知，愿手动确认技术栈 | 同上 |
 
-### ITERATE.md 结构
-
-文件分为两个区域：
+`ITERATE.md` 分为两个区域：
 
 - `<!-- ITERATE:AI-MAINTAINED:START -->`：AI 维护区，刷新时会更新。
 - `<!-- ITERATE:USER-OWNED:START -->`：用户维护区，手写约定、禁区、风险区，刷新时保留。
 
 ### 漂移检测
 
-每次调用 `/iterate` 时，会重新计算 `package.json`、`pyproject.toml` 等 manifest 文件的 SHA-256 指纹。如果发现变更：
+每次调用 `/iterate` 时，会重新计算 `package.json`、`pyproject.toml` 等 manifest 文件的 SHA-256 指纹：
 
 - 无漂移 → 静默通过
 - 有漂移 → 提示用户选择：继续 / 增量刷新 / 完整重新 onboarding
 
----
+### 个性化配置
 
-## 个性化配置 / Personalization
-
-AI 扫描能发现技术栈和目录结构，但无法发现项目专属约束。个性化配置把这些知识沉淀下来。
-
-主要类别：
+AI 扫描能发现技术栈和目录结构，但无法发现项目专属约束。`iterate personalize` 把这些知识沉淀下来：
 
 | 类别 | 说明 | 存储位置 |
 |---|---|---|
@@ -243,21 +253,32 @@ AI 扫描能发现技术栈和目录结构，但无法发现项目专属约束�
 | 项目约定与注意点 | 经验教训、已知陷阱 | `ITERATE.md` 用户区 |
 | 补充验证命令 | 项目特有验证命令 | `iterate.config.yaml` |
 
-使用方式：
+完整示例请参考 [`config/iterate.config.yaml`](./config/iterate.config.yaml)。
 
-```bash
-# onboarding 时顺带配置
-iterate onboard
+### 核心流程
 
-# 项目中途随时追加
-iterate personalize
+```text
+Step 0 — Onboarding Check
+  └─ 定位项目根 → 检查 ITERATE.md → 漂移检测 →（缺失则触发 onboarding）
+
+Setup
+  └─ 提取 goal → 加载配置 → 读取项目上下文 → 创建隔离分支/worktree
+
+Loop (round = 1 .. max_rounds)
+  ├─ Phase 1: N 维度并行审查
+  ├─ Phase 2: 原子问题自动修复
+  ├─ Phase 3: 架构问题用户批准后执行
+  ├─ Phase 4: 记录本轮结果
+  └─ Phase 5: 验证 → merge（若 auto_merge=true）→ push（若 push_per_round=true）
+
+Summary
 ```
 
-完整示例请参考 [`config/iterate.config.yaml`](./config/iterate.config.yaml)。
+详细流程请参考 [`SKILL.md`](./SKILL.md)。
 
 ---
 
-## 配置 / Configuration
+## 配置参考 / Configuration
 
 默认配置位于 [`config/iterate.config.yaml`](./config/iterate.config.yaml)。项目级配置会递归覆盖 Master 配置的同名字段。
 
@@ -316,23 +337,17 @@ validation:
 
 > `validation.commands` 中的命令**必须**以 `command_whitelist` 中的前缀开头，否则会被拒绝。
 
-### 命令行配置
+---
 
-```bash
-# 初始化项目配置
-python scripts/install.py config --init --target /path/to/project
+## 安全说明 / Security
 
-# 非交互式修改
-python scripts/install.py config --set goal="Fix all bugs" --target /path/to/project
-python scripts/install.py config --set max_rounds=10 --target /path/to/project
-python scripts/install.py config --set dimensions='[correctness, security]' --target /path/to/project
-
-# 交互式向导
-python scripts/install.py config --interactive --target /path/to/project
-
-# 校验配置
-python scripts/install.py validate --target /path/to/project
-```
+- **高自主性**：本 skill 会自主执行文件编辑、`git` 操作以及 `validation.commands` 中配置的命令。所有修改先在隔离分支/worktree 中进行，架构修复必须经用户批准。
+- **Secure-by-default Git**：`push_per_round` 和 `auto_merge` 默认均为 `false`。回滚使用 `git restore` 等非破坏性命令。
+- **双层命令白名单**：
+  - 配置时校验命令前缀。
+  - 个性化添加 `extra_validation_commands` 时仅接受 30+ 预批准工具前缀，拒绝 `;`、`|`、`&` 等 shell 元字符。
+- **敏感文件**：不读取 `.env`、密钥、凭证等敏感文件。
+- **Update 安全**：`scripts/install.py update` 与 `npx iterate-skill-installer` 从 GitHub Release 下载时均强制 SHA256 校验，缺失或不匹配则拒绝。
 
 ---
 
@@ -344,7 +359,12 @@ iterate-skill/
 ├── README.md                         # 本文件
 ├── LICENSE                           # MIT 许可证
 ├── CONTRIBUTING.md                   # 开源贡献指南
+├── CHANGELOG.md                      # 版本变更记录
 ├── pyproject.toml                    # iterate CLI 包定义
+├── npm-installer/                    # npx 一键安装器源码
+│   ├── bin/cli.js
+│   ├── lib/installer.js
+│   └── package.json
 ├── config/
 │   ├── iterate.config.yaml           # 默认配置（Master）
 │   ├── config.schema.json            # 配置 JSON Schema
@@ -363,41 +383,6 @@ iterate-skill/
 ├── tests/                            # 单元测试
 └── .github/workflows/                # CI / Release
 ```
-
----
-
-## 核心流程 / Core Workflow
-
-```text
-Step 0 — Onboarding Check
-  └─ 定位项目根 → 检查 ITERATE.md → 漂移检测 →（缺失则触发 onboarding）
-
-Setup
-  └─ 提取 goal → 加载配置 → 读取项目上下文 → 创建隔离分支/worktree
-
-Loop (round = 1 .. max_rounds)
-  ├─ Phase 1: N 维度并行审查
-  ├─ Phase 2: 原子问题自动修复
-  ├─ Phase 3: 架构问题用户批准后执行
-  ├─ Phase 4: 记录本轮结果
-  └─ Phase 5: 验证 → merge（若 auto_merge=true）→ push（若 push_per_round=true）
-
-Summary
-```
-
-详细流程请参考 [`SKILL.md`](./SKILL.md)。
-
----
-
-## 安全说明 / Security
-
-- **高自主性**：本 skill 会自主执行文件编辑、`git` 操作以及 `validation.commands` 中配置的命令。所有修改先在隔离分支/worktree 中进行，架构修复必须经用户批准。
-- **Secure-by-default Git**：`push_per_round` 和 `auto_merge` 默认均为 `false`。回滚使用 `git restore` 等非破坏性命令。
-- **双层命令白名单**：
-  - 配置时校验命令前缀。
-  - 个性化添加 `extra_validation_commands` 时仅接受 30+ 预批准工具前缀，拒绝 `;`、`|`、`&` 等 shell 元字符。
-- **敏感文件**：不读取 `.env`、密钥、凭证等敏感文件。
-- **Update 安全**：`scripts/install.py update` 从 GitHub Release 下载时强制 SHA256 校验，缺失或不匹配则拒绝。
 
 ---
 

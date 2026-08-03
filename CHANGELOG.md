@@ -5,6 +5,79 @@
 
 ---
 
+## [2.1.6] — 2026-08-03
+
+### 文档 / Documentation
+
+- **全面重构 README.md**：以“用户旅程”为主线重新组织内容，降低阅读负担。
+  - 新增“3 分钟上手 / Quick Start”章节，用三步引导用户完成安装、onboarding、开始迭代。
+  - 安装方式精简为“推荐 + 其他方式”两层，突出 `npx iterate-skill-installer` 唯一推荐路径。
+  - 合并原先并列的 4 种安装方式，将 pip install、手动复制 SKILL.md、源码脚本归入“其他方式”。
+  - 新增“全局安装 vs 项目级安装”对比表格，给出明确建议。
+  - 新增“为什么不推荐 skills.sh 安装？”说明，明确从 v2.1 起统一使用 npm 安装器。
+  - 将“使用方式”和“Onboarding”内容整合到“它如何工作”章节，减少重复。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.1.6`。
+
+---
+
+## [2.1.5] — 2026-08-03
+
+### 修复 / Fixed
+
+- **修复安装摘要框线错位**：`scripts/install.py` 的 `_strip_markup` 正则现在能正确匹配空关闭标签（如 `[/]`），确保框线宽度计算与可见文本一致。
+
+### 文档 / Documentation
+
+- README 中补充 `npx iterate-skill-installer` 一键安装器的使用示例与选项说明。
+- 重新组织 README 的安装与使用流程，使主线更清晰。
+
+---
+
+## [2.1.3] — 2026-08-03
+
+### 修复 / Fixed
+
+- 在 `scripts/requirements.txt` 中显式添加 `rich==13.7.1`，确保 npx 安装器创建的隔离 Python 环境具备 TUI 渲染依赖。
+- 改进 `scripts/install.py` 的 markup stripping fallback，在 rich 不可用时仍能对齐输出。
+
+---
+
+## [2.1.2] — 2026-08-03
+
+### 修复 / Fixed
+
+- `npm-installer` 现在正确传递 `FORCE_COLOR=1` 到 Python 安装脚本，确保非 TTY 环境下仍保留彩色输出。
+
+---
+
+## [2.1.1] — 2026-08-03
+
+### 新增 / Added
+
+- `scripts/install.py` 新增 skills.sh 风格框线分区（`_frame_box`）和安装摘要，提升安装完成后的可读性。
+
+---
+
+## [2.1.0] — 2026-08-03
+
+### 新增 / Added
+
+- **skills.sh 风格 TUI**：新增 `iterate_cli/tui.py` 统一终端渲染层，采用青色主题与 @clack/prompts 符号体系（◆ ◇ └ ● ✓ ⚠）。
+- **ITERATE 立体 ASCII 横幅**：CLI 命令与版本输出顶部展示 ITERATE Logo，左对齐避免错位。
+- **AI 助手自动检测**：`scripts/install.py` 可检测 25+ 已安装的 AI 编程工具，并提供交互式多选菜单。
+- **npx 一键安装器**：新增 `npm-installer`，支持 `npx iterate-skill-installer` 一条命令完成下载、SHA256 校验、隔离 Python 环境创建与安装。
+- **跨助手安装统一**：同一份安装逻辑覆盖 Trae、Claude Code、Cursor、Windsurf、GitHub Copilot、Codex、Roo Code 等 25+ 工具。
+
+### 改进 / Changed
+
+- 将 `iterate onboard`、`personalize`、`status`、`refresh`、`reonboard` 的输出统一接入 TUI 层。
+- 安装脚本 `pip install .` 输出美化，与整体 CLI 风格保持一致。
+
+---
+
 ## [2.0.2] — 2026-07-29
 
 ### 安全 / Security
