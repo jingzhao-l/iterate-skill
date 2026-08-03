@@ -226,7 +226,7 @@ async function main(options = {}) {
   const pythonBin = await findPython();
   if (!pythonBin) {
     error('Python is required but was not found on PATH.');
-    hint('Install Python 3.9+ and ensure "python3" or "python" is available.');
+    hint('Install Python 3.10+ and ensure "python3" or "python" is available.');
     return 1;
   }
   success(`Found Python: ${pythonBin}`);

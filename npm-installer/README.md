@@ -38,7 +38,7 @@ Trae, Claude / Claude Code, Cursor, Windsurf, GitHub Copilot, Codex, Gemini CLI,
 ## Requirements
 
 - Node.js 18+
-- Python 3.9+
+- Python 3.10+
 - `tar` command available on PATH (available by default on macOS, Linux, Windows 10+)
 
 ## License
