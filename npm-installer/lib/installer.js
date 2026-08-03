@@ -180,6 +180,7 @@ function runPythonInstall(pythonBin, installScript, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(pythonBin, [installScript, 'install', ...args], {
       stdio: 'inherit',
+      env: { ...process.env, FORCE_COLOR: '1' },
       ...options,
     });
     child.on('close', (code) => {
