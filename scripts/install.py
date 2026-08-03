@@ -33,6 +33,87 @@ from pathlib import Path
 
 import yaml
 
+# --- Lightweight TUI helpers (skills.sh style) -----------------------------
+# install.py runs as a standalone script (often before iterate_cli is pip
+# installed), so we cannot hard-depend on iterate_cli.tui. We try to import
+# rich for nicer output and gracefully fall back to plain print when rich is
+# unavailable. All output is funneled through these helpers so the install /
+# update / uninstall / config flows share a consistent visual style with the
+# iterate CLI commands.
+try:
+    from rich.console import Console
+    from rich.theme import Theme
+    _THEME = Theme({
+        "iterate.primary": "bold cyan",
+        "iterate.success": "green",
+        "iterate.error": "bold red",
+        "iterate.warning": "yellow",
+        "iterate.hint": "dim",
+        "iterate.title": "bold cyan",
+        "iterate.label": "bold",
+    })
+    _CONSOLE = Console(theme=_THEME, force_terminal=None)
+    _ERR_CONSOLE = Console(theme=_THEME, stderr=True, force_terminal=None)
+    _RICH_AVAILABLE = True
+except ImportError:
+    _CONSOLE = None
+    _ERR_CONSOLE = None
+    _RICH_AVAILABLE = False
+
+
+def _tui_print(message: str, *, style: str = "", stderr: bool = False) -> None:
+    """Print a styled message, falling back to plain print without rich."""
+    if not _RICH_AVAILABLE:
+        if stderr:
+            print(message, file=sys.stderr)
+        else:
+            print(message)
+        return
+    console = _ERR_CONSOLE if stderr else _CONSOLE
+    if style:
+        console.print(f"[{style}]{message}[/]")
+    else:
+        console.print(message)
+
+
+def _intro(title: str, subtitle: str = "") -> None:
+    """skills.sh-style intro banner."""
+    _tui_print("")
+    _tui_print(f"◆ {title}", style="iterate.primary")
+    if subtitle:
+        _tui_print(f"  {subtitle}", style="iterate.hint")
+    _tui_print("")
+
+
+def _success(message: str) -> None:
+    """Success line with check mark."""
+    _tui_print(f"✓ {message}", style="iterate.success")
+
+
+def _error(message: str) -> None:
+    """Error line to stderr with cross mark."""
+    _tui_print(f"✗ {message}", style="iterate.error", stderr=True)
+
+
+def _warning(message: str) -> None:
+    """Warning line."""
+    _tui_print(f"⚠  {message}", style="iterate.warning")
+
+
+def _hint(message: str) -> None:
+    """Dim hint line."""
+    _tui_print(message, style="iterate.hint")
+
+
+def _key_value(key: str, value: str) -> None:
+    """Aligned key: value line."""
+    padded = f"{key}:".ljust(18)
+    if _RICH_AVAILABLE:
+        _CONSOLE.print(f"  [iterate.label]{padded}[/] {value}")
+    else:
+        print(f"  {padded} {value}")
+
+
 GITHUB_REPO_OWNER = "jingzhao-l"
 GITHUB_REPO_NAME = "iterate-skill"
 RELEASE_API_URL = (
@@ -126,11 +207,11 @@ def copy_skill_files(
         dst = destination / relative
         if dry_run:
             copied.append(str(dst))
-            print(f"  [dry-run] Would copy: {relative} -> {dst}")
+            _hint(f"[dry-run] Would copy: {relative} -> {dst}")
             continue
 
         if dst.exists() and not force:
-            print(f"  Skipped (already exists, use --force): {dst}")
+            _hint(f"Skipped (already exists, use --force): {dst}")
             continue
 
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -158,18 +239,18 @@ def install_command(
         destination = effective_target / relative_dir
 
         if dry_run:
-            print(f"[dry-run] Would install for {assistant}{mode_label} into {destination}")
+            _hint(f"[dry-run] Would install for {assistant}{mode_label} into {destination}")
         else:
-            print(f"Installing for {assistant}{mode_label} into {destination}")
+            _tui_print(f"Installing for {assistant}{mode_label} into {destination}", style="iterate.primary")
 
         copied = copy_skill_files(source, destination, dry_run, force)
         for item in copied:
-            print(f"  {item}")
+            _hint(item)
 
     if dry_run:
-        print("Dry run complete; no files were copied.")
+        _success("Dry run complete; no files were copied.")
     else:
-        print("Installation complete.")
+        _success("Installation complete.")
     return 0
 
 
@@ -187,23 +268,23 @@ def uninstall_command(
         if (effective_target / SUPPORTED_AI[assistant]).exists()
     ]
     if not existing:
-        print(f"No iterate-skill installation found in {effective_target}{mode_label}")
+        _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
         return 0
 
     if not yes:
-        print("The following installations will be removed:")
+        _tui_print("The following installations will be removed:", style="iterate.primary")
         for assistant, destination in existing:
-            print(f"  - {assistant}{mode_label}: {destination}")
-        answer = input("Proceed? [y/N]: ").strip().lower()
+            _hint(f"- {assistant}{mode_label}: {destination}")
+        answer = input("  \u2514 Proceed? [y/N]: ").strip().lower()
         if answer not in ("y", "yes"):
-            print("Uninstall cancelled.")
+            _hint("Uninstall cancelled.")
             return 0
 
     for assistant, destination in existing:
         shutil.rmtree(destination)
-        print(f"Uninstalled {assistant}{mode_label}: {destination}")
+        _success(f"Uninstalled {assistant}{mode_label}: {destination}")
 
-    print("Uninstall complete.")
+    _success("Uninstall complete.")
     return 0
 
 
@@ -315,11 +396,7 @@ def _download_release_source(
     unverified tarballs.
     """
     if not checksum_url:
-        print(
-            "Refusing to download release: SHA256SUMS.txt URL is required "
-            "for integrity verification.",
-            file=sys.stderr,
-        )
+        _error("Refusing to download release: SHA256SUMS.txt URL is required for integrity verification.")
         return None
 
     data = _download_bytes(tarball_url, token)
@@ -328,25 +405,19 @@ def _download_release_source(
 
     checksum_data = _download_bytes(checksum_url, token)
     if not checksum_data:
-        print("Refusing to proceed: could not download checksum file.", file=sys.stderr)
+        _error("Refusing to proceed: could not download checksum file.")
         return None
 
     expected_hash = _parse_checksum(checksum_data, EXPECTED_TARBALL_FILENAME)
     if not expected_hash:
-        print(
-            f"Refusing to proceed: {EXPECTED_TARBALL_FILENAME} not found in checksum file.",
-            file=sys.stderr,
-        )
+        _error(f"Refusing to proceed: {EXPECTED_TARBALL_FILENAME} not found in checksum file.")
         return None
 
     actual_hash = hashlib.sha256(data).hexdigest()
     if actual_hash.lower() != expected_hash.lower():
-        print(
-            f"Checksum mismatch for release tarball: expected {expected_hash}, got {actual_hash}",
-            file=sys.stderr,
-        )
+        _error(f"Checksum mismatch for release tarball: expected {expected_hash}, got {actual_hash}")
         return None
-    print("Release tarball checksum verified.")
+    _success("Release tarball checksum verified.")
 
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
@@ -374,51 +445,42 @@ def update_command(
     release_info = _fetch_latest_release_info(token)
     release_source: Path | None = None
     if release_info:
-        print(f"Latest GitHub release: {release_info['tag']}")
-        print(
-            "This will download code from "
-            f"https://github.com/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases "
-            "and install it into your AI assistant skill directories."
-        )
+        _tui_print(f"Latest GitHub release: {release_info['tag']}", style="iterate.primary")
+        _hint(f"This will download code from https://github.com/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases and install it into your AI assistant skill directories.")
         has_checksum = "checksum_url" in release_info
         if not has_checksum:
-            print(
-                "Error: no SHA256SUMS.txt asset found for this release. "
-                "Refusing to download without integrity verification. "
-                "Falling back to local source.",
-                file=sys.stderr,
-            )
+            _error("Error: no SHA256SUMS.txt asset found for this release. Refusing to download without integrity verification. Falling back to local source.")
             release_source = None
         else:
             if not yes:
                 answer = input("Continue? [y/N]: ").strip().lower()
                 if answer not in ("y", "yes"):
-                    print("Update cancelled.")
+                    _hint("Update cancelled.")
                     return 0
-            print("Downloading release source...")
+            _hint("Downloading release source...")
             release_source = _download_release_source(
                 release_info["tarball_url"],
                 release_info["checksum_url"],
                 token,
             )
             if release_source:
-                print(f"Using release source: {release_source}")
+                _hint(f"Using release source: {release_source}")
             else:
-                print("Could not download release source; falling back to local source...")
+                _warning("Could not download release source; falling back to local source...")
     else:
-        print("Could not reach GitHub releases; refreshing from local source...")
+        _warning("Could not reach GitHub releases; refreshing from local source...")
 
     update_source = release_source if release_source else source
 
     if ai is None:
         assistants = _detect_installed_assistants(effective_target)
         if not assistants:
-            print(f"No iterate-skill installation found in {effective_target}{mode_label}")
-            print("Run 'install --ai <assistant>' first, or use 'update --ai <assistant>'.")
+            _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
+            _hint("Run 'install --ai <assistant>' first, or use 'update --ai <assistant>'.")
             if release_source:
                 shutil.rmtree(release_source)
             return 1
-        print(f"Updating detected installations: {', '.join(assistants)}")
+        _tui_print(f"Updating detected installations: {', '.join(assistants)}", style="iterate.primary")
     elif ai == "all":
         assistants = list(SUPPORTED_AI.keys())
     else:
@@ -431,7 +493,7 @@ def update_command(
         if release_source:
             shutil.rmtree(release_source, ignore_errors=True)
 
-    print("Update complete.")
+    _success("Update complete.")
     return 0
 
 
@@ -485,17 +547,17 @@ def validate_command(target: Path, source: Path) -> int:
     dimensions_dir = source / "config" / "dimensions"
 
     if not config_path.exists():
-        print(f"No project config found at {config_path}")
+        _warning(f"No project config found at {config_path}")
         return 1
 
     errors = _run_validate_subprocess(source, config_path, schema_path, dimensions_dir)
     if errors:
-        print(f"Validation failed for {config_path}")
+        _error(f"Validation failed for {config_path}")
         for error in errors:
-            print(f"  - {error}")
+            _hint(f"- {error}")
         return 1
 
-    print(f"Validation passed: {config_path}")
+    _success(f"Validation passed: {config_path}")
     return 0
 
 
@@ -580,16 +642,16 @@ def init_config(target: Path, source: Path) -> int:
     project_path = target / "iterate.config.yaml"
 
     if project_path.exists():
-        print(f"Project config already exists: {project_path}")
-        print("Use --set to modify it, or delete it first to re-initialize.")
+        _warning(f"Project config already exists: {project_path}")
+        _hint("Use --set to modify it, or delete it first to re-initialize.")
         return 1
 
     if not master_path.exists():
-        print(f"Master config not found: {master_path}", file=sys.stderr)
+        _error(f"Master config not found: {master_path}")
         return 1
 
     project_path.write_text(master_path.read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"Initialized project config: {project_path}")
+    _success(f"Initialized project config: {project_path}")
     return 0
 
 
@@ -597,7 +659,7 @@ def list_config(target: Path) -> int:
     """Print the current project-level config."""
     project_path = target / "iterate.config.yaml"
     if not project_path.exists():
-        print(f"No project config found at {project_path}")
+        _warning(f"No project config found at {project_path}")
         return 1
 
     config = load_config(project_path)
@@ -616,12 +678,12 @@ def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) ->
     for group in set_pairs:
         for pair in group:
             if "=" not in pair:
-                print(f"Invalid --set argument (expected key=value): {pair}", file=sys.stderr)
+                _error(f"Invalid --set argument (expected key=value): {pair}")
                 return 1
             key, value = pair.split("=", 1)
             key = key.strip()
             if not key:
-                print(f"Empty key in --set argument: {pair}", file=sys.stderr)
+                _error(f"Empty key in --set argument: {pair}")
                 return 1
             set_nested_value(config, key, parse_value(value))
 
@@ -629,27 +691,28 @@ def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) ->
 
     errors = _validate_project_config(target, source)
     if errors:
-        print(f"Validation failed for {project_path}; changes have been reverted.", file=sys.stderr)
+        _error(f"Validation failed for {project_path}; changes have been reverted.")
         for error in errors:
-            print(f"  - {error}", file=sys.stderr)
+            _hint(f"- {error}")
         if previous_text is not None:
             project_path.write_text(previous_text, encoding="utf-8")
         else:
             project_path.unlink()
         return 1
 
-    print(f"Updated project config: {project_path}")
+    _success(f"Updated project config: {project_path}")
     return 0
 
 
 def prompt_choice(question: str, choices: list[str], default: str | None = None) -> str:
     """Ask the user to select one option from a list."""
-    print(f"\n{question}")
+    _tui_print("")
+    _tui_print(question, style="iterate.primary")
     for idx, choice in enumerate(choices, start=1):
         marker = " (default)" if choice == default else ""
-        print(f"  {idx}. {choice}{marker}")
+        _hint(f"{idx}. {choice}{marker}")
     while True:
-        answer = input("Enter number or name: ").strip()
+        answer = input("  \u2514 Enter number or name: ").strip()
         if not answer and default is not None:
             return default
         if answer.isdigit():
@@ -658,7 +721,7 @@ def prompt_choice(question: str, choices: list[str], default: str | None = None)
                 return choices[idx]
         if answer in choices:
             return answer
-        print("Invalid choice, please try again.")
+        _warning("Invalid choice, please try again.")
 
 
 def prompt_text(question: str, default: str | None = None) -> str:
@@ -670,7 +733,7 @@ def prompt_text(question: str, default: str | None = None) -> str:
             return answer
         if default is not None:
             return default
-        print("A value is required.")
+        _warning("A value is required.")
 
 
 def prompt_int(question: str, default: int | None = None) -> int:
@@ -683,7 +746,7 @@ def prompt_int(question: str, default: int | None = None) -> int:
         try:
             return int(answer)
         except ValueError:
-            print("Please enter a valid integer.")
+            _warning("Please enter a valid integer.")
 
 
 def prompt_bool(question: str, default: bool = True) -> bool:
@@ -697,7 +760,7 @@ def prompt_bool(question: str, default: bool = True) -> bool:
             return True
         if answer in ("n", "no"):
             return False
-        print("Please enter 'y' or 'n'.")
+        _warning("Please enter 'y' or 'n'.")
 
 
 def interactive_config(target: Path, source: Path) -> int:
@@ -716,7 +779,7 @@ def interactive_config(target: Path, source: Path) -> int:
         project_path.read_text(encoding="utf-8") if project_path.exists() else None
     )
 
-    print("=== iterate-skill configuration wizard ===")
+    _intro("iterate-skill configuration wizard")
 
     config["goal"] = prompt_text("Iteration goal", config.get("goal", "Improve code quality"))
     config["max_rounds"] = prompt_int_in_range(
@@ -746,16 +809,16 @@ def interactive_config(target: Path, source: Path) -> int:
 
     errors = _validate_project_config(target, source)
     if errors:
-        print(f"\nValidation failed for {project_path}; changes have been reverted.", file=sys.stderr)
+        _error(f"Validation failed for {project_path}; changes have been reverted.")
         for error in errors:
-            print(f"  - {error}", file=sys.stderr)
+            _hint(f"- {error}")
         if previous_text is not None:
             project_path.write_text(previous_text, encoding="utf-8")
         else:
             project_path.unlink()
         return 1
 
-    print(f"\nConfiguration saved: {project_path}")
+    _success(f"Configuration saved: {project_path}")
     return 0
 
 
@@ -768,17 +831,18 @@ def prompt_int_in_range(
         value = prompt_int(full_question, default)
         if min_value <= value <= max_value:
             return value
-        print(f"Please enter a value between {min_value} and {max_value}.")
+        _warning(f"Please enter a value between {min_value} and {max_value}.")
 
 
 def prompt_dimensions(current: object) -> list[str]:
     """Interactively select enabled dimensions."""
     current_set = set(current) if isinstance(current, list) else set(DIMENSION_CHOICES)
     selected: list[str] = []
-    print("\nSelect review dimensions (enter numbers/names, comma-separated):")
+    _tui_print("")
+    _tui_print("Select review dimensions (enter numbers/names, comma-separated):", style="iterate.primary")
     for idx, dim in enumerate(DIMENSION_CHOICES, start=1):
         marker = " [enabled]" if dim in current_set else ""
-        print(f"  {idx}. {dim}{marker}")
+        _hint(f"{idx}. {dim}{marker}")
     answer = input("Dimensions: ").strip()
     if not answer:
         return _ensure_non_empty_dimensions(list(current_set))
@@ -819,7 +883,7 @@ def config_command(
     if interactive:
         return interactive_config(target, source)
 
-    print("No config action specified. Use --init, --list, --set, or --interactive.")
+    _warning("No config action specified. Use --init, --list, --set, or --interactive.")
     return 1
 
 
@@ -1011,7 +1075,7 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
 
     if args.command == "install":
         if not args.target.exists():
-            print(f"Error: target directory does not exist: {args.target}", file=sys.stderr)
+            _error(f"Error: target directory does not exist: {args.target}")
             return 1
         try:
             return install_command(
@@ -1023,7 +1087,7 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
                 args.global_install,
             )
         except FileNotFoundError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            _error(f"Error: {exc}")
             return 1
 
     if args.command == "uninstall":
@@ -1033,13 +1097,13 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
 
     if args.command == "validate":
         if not args.target.exists():
-            print(f"Error: target directory does not exist: {args.target}", file=sys.stderr)
+            _error(f"Error: target directory does not exist: {args.target}")
             return 1
         return validate_command(args.target.resolve(), source)
 
     if args.command == "update":
         if not args.target.exists():
-            print(f"Error: target directory does not exist: {args.target}", file=sys.stderr)
+            _error(f"Error: target directory does not exist: {args.target}")
             return 1
         return update_command(
             args.ai,

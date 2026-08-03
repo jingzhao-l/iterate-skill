@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional
 
 import yaml
 
+from iterate_cli.tui import tui
 from iterate_cli.wizard import (
     ALL_DIMENSIONS,
     DIMENSION_LABELS,
@@ -654,27 +655,27 @@ def _run_string_list_step(
     """
     current = list(items)
     while True:
-        print()
-        print(f"--- {title} ---")
-        print(description)
-        print()
+        tui.empty_line()
+        tui.section(title)
+        tui.info(description)
+        tui.empty_line()
         _print_numbered_list(current)
-        print()
-        choice = input_func("[a]dd / [r]emove / [s]kip > ").strip().lower()
+        tui.empty_line()
+        choice = input_func("  └ [a]dd / [r]emove / [s]kip: ").strip().lower()
         if choice in ("s", ""):
             return current
         if choice == "a":
-            value = input_func(f"  {add_prompt}: ").strip()
+            value = input_func(f"  └ {add_prompt}: ").strip()
             if value:
                 current.append(value)
-                print("  ✅ 已添加 / Added")
+                tui.success("已添加 / Added", indent=2)
             else:
-                print("  ⏭️  空输入，跳过 / Empty, skipped")
+                tui.hint("空输入，跳过 / Empty, skipped", indent=2)
         elif choice == "r" and current:
             idx = _read_index(current, input_func)
             if idx is not None:
                 current.pop(idx)
-                print("  ✅ 已删除 / Removed")
+                tui.success("已删除 / Removed", indent=2)
         else:
             _print_invalid_choice()
 
@@ -695,25 +696,25 @@ def _run_typed_list_step(
     """
     current = list(items)
     while True:
-        print()
-        print(f"--- {title} ---")
-        print(description)
-        print()
+        tui.empty_line()
+        tui.section(title)
+        tui.info(description)
+        tui.empty_line()
         _print_numbered_list([formatter(item) for item in current])
-        print()
-        choice = input_func("[a]dd / [r]emove / [s]kip > ").strip().lower()
+        tui.empty_line()
+        choice = input_func("  └ [a]dd / [r]emove / [s]kip: ").strip().lower()
         if choice in ("s", ""):
             return current
         if choice == "a":
             new_item = add_func(input_func)
             if new_item is not None:
                 current.append(new_item)
-                print("  ✅ 已添加 / Added")
+                tui.success("已添加 / Added", indent=2)
         elif choice == "r" and current:
             idx = _read_index(current, input_func)
             if idx is not None:
                 current.pop(idx)
-                print("  ✅ 已删除 / Removed")
+                tui.success("已删除 / Removed", indent=2)
         else:
             _print_invalid_choice()
 
@@ -726,36 +727,36 @@ def _run_fix_priority_step(
 
     Lets the user specify which dimensions to fix first.
     """
-    print()
-    print("--- 优先修复顺序 / Fix Priority Order ---")
-    print("指定维度修复优先级（从高到低）。留空跳过保持默认。")
-    print("Specify dimension fix priority (high to low). Leave empty to skip.")
-    print()
+    tui.empty_line()
+    tui.section("优先修复顺序 / Fix Priority Order")
+    tui.info("指定维度修复优先级（从高到低）。留空跳过保持默认。")
+    tui.hint("Specify dimension fix priority (high to low). Leave empty to skip.", indent=2)
+    tui.empty_line()
     if current_order:
-        print("当前顺序 / Current order:")
+        tui.info("当前顺序 / Current order:")
         for i, dim in enumerate(current_order, 1):
-            print(f"  {i}. {dim}")
-        print()
-
-    print("可用维度 / Available dimensions:")
+            tui.info(f"{i}. {dim}", indent=4)
+        tui.empty_line()
+    tui.info("可用维度 / Available dimensions:")
     for i, dim in enumerate(ALL_DIMENSIONS, 1):
-        print(f"  {i}. {DIMENSION_LABELS[dim]}")
-    print()
+        tui.info(f"{i}. {DIMENSION_LABELS[dim]}", indent=4)
+    tui.empty_line()
 
-    raw = input_func("输入维度编号（逗号分隔，按优先级从高到低）/ Enter numbers (comma-separated, high to low priority): ").strip()
+    tui.question("输入维度编号（逗号分隔，按优先级从高到低）/ Enter numbers (high to low priority):")
+    raw = input_func("  └ ").strip()
     if not raw:
         return list(current_order)
 
     selected = _parse_dimension_numbers(raw)
     if not selected:
-        print("无效输入，保持原顺序 / Invalid input, keeping current order.")
+        tui.warning("无效输入，保持原顺序 / Invalid input, keeping current order.", indent=4)
         return list(current_order)
 
-    print()
-    print("新顺序 / New order:")
+    tui.empty_line()
+    tui.info("新顺序 / New order:")
     for i, dim in enumerate(selected, 1):
-        print(f"  {i}. {dim}")
-    print()
+        tui.info(f"{i}. {dim}", indent=4)
+    tui.empty_line()
     if _ask_yes_no("确认? / Confirm?", input_func, default=True):
         return selected
     return list(current_order)
@@ -768,35 +769,35 @@ def _run_validation_commands_step(
     """Run the extra validation commands step."""
     result = {k: list(v) for k, v in current.items()}
     while True:
-        print()
-        print("--- 补充验证命令 / Extra Validation Commands ---")
-        print("项目特有的验证命令，会合并到 validation.commands。")
-        print("Project-specific validation commands, merged into validation.commands.")
-        print("命令前缀会自动加入 command_whitelist。")
-        print("Command prefixes are auto-added to command_whitelist.")
-        print()
+        tui.empty_line()
+        tui.section("补充验证命令 / Extra Validation Commands")
+        tui.info("项目特有的验证命令，会合并到 validation.commands。")
+        tui.hint("Project-specific validation commands, merged into validation.commands.", indent=2)
+        tui.info("命令前缀会自动加入 command_whitelist。")
+        tui.hint("Command prefixes are auto-added to command_whitelist.", indent=2)
+        tui.empty_line()
         if result:
             for module, cmds in result.items():
-                print(f"  [{module}]")
+                tui.bullet(f"[{module}]", indent=4)
                 for cmd in cmds:
-                    print(f"    - {cmd}")
+                    tui.info(f"- {cmd}", indent=6)
         else:
-            print("  (空 / empty)")
-        print()
-        choice = input_func("[a]dd / [r]emove / [s]kip > ").strip().lower()
+            tui.hint("(空 / empty)", indent=4)
+        tui.empty_line()
+        choice = input_func("  └ [a]dd / [r]emove / [s]kip: ").strip().lower()
         if choice in ("s", ""):
             return result
         if choice == "a":
-            module = input_func("  模块名 / Module name (e.g. python, swift): ").strip()
+            module = input_func("  └ 模块名 / Module name (e.g. python, swift): ").strip()
             if not module:
-                print("  ⏭️  空模块名，跳过 / Empty module, skipped")
+                tui.hint("空模块名，跳过 / Empty module, skipped", indent=2)
                 continue
             if not MODULE_NAME_PATTERN.match(module):
-                print("  ⚠️  无效模块名（仅允许字母、数字、._-）/ Invalid module name")
+                tui.warning("无效模块名（仅允许字母、数字、._-）/ Invalid module name", indent=2)
                 continue
-            cmd = input_func(f"  {module} 命令 / command: ").strip()
+            cmd = input_func(f"  └ {module} 命令 / command: ").strip()
             if not cmd:
-                print("  ⏭️  空命令，跳过 / Empty command, skipped")
+                tui.hint("空命令，跳过 / Empty command, skipped", indent=2)
                 continue
 
             # v2.0.2: strict whitelist — rejects shell-chaining
@@ -804,25 +805,25 @@ def _run_validation_commands_step(
             # confirmation bypass; only pre-approved tooling is allowed.
             is_valid, reason = validate_extra_command(cmd)
             if not is_valid:
-                print(f"  ❌ 拒绝 / Rejected: {reason}")
+                tui.error(f"拒绝 / Rejected: {reason}", indent=2)
                 continue
 
             existing = result.get(module, [])
             if cmd not in existing:
                 existing.append(cmd)
                 result[module] = existing
-                print("  ✅ 已添加 / Added")
+                tui.success("已添加 / Added", indent=2)
             else:
-                print("  ⏭️  命令已存在 / Command already exists")
+                tui.hint("命令已存在 / Command already exists", indent=2)
         elif choice == "r" and result:
             modules = list(result.keys())
-            print("  选择模块 / Select module:")
+            tui.info("选择模块 / Select module:", indent=2)
             for i, m in enumerate(modules, 1):
-                print(f"    {i}. {m}")
-            idx = _read_index(modules, input_func, prompt="  模块编号 / Module number")
+                tui.info(f"{i}. {m}", indent=4)
+            idx = _read_index(modules, input_func, prompt="模块编号 / Module number")
             if idx is not None:
                 result.pop(modules[idx])
-                print("  ✅ 已删除 / Removed")
+                tui.success("已删除 / Removed", indent=2)
         else:
             _print_invalid_choice()
 
@@ -834,10 +835,10 @@ def _run_validation_commands_step(
 
 def _add_risk_area(input_func: InputFunc) -> Optional[RiskArea]:
     """Collect a single RiskArea from the user."""
-    path = input_func("  路径 / Path (e.g. src/auth/): ").strip()
+    path = input_func("  └ 路径 / Path (e.g. src/auth/): ").strip()
     if not path:
         return None
-    reason = input_func("  原因 / Reason: ").strip()
+    reason = input_func("  └ 原因 / Reason: ").strip()
     if not reason:
         reason = "(未说明 / unspecified)"
     return RiskArea(path=path, reason=reason)
@@ -849,28 +850,28 @@ def _add_known_intentional(input_func: InputFunc) -> Optional[KnownIntentional]:
     Returns None if the user cancels at any step or enters an invalid
     dimension (rather than silently using an empty dimension string).
     """
-    file_path = input_func("  文件路径 / File path (e.g. db/queries.py): ").strip()
+    file_path = input_func("  └ 文件路径 / File path (e.g. db/queries.py): ").strip()
     if not file_path:
         return None
-    line_str = input_func("  行号 / Line number (0 或留空表示整个文件 / 0 or empty for whole file): ").strip()
+    line_str = input_func("  └ 行号 / Line number (0 或留空表示整个文件 / 0 or empty for whole file): ").strip()
     try:
         line = int(line_str) if line_str else 0
     except ValueError:
         line = 0
-    print("  选择维度 / Select dimension:")
+    tui.info("选择维度 / Select dimension:", indent=2)
     for i, dim in enumerate(ALL_DIMENSIONS, 1):
-        print(f"    {i}. {dim}")
-    dim_str = input_func("  维度编号 / Dimension number: ").strip()
+        tui.info(f"{i}. {dim}", indent=4)
+    dim_str = input_func("  └ 维度编号 / Dimension number: ").strip()
     try:
         dim_idx = int(dim_str) - 1
         if not (0 <= dim_idx < len(ALL_DIMENSIONS)):
-            print("  ⚠️  无效维度编号，已取消 / Invalid dimension number, cancelled")
+            tui.warning("无效维度编号，已取消 / Invalid dimension number, cancelled", indent=2)
             return None
         dimension = ALL_DIMENSIONS[dim_idx]
     except ValueError:
-        print("  ⚠️  无效输入，已取消 / Invalid input, cancelled")
+        tui.warning("无效输入，已取消 / Invalid input, cancelled", indent=2)
         return None
-    reason = input_func("  原因 / Reason: ").strip()
+    reason = input_func("  └ 原因 / Reason: ").strip()
     if not reason:
         reason = "(未说明 / unspecified)"
     return KnownIntentional(file=file_path, line=line, dimension=dimension, reason=reason)
@@ -878,10 +879,10 @@ def _add_known_intentional(input_func: InputFunc) -> Optional[KnownIntentional]:
 
 def _add_dimension_focus(input_func: InputFunc) -> Optional[DimensionFocusOverride]:
     """Collect a single DimensionFocusOverride from the user."""
-    print("  选择维度 / Select dimension:")
+    tui.info("选择维度 / Select dimension:", indent=2)
     for i, dim in enumerate(ALL_DIMENSIONS, 1):
-        print(f"    {i}. {DIMENSION_LABELS[dim]}")
-    dim_str = input_func("  维度编号 / Dimension number: ").strip()
+        tui.info(f"{i}. {DIMENSION_LABELS[dim]}", indent=4)
+    dim_str = input_func("  └ 维度编号 / Dimension number: ").strip()
     try:
         dim_idx = int(dim_str) - 1
         if not (0 <= dim_idx < len(ALL_DIMENSIONS)):
@@ -889,7 +890,7 @@ def _add_dimension_focus(input_func: InputFunc) -> Optional[DimensionFocusOverri
         dimension = ALL_DIMENSIONS[dim_idx]
     except ValueError:
         return None
-    focus = input_func(f"  追加 focus 内容 / Extra focus text for [{dimension}]: ").strip()
+    focus = input_func(f"  └ 追加 focus 内容 / Extra focus text for [{dimension}]: ").strip()
     if not focus:
         return None
     return DimensionFocusOverride(dimension=dimension, focus=focus)
@@ -902,37 +903,34 @@ def _add_dimension_focus(input_func: InputFunc) -> Optional[DimensionFocusOverri
 
 def _print_personalize_welcome() -> None:
     """Print the personalization wizard welcome banner."""
-    print()
-    print("=" * 60)
-    print("  Iterate Skill — 个性化配置 / Personalization")
-    print("  捕获 AI 扫描不到的项目专属约束和经验")
-    print("  Capture project-specific constraints AI scanning misses")
-    print("=" * 60)
-    print()
-    print("本向导收集 9 类个性化配置：")
-    print("This wizard collects 9 categories of personalization:")
-    print("  1. 禁区/保护文件          — iterate 不得修改")
-    print("  2. 风险区                 — 改动需架构审批")
-    print("  3. 已知意图               — 抑制误报")
-    print("  4. 维度定制               — 追加 focus")
-    print("  5. 优先修复顺序           — 修复优先级")
-    print("  6. 禁止的修复方式         — 不可使用的修复手法")
-    print("  7. Iterate 注意点         — 经验教训")
-    print("  8. 自定义代码约定         — 项目特有规范")
-    print("  9. 补充验证命令           — 合并到 validation.commands")
-    print()
-    print("每步可跳过。结构化规则写入 iterate.config.yaml，")
-    print("自由文本写入 ITERATE.md 用户区。")
-    print()
+    tui.intro(
+        "Iterate Skill — 个性化配置 / Personalization",
+        "捕获 AI 扫描不到的项目专属约束和经验 / Capture project-specific constraints AI scanning misses",
+    )
+    tui.info("本向导收集 9 类个性化配置：")
+    tui.hint("This wizard collects 9 categories of personalization:", indent=2)
+    tui.numbered_list([
+        "禁区/保护文件 — iterate 不得修改",
+        "风险区 — 改动需架构审批",
+        "已知意图 — 抑制误报",
+        "维度定制 — 追加 focus",
+        "优先修复顺序 — 修复优先级",
+        "禁止的修复方式 — 不可使用的修复手法",
+        "Iterate 注意点 — 经验教训",
+        "自定义代码约定 — 项目特有规范",
+        "补充验证命令 — 合并到 validation.commands",
+    ], indent=4)
+    tui.empty_line()
+    tui.hint("每步可跳过。结构化规则写入 iterate.config.yaml，自由文本写入 ITERATE.md 用户区。")
 
 
 def _print_numbered_list(items: list[Any]) -> None:
     """Print a numbered list or empty placeholder."""
     if not items:
-        print("  (空 / empty)")
+        tui.hint("(空 / empty)", indent=2)
         return
     for i, item in enumerate(items, 1):
-        print(f"  {i}. {item}")
+        tui.info(f"{i}. {item}", indent=4)
 
 
 def _read_index(
@@ -944,15 +942,15 @@ def _read_index(
 
     Returns None if the input is invalid or out of range.
     """
-    raw = input_func(f"  {prompt} (1-{len(items)}): ").strip()
+    raw = input_func(f"  └ {prompt} (1-{len(items)}): ").strip()
     try:
         idx = int(raw) - 1
         if 0 <= idx < len(items):
             return idx
-        print(f"  ❌ 超出范围 / Out of range (1-{len(items)})")
+        tui.error(f"超出范围 / Out of range (1-{len(items)})", indent=2)
         return None
     except ValueError:
-        print("  ❌ 无效输入 / Invalid input")
+        tui.error("无效输入 / Invalid input", indent=2)
         return None
 
 
@@ -980,34 +978,28 @@ def _confirm_personalization_summary(
     input_func: InputFunc,
 ) -> bool:
     """Show a summary of personalization data and ask for confirmation."""
-    print()
-    print("=" * 60)
-    print("  确认个性化配置 / Confirm Personalization")
-    print("=" * 60)
-    print()
-    print(f"  禁区 / Protected:          {len(data.protected_paths)}")
-    print(f"  风险区 / Risk areas:       {len(data.risk_areas)}")
-    print(f"  已知意图 / Intentional:    {len(data.known_intentional)}")
-    print(f"  维度定制 / Dim focus:      {len(data.dimension_focus)}")
-    print(f"  优先顺序 / Fix priority:   {len(data.fix_priority_order)}")
-    print(f"  禁止方式 / Forbidden:      {len(data.forbidden_fixes)}")
-    print(f"  注意点 / Notes:            {len(data.iterate_notes)}")
-    print(f"  代码约定 / Conventions:    {len(data.code_conventions)}")
-    print(f"  验证命令 / Extra cmds:     {sum(len(v) for v in data.extra_validation_commands.values())}")
-    print()
+    tui.section("确认个性化配置 / Confirm Personalization")
+    tui.key_value("禁区 / Protected", str(len(data.protected_paths)))
+    tui.key_value("风险区 / Risk areas", str(len(data.risk_areas)))
+    tui.key_value("已知意图 / Intentional", str(len(data.known_intentional)))
+    tui.key_value("维度定制 / Dim focus", str(len(data.dimension_focus)))
+    tui.key_value("优先顺序 / Fix priority", str(len(data.fix_priority_order)))
+    tui.key_value("禁止方式 / Forbidden", str(len(data.forbidden_fixes)))
+    tui.key_value("注意点 / Notes", str(len(data.iterate_notes)))
+    tui.key_value("代码约定 / Conventions", str(len(data.code_conventions)))
+    tui.key_value("验证命令 / Extra cmds", str(sum(len(v) for v in data.extra_validation_commands.values())))
+    tui.empty_line()
     if data.is_empty():
-        print("  ⚠️  所有类别为空 / All categories empty")
-        print()
+        tui.warning("所有类别为空 / All categories empty", indent=2)
+        tui.empty_line()
     return _ask_yes_no("确认保存? / Confirm and save?", input_func)
 
 
 def _print_cancelled() -> None:
     """Print cancellation message."""
-    print()
-    print("已取消 / Cancelled.")
-    print()
+    tui.cancel()
 
 
 def _print_invalid_choice() -> None:
     """Print invalid choice message."""
-    print("  请输入 a / r / s / Please enter a / r / s")
+    tui.warning("请输入 a / r / s / Please enter a / r / s", indent=2)

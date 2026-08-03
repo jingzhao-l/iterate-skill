@@ -7,6 +7,9 @@ Provides subcommands for onboarding and personalization management:
     iterate reonboard   — Full re-onboarding (backup old files, run wizard)
     iterate status      — Show onboarding status and drift detection
     iterate --version   — Print version
+
+All user-facing output is routed through the unified TUI layer
+(``iterate_cli.tui``) for consistent skills.sh / Claude Code style styling.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from iterate_cli.refresh import (
     is_onboarding_complete,
     load_onboarding_config,
 )
+from iterate_cli.tui import tui
 from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
 
 
@@ -47,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     project_root = Path(args.project).resolve()
 
     if not project_root.is_dir():
-        print(f"Error: project directory not found: {project_root}", file=sys.stderr)
+        tui.error(f"Error: project directory not found: {project_root}")
         return 1
 
     if args.command == "onboard":
@@ -133,7 +137,7 @@ def _cmd_onboard(project_root: Path) -> int:
     data = run_wizard(project_root)
     if data is NO_CHANGES_NEEDED:
         # Returning user explicitly declined all updates.
-        print("No changes made. Onboarding is already complete.")
+        tui.info("No changes made. Onboarding is already complete.")
         return 0
     if data is None:
         # User cancelled mid-flow (gate, basic wizard, or personalization
@@ -141,14 +145,14 @@ def _cmd_onboard(project_root: Path) -> int:
         return 1
 
     iterate_md, config_yaml = write_onboarding_outputs(data, project_root)
-    print()
-    print("✅ Onboarding complete!")
-    print(f"   Written: {iterate_md}")
-    print(f"   Written: {config_yaml}")
+    tui.empty_line()
+    tui.success("Onboarding complete!")
+    tui.key_value("Written", str(iterate_md))
+    tui.key_value("Written", str(config_yaml))
     if data.personalization is not None:
-        print("   Personalization: applied")
-    print()
-    print("You can now use /iterate in your AI coding tool.")
+        tui.key_value("Personalization", "applied")
+    tui.empty_line()
+    tui.hint("You can now use /iterate in your AI coding tool.")
     return 0
 
 
@@ -162,12 +166,12 @@ def _cmd_personalize(project_root: Path) -> int:
 
     # Personalization requires existing onboarding (ITERATE.md + config).
     if not is_onboarding_complete(project_root):
-        print("Onboarding not yet completed. Run 'iterate onboard' first.")
+        tui.warning("Onboarding not yet completed. Run 'iterate onboard' first.")
         return 1
 
     config_path = project_root / "iterate.config.yaml"
     if not config_path.is_file():
-        print("iterate.config.yaml not found. Run 'iterate onboard' first.")
+        tui.warning("iterate.config.yaml not found. Run 'iterate onboard' first.")
         return 1
 
     # Load existing personalization for editing.
@@ -187,10 +191,10 @@ def _cmd_personalize(project_root: Path) -> int:
     # Update ITERATE.md user-owned section with notes/conventions.
     _update_iterate_md_user_section(project_root, personalization)
 
-    print()
-    print("✅ Personalization saved!")
-    print(f"   Updated: {config_path}")
-    print(f"   Updated: {project_root / 'ITERATE.md'}")
+    tui.empty_line()
+    tui.success("Personalization saved!")
+    tui.key_value("Updated", str(config_path))
+    tui.key_value("Updated", str(project_root / "ITERATE.md"))
     return 0
 
 
@@ -236,32 +240,32 @@ def _update_iterate_md_user_section(project_root: Path, personalization: Any) ->
 def _cmd_refresh(project_root: Path) -> int:
     """Handle the 'refresh' subcommand."""
     if not is_onboarding_complete(project_root):
-        print("Onboarding not yet completed. Run 'iterate onboard' first.")
+        tui.warning("Onboarding not yet completed. Run 'iterate onboard' first.")
         return 1
 
     success = incremental_refresh(project_root)
     if success:
-        print("✅ Incremental refresh complete.")
-        print("   AI-maintained sections updated, user-owned sections preserved.")
+        tui.success("Incremental refresh complete.")
+        tui.hint("AI-maintained sections updated, user-owned sections preserved.", indent=2)
         return 0
     else:
-        print("❌ Refresh failed. ITERATE.md not found.")
+        tui.error("Refresh failed. ITERATE.md not found.")
         return 1
 
 
 def _cmd_reonboard(project_root: Path) -> int:
     """Handle the 'reonboard' subcommand."""
     if not is_onboarding_complete(project_root):
-        print("No existing onboarding found. Run 'iterate onboard' first.")
+        tui.warning("No existing onboarding found. Run 'iterate onboard' first.")
         return 1
 
     success = full_reonboard(project_root)
     if success:
-        print("✅ Full re-onboarding complete.")
-        print("   Old files backed up with .bak-<timestamp> suffix.")
+        tui.success("Full re-onboarding complete.")
+        tui.hint("Old files backed up with .bak-<timestamp> suffix.", indent=2)
         return 0
     else:
-        print("❌ Re-onboarding cancelled or failed.")
+        tui.error("Re-onboarding cancelled or failed.")
         return 1
 
 
@@ -270,7 +274,7 @@ def _count_personalization_rules(personalization: dict[str, Any]) -> int:
 
     Excludes the ``version`` field (schema metadata, not a rule) and
     properly handles ``extra_validation_commands`` which is a dict of
-    module → command list (each command counts as one rule).
+    module -> command list (each command counts as one rule).
 
     Args:
         personalization: The ``personalization`` section of iterate.config.yaml.
@@ -300,45 +304,54 @@ def _count_personalization_rules(personalization: dict[str, Any]) -> int:
 
 
 def _cmd_status(project_root: Path) -> int:
-    """Handle the 'status' subcommand."""
-    print(f"Project: {project_root}")
-    print()
+    """Handle the 'status' subcommand.
+
+    Output is routed through the TUI layer but keeps plain-text keywords
+    (``Onboarded``, ``Not onboarded``, ``Drift``, ``No drift``,
+    ``Personalization: N rule(s)``) so that automated tests and grep-based
+    checks continue to work.
+    """
+    tui.intro("Iterate Skill — Status")
+    tui.key_value("Project", str(project_root))
+    tui.empty_line()
 
     if not is_onboarding_complete(project_root):
-        print("Status: Not onboarded")
-        print("Run 'iterate onboard' to initialize.")
+        tui.warning("Status: Not onboarded")
+        tui.hint("Run 'iterate onboard' to initialize.", indent=2)
         return 0
 
-    print("Status: Onboarded ✅")
+    tui.success("Status: Onboarded")
 
     config = load_onboarding_config(project_root)
     if config:
         onboarding = config.get("onboarding") or {}
         completed_at = onboarding.get("completed_at", "unknown")
         channel = onboarding.get("channel", "unknown")
-        print(f"  Completed: {completed_at}")
-        print(f"  Channel:   {channel}")
+        tui.key_value("Completed", completed_at)
+        tui.key_value("Channel", channel)
 
         # Show personalization summary.
         # Count structured rules, excluding the schema "version" field
         # (metadata, not a rule) and properly handling
-        # extra_validation_commands (a dict of module → command list).
+        # extra_validation_commands (a dict of module -> command list).
         personalization = config.get("personalization") or {}
         if personalization:
             total = _count_personalization_rules(personalization)
-            print(f"  Personalization: {total} rule(s)")
+            # Use plain info() to keep 'Personalization: N rule(s)' as a
+            # contiguous substring (tests assert this exact text).
+            tui.info(f"Personalization: {total} rule(s)", indent=2)
 
         # Check drift.
         drift = check_onboarding_drift(project_root)
         if drift is None:
-            print("  Drift:     check disabled or no fingerprints")
+            tui.key_value("Drift", "check disabled or no fingerprints")
         elif drift.has_drift:
-            print(f"  Drift:     ⚠️  {drift.summary()}")
-            print("  Consider running 'iterate refresh' or 'iterate reonboard'.")
+            tui.warning(f"Drift: {drift.summary()}", indent=2)
+            tui.hint("Consider running 'iterate refresh' or 'iterate reonboard'.", indent=4)
         else:
-            print("  Drift:     No drift detected ✅")
+            tui.success("Drift: No drift detected", indent=2)
     else:
-        print("  (iterate.config.yaml not found — only ITERATE.md exists)")
+        tui.hint("(iterate.config.yaml not found — only ITERATE.md exists)", indent=2)
 
     return 0
 
