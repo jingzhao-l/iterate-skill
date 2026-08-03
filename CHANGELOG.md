@@ -5,6 +5,24 @@
 
 ---
 
+## [2.2.3] — 2026-08-03
+
+### 修复 / Bug Fixes
+
+- **安装时仅预选自动检测到的 AI 工具**：此前 `install.py` 的箭头键多选默认全选所有受支持工具，即使某些工具未安装也会被预勾选，导致用户误以为会安装到不存在的工具。现在只预选检测到的（已安装）工具，未检测到的工具列出但默认不勾选，需用户显式选择。
+- **安装取消时不再误报成功**：此前当用户取消安装（未选择任何工具）时 `install_command` 返回 `0`，导致 `npx iterate-skill-installer` 打印成功提示。现在返回非零退出码，npm 包装器检测到取消/失败后停止并提示，不再误报成功。
+
+### 测试 / Tests
+
+- 新增 `TestInstallPreselect` 回归测试，验证多选仅预选检测到的工具。
+- 新增 `TestInstallCancelExitCode` 回归测试，验证取消安装返回非零退出码。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.2.3`。
+
+---
+
 ## [2.2.2] — 2026-08-03
 
 ### 修复 / Bug Fixes
