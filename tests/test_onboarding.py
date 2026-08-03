@@ -3455,6 +3455,47 @@ class TestCmdOnboardPreservesUserSections:
         assert "新注意点 - reflected" in after
 
 
+class TestCmdOnboardPreservesConfigPersonalization:
+    """Returning-user ``onboard`` must preserve ``personalization`` in config.yaml.
+
+    Regression: when a returning user updates basic config via ``onboard`` but
+    declines to re-personalize, the config.yaml was regenerated from scratch and
+    the existing ``personalization`` section (structured rules: protected paths,
+    risk areas, extra validation commands, etc.) was silently dropped.
+    """
+
+    def test_basic_update_preserves_existing_personalization(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """Returning user updates basic config only → structured rules survive."""
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            extra_validation_commands={"python": ["ruff check src/"]},
+        )
+        write_onboarding_outputs(data, fake_project)
+
+        # Confirm personalization exists in config before re-onboarding.
+        config = load_onboarding_config(fake_project)
+        assert config["personalization"]["protected_paths"] == ["legacy/**"]
+
+        # Returning user updates basic config but returns no personalization.
+        monkeypatch.setattr(
+            "iterate_cli.cli.run_wizard",
+            lambda project_root: _build_onboarding_data(project_root),
+        )
+
+        ret = cli_main(["onboard", "-p", str(fake_project)])
+        assert ret == 0
+
+        # Personalization structured rules must survive the basic-config update.
+        config = load_onboarding_config(fake_project)
+        assert config["personalization"]["protected_paths"] == ["legacy/**"]
+        assert config["personalization"]["extra_validation_commands"] == {
+            "python": ["ruff check src/"]
+        }
+
+
 class TestValidateExtraCommand:
     """Tests for iterate_cli.personalize.validate_extra_command (v2.0.1).
 
