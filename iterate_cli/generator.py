@@ -181,12 +181,21 @@ def generate_config_yaml(data: OnboardingData) -> str:
 def write_onboarding_outputs(
     data: OnboardingData,
     output_dir: Path,
+    existing_md: str | None = None,
 ) -> tuple[Path, Path]:
     """Write ITERATE.md and iterate.config.yaml to the output directory.
+
+    When ``existing_md`` is provided (re-onboarding an existing project), the
+    user-owned section of ITERATE.md is preserved so manual edits survive, and
+    any new personalization content is merged in. This keeps ``onboard``
+    consistent with ``refresh`` (which also preserves user-owned sections).
 
     Args:
         data: OnboardingData with scan results and user inputs.
         output_dir: Directory to write files to (usually the project root).
+        existing_md: Optional content of a pre-existing ITERATE.md whose
+            user-owned section should be preserved. If None, the default user
+            section (or personalization content) is used.
 
     Returns:
         Tuple of (iterate_md_path, config_yaml_path).
@@ -197,7 +206,22 @@ def write_onboarding_outputs(
     iterate_md_path = output_dir / "ITERATE.md"
     config_path = output_dir / "iterate.config.yaml"
 
-    iterate_md_path.write_text(generate_iterate_md(data), encoding="utf-8")
+    if existing_md is None:
+        iterate_md_content = generate_iterate_md(data)
+    else:
+        # Re-onboarding an existing project: regenerate AI-maintained sections,
+        # keep the user-owned section (manual edits), and merge in any new
+        # personalization content so notes/conventions are also updated.
+        fresh = generate_iterate_md(data)
+        user_content = extract_user_owned_section(existing_md)
+        if data.personalization is not None:
+            from iterate_cli.personalize import merge_user_sections
+
+            new_personalization_md = data.personalization.to_user_md_sections()
+            user_content = merge_user_sections(user_content, new_personalization_md)
+        iterate_md_content = _replace_user_owned_section(fresh, user_content)
+
+    iterate_md_path.write_text(iterate_md_content, encoding="utf-8")
     config_path.write_text(generate_config_yaml(data), encoding="utf-8")
 
     return iterate_md_path, config_path
