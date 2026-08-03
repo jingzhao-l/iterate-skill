@@ -199,12 +199,13 @@ def _cmd_onboard(project_root: Path) -> int:
 
     # Preserve existing personalization when the user did not re-personalize,
     # so a basic-config update does not silently drop structured rules
-    # (protected paths, risk areas, extra validation commands, etc.).
+    # (protected paths, risk areas, extra validation commands, etc.) or
+    # free-form notes/conventions stored in ITERATE.md.
     if data.personalization is None:
-        from iterate_cli.personalize import load_personalization_from_config
+        from iterate_cli.personalize import load_existing_personalization
 
         existing_config = load_onboarding_config(project_root) or {}
-        existing_personalization = load_personalization_from_config(existing_config)
+        existing_personalization = load_existing_personalization(project_root, existing_config)
         if not existing_personalization.is_empty():
             data.personalization = existing_personalization
 
@@ -223,7 +224,7 @@ def _cmd_onboard(project_root: Path) -> int:
 def _cmd_personalize(project_root: Path) -> int:
     """Handle the 'personalize' subcommand — direct personalization configuration."""
     from iterate_cli.personalize import (
-        load_personalization_from_config,
+        load_existing_personalization,
         run_personalize_wizard,
         save_personalization_to_config,
     )
@@ -238,9 +239,11 @@ def _cmd_personalize(project_root: Path) -> int:
         tui.warning("iterate.config.yaml not found. Run 'iterate onboard' first.")
         return 1
 
-    # Load existing personalization for editing.
+    # Load existing personalization for editing (structured from config +
+    # free-form notes/conventions from ITERATE.md) so re-running the wizard
+    # preserves previously entered content instead of wiping it.
     existing_config = load_onboarding_config(project_root) or {}
-    existing_personalization = load_personalization_from_config(existing_config)
+    existing_personalization = load_existing_personalization(project_root, existing_config)
 
     personalization = run_personalize_wizard(
         project_root,

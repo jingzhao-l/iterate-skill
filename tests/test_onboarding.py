@@ -68,7 +68,9 @@ from iterate_cli.personalize import (
     KnownIntentional,
     PersonalizationData,
     RiskArea,
+    load_existing_personalization,
     load_personalization_from_config,
+    load_personalization_from_iterate_md,
     merge_personalization_into_config,
     run_personalize_wizard,
     save_personalization_to_config,
@@ -1748,6 +1750,64 @@ class TestLoadPersonalizationFromConfig:
         assert "python; rm" not in data.extra_validation_commands
         assert "node &" not in data.extra_validation_commands
         assert data.extra_validation_commands["safe_module"] == ["good"]
+
+
+class TestLoadPersonalizationFromIterateMd:
+    """Regression: free-form notes/conventions must round-trip from ITERATE.md.
+
+    These are stored in the user-owned section (not in iterate.config.yaml),
+    so re-running ``iterate personalize`` / ``onboard`` without a loader
+    would wipe them via ``merge_user_sections``.
+    """
+
+    def test_load_notes_and_conventions(self, tmp_path: Path) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "ITERATE.md").write_text(
+            "# ITERATE.md\n\n"
+            "<!-- ITERATE:USER-OWNED:START -->\n\n"
+            "## 自定义代码约定 / Custom Code Conventions\n\n"
+            "- 使用 snake_case\n"
+            "- 禁止魔法数字\n\n"
+            "## Iterate 注意点 / Iterate Notes\n\n"
+            "- 注意 auth 模块的边界\n\n"
+            "## 手动批注 / Manual Annotations\n\n"
+            "- 用户手动内容\n\n"
+            "<!-- ITERATE:USER-OWNED:END -->\n",
+            encoding="utf-8",
+        )
+        notes, conventions = load_personalization_from_iterate_md(project)
+        assert conventions == ["使用 snake_case", "禁止魔法数字"]
+        assert notes == ["注意 auth 模块的边界"]
+
+    def test_load_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        notes, conventions = load_personalization_from_iterate_md(project)
+        assert notes == []
+        assert conventions == []
+
+    def test_load_existing_merges_structured_and_free_form(self, tmp_path: Path) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "ITERATE.md").write_text(
+            "# ITERATE.md\n\n"
+            "<!-- ITERATE:USER-OWNED:START -->\n\n"
+            "## Iterate 注意点 / Iterate Notes\n\n"
+            "- 注意迁移脚本\n\n"
+            "<!-- ITERATE:USER-OWNED:END -->\n",
+            encoding="utf-8",
+        )
+        config = {
+            "personalization": {
+                "version": "1.0",
+                "protected_paths": ["vendor/**"],
+            },
+        }
+        data = load_existing_personalization(project, config)
+        assert data.protected_paths == ["vendor/**"]
+        assert data.iterate_notes == ["注意迁移脚本"]
+        assert data.is_empty() is False
 
 
 class TestMergePersonalizationIntoConfig:
