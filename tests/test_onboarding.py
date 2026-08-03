@@ -56,6 +56,7 @@ from iterate_cli.wizard import (
     _ask_yes_no,
 )
 from iterate_cli.refresh import (
+    _build_refresh_data,
     check_onboarding_drift,
     full_reonboard,
     incremental_refresh,
@@ -738,6 +739,31 @@ class TestIncrementalRefresh:
 
     def test_refresh_fails_without_iterate_md(self, empty_project: Path) -> None:
         assert incremental_refresh(empty_project) is False
+
+    def test_refresh_defaults_push_per_round_to_false(self, fake_project: Path) -> None:
+        """Refresh must default push_per_round to False (Secure-by-default).
+
+        Regression: ``_build_refresh_data`` previously defaulted to True when
+        the existing config lacked ``git.push_per_round``, which contradicts
+        OnboardingData and the documented default.
+        """
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Remove git.push_per_round from the config to simulate a config
+        # that predates the Secure-by-default change.
+        config_path = fake_project / "iterate.config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        config["git"].pop("push_per_round", None)
+        config_path.write_text(
+            yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+
+        scan = scan_project(fake_project)
+        existing_config = load_onboarding_config(fake_project) or {}
+        refreshed = _build_refresh_data(fake_project, scan, existing_config)
+        assert refreshed.push_per_round is False
 
 
 class TestLoadOnboardingConfigErrorHandling:

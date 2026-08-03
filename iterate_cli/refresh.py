@@ -324,7 +324,9 @@ def _build_refresh_data(
     dimensions = existing_config.get("dimensions") or suggest_dimensions(scan)
     target_branch = (existing_config.get("git") or {}).get("target_branch", "main")
     review_scope = (existing_config.get("review") or {}).get("scope", "full")
-    push_per_round = (existing_config.get("git") or {}).get("push_per_round", True)
+    # Secure-by-default: push_per_round must default to False, matching
+    # OnboardingData (generator.py) and the documented default.
+    push_per_round = (existing_config.get("git") or {}).get("push_per_round", False)
     validation_commands = (existing_config.get("validation") or {}).get("commands") or {}
     command_whitelist = (existing_config.get("validation") or {}).get("command_whitelist") or []
     language = existing_config.get("language", "en")

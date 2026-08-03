@@ -37,7 +37,7 @@
 npx iterate-skill-installer
 ```
 
-运行后会自动检测你已安装的 AI 编程工具，交互选择要安装到哪些助手。支持 `--ai <name>` 直接指定单个助手。
+运行后会自动检测你已安装的 AI 编程工具，交互选择要安装到哪些助手。支持 `--ai <name>` 直接指定单个助手。安装器还会自动安装 `iterate` CLI（用于下面第 2 步的 `iterate onboard` 等命令），一条命令即可完成 skill + CLI 的安装。
 
 ### 2. 进入项目并完成 onboarding
 
@@ -73,7 +73,7 @@ iterate personalize # 追加项目专属约束
 
 ### 推荐：npx 一键安装（适合绝大多数用户）
 
-无需克隆仓库，无需手动配置 Python 环境，一条命令完成下载、校验、安装：
+无需克隆仓库，无需手动配置 Python 环境，一条命令完成 skill 下载、校验、安装，并自动安装 `iterate` CLI：
 
 ```bash
 # 自动检测已安装的 AI 助手并交互选择
@@ -101,7 +101,7 @@ npx iterate-skill-installer --ai trae --global --force
 | `-h, --help` | 查看帮助 |
 | `-v, --version` | 查看版本 |
 
-> 安装器需要 Node.js 18+ 和 Python 3.10+。它会自动创建隔离的 Python 虚拟环境、安装依赖、调用 `scripts/install.py` 完成文件复制。
+> 安装器需要 Node.js 18+ 和 Python 3.10+。它会自动创建隔离的 Python 虚拟环境、安装依赖、调用 `scripts/install.py` 完成文件复制，并安装 `iterate` CLI（优先 `pipx`，否则 `pip install --user`）。若 `iterate` 命令安装失败，仍可手动执行 `pipx install .` 或 `pip install .` 补装。
 
 ### 其他安装方式
 
@@ -109,7 +109,7 @@ npx iterate-skill-installer --ai trae --global --force
 
 #### 方式 A：本地安装 iterate CLI
 
-适合希望在终端里完整体验 onboarding、个性化配置和状态管理的用户。
+通过 npx 一键安装时已自动安装 `iterate` CLI。若你未使用 npx，或希望手动/升级安装 CLI，可在此手动安装：
 
 ```bash
 git clone https://github.com/jingzhao-l/iterate-skill.git
@@ -223,8 +223,8 @@ iterate reonboard
 
 | 通道 | 适用场景 | 产出 |
 |---|---|---|
-| **AI Onboarding** | 希望 AI 自动扫描代码库、识别技术栈 | `ITERATE.md` + `iterate.config.yaml` |
-| **CLI Onboarding** | 对项目有清晰认知，愿手动确认技术栈 | 同上 |
+| **AI Onboarding** | 希望 AI 完全自动扫描代码库、识别技术栈并生成 | `ITERATE.md` + `iterate.config.yaml` |
+| **CLI Onboarding** | 希望 CLI 扫描后手动确认/调整技术栈与配置 | 同上 |
 
 `ITERATE.md` 分为两个区域：
 

@@ -312,14 +312,14 @@ def _gate_question(input_func: InputFunc) -> bool:
     """
     tui.info("本向导将在命令行中收集项目信息以生成 ITERATE.md 和 iterate.config.yaml。")
     tui.empty_line()
-    tui.warning("命令行向导无法扫描代码库，只能基于你的回答生成配置。")
-    tui.hint("The CLI wizard cannot scan your codebase; it only uses your answers.", indent=4)
+    tui.info("CLI 会自动扫描代码库（manifest、目录、技术栈），并让你确认/修正检测结果。")
+    tui.hint("The CLI wizard scans your codebase (manifests, directories, tech stack) and lets you confirm or adjust the results.", indent=4)
     tui.empty_line()
     tui.info("如果你对项目的技术栈、模块结构和构建/测试命令有清晰认知，可继续。")
     tui.hint("If you have a clear understanding of your project's tech stack, module structure, and build/test commands, you can continue.", indent=2)
     tui.empty_line()
-    tui.info("否则建议在 AI 编程工具中直接调用 /iterate，由 AI 自动扫描代码库完成 onboarding。")
-    tui.hint("Otherwise, use /iterate in your AI coding tool for automated AI onboarding.", indent=2)
+    tui.info("若你更希望完全由 AI 自动扫描并生成，可在 AI 编程工具中直接调用 /iterate。")
+    tui.hint("Alternatively, use /iterate in your AI coding tool for fully automated AI onboarding.", indent=2)
     tui.empty_line()
 
     answer = _ask_yes_no("是否继续命令行 onboarding? / Continue CLI onboarding?", input_func)
