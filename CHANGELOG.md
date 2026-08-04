@@ -5,6 +5,18 @@
 
 ---
 
+## [2.3.0] — 2026-08-04
+
+### 文档 / Docs
+
+- **新增"常见问题 / FAQ"章节（SkillHub Convention 评测改进）**：SkillHub 评测指出 C·Convention 的短板是"没有常见问题解答，遇到特殊情况只能靠试错摸索"。README 新增 FAQ 章节，按「安装 / 使用 / 安全」三组覆盖：国内网络安装受限、Node/Python 版本要求、是否自动安装 CLI、取消安装是否留半成品、适用/不适用场景、首次使用未初始化、大项目耗时无进度、漂移检测含义、改动未合并推送、验证命令不生效、新增验证工具、密钥与 `.env` 保护、更新下载安全性等 13 个常见问题。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.3.0`。
+
+---
+
 ## [2.2.9] — 2026-08-04
 
 ### 安全 / Security
