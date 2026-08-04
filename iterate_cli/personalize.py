@@ -47,7 +47,7 @@ KNOWN_SAFE_COMMAND_PREFIXES: tuple[str, ...] = (
     "pytest", "py.test", "unittest", "tox", "nox",
     "ruff", "flake8", "pylint", "mypy", "bandit",
     "black", "isort", "pyupgrade",
-    "coverage", "pytest-cov",
+    "coverage", "pytest-cov", "pip-audit",
     "npm", "pnpm", "yarn", "npx",
     "tsc", "eslint", "prettier", "jest", "vitest", "ava", "mocha",
     "swift", "swiftc", "xcodebuild", "swift test",
@@ -420,10 +420,25 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
             # Skip entries with unsafe module names.
             continue
         if isinstance(cmds, list):
-            # Only keep string commands; skip non-string entries silently.
-            extra_cmds[module_str] = [
-                str(c) for c in cmds if isinstance(c, str) and c.strip()
-            ]
+            valid: list[str] = []
+            for c in cmds:
+                if not isinstance(c, str) or not c.strip():
+                    continue
+                # Fail closed: revalidate every config-sourced command against
+                # the strict whitelist before it can be persisted into
+                # executable ``validation.commands``. A manually edited
+                # iterate.config.yaml cannot smuggle an arbitrary command this
+                # way, keeping the "strict whitelist" guarantee intact.
+                ok, reason = validate_extra_command(c)
+                if ok:
+                    valid.append(c)
+                else:
+                    tui.warning(
+                        f"跳过非法验证命令 [{module_str}] '{c}': {reason}",
+                        indent=2,
+                    )
+            if valid:
+                extra_cmds[module_str] = valid
 
     return PersonalizationData(
         protected_paths=protected,
@@ -546,10 +561,22 @@ def merge_personalization_into_config(
                 # config compliant with schema (minLength: 1).
                 if not cmd or not cmd.strip():
                     continue
+                # Fail closed: revalidate before merging so a config-sourced or
+                # manually-crafted command cannot expand the executable surface
+                # or auto-extend the whitelist. Only commands that pass the
+                # strict whitelist may be merged and whitelisted.
+                ok, reason = validate_extra_command(cmd)
+                if not ok:
+                    tui.warning(
+                        f"跳过非法验证命令 [{module}] '{cmd}': {reason}",
+                        indent=2,
+                    )
+                    continue
                 if cmd not in existing:
                     existing.append(cmd)
                 # Auto-add command prefix to whitelist if not present.
-                # "bandit -r src/" → prefix "bandit"
+                # Only reached for commands that passed strict validation,
+                # so the prefix is always a known-safe tool.
                 parts = cmd.strip().split(None, 1)
                 prefix = parts[0] if parts else ""
                 if prefix and prefix not in whitelist:

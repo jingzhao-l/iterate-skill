@@ -1,7 +1,7 @@
 ---
 name: iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.2.7
+version: 2.2.8
 permissions:
   file_read: true
   file_write: true
@@ -14,9 +14,9 @@ permissions:
 
 # /iterate `<goal>` `[rounds]` `[no-limit]`
 
-> 中文：全自动多轮代码迭代。每轮从 N 个已启用维度并行审查整个项目（默认 9 个），原子问题直接修复，架构问题经用户批准后由子代理串行执行，验证通过后合并回主分支并推送，循环直到零 findings 或达到轮数上限。
+> 中文：全自动多轮代码迭代。每轮从 N 个已启用维度并行审查整个项目（默认 9 个），原子问题直接修复，架构问题经用户批准后由子代理串行执行，验证通过后（合并与推送为 opt-in，默认关闭）循环直到零 findings 或达到轮数上限。
 >
-> English: Fully automated multi-round code iteration. Each round launches N parallel dimension reviewers across the project (default 9), fixes atomic issues directly, executes architectural issues after user approval via serial sub-agents, validates, merges into the target branch, pushes, and loops until zero findings or max rounds.
+> English: Fully automated multi-round code iteration. Each round launches N parallel dimension reviewers across the project (default 9), fixes atomic issues directly, executes architectural issues after user approval via serial sub-agents, validates, and loops until zero findings or max rounds (merge/push are opt-in and disabled by default).
 
 ---
 
@@ -682,7 +682,7 @@ round += 1
 
 ## Git 隔离工作流 / Git Isolation Workflow
 
-**规则 / Rule**：每次 `/iterate` 会话必须在隔离的本地分支或 worktree 中运行；每轮修复验证通过后，必须合并回本地主分支、解决冲突并推送到远程。**绝不直接在 main/master 上提交**。
+**规则 / Rule**：每次 `/iterate` 会话必须在隔离的本地分支或 worktree 中运行。**绝不直接在 main/master 上提交**。合并与推送均为**主动选择（opt-in）**动作：`git.auto_merge` 与 `git.push_per_round` 默认均为 `false`，仅在用户显式启用时才自动 merge/push；未启用时，改动保留在迭代分支，由用户在会话结束时人工 review 后决定合并或推送。
 
 **Why**：
 - 保持主工作区稳定。
@@ -922,6 +922,6 @@ iterate/
 4. **文件碰撞显式延迟 / File collisions are explicitly deferred**：不依赖 reviewer 再次发现。
 5. **原子验证失败立即停止 / Atomic validation failure stops iteration**：不进入 Phase 3。
 6. **主模型可补充 findings / Main model can supplement findings**：当 reviewer 遗漏明显问题时。
-7. **Git 隔离强制 / Git isolation is mandatory**：所有工作发生在 `iterate/*` 分支或 worktree；每轮验证后合并并推送。
+7. **Git 隔离强制 / Git isolation is mandatory**：所有工作发生在 `iterate/*` 分支或 worktree；merge/push 为 opt-in（`git.auto_merge` / `git.push_per_round` 默认 `false`），仅在用户显式启用时自动合并并推送，否则保留在迭代分支由人工 review。
 8. **完整审计 / Full audit trail**：`.iterate_decisions.md` 记录所有修复、延迟、回滚和重要决策。
-9. **验证命令安全 / Validation command safety**：`iterate.config.yaml` 中的 `validation.commands` 由 AI 助手读取后执行；执行前检查 `validation.command_whitelist`，不在白名单的命令需用户确认。
+9. **验证命令安全 / Validation command safety**：`iterate.config.yaml` 中的 `validation.commands` 由 AI 助手读取后执行；执行前检查 `validation.command_whitelist`，**不在白名单的命令直接拒绝，不可通过用户确认绕过**（与上方"个性化硬白名单"保持一致）。

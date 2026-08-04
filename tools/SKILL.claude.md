@@ -88,4 +88,4 @@ Claude Code 实现 iterate skill 的核心要点：用 `/workflow` 或 `/agent` 
 执行 `Bash` 前：
 
 1. 读取 `validation.command_whitelist`。
-2. 命令不在白名单时，先请求用户确认。
+2. 命令不在白名单时，**直接拒绝，不可通过用户确认绕过**（与个性化硬白名单一致）。
