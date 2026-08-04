@@ -5,6 +5,21 @@
 
 ---
 
+## [2.2.9] — 2026-08-04
+
+### 安全 / Security
+
+- **发布预上传 tarball + SHA256SUMS，installer 下载资产时验证（ClawHub Description-Behavior Mismatch）**：`.github/workflows/release.yml` 改为先 `git archive` 生成 `iterate-skill.tar.gz`，再生成 `SHA256SUMS.txt`，并把两者作为 Release 资产上传。`npm-installer/lib/installer.js` 与 `scripts/install.py` 现在优先下载上传的 `iterate-skill.tar.gz` asset，再用 `SHA256SUMS.txt` 校验，而不是依赖 GitHub 自动生成的 tarball。这样 checksum 文件在 release 发布时即已存在，installer 执行的是真正的完整性校验。
+- **明确披露安装器会安装 `iterate` CLI 到 PATH（Context-Inappropriate Capability / Excessive Agency）**：README 与 SKILL.md 的安全说明中明确说明 `npx iterate-skill-installer` 会顺带把 `iterate` CLI 安装到 PATH（优先 `pipx` 隔离，否则 `--user`），并给出不安装 CLI 的替代方式。
+- **明确 onboarding 扫描范围（敏感文件披露）**：README 与 SKILL.md 说明 onboarding 扫描仅检查 manifest 等公开文件的存在性以及 `README.md` / `CLAUDE.md` 等上下文文件，不会读取 `.env`、密钥、凭证等敏感文件内容。
+- **进一步强化 merge/push opt-in 披露**：README 的 At a Glance、安全说明与 SKILL.md 的风险披露中，统一写明 `auto_merge` / `push_per_round` 默认 `false`，merge/push 为 opt-in。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.2.9`。
+
+---
+
 ## [2.2.8] — 2026-08-04
 
 ### 安全 / Security

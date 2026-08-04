@@ -11,16 +11,27 @@ jobs:
   checksums:
     runs-on: ubuntu-latest
     steps:
-      - name: Download release tarball
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Create release tarball locally
         run: |
-          curl -fsSL -o iterate-skill.tar.gz "${{ github.event.release.tarball_url }}"
+          # Build the tarball deterministically from the tagged tree so the
+          # checksum file can be uploaded *before* the installer downloads it.
+          # GitHub's release tarball_url is auto-generated; we recreate a
+          # stable archive here to publish a matching SHA256SUMS.txt asset.
+          git archive --format=tar.gz --prefix=iterate-skill/ -o iterate-skill.tar.gz HEAD
 
       - name: Generate SHA256 checksums
         run: |
           sha256sum iterate-skill.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Upload checksums to release
+      - name: Upload tarball and checksums to release
         uses: softprops/action-gh-release@v2
         with:
-          files: SHA256SUMS.txt
+          files: |
+            iterate-skill.tar.gz
+            SHA256SUMS.txt

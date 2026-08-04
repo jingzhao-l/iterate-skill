@@ -377,11 +377,11 @@ async function main(options = {}) {
   }
   success(`Latest release: ${tag}`);
 
-  const tarballUrl = release.tarball_url;
+  const tarballAsset = release.assets?.find((a) => a.name === 'iterate-skill.tar.gz');
   const checksumAsset = release.assets?.find((a) => a.name === 'SHA256SUMS.txt');
 
-  if (!tarballUrl) {
-    error('Release has no tarball URL.');
+  if (!tarballAsset) {
+    error('Release is missing the iterate-skill.tar.gz asset.');
     return 1;
   }
   if (!checksumAsset) {
@@ -395,7 +395,7 @@ async function main(options = {}) {
 
   try {
     info('Downloading release tarball...');
-    await downloadFile(tarballUrl, tarballPath, token);
+    await downloadFile(tarballAsset.browser_download_url, tarballPath, token);
 
     info('Downloading checksums...');
     await downloadFile(checksumAsset.browser_download_url, checksumPath, token);
