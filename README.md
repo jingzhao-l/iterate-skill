@@ -343,6 +343,61 @@ validation:
 
 ---
 
+## 常见问题 / FAQ
+
+### 安装 / Installation
+
+**Q: 安装时提示要访问 GitHub 等国外网络，国内网络环境装不上怎么办？**
+A: 安装器通过 GitHub Release 下载并校验，确实需要能访问 GitHub 的网络。若网络受限，可改用不依赖 GitHub 的方式：
+- 手动复制 [`SKILL.md`](./SKILL.md) 到对应助手目录（见"方式 B"）。
+- 国内镜像渠道（ModelScope / SkillHub CN）已上架，可从中获取 skill 文件。
+- 社区代理镜像下载后，再执行 `python scripts/install.py install` 本地安装。
+
+**Q: `npx iterate-skill-installer` 报 Python 或 Node 版本不符合？**
+A: 安装器要求 Node.js 18+ 和 Python 3.10+。请先升级系统 Python/Node，或在终端确认 `python3` / `node` 在 PATH 中。安装器会优先使用 `python3`，再回退到 `python`。
+
+**Q: 安装器会自动安装 `iterate` CLI 到我的电脑上，我能不装吗？**
+A: 可以。`npx iterate-skill-installer` 会顺带安装 `iterate` CLI（优先 `pipx`，否则 `pip install --user`）以便直接运行 `iterate onboard`。若不希望自动安装 CLI，请改用"手动复制 SKILL.md"或"源码脚本"方式，仅复制 skill 文件即可。
+
+**Q: 安装到一半想取消，会留下半成品吗？**
+A: 不会。安装器在临时目录中完成下载、校验、解压，选中助手后才会写入助手目录；取消或失败时不会覆盖已安装的 skill。若已安装过，重装默认提示覆盖，需确认或加 `--force`。
+
+### 使用 / Usage
+
+**Q: 这个 Skill 适合什么场景？不适合什么场景？**
+A: 适合**多轮**的代码审查与自动修复——例如压制技术债、多轮消除 lint/类型/测试问题、项目级重构。**不适合**单次简单改动（改一行、加个注释），这类需求直接用普通对话即可，无需 `/iterate`。
+
+**Q: 第一次使用为什么什么都不做？**
+A: 首次调用 `/iterate` 或运行 `iterate onboard` 前，项目还没有 `ITERATE.md` 与 `iterate.config.yaml`。请先在项目根目录运行 `iterate onboard`（或让 AI 走 AI Onboarding）完成初始化，之后 `/iterate` 才会生效。
+
+**Q: 处理大项目时感觉卡住，没有进度提示？**
+A: 大项目首轮要并行审查多个维度，可能耗时较长。可主动等待，或通过以下方式提速：
+- 在 `iterate.config.yaml` 中把 `review.scope` 设为 `changed-only`，只审查本轮改动。
+- 按目录/模块拆分 reviewer 任务（见 SKILL.md 的 Reviewer Prompt 检查清单）。
+- 适当降低 `max_rounds`，避免无谓的额外轮次。
+
+**Q: 运行时提示有漂移（drift）是什么意思？**
+A: 漂移检测会对比 `package.json`、`pyproject.toml` 等 manifest 文件的 SHA-256 指纹。若依赖或配置发生变化，说明项目状态与上次 onboarding 不一致，会提示你选择：继续 / 增量刷新（`iterate refresh`）/ 完整重新 onboarding（`iterate reonboard`）。
+
+**Q: 修改没有合并到主分支，也没推送到远程？**
+A: 这是**安全默认**行为：`git.auto_merge` 与 `git.push_per_round` 默认均为 `false`，改动保留在隔离的 `iterate/*` 分支或 worktree 中，由你 review 后决定是否合并/推送。如需自动合并推送，请在 `iterate.config.yaml` 中显式开启这两个选项。
+
+**Q: 我手动改了 `iterate.config.yaml`，为什么某些验证命令不生效？**
+A: `validation.commands` 中的命令**必须**以 `validation.command_whitelist` 中的前缀开头，否则会被拒绝。个性化添加的 `extra_validation_commands` 也只会接受 30+ 预批准工具前缀，拒绝 `;`、`|`、`&` 等 shell 元字符——这是为了安全，防止项目配置被执行任意命令。
+
+**Q: 想增加一个新的验证工具（比如 `sphinx`），怎么办？**
+A: 当前严格白名单只接受预批准的工具前缀。若要新增工具，需要扩展 `iterate_cli/personalize.py` 中的 `KNOWN_SAFE_COMMAND_PREFIXES`，或改用 `validation.command_whitelist` + `validation.commands` 直接配置（需通过 `python scripts/validate.py config` 校验）。
+
+### 安全 / Security
+
+**Q: 这个 Skill 会读取我的密钥、`.env` 吗？**
+A: 不会。skill 及 onboarding 扫描仅读取 manifest 文件的存在性和 `README.md` / `CLAUDE.md` 等公开上下文文件，明确不读取 `.env`、`*.key`、`secrets/`、`*.pem` 等敏感文件。`projectContext` 也不会包含 API 密钥、密码、Token。
+
+**Q: 下载更新时安全吗？**
+A: 安全。`scripts/install.py update` 与 `npx iterate-skill-installer` 从 GitHub Release 下载预上传的 `iterate-skill.tar.gz` + `SHA256SUMS.txt`，下载后强制 SHA256 校验，缺失或不匹配则拒绝安装。
+
+---
+
 ## 安全说明 / Security
 
 - **高自主性**：本 skill 会自主执行文件编辑、`git` 操作以及 `validation.commands` 中配置的命令。所有修改先在隔离分支/worktree 中进行，架构修复必须经用户批准。
