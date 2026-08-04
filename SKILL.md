@@ -1,7 +1,7 @@
 ---
 name: iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.2.8
+version: 2.2.9
 permissions:
   file_read: true
   file_write: true
@@ -873,10 +873,11 @@ iterate/
 
 1. **所有 AI 操作不读取敏感文件 / No sensitive file access**
    - 主模型、reviewer 子代理、架构修复子代理均不得读取敏感文件，包括但不限于：
-     `.env`、`.env.*`、`*.key`、`secrets/`、`*.pem`、`*.p12`、`*.crt`、`*.cer`、
+     `.env`、`.env.*`、`*.key`、`secrets/`、`*.pem`、`.p12`、`.crt`、`.cer`、
      `credentials.json`、`.aws/`、`.ssh/`。
    - `projectContext` 中不得包含 API 密钥、密码、Token、数据库连接字符串、私钥内容。
    - 执行命令时避免将敏感文件作为参数或输出内容。
+   - onboarding 扫描仅检查 `package.json`、`pyproject.toml` 等 manifest 文件的存在性，以及 `README.md` / `CLAUDE.md` 等公开上下文文件；不会读取 `.env`、密钥、凭证或其他敏感文件内容。
 
 2. **命令白名单 / Command whitelist — 双层强制执行 / Dual-layer enforcement**
    - **配置时校验 / Config-time validation**：`scripts/validate.py` 在校验配置时检查 `validation.commands` 中的每条命令是否以 `validation.command_whitelist` 中的前缀开头。不在白名单中的命令会报错，配置校验失败。
@@ -894,14 +895,19 @@ iterate/
 
 5. **高自主性风险披露 / High-autonomy risk disclosure**
    - 本 skill 会自主执行文件编辑、`git` 操作（commit/merge/reset）以及 `validation.commands` 中配置的命令。
-   - 所有代码修改先在隔离的 `iterate/*` 分支或 worktree 中进行，验证通过后才合并回 `main`/`master`。
+   - 所有代码修改先在隔离的 `iterate/*` 分支或 worktree 中进行。
+   - `git.auto_merge` 与 `git.push_per_round` 默认均为 `false`（安全默认）；merge/push 是 opt-in 动作，仅在用户显式开启时自动执行，否则改动保留在迭代分支由人工 review。
    - 架构修复必须经用户批准后方可执行。
    - 运行前请确保 `validation.command_whitelist` 和 `validation.commands` 只包含你信任的命令。
 
 6. **Update 命令远程下载说明 / Update command remote download**
-   - `scripts/install.py update` 会从 GitHub Release 下载最新源码并安装到 AI 助手技能目录。
+   - `scripts/install.py update` 与 `npx iterate-skill-installer` 会从 GitHub Release 下载预上传的 `iterate-skill.tar.gz` + `SHA256SUMS.txt`。
    - 下载前会提示确认（可用 `--yes` 跳过）。
-   - **强制校验 / Mandatory checksum verification**：下载 release tarball 时**必须**验证 SHA256 校验和。若 release 缺少 `SHA256SUMS.txt` asset 或校验和不匹配，**拒绝下载并回退到本地源码**。绝不会在未校验完整性的情况下安装远程代码。
+   - **强制校验 / Mandatory checksum verification**：下载 release tarball 时**必须**先下载 `SHA256SUMS.txt`，再用其中记录的哈希校验 tarball 完整性。若 release 缺少 `SHA256SUMS.txt` asset、`iterate-skill.tar.gz` asset，或校验和不匹配，**拒绝下载并回退到本地源码**。绝不会在未校验完整性的情况下安装远程代码。
+
+7. **安装器额外披露 / Installer disclosure**
+   - `npx iterate-skill-installer` 在复制 skill 文件的同时，会顺带把 `iterate` CLI 安装到 PATH（优先 `pipx` 隔离安装，否则 `pip install --user`），以便安装完成后可直接运行 `iterate onboard`。
+   - 这是刻意的端到端设计，但确实会在系统上放置一个可执行文件。若不希望自动安装 CLI，请使用手动复制 `SKILL.md` 或源码脚本 `python scripts/install.py install` 的方式。
 
 ## Reviewer Prompt 质量检查清单 / Reviewer Prompt Quality Checklist
 

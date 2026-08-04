@@ -793,19 +793,32 @@ def _fetch_latest_release_info(token: str | None) -> dict[str, str] | None:
     if not isinstance(data, dict):
         return None
     tag = data.get("tag_name")
-    tarball_url = data.get("tarball_url")
-    if not isinstance(tag, str) or not isinstance(tarball_url, str):
+    if not isinstance(tag, str):
         return None
 
+    tarball_url: str | None = None
     checksum_url: str | None = None
     assets = data.get("assets")
     if isinstance(assets, list):
         for asset in assets:
-            if isinstance(asset, dict) and asset.get("name") == CHECKSUMS_ASSET_NAME:
-                asset_url = asset.get("browser_download_url")
-                if isinstance(asset_url, str):
-                    checksum_url = asset_url
-                    break
+            if not isinstance(asset, dict):
+                continue
+            name = asset.get("name")
+            asset_url = asset.get("browser_download_url")
+            if not isinstance(asset_url, str):
+                continue
+            if name == EXPECTED_TARBALL_FILENAME:
+                tarball_url = asset_url
+            elif name == CHECKSUMS_ASSET_NAME:
+                checksum_url = asset_url
+
+    if not tarball_url:
+        # Fallback to GitHub auto-generated tarball only if the project hasn't
+        # uploaded a deterministic tarball asset yet (legacy releases).
+        tarball_url = data.get("tarball_url")
+
+    if not isinstance(tarball_url, str):
+        return None
 
     result: dict[str, str] = {"tag": tag, "tarball_url": tarball_url}
     if checksum_url:

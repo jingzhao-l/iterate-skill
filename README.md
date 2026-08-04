@@ -20,7 +20,7 @@
 |---|---|
 | **9 维度并行审查** | correctness、security、performance、architecture、style-tests、tech-debt、spec-compliance、frontend-backend、ui-ux |
 | **双轨修复** | 原子问题（≤20 行、单文件）自动修；架构问题经你批准后再修 |
-| **Git 隔离** | 每轮在独立 `iterate/*` 分支或 worktree 中完成，不直接写 main/master |
+| **Git 隔离** | 每轮在独立 `iterate/*` 分支或 worktree 中完成；merge/push 默认关闭，需显式开启 |
 | **Secure-by-default** | `push_per_round` 和 `auto_merge` 默认均为 `false` |
 | **命令白名单** | 配置时 + 个性化时双层校验，拒绝危险 shell 元字符 |
 | **校验和验证** | 从 GitHub Release 更新时强制 SHA256 校验 |
@@ -101,7 +101,9 @@ npx iterate-skill-installer --ai trae --global --force
 | `-h, --help` | 查看帮助 |
 | `-v, --version` | 查看版本 |
 
-> 安装器需要 Node.js 18+ 和 Python 3.10+。它会自动创建隔离的 Python 虚拟环境、安装依赖、调用 `scripts/install.py` 完成文件复制，并安装 `iterate` CLI（优先 `pipx`，否则 `pip install --user`）。若 `iterate` 命令安装失败，仍可手动执行 `pipx install .` 或 `pip install .` 补装。
+> **安装器会安装 `iterate` CLI 到你的 PATH**（优先 `pipx` 隔离安装，否则 `pip install --user`）。这是为了让 `npx iterate-skill-installer` 一条命令完成 "skill + CLI"，但安装器确实会在你的系统上放置一个可执行文件。若不希望自动安装 CLI，可改用下方的"手动复制 SKILL.md"或"源码脚本"方式。
+>
+> 安装器需要 Node.js 18+ 和 Python 3.10+。它会自动创建隔离的 Python 虚拟环境、安装依赖、调用 `scripts/install.py` 完成文件复制。下载 release 时强制校验 `SHA256SUMS.txt`，校验失败则拒绝安装。若 `iterate` 命令安装失败，仍可手动执行 `pipx install .` 或 `pip install .` 补装。
 
 ### 其他安装方式
 
@@ -223,8 +225,10 @@ iterate reonboard
 
 | 通道 | 适用场景 | 产出 |
 |---|---|---|
-| **AI Onboarding** | 希望 AI 完全自动扫描代码库、识别技术栈并生成 | `ITERATE.md` + `iterate.config.yaml` |
+| **AI Onboarding** | 希望 AI 根据项目目录结构/清单文件自动识别技术栈并生成 | `ITERATE.md` + `iterate.config.yaml` |
 | **CLI Onboarding** | 希望 CLI 扫描后手动确认/调整技术栈与配置 | 同上 |
+
+扫描仅读取文件/目录**存在性**和 README.md 等少量公开上下文文件，不会读取 `.env`、密钥、凭证或其他敏感文件内容。项目专属约束可通过 `iterate personalize` 补充。
 
 `ITERATE.md` 分为两个区域：
 
@@ -342,12 +346,13 @@ validation:
 ## 安全说明 / Security
 
 - **高自主性**：本 skill 会自主执行文件编辑、`git` 操作以及 `validation.commands` 中配置的命令。所有修改先在隔离分支/worktree 中进行，架构修复必须经用户批准。
-- **Secure-by-default Git**：`push_per_round` 和 `auto_merge` 默认均为 `false`。回滚使用 `git restore` 等非破坏性命令。
+- **Secure-by-default Git**：`push_per_round` 和 `auto_merge` 默认均为 `false`；merge/push 为 opt-in，未显式开启时改动保留在迭代分支。回滚使用 `git restore` 等非破坏性命令。
 - **双层命令白名单**：
   - 配置时校验命令前缀。
-  - 个性化添加 `extra_validation_commands` 时仅接受 30+ 预批准工具前缀，拒绝 `;`、`|`、`&` 等 shell 元字符。
-- **敏感文件**：不读取 `.env`、密钥、凭证等敏感文件。
-- **Update 安全**：`scripts/install.py update` 与 `npx iterate-skill-installer` 从 GitHub Release 下载时均强制 SHA256 校验，缺失或不匹配则拒绝。
+  - 个性化添加 `extra_validation_commands` 时仅接受 30+ 预批准工具前缀，拒绝 `;`、`|`、`&` 等 shell 元字符；命令加载/合并时也会重新校验，手工编辑的配置无法绕过白名单。
+- **敏感文件**：skill 及其 installer 不读取 `.env`、密钥、凭证等敏感文件；onboarding 扫描仅检查 manifest 等公开文件的存在性。
+- **Update 安全**：`scripts/install.py update` 与 `npx iterate-skill-installer` 从 GitHub Release 下载预上传的 `iterate-skill.tar.gz` + `SHA256SUMS.txt`，下载后强制 SHA256 校验，缺失或不匹配则拒绝安装。
+- **安装器披露**：`npx iterate-skill-installer` 会顺带把 `iterate` CLI 安装到 PATH（优先 `pipx` 隔离，否则 `--user`）。若不希望安装 CLI，请使用手动复制或源码脚本方式。
 
 ---
 
