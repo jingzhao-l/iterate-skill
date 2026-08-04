@@ -5,6 +5,25 @@
 
 ---
 
+## [2.2.8] — 2026-08-04
+
+### 安全 / Security
+
+- **关闭个性化配置的可执行命令信任边界绕过（ClawHub SkillSpector SDI-4/SDI-2）**：`load_personalization_from_config` 与 `merge_personalization_into_config` 现在对 `iterate.config.yaml` 中来源的 `extra_validation_commands` 均用 `validate_extra_command` 重新校验（fail-closed），命令含 shell 链接元字符或不在预批准前缀白名单内时直接跳过，不再并入可执行的 `validation.commands`，也不会自动扩展 `command_whitelist`。此前手工编辑的配置文件可绕过严格白名单并持久化、执行任意命令，现已封堵。
+- **统一验证命令白名单文档（SDI-4）**：`SKILL.md`、`tools/SKILL.claude.md`、`tools/SKILL.cursor.md` 中原有"不在白名单的命令需用户确认"的表述与个性化硬白名单矛盾，已统一为"不在白名单的命令直接拒绝，不可通过用户确认绕过"，消除安全模型前后不一致。
+- **统一 merge/push 文档默认值（SQP-2 / instruction_scope）**：`SKILL.md` 简介、Git 隔离工作流、重要注意事项，以及 `examples/python-project.md`、`examples/swift-project.md`、`tools/SKILL.cursor.md` 中把 merge/push 描述为"自动/预期行为"的表述已修正为 opt-in，并明确 `git.auto_merge` 与 `git.push_per_round` 默认均为 `false`（安全默认），未显式开启时改动保留在迭代分支由人工 review。
+- **新增 `pip-audit` 到预批准验证命令前缀**。
+
+### 修复 / Bug Fixes
+
+- 修复 `extra_validation_commands` 从配置加载时未校验、可被手工编辑的配置文件绕过白名单的问题。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.2.8`。
+
+---
+
 ## [2.2.7] — 2026-08-03
 
 ### 安全 / Security

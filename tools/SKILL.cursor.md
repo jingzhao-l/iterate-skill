@@ -24,7 +24,7 @@ Cursor Agent 会按 SKILL.md 的流程执行：
 - 并行审查（通过多次 Agent 调用）
 - 修复问题
 - 运行验证命令
-- merge/push
+- merge/push（**opt-in**：`git.auto_merge` / `git.push_per_round` 默认 `false`，仅在用户显式开启时才自动合并并推送）
 
 ---
 
@@ -91,6 +91,7 @@ If no findings, return { "findings": [] }.
 
 ## 安全提醒 / Safety Reminder
 
-- 执行任何 `validation.commands` 前，先检查命令是否在 `validation.command_whitelist` 中。
+- 执行任何 `validation.commands` 前，先检查命令是否在 `validation.command_whitelist` 中；不在白名单的命令直接拒绝，不可通过用户确认绕过。
 - 绝不 force-push。
 - 绝不直接在 main/master 上提交。
+- merge/push 默认关闭（`git.auto_merge` / `git.push_per_round = false`）；如需合并推送，先确认当前仓库与远程，再人工 review 后执行。
