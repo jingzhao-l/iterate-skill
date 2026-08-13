@@ -83,5 +83,5 @@ query: |
 运行 `RunCommand` 前：
 
 1. 读取 `validation.command_whitelist`。
-2. 若命令不在白名单中，先用 `AskUserQuestion` 确认。
+2. 命令不在白名单时，**直接拒绝，不可通过用户确认绕过**（与个性化硬白名单一致）。
 3. 执行命令并捕获输出。

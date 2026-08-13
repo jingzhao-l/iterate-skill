@@ -7,7 +7,6 @@
 [![npm](https://img.shields.io/badge/-npm-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/iterate-skill-installer)
 [![GitHub release](https://img.shields.io/github/v/release/jingzhao-l/iterate-skill)](https://github.com/jingzhao-l/iterate-skill/releases)
 [![ClawHub](https://img.shields.io/badge/-ClawHub.ai-4285F4?logo=cloudflare&logoColor=white)](https://clawhub.ai/jingzhao-l/skills/iterate-skill)
-[![SkillHub CN](https://img.shields.io/badge/-SkillHub.cn-2385bb?logo=codeberg&logoColor=white)](https://www.skillhub.cn/skills/jingzhao-l/iterate-skill)
 [![ModelScope](https://img.shields.io/badge/-ModelScope-624aff?logo=alibabacloud&logoColor=white)](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)
 
 ---

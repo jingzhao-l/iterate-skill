@@ -5,6 +5,28 @@
 
 ---
 
+## [2.3.2] — 2026-08-13
+
+### 功能 / Features
+
+- **漂移忽略列表（`onboarding.drift_ignore`）**：允许用户配置 fnmatch 模式，将锁文件等频繁变更的 manifest（如 `package-lock.json`、`yarn.lock`）排除出漂移检测。新增 `iterate_cli/fingerprint.py` 中 `_matches_ignore()` 的完整接线（此前为死代码）：`scan_manifests` / `capture_fingerprints` / `check_drift` 均支持忽略模式，`check_drift` 在比较前同时过滤当前扫描与已存指纹两侧，避免被忽略的旧指纹产生虚假 `removed` 漂移。`refresh.py` 新增 `get_drift_ignore()` 读取配置，`incremental_refresh` 刷新后的指纹列表会排除被忽略的 manifest。`config.schema.json`、`config/iterate.config.yaml`、`SKILL.md` 配置说明同步补充 `onboarding.drift_ignore` 字段。
+- **`iterate status` 接入智能建议（`drift.advice()`）**：漂移检测到变更时，status 输出会展示根据漂移类型（新增/删除 vs 内容变更）生成的针对性建议（是否值得 `iterate refresh`），取代此前固定文案。
+- **`iterate status` 信息增强**：新增 `Skill version`、`Fingerprints: N manifest(s)`、`Drift check: enabled/disabled` 输出；漂移为空时区分"检查已禁用 / 尚无指纹 / 未知"三种原因，便于排障。
+
+### 修复 / Fixes
+
+- **`SKILL.md`「何时跳过」与 Step 1 矛盾**：v2.3.1 已将脏工作区处理改为"优先 worktree 隔离、不中止"，但「何时跳过 / When to Skip」仍残留"工作区不干净→不要使用"条目。已删除该条（中英文），与 Step 1 的 worktree 隔离策略保持一致。
+- **`SKILL.md` 配置表白名单描述过期**：「无需二次确认的允许命令前缀」更新为「不在白名单中的命令直接拒绝，不可通过用户确认绕过」，与命令白名单双层强制策略一致。
+- **`config/dimensions.yaml` 主表 `frontend-backend` 缺 `priority`**：补上 `priority: high`，与权威文件 `config/dimensions/frontend-backend.yaml` 一致。
+
+### 维护 / Maintenance
+
+- `iterate_cli/generator.py` 中 `_render_dimensions` 的 `priority_map` 补充"需与 `config/dimensions.yaml` 保持同步"注释，明确重复维护关系。
+- 新增 `tests/test_drift_ignore.py`（15 个用例）：覆盖扫描忽略、`check_drift` 两侧过滤、配置读取健壮性、refresh 后指纹排除、status 输出 advice 与新增字段。
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.3.2`。
+
+---
+
 ## [2.3.1] — 2026-08-13
 
 ### 功能 / Features

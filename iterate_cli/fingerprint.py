@@ -7,6 +7,7 @@ tech stack has changed since the last onboarding.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,6 +76,44 @@ class DriftResult:
             parts.append(f"removed: {', '.join(sorted(self.removed))}")
         return "; ".join(parts)
 
+    def advice(self) -> str:
+        """Return a concise, honest recommendation for the user.
+
+        Drift is **non-blocking**: the iteration can always continue. The
+        advice only tells the user *when a refresh is most worthwhile*:
+
+        - added/removed manifests: the tech stack itself changed, so
+          refreshing ITERATE.md is more likely to matter.
+        - only changed manifests: dependencies/configuration were updated;
+          continuing is fine unless the change is significant.
+        """
+        if not self.has_drift:
+            return "No drift detected; no action needed."
+        if self.added or self.removed:
+            return (
+                "技术栈发生增减，建议运行 `iterate refresh` 同步知识库（非阻塞）。"
+                "Tech stack manifests added/removed; consider `iterate refresh` (non-blocking)."
+            )
+        return (
+            "依赖/配置已更新；如无重大变化可继续迭代（非阻塞），需要时再 `iterate refresh`。"
+            "Dependencies/config updated; safe to continue (non-blocking), refresh when needed."
+        )
+
+
+def _matches_ignore(name: str, ignore_patterns: list[str] | None) -> bool:
+    """Return True if ``name`` matches any fnmatch ignore pattern.
+
+    Args:
+        name: The manifest file name (basename) to test.
+        ignore_patterns: Optional glob patterns to ignore. Empty/None matches nothing.
+
+    Returns:
+        True if the name should be excluded from fingerprinting.
+    """
+    if not ignore_patterns:
+        return False
+    return any(fnmatch.fnmatch(name, pat) for pat in ignore_patterns)
+
 
 def compute_sha256(path: Path) -> str:
     """Compute the SHA-256 hash of a file's content.
@@ -92,7 +131,7 @@ def compute_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def scan_manifests(project_root: Path) -> list[Path]:
+def scan_manifests(project_root: Path, ignore_patterns: list[str] | None = None) -> list[Path]:
     """Detect manifest files that exist in the project root.
 
     Only checks the project root directory (not subdirectories), because
@@ -100,12 +139,16 @@ def scan_manifests(project_root: Path) -> list[Path]:
 
     Args:
         project_root: The project root directory to scan.
+        ignore_patterns: Optional fnmatch patterns of manifest names to skip
+            (e.g. ``package-lock.json``). Empty/None ignores nothing.
 
     Returns:
         List of paths to existing manifest files, sorted by name.
     """
     found: list[Path] = []
     for name in MANIFEST_FILES:
+        if _matches_ignore(name, ignore_patterns):
+            continue
         candidate = project_root / name
         if candidate.is_file():
             found.append(candidate)
@@ -113,17 +156,20 @@ def scan_manifests(project_root: Path) -> list[Path]:
     return found
 
 
-def capture_fingerprints(project_root: Path) -> list[FingerprintEntry]:
+def capture_fingerprints(
+    project_root: Path, ignore_patterns: list[str] | None = None
+) -> list[FingerprintEntry]:
     """Capture fingerprints for all existing manifest files.
 
     Args:
         project_root: The project root directory to scan.
+        ignore_patterns: Optional fnmatch patterns of manifest names to skip.
 
     Returns:
         List of FingerprintEntry objects, one per manifest file found.
     """
     entries: list[FingerprintEntry] = []
-    for manifest in scan_manifests(project_root):
+    for manifest in scan_manifests(project_root, ignore_patterns):
         entries.append(
             FingerprintEntry(
                 path=manifest.name,
@@ -194,15 +240,34 @@ def compare_fingerprints(
     return result
 
 
-def check_drift(project_root: Path, stored_fingerprints: list[dict[str, str]]) -> DriftResult:
+def check_drift(
+    project_root: Path,
+    stored_fingerprints: list[dict[str, str]],
+    ignore_patterns: list[str] | None = None,
+) -> DriftResult:
     """Convenience: capture current fingerprints and compare against stored.
+
+    Ignored manifests are excluded from **both** sides of the comparison: the
+    freshly captured set (via ``capture_fingerprints``) and the stored set.
+    This prevents a previously-fingerprinted manifest that is now ignored
+    (e.g. a lock file the user no longer wants tracked) from reporting a
+    spurious ``removed`` drift before the next refresh.
 
     Args:
         project_root: The project root directory.
         stored_fingerprints: Fingerprints from the existing config.
+        ignore_patterns: Optional fnmatch patterns of manifest names to skip.
 
     Returns:
         DriftResult describing what changed since last onboarding.
     """
-    current = fingerprints_to_dict(capture_fingerprints(project_root))
+    current = fingerprints_to_dict(
+        capture_fingerprints(project_root, ignore_patterns)
+    )
+    if ignore_patterns:
+        stored_fingerprints = [
+            entry
+            for entry in stored_fingerprints
+            if not _matches_ignore(str(entry.get("path", "")), ignore_patterns)
+        ]
     return compare_fingerprints(stored_fingerprints, current)

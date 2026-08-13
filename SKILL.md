@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.3.1
+version: 2.3.2
 permissions:
   file_read: true
   file_write: true
@@ -43,14 +43,12 @@ This Skill is appropriate when:
 本 Skill 不适用于以下场景：
 
 - 仅需要单次、简单的代码编辑（不需要多轮审查）。
-- 项目工作区不干净、存在未提交改动或冲突。
 - 没有可用的验证命令（`validation.commands` 未配置）。
 - 只需要 UI/UX 设计建议（请使用 UI/UX Pro Max 等专业设计 Skill）。
 
 Do **not** use this Skill when:
 
 - A single, simple edit is sufficient (no multi-round review needed).
-- The working tree is dirty, has uncommitted changes, or unresolved conflicts.
 - No validation commands are configured in `validation.commands`.
 - You only need UI/UX design advice (use a dedicated design Skill like UI/UX Pro Max).
 
@@ -166,7 +164,7 @@ Summary
 
 3. **漂移检测 / Drift detection**（仅在 `onboarding.drift_check` 为 `true` 时执行）
    - 读取 `iterate.config.yaml` 中的 `onboarding.fingerprints`（manifest 文件的 SHA-256 哈希）。
-   - 重新计算当前 manifest 文件的哈希并比对。
+   - 重新计算当前 manifest 文件的哈希并比对；`onboarding.drift_ignore` 中列出的 manifest（如锁文件）会被跳过，不计入漂移。
    - **无漂移** → 静默通过，进入 Step 1。
    - **有漂移**（manifest 新增/删除/内容变更）→ **非阻塞**警告，使用 `AskUserQuestion` 询问用户：
      - **继续（continue）**：本轮照旧使用现有 ITERATE.md。
@@ -520,7 +518,7 @@ if empty AND deferredArchitectural is empty:
    - `swift/`：`swift build -c debug`
    - `typescript/`：`npm run compile`
 
-   执行前检查命令前缀是否在 `validation.command_whitelist` 中；不在白名单中的命令必须二次确认。
+   执行前检查命令前缀是否在 `validation.command_whitelist` 中；不在白名单中的命令**直接拒绝，不可通过用户确认绕过**（与"个性化硬白名单"保持一致）。
 
    若验证失败：
    - 追加 `.iterate_decisions.md`：`Atomic fix validation failed: {details}`
@@ -882,7 +880,7 @@ iterate/
 | `git.use_worktree` | bool | `false` | 是否使用 worktree |
 | `git.push_per_round` | bool | `false` | 每轮通过后是否立即 push（默认 false，安全） |
 | `git.auto_merge` | bool | `false` | 每轮验证后是否自动 merge 回 target_branch（默认 false，安全） |
-| `validation.command_whitelist` | list | 常见命令前缀 | 无需二次确认的允许命令前缀 |
+| `validation.command_whitelist` | list | 常见命令前缀 | 允许的命令前缀；不在白名单中的命令直接拒绝，不可通过用户确认绕过 |
 | `validation.commands.<module>` | list | 示例命令 | 各模块验证命令 |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
 | `personalization.protected_paths` | list | `[]` | 禁区 glob 模式，iterate 不得修改 |
@@ -897,6 +895,7 @@ iterate/
 | `onboarding.completed_at` | string | — | 上次 onboarding/刷新的 ISO 8601 时间戳 |
 | `onboarding.channel` | string | — | onboarding 通道：`cli` / `ai` |
 | `onboarding.drift_check` | bool | `true` | 是否在每次调用时检查 manifest 漂移 |
+| `onboarding.drift_ignore` | list | `[]` | 漂移忽略的 manifest glob 模式（如 `package-lock.json`），命中文件不计入漂移 |
 | `onboarding.fingerprints` | list | — | manifest 文件的 SHA-256 哈希列表（自动生成） |
 
 ---

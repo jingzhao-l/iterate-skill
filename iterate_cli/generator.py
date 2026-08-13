@@ -431,6 +431,9 @@ def _render_dimensions(data: OnboardingData) -> str:
     lines.append("The following dimensions are enabled (adjustable in `iterate.config.yaml`):")
     lines.append("")
 
+    # 与 config/dimensions.yaml 中的 priority 保持一致，修改时需同步更新。
+    # Keep in sync with config/dimensions.yaml — duplicate by design to avoid
+    # a runtime dependency on the dimensions yaml files.
     priority_map = {
         "correctness": "critical",
         "security": "critical",
