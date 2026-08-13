@@ -31,6 +31,7 @@ __pycache__/
 # Python build artifacts
 build/
 dist/
+.dist_tmp/
 *.egg-info/
 *.egg
 
