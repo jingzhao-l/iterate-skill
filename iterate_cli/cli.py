@@ -394,8 +394,17 @@ def _cmd_status(project_root: Path) -> int:
         onboarding = config.get("onboarding") or {}
         completed_at = onboarding.get("completed_at", "unknown")
         channel = onboarding.get("channel", "unknown")
+        skill_version = onboarding.get("skill_version", "unknown")
         tui.key_value("Completed", completed_at)
         tui.key_value("Channel", channel)
+        tui.key_value("Skill version", skill_version)
+
+        # Drift configuration summary.
+        drift_enabled = onboarding.get("drift_check", True)
+        raw_fingerprints = onboarding.get("fingerprints") or []
+        fp_count = len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
+        tui.key_value("Fingerprints", f"{fp_count} manifest(s)")
+        tui.key_value("Drift check", "enabled" if drift_enabled else "disabled")
 
         # Show personalization summary.
         # Count structured rules, excluding the schema "version" field
@@ -408,13 +417,18 @@ def _cmd_status(project_root: Path) -> int:
             # contiguous substring (tests assert this exact text).
             tui.info(f"Personalization: {total} rule(s)", indent=2)
 
-        # Check drift.
+        # Check drift and surface actionable advice.
         drift = check_onboarding_drift(project_root)
         if drift is None:
-            tui.key_value("Drift", "check disabled or no fingerprints")
+            if not drift_enabled:
+                tui.key_value("Drift", "check disabled")
+            elif fp_count == 0:
+                tui.key_value("Drift", "no fingerprints recorded yet")
+            else:
+                tui.key_value("Drift", "unknown")
         elif drift.has_drift:
             tui.warning(f"Drift: {drift.summary()}", indent=2)
-            tui.hint("Consider running 'iterate refresh' or 'iterate reonboard'.", indent=4)
+            tui.hint(drift.advice(), indent=4)
         else:
             tui.success("Drift: No drift detected", indent=2)
     else:

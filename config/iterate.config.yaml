@@ -54,8 +54,8 @@ git:
   auto_merge: false
 
 # 验证命令安全 / Validation command safety
-# 白名单中的命令前缀无需二次确认即可执行。
-# 不在白名单中的命令需要用户二次确认。
+# 白名单中的命令前缀可直接执行。
+# 不在白名单中的命令直接拒绝，不可通过用户确认绕过。
 validation:
   command_whitelist:
     - "ruff"
@@ -98,6 +98,11 @@ onboarding:
   version: "1.0"
   # 是否在每次 /iterate 时检查 manifest 漂移 / Check manifest drift on each invocation
   drift_check: true
+  # 漂移忽略模式 / Drift ignore patterns (fnmatch glob)
+  # 列表中的 manifest 文件不会计入漂移检测，避免锁文件等频繁变更的文件触发误报。
+  # drift_ignore:
+  #   - "package-lock.json"
+  #   - "yarn.lock"
   # 此段在首次 onboarding 后由 CLI/AI 填充 / Populated after first onboarding
   # fingerprints:
   #   - path: "package.json"

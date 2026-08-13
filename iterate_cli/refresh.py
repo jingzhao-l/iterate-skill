@@ -102,6 +102,26 @@ def get_stored_fingerprints(config: dict[str, Any]) -> list[dict[str, str]]:
     return result
 
 
+def get_drift_ignore(config: dict[str, Any]) -> list[str]:
+    """Extract drift-ignore glob patterns from the onboarding section.
+
+    Patterns are matched against manifest basenames via fnmatch. Non-string
+    or non-list values are discarded so malformed manual edits degrade to
+    "ignore nothing" instead of crashing drift detection.
+
+    Args:
+        config: Parsed iterate.config.yaml content.
+
+    Returns:
+        List of fnmatch patterns, or empty list if not present.
+    """
+    onboarding = config.get("onboarding") or {}
+    raw = onboarding.get("drift_ignore") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(p) for p in raw if isinstance(p, str)]
+
+
 def is_onboarding_complete(project_root: Path) -> bool:
     """Check whether onboarding has been completed for this project.
 
@@ -138,7 +158,7 @@ def check_onboarding_drift(project_root: Path) -> DriftResult | None:
     if not stored:
         return None
 
-    return check_drift(project_root, stored)
+    return check_drift(project_root, stored, get_drift_ignore(config))
 
 
 def incremental_refresh(project_root: Path) -> bool:
@@ -338,8 +358,9 @@ def _build_refresh_data(
 
         personalization = load_personalization_from_config(existing_config)
 
-    # Capture fresh fingerprints.
-    fingerprints = capture_fingerprints(project_root)
+    # Capture fresh fingerprints, honouring drift-ignore patterns.
+    ignore_patterns = get_drift_ignore(existing_config)
+    fingerprints = capture_fingerprints(project_root, ignore_patterns)
 
     # Preserve channel and user-entered text from existing config.
     onboarding_section = existing_config.get("onboarding") or {}

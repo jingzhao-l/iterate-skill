@@ -199,6 +199,15 @@
         "code_conventions": {
           "type": "string",
           "description": "User-entered code conventions from the onboarding wizard. Persisted so returning users who decline basic update don't lose their input."
+        },
+        "drift_ignore": {
+          "type": "array",
+          "description": "Glob patterns of manifest files to exclude from drift detection (e.g. package-lock.json, yarn.lock).",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
         }
       }
     },
