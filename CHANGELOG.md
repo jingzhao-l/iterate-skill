@@ -5,6 +5,28 @@
 
 ---
 
+## [2.3.1] — 2026-08-13
+
+### 功能 / Features
+
+- **操作者级验证工具安全扩展点（无需改源码）**：`iterate_cli/personalize.py` 新增环境变量 `ITERATE_EXTRA_SAFE_COMMAND_PREFIXES`，允许操作者在系统层面追加预批准工具前缀（如 `sphinx`），而无需编辑源码。该变量**只能在进程环境设置，项目配置文件无法设置**，因此不会破坏既有安全模型；含 `;`、`|`、`&` 等元字符的条目会直接丢弃（fail-closed），不以其开头或以非字母数字开头（如 `-rf`、`/`）的碎片也会被过滤。新增 7 个回归测试覆盖默认、解析、注入丢弃、白名单扩展、元字符拒绝与 `python -m` 形式。
+
+### 文档 / Docs
+
+- **首次使用预期提示（体验）**：SKILL.md Step 0 与 AI Onboarding 明确要求 AI 在首次调用时先说明"将先进行项目初始化"，避免用户误以为 skill 失效；README FAQ 同步更新"第一次使用为什么什么都不做"。
+- **Monorepo 定位（体验）**：SKILL.md Step 0 与 Setup 的项目根目录定位改为优先命中含 `ITERATE.md` / `iterate.config.yaml` 的目录，并对多子项目场景给出 `AskUserQuestion` 确认，避免误审无关子项目。
+- **脏工作区处理（体验）**：SKILL.md 创建隔离环境改为优先 `git worktree add` 隔离，不再强制要求 commit/stash、不因用户拒绝而直接中止。
+- **会话内进度反馈（体验）**：SKILL.md Step 2 新增"进度反馈"约定，要求主模型每轮开始/并行审查/每轮结束持续输出进度；README FAQ 的"大项目卡住"答案同步说明。
+- **交付指引与提前终止（体验）**：SKILL.md Step 3 新增"交付指引"（明确分支名、日志路径、合并/推送选项）与"提前终止"（剩余均 low 或目标达成时询问提前结束），README FAQ 同步。
+- **会话恢复（体验）**：SKILL.md 会话中断与恢复改为 AI 自动读取 `.iterate_decisions.md` 并主动提议 resume/restart/仅查看报告，用户无需自行理解决策日志。
+- README FAQ 更新"想增加新的验证工具"答案，补充环境变量扩展方式。
+
+### 维护 / Maintenance
+
+- 同步更新 `SKILL.md`、`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json` 中的版本号至 `2.3.1`。
+
+---
+
 ## [2.3.0] — 2026-08-04
 
 ### 文档 / Docs

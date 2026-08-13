@@ -1,7 +1,7 @@
 ---
 name: iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.3.0
+version: 2.3.1
 permissions:
   file_read: true
   file_write: true
@@ -153,13 +153,14 @@ Summary
 ### 检查流程
 
 1. **定位项目根目录 / Locate project root**
-   - 以当前工作目录为起点，向上查找包含 `.git`、`iterate.config.yaml` 或 `ITERATE.md` 的目录。
-   - 若向上查找到文件系统根仍未找到，则使用当前工作目录作为项目根目录。
+   - 以当前工作目录为起点向上查找；命中优先级：**包含 `ITERATE.md` 或 `iterate.config.yaml` 的目录 > 包含 `.git` 的目录**。
+   - **Monorepo / 多子项目提示**：若同时存在多个候选根（如外层 git 根 + 内层某子项目也含 manifest），以**最近的含 `ITERATE.md` / `iterate.config.yaml` 的目录**为准；若无明确唯一候选，用 `AskUserQuestion` 让用户确认审查范围，避免误审到无关子项目。
+   - 若向上查找到文件系统根仍未找到，则使用当前工作目录作为项目根目录，并提示用户确认。
 
 2. **检查 onboarding 状态 / Check onboarding status**
    - 检查项目根目录下是否存在 `ITERATE.md`。
    - **存在** → 进入漂移检测（下一步）。
-   - **不存在** → 暂停迭代，进入 **AI Onboarding 流程**（见下文）。完成后继续 Step 1。
+   - **不存在** → **先向用户明确说明**"这是首次使用，将先进行项目初始化（Onboarding）"，再暂停迭代进入 **AI Onboarding 流程**（见下文）。不要让用户误以为 skill 失效或卡住；完成后继续 Step 1。
 
 3. **漂移检测 / Drift detection**（仅在 `onboarding.drift_check` 为 `true` 时执行）
    - 读取 `iterate.config.yaml` 中的 `onboarding.fingerprints`（manifest 文件的 SHA-256 哈希）。
@@ -177,7 +178,7 @@ Summary
 当 `ITERATE.md` 不存在时，AI 执行以下流程（类似 Claude Code 首次生成 `CLAUDE.md`）：
 
 1. **告知并确认 / Inform and confirm**
-   - 告知用户将扫描代码库生成 `ITERATE.md` 和配置。
+   - 告知用户将扫描代码库生成 `ITERATE.md` 和配置，并说明这是首次使用所必需的初始化步骤。
    - 同时提示 CLI 备选：用户也可以运行 `iterate onboard` 在命令行中完成。
    - 参考 `templates/onboarding-playbook.md` 中的扫描清单和映射表（**仅供参考，需按项目实况调整**）。
 
@@ -239,7 +240,8 @@ CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适
    - 解析失败时默认 `7` 并提示用户。
 
 3. **确定项目根目录 / Locate project root**
-   - 以当前工作目录为起点，向上查找包含 `.git`、`iterate.config.yaml` 或 `CLAUDE.md` 的目录。
+   - 以当前工作目录为起点向上查找；命中优先级：**含 `ITERATE.md` 或 `iterate.config.yaml` 的目录 > 含 `.git` 的目录**。
+   - **Monorepo / 多子项目提示**：以**最近的含 `ITERATE.md` / `iterate.config.yaml` 的目录**为审查范围；无唯一候选时用 `AskUserQuestion` 让用户确认，避免误审无关子项目。
    - 若向上查找到文件系统根仍未找到，则使用当前工作目录作为项目根目录，并提示用户确认。
    - 该目录即为项目根目录，后续所有文件读取和命令执行均以此为准。
 
@@ -267,11 +269,12 @@ CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适
    - 绝不读取 `.env`、`.env.*`、`*.{key,pem,p12,crt,cer}`、`credentials.json`、`.aws/`、`.ssh/` 等敏感文件。
 
 7. **创建隔离环境 / Create isolated environment**
-   - 检查 `git status`，工作区必须干净（无未跟踪文件、无未提交修改、无未解决冲突）。
-   - 若工作区不干净，询问用户是否 commit/stash；若用户拒绝或取消，**中止本次迭代**。
+   - 检查 `git status` 与是否存在未解决冲突。
+   - **优先 worktree 隔离**：若工作区存在未提交改动/未跟踪文件，**优先用 `git worktree add` 创建隔离工作树**进行迭代，**不要求也不强制**用户 commit/stash，也不改动当前脏工作区；迭代结束返回主工作区。
+   - 仅当无法创建 worktree（如磁盘/路径受限）且工作区不干净时，才询问用户是否 commit/stash；用户拒绝/取消则**说明原因并建议改用 worktree 方式，而非直接中止**。
+   - 存在未解决冲突时提示用户先解决，但不强行中断；可在干净的 worktree 中继续。
    - 记录当前分支名，作为迭代结束后的返回目标。
-   - 创建迭代分支：`iterate/<goal-slug>-<timestamp>`。
-   - 或创建 git worktree：`git worktree add ../<name> -b iterate/<goal-slug>-<timestamp>`。
+   - 创建迭代分支：`iterate/<goal-slug>-<timestamp>`（或对应 worktree 分支）。
    - 若分支/worktree 创建失败（如名称冲突），尝试追加递增序号后重试，最多 3 次；仍失败则中止并告知用户。
 
 8. **初始化决策日志 / Initialize decision log**
@@ -286,6 +289,16 @@ CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适
 round = 1
 while round <= maxRounds:
 ```
+
+### 进度反馈 / Progress Feedback
+
+迭代为多轮长任务，**必须**在与用户的对话中持续输出进度，避免长时间静默造成"卡住"观感。主模型遵循以下约定（写在与用户的对话里，而非仅记录到 `.iterate_decisions.md`）：
+
+- **每轮开始**：输出 `▶ Round {N}/{maxRounds} — 启用的维度：{enabled dims}`，并简述本轮范围（涉及模块）。
+- **Phase 1 并行审查期间**：若预计耗时较长，逐维度输出 `⏳ 正在审查 {dimension}（{i}/{total}）…`，让用户看到推进而非无响应。
+- **每轮结束**：输出 `✅ Round {N} complete — 原子修复 x / 架构修复 y / 剩余 findings z`（或本轮失败原因）。
+- **提前终止**：出现 0 findings 时明确输出 `✅ 0 findings，迭代完成` 并说明停止原因。
+- 任一步骤若预计无可见输出超过合理时间，主动补一句进度说明。
 
 ### Phase 0 — 维度规划 / Dimension Planning
 
@@ -678,6 +691,21 @@ round += 1
 - `.iterate_decisions.md` 路径 / Decision log path
 - 迭代分支名 / Iteration branch name
 
+### 交付指引 / Handoff（改动如何处理）
+
+改动默认保留在迭代分支 `iterate/<goal-slug>-<timestamp>`（未启用 `auto_merge` / `push_per_round`）。汇总后**必须**明确告知用户后续操作，不要让用户困惑"改动去哪了"：
+
+- 说明：分支名、`.iterate_decisions.md` 路径、以及是否已合并/推送。
+- 给出清晰选项：让用户 **人工 review 后自行合并推送**，或 **询问是否由 AI 代为合并/推送**（此时先 review 差异再执行安全命令）。
+- 若用户希望保留分支以便二次审查，也予以确认，不强行清理。
+
+### 提前终止 / Early Stop
+
+默认在出现 0 findings 时结束。此外，在每轮结束后评估：
+
+- 若剩余 findings 均为 **low** 且目标基本达成，或达到用户明确设定的目标，可询问用户"是否提前结束本轮迭代"，避免无谓多轮消耗。
+- 若用户确认提前结束，输出停止原因与交付指引后退出循环。
+
 ---
 
 ## Git 隔离工作流 / Git Isolation Workflow
@@ -693,7 +721,7 @@ round += 1
 
 ```bash
 # 1. Setup
-git status                                          # 必须干净
+git status                                          # 确认状态；有未提交改动时优先用 worktree 隔离
 git checkout -b iterate/<goal>-<date>               # 或 git worktree add ../<name> -b iterate/<goal>-<date>
 
 # 2. Each round (after validation passes)
@@ -713,13 +741,15 @@ git checkout iterate/<goal>-<date>                  # 继续下一轮
 若会话因用户关闭、AI 异常或验证失败而中断：
 
 1. 保留当前迭代分支和 `.iterate_decisions.md`，不要删除。
-2. 下次调用 `/iterate` 时，先读取 `.iterate_decisions.md` 确定：
+2. **下次调用 `/iterate` 时，AI 应主动**先读取 `.iterate_decisions.md`（用户无需自行理解该文件），自动提取并简要呈现：
    - 上次的迭代分支名。
    - 已完成的轮数、`deferredArchitectural` 列表。
    - 是否有未 push 的本地 merge。
-3. 若工作区干净且迭代分支存在，询问用户：
-   - 继续上次会话（resume）：切回迭代分支，从下一轮开始。
-   - 重新开始（restart）：创建新迭代分支，`deferredArchitectural` 可继承或清空。
+   - 上次停止时的轮次与剩余 findings 概要。
+3. 基于以上状态，**主动向用户提议**下一步，而非让用户判断：
+   - **继续上次会话（resume）**：切回迭代分支，从下一轮继续。
+   - **重新开始（restart）**：创建新迭代分支，`deferredArchitectural` 可继承或清空。
+   - **仅查看报告**：只输出上次汇总，不继续迭代。
 4. 若上一轮已合并到 main/master 但未 push，在 resume 时先完成 push。
 
 ### 护栏 / Guardrails

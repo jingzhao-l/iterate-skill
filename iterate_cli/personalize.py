@@ -13,6 +13,7 @@ user-owned section of ``ITERATE.md``.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,21 +66,56 @@ KNOWN_SAFE_COMMAND_PREFIXES: tuple[str, ...] = (
 # would let a "validation command" smuggle arbitrary side effects.
 FORBIDDEN_COMMAND_CHARS: tuple[str, ...] = (";", "|", "&", "`", "$", ">", "<", "\n", "\r")
 
+# Environment variable that lets the *operator* (system level) extend the
+# known-safe command-prefix allowlist without editing source. This is
+# intentionally NOT project-configurable: a project's iterate.config.yaml
+# cannot set it, so a malicious or accidental project config cannot use it
+# to smuggle arbitrary commands. Values are comma/whitespace-separated tool
+# names, and each token is still rejected (fail-closed) if it contains any
+# shell metacharacter. Only an operator able to set the process environment
+# can widen the allowlist.
+EXTRA_SAFE_PREFIXES_ENV: str = "ITERATE_EXTRA_SAFE_COMMAND_PREFIXES"
+
+
+def _operator_extra_prefixes() -> tuple[str, ...]:
+    """Return operator-approved extra safe prefixes from the environment.
+
+    Reads ``ITERATE_EXTRA_SAFE_COMMAND_PREFIXES`` (comma/whitespace
+    separated). Tokens containing shell metacharacters are dropped, so the
+    result always remains fail-closed. This is a safe extension point for
+    adding new tooling without editing source.
+    """
+    raw = os.environ.get(EXTRA_SAFE_PREFIXES_ENV, "")
+    if not raw:
+        return ()
+    tokens = [tok.strip() for tok in re.split(r"[\s,]+", raw) if tok.strip()]
+    # Keep only clean tool names: no shell metacharacters and starting with an
+    # alphanumeric char. This drops both injection attempts ("safety;rm") and
+    # incidental fragments ("-rf", "/", ".") that whitespace-splitting of a
+    # malicious value could otherwise leave behind.
+    safe = [
+        tok
+        for tok in tokens
+        if not _has_forbidden_chars(tok) and tok[0].isalnum()
+    ]
+    return tuple(dict.fromkeys(safe))
+
 
 def _is_known_safe_command(cmd: str) -> bool:
-    """Return True if cmd starts with one of the known safe tool prefixes."""
+    """Return True if cmd starts with a known safe tool prefix."""
     stripped = cmd.strip()
     if not stripped:
         return False
     first_token = stripped.split(None, 1)[0]
+    operator_prefixes = _operator_extra_prefixes()
     # Handle "python -m pytest" style invocations: accept if the
     # *effective* tool (after -m) is whitelisted.
     if first_token in ("python", "python3", "py") and " -m " in stripped:
         parts = stripped.split(" -m ", 1)
         if len(parts) == 2:
             inner = parts[1].strip().split(None, 1)[0]
-            return inner in KNOWN_SAFE_COMMAND_PREFIXES
-    return first_token in KNOWN_SAFE_COMMAND_PREFIXES
+            return inner in KNOWN_SAFE_COMMAND_PREFIXES or inner in operator_prefixes
+    return first_token in KNOWN_SAFE_COMMAND_PREFIXES or first_token in operator_prefixes
 
 
 def _has_forbidden_chars(cmd: str) -> bool:
@@ -117,7 +153,9 @@ def validate_extra_command(cmd: str) -> tuple[bool, str]:
         f"({sorted(KNOWN_SAFE_COMMAND_PREFIXES)[:6]}...); only pre-approved "
         "test/lint/type-check/build tooling is allowed in extra validation "
         "commands. To add a new tool, extend KNOWN_SAFE_COMMAND_PREFIXES "
-        "in iterate_cli/personalize.py"
+        "in iterate_cli/personalize.py, or set the operator-level "
+        f"environment variable {EXTRA_SAFE_PREFIXES_ENV} "
+        "(see README for details)"
     )
 
 # ---------------------------------------------------------------------------

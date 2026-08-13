@@ -368,10 +368,10 @@ A: 不会。安装器在临时目录中完成下载、校验、解压，选中�
 A: 适合**多轮**的代码审查与自动修复——例如压制技术债、多轮消除 lint/类型/测试问题、项目级重构。**不适合**单次简单改动（改一行、加个注释），这类需求直接用普通对话即可，无需 `/iterate`。
 
 **Q: 第一次使用为什么什么都不做？**
-A: 首次调用 `/iterate` 或运行 `iterate onboard` 前，项目还没有 `ITERATE.md` 与 `iterate.config.yaml`。请先在项目根目录运行 `iterate onboard`（或让 AI 走 AI Onboarding）完成初始化，之后 `/iterate` 才会生效。
+A: 首次调用 `/iterate` 或运行 `iterate onboard` 前，项目还没有 `ITERATE.md` 与 `iterate.config.yaml`。首次使用时 skill 会**先进行项目初始化（Onboarding）**：AI 会明确告知"这是首次使用，将先初始化项目"，扫描代码库生成 `ITERATE.md` 与配置后再进入迭代。若你看到初始化提示而不是立刻审查，这是正常流程，不是失效；也可直接在项目根目录运行 `iterate onboard` 手动完成初始化。
 
 **Q: 处理大项目时感觉卡住，没有进度提示？**
-A: 大项目首轮要并行审查多个维度，可能耗时较长。可主动等待，或通过以下方式提速：
+A: 大项目首轮要并行审查多个维度，可能耗时较长。为缓解"卡住"观感，skill 现在会在对话中**持续输出进度**：每轮开始显示 `▶ Round N/max`、并行审查期间逐维度提示 `⏳ 正在审查 …`、每轮结束显示 `✅ Round N complete`。若仍觉慢，可通过以下方式提速：
 - 在 `iterate.config.yaml` 中把 `review.scope` 设为 `changed-only`，只审查本轮改动。
 - 按目录/模块拆分 reviewer 任务（见 SKILL.md 的 Reviewer Prompt 检查清单）。
 - 适当降低 `max_rounds`，避免无谓的额外轮次。
@@ -386,7 +386,10 @@ A: 这是**安全默认**行为：`git.auto_merge` 与 `git.push_per_round` 默�
 A: `validation.commands` 中的命令**必须**以 `validation.command_whitelist` 中的前缀开头，否则会被拒绝。个性化添加的 `extra_validation_commands` 也只会接受 30+ 预批准工具前缀，拒绝 `;`、`|`、`&` 等 shell 元字符——这是为了安全，防止项目配置被执行任意命令。
 
 **Q: 想增加一个新的验证工具（比如 `sphinx`），怎么办？**
-A: 当前严格白名单只接受预批准的工具前缀。若要新增工具，需要扩展 `iterate_cli/personalize.py` 中的 `KNOWN_SAFE_COMMAND_PREFIXES`，或改用 `validation.command_whitelist` + `validation.commands` 直接配置（需通过 `python scripts/validate.py config` 校验）。
+A: 严格白名单只接受预批准的工具前缀（这防止项目配置执行任意命令）。新增工具有两种**安全**方式：
+- **操作者级环境变量（推荐，无需改源码）**：在运行环境中设置 `ITERATE_EXTRA_SAFE_COMMAND_PREFIXES=sphinx`（逗号/空格分隔多个工具名）。该变量**只能在系统层面设置**，项目配置文件无法设置，因此不会破坏安全模型；含 `;`、`|`、`&` 等元字符的条目会被直接丢弃（fail-closed）。
+- **源码级扩展**：在 `iterate_cli/personalize.py` 的 `KNOWN_SAFE_COMMAND_PREFIXES` 中追加工具名后重新安装。
+- 或改用 `validation.command_whitelist` + `validation.commands` 直接配置（需通过 `python scripts/validate.py config` 校验）。
 
 ### 安全 / Security
 
