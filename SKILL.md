@@ -31,12 +31,24 @@ permissions:
 - 需要多维度（正确性、安全、性能、架构等）并行审查。
 - 希望将原子问题自动修复，将架构问题经审批后修复。
 
+**纯审查模式 / review-only mode**：当调用参数含 `review-only` 或 `dry-run` 时，本 Skill 只做**只读健康检查**，绝不修改任何文件：
+- 反复多轮并行审查，直到某一轮出现 0 个新 findings（收敛）。
+- 生成审查报告（含每轮收敛统计、按严重级别/维度汇总、修复优先级建议）。
+- **再审查这份报告本身**（meta-review：校验报告内部一致性——总数匹配、严重级别汇总、维度汇总、排序、收敛数学），给出带 `approved` / `needs_revision` 判定的**最终审查报告**。
+- 适用于发布前体检、代码质量审计、不想让 AI 动代码的场景。
+
 This Skill is appropriate when:
 
 - You need a systematic code quality improvement, bug fix, or security hardening pass.
 - The project is in refactoring, pre-release, or iteration wrap-up phase.
 - You want parallel multi-dimension review (correctness, security, performance, architecture, etc.).
 - You want atomic issues fixed automatically and architectural issues fixed after approval.
+
+**review-only / dry-run mode** applies when the invocation includes `review-only` or `dry-run`:
+it performs a read-only health check that never modifies files — repeated parallel review rounds until a
+round finds 0 new findings (convergence), produces a review report, then meta-reviews that report
+(validating internal consistency) and emits a final report with an `approved` / `needs_revision` verdict.
+Use it for pre-release health checks, audits, or any case where you do not want the AI to touch code.
 
 ## 何时跳过 / When to Skip
 
@@ -65,12 +77,15 @@ Do **not** use this Skill when:
 | `$goal` / `$0` | 迭代目标 / Iteration goal | required |
 | `$rounds` / `$1` | 最大轮数 / Max rounds | `7` |
 | `$limit_mode` / `$2` | 若设为 `no-limit`，则最大轮数为 50（硬上限）/ Set to `no-limit` for hard cap 50 | — |
+| `$mode` / `$3` | 若设为 `review-only`（或 `dry-run`），则进入**纯审查模式**：反复审查直到零 findings，绝不修改任何文件 / Set to `review-only` or `dry-run` for pure-review mode (never touches files) | 默认迭代模式 |
 | `$ARGUMENTS` | 用户输入的全部参数原样字符串 / Raw argument string | — |
 
 示例 / Examples：
 - `/iterate improve error handling`
 - `/iterate improve error handling 10`
 - `/iterate improve error handling no-limit`
+- `/iterate review the codebase review-only`（纯审查模式：只审查不改代码，反复审查到零 findings，出审查报告，再审查报告给出最终审查报告）
+- `/iterate full health check --review-only`（同上，纯审查别名）
 
 ---
 
