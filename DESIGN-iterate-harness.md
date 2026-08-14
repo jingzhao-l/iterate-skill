@@ -188,6 +188,85 @@ harness/
 
 **诚实边界（继承 v1.0 §8）**：harness 不改变模型智力；skill 的零安装、宿主天然支持优势被 harness 丢掉；独立运行时需自维护。
 
+#### 11.2.1 用户体验场景深析（v1.8：站在用户面前的具体交互，非内核能力清单）
+
+> §11.2 的表是"内核能力"视角；本节补齐"用户能看到什么、点什么、玩到什么"视角，只列 skill 与插件**原理上做不出**的体验，按「看 / 摸 / 跑 / 沉淀」四类分。
+
+**一、看得见的 UI**（skill 只能吐 markdown，插件被 dsh 卡片样式锁死）
+
+| 独占体验 | 长什么样 | 为什么前两层做不到 |
+|---|---|---|
+| 实时收敛仪表盘 | 审查进行中：TUI 显示 `Round 2/3`、新发现数 sparkline `▇▅▂▁`、五维度各自 spinner + findings 计数、token/费用累计条 | skill 等全部跑完才有文字报告；dsh 卡片是静态文本，插件无法自绘组件 |
+| 细粒度 diff 审批 | 修复前弹 unified diff，↑↓ 滚动、**逐 hunk 空格标记接受/拒绝**、Enter 提交 | 插件走 dsh 通用审批（整文件粒度）；skill 是模型直接改文件 |
+| findings 分诊界面 | 审查完逐条过：`y 修复 / n 跳过 / a 永久忽略`——按 `a` 的自动写回 `iterate.config.yaml` 的 known_intentional | skill/插件无交互入口；"个性化配置"从手写 yaml 变成交互产生的数据 |
+| init 检测式向导 | 自动识别项目语言/测试框架 → 空格勾选推荐维度 → 预览生成的 yaml → Enter 写入 | skill 的 wizard 是纯文本问答；插件没做 init |
+
+**二、摸得着的中途干预**（不是"等它跑完"）
+
+- Esc 暂停菜单：迭代中途暂停，弹"跳过当前 finding / 收窄维度 / 直接停"，选完继续——skill 无进程概念，插件 workflow 发起后不可中途改道。
+- 断点续跑画面：`resume` 恢复时 TUI 先显示上次快照（跑到第几轮、还剩哪些 finding），确认后续跑。
+
+**三、离开 IDE 才能跑的场景**（无人值守，存在性缺口）
+
+- PR 自动审查：`review --dry-run --format pr-comment`，CI 里直接评论到 PR，exit code 当质量门禁（findings 超阈值即红）。
+- git hook：commit 前 30 秒 changed-only 快审。
+- 批量/定时：一条命令审 10 个仓库出排行；cron 每天跑，只报新增问题。
+
+**四、数据沉淀**（从"一次性报告"到"趋势"）
+
+- 跨 run 趋势：finding 指纹（file+line+dimension 哈希）存本地库，`log --trend` 显示"上周 12 → 本周 5"，区分**新增 / 已修复 / 顽固未动**——skill 的决策日志是纯文本，查不了。
+- HTML 单文件报告：收敛曲线、severity 分布、内嵌 diff，可直接发给别人看。
+- 评审回放：`log --replay` 按时间序回放每轮决策，像看录像。
+
+**v0 取舍建议**：① findings 分诊界面（把个性化闭环做成交互）② diff 审批 + Esc 干预（把"强制受控"做成体验）③ PR/CI 模式（打开无人值守场景）优先；实时仪表盘与趋势库 v1；HTML 报告最低。
+
+#### 11.2.2 代码实况深析（v1.9：基于 iterate_cli 六模块 + SKILL.md + 配置层的源码证据）
+
+> 本节结论全部来自源码阅读（iterate_cli/{cli,fingerprint,scan,generator,refresh,personalize,wizard,tui}.py、SKILL.md、config/、scripts/、templates/、examples/），是 §11.2 内核能力与 §11.2.1 UX 场景的代码级证据与细化。
+
+**一、关键事实：iterate_cli 是 100% 确定性本地计算，零 LLM 依赖**
+
+六个模块（fingerprint / scan / generator / refresh / personalize / cli 非向导部分）全部为纯本地确定性计算 + 终端表单采集；模型依赖全部在 SKILL.md 驱动的宿主 agent 侧。这意味着 **onboarding 全链路可直接作为 harness 的数据层复用**，无需重写。
+
+现成数据资产清单：
+
+| 资产 | 内容 | 当前形态 | 位置 |
+|---|---|---|---|
+| 指纹库 | 15 类 manifest 的 SHA-256（仅项目根，不递归） | config 字段 | `iterate.config.yaml` `onboarding.fingerprints` |
+| DriftResult | unchanged/changed/added/removed 四元组 | 内存，不持久化 | fingerprint.py `compare_fingerprints` |
+| ScanResult | manifests/languages/dirs + 6 个 has_* 特性位 | 内存，渲染进 ITERATE.md | scan.py `scan_project` |
+| suggest_* 三函数 | 维度/验证命令/白名单启发式建议 | 内存，仅向导内一次性出现 | scan.py |
+| PersonalizationData | 9 类个性化数据（结构化 7 类 + 自由文本 2 类） | config + ITERATE.md 用户区 | personalize.py |
+| KNOWN_SAFE_COMMAND_PREFIXES | 命令前缀白名单 + FORBIDDEN_COMMAND_CHARS 禁字符 | 源码常量 | personalize.py |
+| 分区标记契约 | AI-MAINTAINED / USER-OWNED 刷新边界 | ITERATE.md 注释 | generator.py |
+
+**二、prompt 约定 → 机制强制：全景对照（skill 现状 vs 插件已强制 vs harness 待强制）**
+
+- **插件已强制（10 项，确定性计算类）**：findings schema、severity 排序、跨轮去重、known_intentional 过滤、收敛判定、meta-review 六项审计（仅 dry-run）、review plan、配置合并、验证命令精确匹配、决策日志 append-only。
+- **仍是 prompt 约定、harness 内核可强制（20 项），分两类**：
+  - **副作用约束类（PreToolUse/PostToolUse hooks + 权限层）**：protected_paths 写拦截、risk_areas 强制审批、forbidden_fixes diff 正则匹配拒绝、敏感文件读拦截（.env/*.key）、验证失败自动回滚（限 iterate/* 分支）、逐 hunk 修复 + 文件锁串行。
+  - **状态继承类（session + 持久化）**：is_atomic 实测校验（fixer 后 `git diff --stat` 超阈值自动降级 architectural）、每组 trim≤20 确定性截断、文件碰撞 defer 用 Set 交集计算、fix_priority_order 确定性重排、deferredArchitectural 跨会话继承（decision-log + resume）、正常模式复用 meta-review 审计计数一致性。
+
+**三、维度配置体系在 harness 的解锁项**（当前维度 yaml 仅 name/priority/focus 文本，focus 里的"阈值"是自然语言不可消费）
+
+- per-dimension `model`/`concurrency`/`token_budget`（security 用强模型、style-tests 用快模型）
+- 维度级阈值门禁：`max_critical`/`max_high` → 阻止 merge / CI 红（对接 §11.2.1 PR 门禁）
+- 维度特定验证命令：style-tests 修完跑 lint、security 修完跑 bandit
+- priority 驱动修复调度（与 fix_priority_order 合并）；维度趋势追踪；changed-only 的维度级细化（后续轮只重跑有改动维度的模块）
+
+**四、用户旅程断点（源码级证据，harness 可修复）**
+
+- 安装：无 bootstrap、无版本过期比对（A1-A3）
+- onboarding：**"TUI"实为 rich 着色的 input() 问答**——无方向键/空格/回车组件，维度多选靠手敲 `"1,2,5,7"`（wizard.py `_parse_dimension_selection`）；向导不问 goal/max_rounds/atomic/language（generator.py 硬编码 DEFAULT_GOAL/7/20/en，与 examples/ 展示落差）；验证命令建议按语言硬编码不读真实 manifest scripts、且无 dry-run 预检（B1-B8）
+- 日常：drift 检测只在 `iterate status` 被动触发；known_intentional 添加后无法即时验证是否命中；`.bak-<timestamp>` 平铺备份难查询（C1-C5）
+
+**五、顺带发现的现有代码问题（待修复清单，非 harness 范畴）**
+
+1. `tui.py question()` 签名 `-> str` 实际返回 None；`prompt_prefix` 的 rich 标记可能泄露进 input() 提示文本。
+2. `examples/typescript-project.md` "验证通过后合并推送" 与默认 `auto_merge=false` 矛盾（Python/Swift 示例已修正，TS 未同步）。
+3. `templates/iterate-decisions.template.md` 用 `{goal}` 单花括号占位，但仓库无对应渲染代码——模板与生成器脱节，实际由 AI 会话自行处理。
+4. `__main__.py` 与 `cli.py` 双 `if __name__` 守卫冗余。
+
 ### 11.3 fork 定制点（OpenHarness → iterate-harness）
 
 在 OpenHarness 之上定制以下内容，其余内核能力（loop / 权限 / 记忆 / 多智能体 / TUI / 厂商 workflow）直接复用：
@@ -273,3 +352,5 @@ harness/
 - v1.5（2026-08-14）：新增独立 harness 设计章节（§11）——确认 OpenHarness 为 Python 栈并决策独立 harness 采用 Python 同栈；以用户视角完成「skill / dsh 插件 / 独立 harness」三层能力差距分析（内核级 agent loop、token 成本透明、审批强制执行、session 恢复、持久记忆、厂商中立、技能生态复用、独立分发等）；给出 fork 定制点、模块架构、CLI 命令集（init / review --dry-run / iterate / resume / log）、v0 里程碑（M1 语义层移植 → M5 独立分发）与路线 B 新增风险。
 - v1.6（2026-08-14）：仓库形态决策迭代（§6）——新增独立插件发布仓库 jingzhao-l/iterate-plugin（git subtree 拆分 harness/iterate-plugin，保留完整历史，作为 dsh 生态镜像并引流回主仓库）；主仓库保持唯一维护点，同步走 subtree push（无 CI 同步、无 force-push）；插件 package.json 补 repository/homepage/bugs 元数据指向主仓库；插件开始独立版本线（自 2.3.7 起），第 9 节版本统一约束对插件生效范围同步更新。
 - v1.7（2026-08-14）：npm 发布源切换至插件仓库（§6）——建立本地发布工作区 `.release/iterate-plugin/`（gitignore），插件仓库从"只读镜像"升级为 npm 正式发布位：版本 bump、git tag、npm publish 均在插件仓库进行，主仓库仍是唯一开发/评审维护点；版本线确认沿用当前数值（不重置 1.0.0，npm 不允许发布低于已发布最高版本），自 2.3.7 起独立递增；主仓库 `dsh-plugin` topic 移除，仅插件仓库保留。
+- v1.8（2026-08-14）：新增 §11.2.1 用户体验场景深析——区别于 §11.2 内核能力视角，按「看（实时收敛仪表盘 / 逐 hunk diff 审批 / findings 分诊 / init 检测式向导）/ 摸（Esc 暂停干预 / 断点续跑画面）/ 跑（PR 评论 + 质量门禁 / git hook / 批量定时）/ 沉淀（finding 指纹趋势 / HTML 报告 / 评审回放）」四类记录 skill 与插件原理上做不出的独占体验；给出 v0 优先级（分诊界面 > diff 审批+干预 > PR/CI 模式）。
+- v1.9（2026-08-14）：新增 §11.2.2 代码实况深析——三路并行源码审查（iterate_cli 六模块 / wizard+tui+模板 / SKILL.md+配置层）证实：① iterate_cli 100% 确定性本地计算零 LLM，onboarding 全链路可直接复用为 harness 数据层（7 类现成数据资产清单）；② prompt 约定→机制强制全景对照：插件已强制 10 项确定性计算类约定，剩余 20 项分「副作用约束类（hooks/权限可强制）」与「状态继承类（session/持久化可强制）」；③ 维度 yaml 现仅 focus 文本，harness 可解锁 per-dimension model/并发/token 预算、维度级阈值门禁、维度专属验证命令等 7 项；④ 用户旅程断点源码级定位（TUI 实为 input() 问答、向导不问 goal/max_rounds/atomic/language、验证命令无 dry-run 预检等）；⑤ 顺带发现 4 个现有代码问题（tui.question 接口 bug、TS 示例 auto_merge 文档矛盾、决策日志模板未接线、双 __name__ 守卫）记入待修复清单。
