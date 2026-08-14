@@ -337,32 +337,18 @@ class TUI:
     # 交互输入（包装 input_func，添加样式）
     # ------------------------------------------------------------------
 
-    def question(self, message: str) -> str:
-        """输出问题标记行（不含输入），返回 prompt 前缀.
+    def question(self, message: str) -> None:
+        """输出问题标记行（不含输入），无返回值.
 
         用于在 input_func 调用前打印问题头。
         实际输入仍由调用方通过 input_func 完成。
 
         格式:
           ◇ 这是一个问题？
-
-        Args:
-            message: 问题文本
-
-        Returns:
-            无返回值，仅打印问题头
         """
         self.console.print(
             f"  [iterate.primary]{SYM_QUESTION}[/] {message}"
         )
-
-    def prompt_prefix(self) -> str:
-        """返回输入行的视觉前缀（连接线）.
-
-        Returns:
-            "  └ " 字符串，用于 input_func 的提示文本
-        """
-        return f"  [iterate.dim]{SYM_END}[/] "
 
 
 # ---------------------------------------------------------------------------
