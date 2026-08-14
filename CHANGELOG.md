@@ -5,6 +5,15 @@
 
 ---
 
+## [2.3.7] — 2026-08-14
+
+### 修复 / Bug Fixes (skill)
+
+- **TUI 接口契约**：`tui.question()` 签名返回类型由 `str` 修正为 `None`（此前签名与实现不一致）；删除无调用方的死代码 `prompt_prefix()`（其返回值含 rich 标记，若被用作 `input()` 提示文本会把 `[iterate.dim]` 标记泄露到终端）。新增 `tests/test_tui.py` 契约测试。
+- **示例文档矛盾**：`examples/typescript-project.md` 预期行为第 5 条"验证通过后合并推送"与安全默认 `git.auto_merge=false` / `git.push_per_round=false` 矛盾，已对齐 Python/Swift 示例的措辞。
+- **决策日志模板角色说明**：`templates/iterate-decisions.template.md` 增加头注释，明确该模板是 AI 会话按 SKILL.md「决策日志格式」章节填充的结构参考，`{...}` 非 Python format 占位符。
+- **入口冗余**：移除 `iterate_cli/cli.py` 尾部与 `__main__.py` 重复的 `if __name__ == "__main__"` 守卫及无用 `import sys`。
+
 ## [2.3.6] — 2026-08-14
 
 ### 插件安全修复 / Security (iterate-plugin)
