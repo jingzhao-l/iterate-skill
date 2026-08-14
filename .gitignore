@@ -19,7 +19,7 @@ logs/
 
 # Temporary worktrees or branches
 .iterate-worktree/
-iterate-*/
+/iterate-*/
 
 # Node/Python artifacts (if examples are executed locally)
 node_modules/
