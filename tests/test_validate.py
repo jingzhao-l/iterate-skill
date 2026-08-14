@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 sys.path.insert(0, str(REPO_ROOT))
 
 import validate
+
 from iterate_cli import __version__ as ITERATE_VERSION
 
 
@@ -730,7 +731,8 @@ class TestMultiSelectPreselect:
 
 class TestInteractiveSelectionPreselect:
     def test_preselects_only_detected_tools(self, tmp_path, monkeypatch) -> None:
-        from install import Path as IPath, interactive_select_assistants
+        from install import Path as IPath
+        from install import interactive_select_assistants
 
         fake_home = tmp_path / "home"
         fake_home.mkdir()
@@ -832,8 +834,8 @@ class TestConfigCommand:
         target = tmp_path / "target"
         target.mkdir()
 
-        from install import main as install_main
         import install
+        from install import main as install_main
 
         assert install_main(["config", "--init", "--target", str(target)], source=source) == 0
         original_text = (target / "iterate.config.yaml").read_text(encoding="utf-8")
@@ -981,8 +983,8 @@ class TestUpdateCommand:
         target = tmp_path / "target"
         target.mkdir()
 
-        from install import main as install_main
         import install
+        from install import main as install_main
 
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: None)
 
@@ -1000,8 +1002,8 @@ class TestUpdateCommand:
         target = tmp_path / "target"
         target.mkdir()
 
-        from install import main as install_main
         import install
+        from install import main as install_main
 
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: None)
 
@@ -1022,8 +1024,8 @@ class TestUpdateCommand:
         target = tmp_path / "target"
         target.mkdir()
 
-        from install import main as install_main
         import install
+        from install import main as install_main
 
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: None)
 
@@ -1034,8 +1036,8 @@ class TestUpdateCommand:
         target = tmp_path / "target"
         target.mkdir()
 
-        from install import main as install_main
         import install
+        from install import main as install_main
 
         release_parent = tmp_path / "release"
         release_parent.mkdir()

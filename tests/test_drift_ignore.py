@@ -21,10 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+from iterate_cli.cli import main as cli_main
 from iterate_cli.fingerprint import (
     capture_fingerprints,
     check_drift,
-    compute_sha256,
     fingerprints_to_dict,
     scan_manifests,
 )
@@ -40,7 +40,6 @@ from iterate_cli.scan import (
     suggest_dimensions,
     suggest_validation_commands,
 )
-from iterate_cli.cli import main as cli_main
 
 
 @pytest.fixture

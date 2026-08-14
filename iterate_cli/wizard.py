@@ -14,8 +14,9 @@ for consistent skills.sh / Claude Code style styling.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import yaml
 
@@ -74,7 +75,7 @@ DIMENSION_LABELS: dict[str, str] = {
 def run_wizard(
     project_root: Path,
     input_func: InputFunc = input,
-) -> Optional[OnboardingData]:
+) -> OnboardingData | None:
     """Run the interactive CLI onboarding wizard with multi-path branching.
 
     The flow depends on whether ``ITERATE.md`` already exists:
@@ -104,7 +105,7 @@ def run_wizard(
 def _first_time_flow(
     project_root: Path,
     input_func: InputFunc,
-) -> Optional[OnboardingData]:
+) -> OnboardingData | None:
     """Handle first-time onboarding (no ITERATE.md exists)."""
     tui.info("首次 onboarding / First-time onboarding.")
     tui.hint("AI 工具可自动扫描代码库生成基础配置；CLI 适合手动配置 + 个性化约束。")
@@ -135,7 +136,7 @@ def _first_time_flow(
 def _returning_user_flow(
     project_root: Path,
     input_func: InputFunc,
-) -> Optional[OnboardingData]:
+) -> OnboardingData | None:
     """Handle returning user (ITERATE.md already exists)."""
     tui.info("检测到已有 ITERATE.md / ITERATE.md already exists.")
     tui.empty_line()
@@ -206,7 +207,7 @@ def _returning_user_flow(
 def _run_basic_wizard(
     project_root: Path,
     input_func: InputFunc,
-) -> Optional[OnboardingData]:
+) -> OnboardingData | None:
     """Run the basic onboarding wizard (tech stack, dimensions, git, etc.)."""
     with tui.status("正在扫描项目 / Scanning project..."):
         scan = scan_project(project_root)
@@ -246,7 +247,7 @@ def _run_basic_wizard(
     return data
 
 
-def _load_existing_onboarding_data(project_root: Path) -> Optional[OnboardingData]:
+def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
     """Load existing onboarding data from iterate.config.yaml.
 
     Reads project description and code conventions from the ``onboarding``

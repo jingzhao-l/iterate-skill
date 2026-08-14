@@ -194,12 +194,13 @@ def fingerprints_from_dict(data: list[dict[str, Any]]) -> list[FingerprintEntry]
         List of FingerprintEntry objects.
 
     Raises:
-        ValueError: If any entry is missing required keys or has wrong types.
+        ValueError: If any entry is missing required keys.
+        TypeError: If any entry is not a dict.
     """
     entries: list[FingerprintEntry] = []
     for i, item in enumerate(data):
         if not isinstance(item, dict):
-            raise ValueError(f"Fingerprint entry {i} is not a dict")
+            raise TypeError(f"Fingerprint entry {i} is not a dict")
         path = item.get("path")
         sha = item.get("sha256")
         if not isinstance(path, str) or not path:

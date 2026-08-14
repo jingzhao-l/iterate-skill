@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -82,7 +82,7 @@ class OnboardingData:
     fingerprints: list[FingerprintEntry] = field(default_factory=list)
     iterate_notes: str = ""
     language: str = "en"
-    personalization: Optional["PersonalizationData"] = None
+    personalization: PersonalizationData | None = None
 
     def completed_at(self) -> str:
         """ISO 8601 timestamp of onboarding completion."""

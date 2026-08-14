@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import yaml
 
@@ -670,7 +671,7 @@ def run_personalize_wizard(
     project_root: Path,
     input_func: InputFunc = input,
     existing: PersonalizationData | None = None,
-) -> Optional[PersonalizationData]:
+) -> PersonalizationData | None:
     """Run the 9-step personalization configuration wizard.
 
     Each step supports view / add / remove / skip.  The wizard loads
@@ -841,7 +842,7 @@ def _run_typed_list_step(
     description: str,
     items: list[Any],
     formatter: Callable[[Any], str],
-    add_func: Callable[[InputFunc], Optional[Any]],
+    add_func: Callable[[InputFunc], Any | None],
     input_func: InputFunc,
 ) -> list[Any]:
     """Run a step that manages a list of typed objects.
@@ -989,7 +990,7 @@ def _run_validation_commands_step(
 # ---------------------------------------------------------------------------
 
 
-def _add_risk_area(input_func: InputFunc) -> Optional[RiskArea]:
+def _add_risk_area(input_func: InputFunc) -> RiskArea | None:
     """Collect a single RiskArea from the user."""
     path = input_func("  └ 路径 / Path (e.g. src/auth/): ").strip()
     if not path:
@@ -1000,7 +1001,7 @@ def _add_risk_area(input_func: InputFunc) -> Optional[RiskArea]:
     return RiskArea(path=path, reason=reason)
 
 
-def _add_known_intentional(input_func: InputFunc) -> Optional[KnownIntentional]:
+def _add_known_intentional(input_func: InputFunc) -> KnownIntentional | None:
     """Collect a single KnownIntentional entry from the user.
 
     Returns None if the user cancels at any step or enters an invalid
@@ -1033,7 +1034,7 @@ def _add_known_intentional(input_func: InputFunc) -> Optional[KnownIntentional]:
     return KnownIntentional(file=file_path, line=line, dimension=dimension, reason=reason)
 
 
-def _add_dimension_focus(input_func: InputFunc) -> Optional[DimensionFocusOverride]:
+def _add_dimension_focus(input_func: InputFunc) -> DimensionFocusOverride | None:
     """Collect a single DimensionFocusOverride from the user."""
     tui.info("选择维度 / Select dimension:", indent=2)
     for i, dim in enumerate(ALL_DIMENSIONS, 1):
@@ -1093,7 +1094,7 @@ def _read_index(
     items: list[Any],
     input_func: InputFunc,
     prompt: str = "删除编号 / Remove number",
-) -> Optional[int]:
+) -> int | None:
     """Read a 1-based index from user input and convert to 0-based.
 
     Returns None if the input is invalid or out of range.

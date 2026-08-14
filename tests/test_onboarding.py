@@ -19,49 +19,29 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+from iterate_cli.cli import main as cli_main
 from iterate_cli.fingerprint import (
     FINGERPRINT_VERSION,
     FingerprintEntry,
-    compare_fingerprints,
-    compute_sha256,
     capture_fingerprints,
     check_drift,
+    compare_fingerprints,
+    compute_sha256,
     fingerprints_from_dict,
     fingerprints_to_dict,
     scan_manifests,
 )
-from iterate_cli.scan import (
-    ScanResult,
-    scan_project,
-    suggest_command_whitelist,
-    suggest_dimensions,
-    suggest_validation_commands,
-)
 from iterate_cli.generator import (
-    AI_START_MARKER,
     AI_END_MARKER,
-    USER_START_MARKER,
+    AI_START_MARKER,
     USER_END_MARKER,
+    USER_START_MARKER,
     OnboardingData,
     extract_user_owned_section,
     generate_config_yaml,
     generate_iterate_md,
     generate_refreshed_md,
     write_onboarding_outputs,
-)
-from iterate_cli.wizard import (
-    NO_CHANGES_NEEDED,
-    run_wizard,
-    _parse_dimension_selection,
-    _ask_yes_no,
-)
-from iterate_cli.refresh import (
-    _build_refresh_data,
-    check_onboarding_drift,
-    full_reonboard,
-    incremental_refresh,
-    is_onboarding_complete,
-    load_onboarding_config,
 )
 from iterate_cli.personalize import (
     EXTRA_SAFE_PREFIXES_ENV,
@@ -78,8 +58,27 @@ from iterate_cli.personalize import (
     save_personalization_to_config,
     validate_extra_command,
 )
-from iterate_cli.cli import main as cli_main
-
+from iterate_cli.refresh import (
+    _build_refresh_data,
+    check_onboarding_drift,
+    full_reonboard,
+    incremental_refresh,
+    is_onboarding_complete,
+    load_onboarding_config,
+)
+from iterate_cli.scan import (
+    ScanResult,
+    scan_project,
+    suggest_command_whitelist,
+    suggest_dimensions,
+    suggest_validation_commands,
+)
+from iterate_cli.wizard import (
+    NO_CHANGES_NEEDED,
+    _ask_yes_no,
+    _parse_dimension_selection,
+    run_wizard,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -225,7 +224,7 @@ class TestFingerprintSerialization:
         assert restored == entries
 
     def test_from_dict_invalid_entry(self) -> None:
-        with pytest.raises(ValueError, match="not a dict"):
+        with pytest.raises(TypeError, match="not a dict"):
             fingerprints_from_dict(["not a dict"])  # type: ignore[list-item]
 
     def test_from_dict_missing_path(self) -> None:
@@ -1183,9 +1182,10 @@ class TestValidateStderrOutput:
     """Tests for validate.py error output going to stderr (M-10-7)."""
 
     def test_validation_errors_go_to_stderr(self, capsys) -> None:
-        from validate import main
         # Create an invalid config file.
         import tempfile
+
+        from validate import main
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".yaml", delete=False
         ) as f:
@@ -3302,6 +3302,7 @@ class TestPersonalizationVersion:
 
     def test_version_is_valid_format(self) -> None:
         import re
+
         from iterate_cli.personalize import PERSONALIZATION_VERSION
 
         assert re.match(r"^\d+\.\d+$", PERSONALIZATION_VERSION), (
@@ -3772,7 +3773,7 @@ class TestValidateExtraCommand:
 
     def test_known_safe_prefix_not_bypassed_by_metachar(self) -> None:
         """Even pytest cannot bypass the metacharacter check."""
-        is_valid, reason = validate_extra_command("pytest; rm -rf /")
+        is_valid, _ = validate_extra_command("pytest; rm -rf /")
         assert is_valid is False
 
 
@@ -3815,7 +3816,7 @@ class TestOperatorExtraPrefixes:
     def test_env_extended_prefix_still_rejects_metachar(self, monkeypatch) -> None:
         """Even an operator-approved prefix cannot bypass metachar checks."""
         monkeypatch.setenv(EXTRA_SAFE_PREFIXES_ENV, "safety")
-        is_valid, reason = validate_extra_command("safety check; rm -rf /")
+        is_valid, _ = validate_extra_command("safety check; rm -rf /")
         assert is_valid is False
 
     def test_env_python_m_extension(self, monkeypatch) -> None:
