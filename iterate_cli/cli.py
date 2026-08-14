@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -442,6 +441,3 @@ def _cmd_status(project_root: Path) -> int:
 
     return 0
 
-
-if __name__ == "__main__":
-    sys.exit(main())
