@@ -5,6 +5,23 @@
 
 ---
 
+## [2.3.5] — 2026-08-14
+
+### 修复 / Fixes
+
+- **meta-review 误报收敛轮为 ROUND_EMPTY**：dry-run 收敛时最后一轮 0 个新 findings 是**正常的成功信号**，但 `metaReviewReport` 的 ROUND_SHAPE 检查会将其误判为 `ROUND_EMPTY` 缺陷，导致最终审查报告错误判定为 `needs_revision`。已修复——仅当**非最后一轮**出现空 findings 时才报 `ROUND_EMPTY`，最终收敛空轮不再触发。
+
+### 文档 / Docs
+
+- **`harness/iterate-plugin/README.md`**：新增插件运行时说明（安装、加载、dry-run 纯审查与 meta-review 用法）。
+- **`DESIGN-iterate-harness.md`**：补充 meta-review 收尾步骤设计说明。
+
+### 维护 / Maintenance
+
+- 版本号统一升级至 `2.3.5`（`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json`、`harness/iterate-plugin/package.json`、`package-lock.json`、`SKILL.md` frontmatter）。
+
+---
+
 ## [2.3.4] — 2026-08-14
 
 ### 新功能 / Features
