@@ -5,6 +5,30 @@
 
 ---
 
+## [2.3.6] — 2026-08-14
+
+### 插件安全修复 / Security (iterate-plugin)
+
+- **P0 最高优先**：`validate` 验证命令安全模型由「前缀白名单」改为 `validation.commands` 中命令的**精确匹配**。原前缀匹配允许攻击者通过构造形如 `python3 -c "..."` 绕过白名单执行任意代码，新精确匹配杜绝该风险。无配置信任命令时，会明确拒绝执行任意命令。
+
+### 插件功能补全 / Features (iterate-plugin)
+
+- **P1**：`iterate_context` 支持多路径查找 SKILL.md：按优先级 `自定义路径 → 自动探测 skill 目录（从插件位置向上找）→ 项目根` 查找，返回找到的内容和来源目录。解决插件挂载到项目目录时读不到原 skill 文档的问题。
+- **P2**：`config-loader` 支持「默认配置（Master）+项目覆盖（Overrides）」深合并，无配置文件时也能以完整默认配置运行（仍保持 `validation.commands` 默认空，拒绝执行任何命令，符合最小权限）。工具层（`config/validate/review`）全部适配。
+
+### 插件一致性对齐 / Bug Fixes (iterate-plugin)
+
+- **P2**：`ReviewFinding` 字段对齐原 iterate skill：`detail/classification` → `failure_scenario/suggested_fix/is_atomic`，`review.ts/skill-prompt.ts`/测试用例同步更新。
+- **P1**：dry-run/normal 工作流对子代理返回添加判空防御：`planRes/finalAgg` 为 null/无效时抛错而非崩溃。
+- **P2**：`dry-run` 脚本 `finalReport.metaReview.issues` 添加可选链与默认值，避免无问题时访问 null。
+
+### 新增单元测试 / Tests
+
+- 新增 `config-loader.test.ts`、`context.test.ts`，共新增 22 个测试用例。
+- 所有 TS 测试 53 个全绿，类型检查通过。
+
+---
+
 ## [2.3.5] — 2026-08-14
 
 ### 修复 / Fixes
