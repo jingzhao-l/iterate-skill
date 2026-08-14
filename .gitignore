@@ -24,6 +24,9 @@ logs/
 # Local publishing workspace (clone of jingzhao-l/iterate-plugin, npm publish source)
 .release/
 
+# External upstream sources for reference (e.g. OpenHarness clone for harness fork design)
+.external/
+
 # Node/Python artifacts (if examples are executed locally)
 node_modules/
 __pycache__/

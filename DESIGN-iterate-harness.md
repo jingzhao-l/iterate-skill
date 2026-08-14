@@ -282,7 +282,122 @@ harness/
 | 项目记忆 | `ITERATE.md` 投影为 CLAUDE.md 等价物（OpenHarness 已原生支持 CLAUDE.md 注入），语义与插件 context 工具一致 |
 | TUI 体验 | 复用 OpenHarness TUI；按用户偏好打磨键盘导航（↑↓ 移动、空格选择、Enter 确认）的 approve / dimension 选择界面 |
 
+#### 11.3.1 真实仓库结构核验（v1.11：以 GitHub 实际目录树为依据）
+
+> 初稿结构拉取自 GitHub `HKUDS/OpenHarness` main 分支（commit `9b2efd7`，2026-06-04）；随后已完整克隆源码至主仓库 `.external/OpenHarness/`（gitignored，`--depth 1` + tags，检出 **v0.1.9 稳定 tag** `a0f8552`，2026-05-07）并完成四路并行源码深析（内核引擎 / 扩展面 / 状态配置 / 编排与 UI），深析结论见 §11.3.2。本节结构与本地克隆一致。
+
+```
+OpenHarness/
+├── pyproject.toml / README.md / README.zh-CN.md / CHANGELOG.md / LICENSE(MIT)
+├── src/openharness/           # 主包（扁平子包结构，无 kernel/ 聚合层）
+│   ├── cli.py / __main__.py   # `oh` CLI 入口
+│   ├── engine/                # query_engine.py（agent loop 核心）/ cost_tracker.py / messages.py / stream_events.py
+│   ├── api/                   # provider.py / registry.py / client / openai_client / codex_client / copilot_client / usage.py（厂商中立层）
+│   ├── auth/                  # 认证管理
+│   ├── permissions/           # checker.py / modes.py（多级权限）
+│   ├── hooks/                 # events / executor / loader / schemas——4 类 hook：command | prompt | http | agent，均带 matcher / timeout / block_on_failure / priority
+│   ├── commands/              # registry.py（slash 命令注册表）
+│   ├── skills/                # loader / registry / types / _frontmatter / bundled/content（anthropics 兼容技能加载）
+│   ├── prompts/               # claudemd.py（CLAUDE.md 原生注入）/ system_prompt.py / context.py / environment.py
+│   ├── memory/                # manager / agent / memdir / relevance / scan / search / team / usage / schema / migrate
+│   ├── services/              # session_backend / session_storage / compact/（上下文压缩）/ cron_scheduler / token_estimation / lsp / memory_extract
+│   ├── state/                 # app_state / store
+│   ├── swarm/                 # in_process / subprocess_backend / mailbox / registry / team_lifecycle / worktree / permission_sync / lockfile（多智能体）
+│   ├── tasks/                 # manager / local_agent_task / local_shell_task / types
+│   ├── coordinator/           # agent_definitions / coordinator_mode
+│   ├── tools/                 # 44 个内置工具：bash / file_read / file_write / file_edit / grep / glob / agent / team_* / task_* / todo_write / skill / cron_* / web_* / mcp_* / ask_user_question / enter_worktree / exit_worktree / lsp …
+│   ├── ui/                    # react_launcher（对接 frontend/terminal React+Ink）/ textual_app / permission_dialog / input / output / protocol / runtime
+│   ├── plugins/               # loader / installer / schemas / bundled（OpenHarness 自身插件系统）
+│   ├── personalization/       # extractor / rules / session_hook（OpenHarness 已有个性化框架）
+│   ├── sandbox/               # docker_backend / path_validator / session / adapter（Docker 沙箱）
+│   └── mcp/ bridge/ channels/ keybindings/ themes/ vim/ voice/ output_styles/ autopilot/ utils/ platforms.py
+├── frontend/terminal/         # React + Ink TUI 源码
+├── autopilot-dashboard/       # React 自动驾驶看板
+├── ohmo/                      # 独立子项目（fork 后可裁剪）
+└── docs/ scripts/ tests/ assets/ .claude/skills/ .agents/
+```
+
+**对设计有直接影响的核验结论**：
+
+1. **结构形态**：真实结构是「扁平子包 + 注册机制」，不存在 v1.10 §11.4 草案假设的 `kernel/` 聚合层与 `providers.py`/`agent_loop.py` 等文件名——fork 策略必须改为「保留 `openharness/` 包原样 + 新增 `iterate/` 子包 + 注册点挂载」，详见 §11.4.1。
+2. **意外收获的现成能力**（草案未预料、直接复用）：
+   - `swarm/worktree.py` + `tools/enter_worktree_tool.py`：**git worktree 隔离是内核原生的**——iterate 修复轮的 git 隔离方案可直接复用，无需自建；
+   - `tools/cron_*` + `services/cron_scheduler.py`：定时审查（§11.2.1「cron 每天跑」场景）开箱即得；
+   - `tools/ask_user_question_tool.py`：findings 分诊界面的交互原语已存在；
+   - `hooks/` 4 类 hook（command/prompt/http/agent）+ matcher 工具过滤 + block_on_failure：§11.2.2 的 20 项「prompt 约定→机制强制」有了直接载体——副作用约束类用 command hook（确定性），状态继承类用 agent/prompt hook（模型校验）；
+   - `personalization/`：上游已有个性化框架，iterate 个性化数据可对接而非另起炉灶；
+   - `sandbox/`：验证命令可选 Docker 隔离执行；
+   - `services/compact/`：长迭代多轮的上下文压缩原生支持。
+3. **hook 机制细节**（来自 `hooks/schemas.py`）：`CommandHookDefinition`（shell 命令、默认 30s、可 block）/ `PromptHookDefinition`（模型校验、默认 block）/ `HttpHookDefinition` / `AgentHookDefinition`（深度模型校验、60s、block），matcher 可按工具名过滤（file_write / file_edit / bash）——iterate 的 protected_paths 写拦截、forbidden_fixes diff 正则拒绝等均可用 command hook 零内核改动实现。
+4. **命令机制**：`commands/registry.py` 为 slash 命令注册表（`/xxx` 形态），CLI 子命令在 `cli.py`——iterate 命令双形态挂载（slash `/iterate` + CLI `iterate-harness` 子命令）。
+
+#### 11.3.2 源码级深析（v1.11：基于 v0.1.9 本地克隆的四路并行探索，全部带 file:line 证据）
+
+> 源码位置：`.external/OpenHarness/`（v0.1.9, `a0f8552`）。以下每条结论均可回溯到源码行号，是 §11.4.1 修订版架构的直接依据。
+
+**一、关键纠偏：v1.10 草案中与源码不符的假设（12 项）**
+
+| # | 草案假设 | 源码事实（file:line） | 对设计的影响 |
+|---|---|---|---|
+| 1 | agent loop 在 `QueryEngine` 类内 | 真循环是模块级函数 `run_query`（`engine/query.py:632`），单 `while` 循环在 `query.py:699`；`QueryEngine.submit_message` 只是薄包装（`engine/query_engine.py:147-190`） | 轮次控制必须 fork `run_query`，不是改类 |
+| 2 | hook 可承载评审轮次控制 | `HookEvent` 共 10 个事件（`hooks/events.py:8-19`），无 PRE_TURN/POST_TURN；`STOP` 仅在模型不再调工具、循环将结束时触发一次（`query.py:806-815`）；hook 只能 block 单个工具、不能改 messages/控制流（`hooks/executor.py:64`） | 收敛判定/轮次注入只能改 loop 本体；hook 仅用于副作用约束类强制 |
+| 3 | 可走「内置插件」形态 | `plugins/bundled/__init__.py` 是空文件且 `load_plugins()` 不扫描它（`plugins/loader.py:107-123` 只扫用户/项目目录）；插件无 apply/inject 编程式 API，纯声明式 manifest（`plugins/schemas.py:8-24`）；插件不能直接注入系统提示 | 否决插件路线，采用「独立子包 + 直接注册」（§11.4.1） |
+| 4 | TUI 有 React / Textual 双形态可选 | Textual 实现存在但**未接线**：全仓无任何模块 import `textual_app`；`run_repl` 只走 `launch_react_tui`（`ui/app.py:57-86`） | TUI 定制唯一路径 = React 前端 + NDJSON 协议扩展 |
+| 5 | CLI 有 `--session` 参数 | 不存在；恢复用 `--continue`（最近会话）/ `--resume [ID]`（指定会话，`cli.py:2110-2123`），恢复经 `run_repl(restore_messages=..., restore_tool_metadata=...)`（`cli.py:2397-2411`） | §11.5 命令集对应修正 |
+| 6 | cost tracking 含金额 | `CostTracker` 只累加 token（`engine/cost_tracker.py:8-24`），`UsageSnapshot` 仅 input/output_tokens（`api/usage.py:8-16`），无金额换算 | 「看得见的成本」金额层需 fork 自建（token×价格表） |
+| 7 | worktree 隔离一套实现 | **两套独立实现不共享代码**：`swarm/worktree.py`（`~/.openharness/worktrees/<slug>`，含 node_modules/.venv 软链复用，`worktree.py:105-117,144`）与 `tools/enter_worktree_tool.py`（`repo/.openharness/worktrees/`，同步 subprocess，`enter_worktree_tool.py:42-53,79-80`） | iterate 修复轮选 `WorktreeManager`（有软链复用与 stale 清理） |
+| 8 | bash 白名单可用权限规则表达 | 只有 `denied_commands`（deny 语义，`permissions/checker.py:120-126`）；无 `allowed_commands` 字段（全仓 grep 0 命中） | 白名单两条路：PreToolUse command hook（零内核改动）或 fork 加字段（推荐后者，见 §11.4.1） |
+| 9 | path_rules 可做 protected_paths 禁写 | `path_rules` 仅 deny 生效、不区分读写（`checker.py:109-117` 无 is_read_only 分支）；且仅当工具输入含 `file_path/path` 字段才被抽取（`query.py:916`） | 「禁写不禁读」需 fork 在 `evaluate` 加读写分支 |
+| 10 | 长迭代上下文无忧 | compact 四级渐进（microcompact→collapse→session memory→LLM full compact），microcompact 把早期 read_file/bash/grep 等结果**不可逆清空**（`services/compact/__init__.py:52,808-856`），`COMPACTABLE_TOOLS` 硬编码、无「不可压缩」标记 | iterate 多轮评审的 findings/diff 关键产物必须走 attachment 通道保留（`compact/__init__.py:714-733` 已有先例） |
+| 11 | bundled skill 支持目录布局 | `get_bundled_skills()` 只 glob `*.md` 不递归（`skills/bundled/__init__.py:23`）；用户级才是 `<dir>/SKILL.md` 布局（`skills/loader.py:70-85`） | iterate SKILL.md 以单文件 `skills/bundled/content/iterate.md` 落地，自动成为 `/iterate` 命令（`commands/registry.py:2160`） |
+| 12 | 复用上游 personalization 框架 | 上游是 10 类正则扁平 fact（confidence 固定 0.7，`personalization/extractor.py:11-75`），与 iterate 9 类结构化 PersonalizationData 模型不兼容；存储不按项目隔离（`rules.py:9`） | iterate 个性化独立子系统，仅复用注入入口模式（`prompts/context.py:123-125` 先例） |
+
+**二、直接可用的挂载点清单（全部现成入口，fork 改动集中且小）**
+
+| 挂载面 | 源码入口 | 用法 |
+|---|---|---|
+| 轮间控制点 | `engine/query.py:868`（tool results 回喂后、下一轮 while 前） | 插 iterate 控制块：收敛判定/轮次注入/break；经 `QueryContext`（dataclass，`query.py:137-154`）扩展 `iterate_policy` 传策略，上层 `QueryEngine` 与消费者零改动 |
+| slash 命令 | `create_default_command_registry()`（`commands/registry.py:2106-2266`） | `registry.register(SlashCommand("iterate", ...))`；handler 放独立模块 `commands/iterate.py`（registry.py 已 2300+ 行） |
+| 自定义工具 | `BaseTool`（`tools/base.py:35-57`：`name/description/input_model` + `async execute(arguments, context) -> ToolResult`）+ `create_default_tool_registry()`（`tools/__init__.py:47-96`） | 5 个 iterate 工具按此契约实现并追加注册 |
+| 内置技能 | `skills/bundled/content/iterate.md`（frontmatter 仅 `description` 功能必填，`skills/_frontmatter.py:34-82`） | 放入即被扫描，自动注册为 `/iterate` + `skill(name="iterate")` 双入口 |
+| ITERATE.md 注入 | 最小改法 1 行：`prompts/claudemd.py:15-17` candidate 元组加 `ITERATE.md`（复用向上遍历+截断+去重）；独立段落改法：`prompts/context.py:119` 后加一段 | 推荐 claudemd.py 一行改法（零新代码）；系统提示组装唯一汇聚点在 `prompts/context.py:77` |
+| 配置节 | `Settings`（pydantic，`config/settings.py:496-534`）加 `IterateSettings` 字段 | model_validate/dump 自动往返，`load/save_settings` 零改动 |
+| CLI 子命令 | `cli.py:765-777` 已有 `mcp/plugin/auth/provider/cron/autopilot` 子命令组先例 | 新增 `iterate` 子命令组（review/iterate/resume/log），console script 复用 `oh`/`openharness`（`pyproject.toml:48-52`） |
+| 厂商接入 | `PROVIDERS` 元组加 `ProviderSpec` 即完成（`api/registry.py:55-368`，文件头注释明示三步流程）；**DeepSeek 已内置**（`registry.py:171-183`，`DEEPSEEK_API_KEY` + `api.deepseek.com/v1`） | 厂商中立零成本兑现，含重试退避（`api/client.py:32-114`：3 次指数退避+抖动+Retry-After） |
+
+**三、并行评审 ×N 的正确姿势（源码契约）**
+
+- `AgentTool` **强制 subprocess backend**（`tools/agent_tool.py:62-66`，注释说明 in_process 的 asyncio 内部 ID 无法被 task 工具查询）；单次 execute 只 spawn 一个 agent（`agent_tool.py:82`），**没有批量 spawn API**。
+- 并行的正确方式 = 模型同一回合发起 N 次并行 `agent` 工具调用——多工具并发由内核 `asyncio.gather` 承载（`engine/query.py:830-844`，`return_exceptions=True` 防兄弟协程被取消）。
+- 结果回收复用 coordinator 契约：`ui/coordinator_drain.py` 轮询 `BackgroundTaskManager`，完成批以 `<task-notification>` 包络作为后续 user turn 回灌（`coordinator_drain.py:89-197`）；coordinator 系统提示本身示范并行 spawn（`coordinator/coordinator_mode.py:496-497`）。
+- **iterate 评审编排完全复用该契约**：N 个维度评审 = N 个后台 agent task（`tasks/manager.py:114` `create_agent_task`），每任务独立 worktree（`swarm/worktree.py:150` `create_worktree(repo_path, slug, branch, agent_id)`，含软链复用与 `cleanup_stale`），聚合由确定性引擎消费 task 输出。
+
+**四、fork 裁剪清单（以 import 证据为准）**
+
+| 子包 | 外部引用 | 处置 |
+|---|---|---|
+| `vim/` | 零外部 import（孤立死代码） | **删除** |
+| `channels/` | 零外部引用（vendored 自 nanobot，`channels/UPSTREAM`） | **删除**（连带 ohmo 的 2 处 lazy import 消失） |
+| `ohmo/`（子项目） | 仅 channels 内 2 处 lazy import | **删除**（可选依赖） |
+| `autopilot/` | `cli.py` ×10 + `commands/registry.py:17` | 保留（接线中；autopilot-dashboard/ 目录一并保留或裁剪 UI） |
+| `voice/` | `commands/registry.py:1618` | 保留（删需同步删命令，收益低） |
+| `bridge/` | UI 三件套 + commands 活跃使用 | 保留 |
+| `frontend/terminal/` | React TUI 唯一 UI | **必留**（注意：本克隆浅层无 node_modules，首启会自动 `npm install`，`react_launcher.py:133-142`） |
+
+**五、其它源码事实（备查）**
+
+- 会话存储是 **JSON 非 JSONL**：`~/.openharness/data/sessions/{name}-{sha1(cwd)[:12]}/` 下 `latest.json` + `session-{sid}.json` 双写（`services/session_storage.py:54-107`）；decision-log 仍按 iterate 自己的 append-only jsonl 独立存在。
+- 权限三模式 `default/plan/full_auto`（`permissions/modes.py:8-13`，无 acceptEdits）；`--dangerously-skip-permissions` ≡ full_auto（`cli.py:2304-2305`）。
+- 权限判定顺序：内置敏感路径硬保护（不可覆盖，`checker.py:88-98`）→ denied_tools → allowed_tools → path_rules(deny) → denied_commands → full_auto → 只读放行 → plan 拒绝 → default 弹窗确认（`checker.py:75-156`）；**PreToolUse hook 先于权限层执行**（`query.py:880-890`）。
+- PreToolUse block 的语义 = 返回 `is_error=True` 的 ToolResultBlock 给模型（可调整重试），非中断会话（`query.py:886-891`）。
+- cron：标准 5 字段（croniter），注册表 JSON + 历史 jsonl + fork 守护进程（`services/cron.py:12-116`、`cron_scheduler.py:261-358`，`oh cron start`）；job 经沙箱执行、300s 超时——定时审查场景零成本。
+- 沙箱：`srt` CLI 包裹或 Docker backend（`sandbox/adapter.py:52-131`、`utils/shell.py:51-97`）；Windows 原生不支持。
+- auto-compact 阈值默认 ≈167k token（200k 窗口，`compact/__init__.py:1056-1088`），连续失败 3 次熔断。
+- MEMORY.md 体系按 cwd 哈希存于 `~/.openharness/data/memory/`（`memory/paths.py:11-22`），不在项目内。
+
 ### 11.4 架构与模块划分
+
+> ⚠️ v1.11 注：以下目录树为 v1.10 基于能力清单的**草案假设**（虚构的 `kernel/` 聚合层与文件名），保留存档；**修订版架构见 §11.4.1**（以 §11.3.1 真实结构为依据），落地实现以 §11.4.1 为准。
 
 ```
 harness/
@@ -317,7 +432,71 @@ harness/
     └── README.md
 ```
 
+#### 11.4.1 修订版架构（v1.11：源码级，落地实现以此为准）
+
+> 形态：**保留 OpenHarness 包结构与内核原样 + 新增 `iterate/` 语义子包 + 8 处内核定点修改**。不虚构 kernel 层，不重排上游目录——最大化降低上游同步（rebase）成本。
+
+```
+iterate-harness/                     # fork 自 HKUDS/OpenHarness @ v0.1.9
+├── src/openharness/                 # 上游包结构原样保留（裁剪清单见 §11.3.2-四）
+│   ├── iterate/                     # ★ 新增子包：iterate 语义层（唯一大块新增代码）
+│   │   ├── __init__.py
+│   │   ├── settings.py              # IterateSettings(pydantic) + iterate.config.yaml 加载（Master/Overrides 深合并，移植插件 config-loader）
+│   │   ├── review.py                # 确定性聚合引擎：去重/known_intentional 过滤/severity 排序/收敛统计（移植 TS review.ts）
+│   │   ├── meta_review.py           # 6 项一致性审计（移植 TS meta-review.ts，含 ROUND_EMPTY 修复语义）
+│   │   ├── decision_log.py          # append-only decision-log.jsonl + 回放
+│   │   ├── validate.py              # validation.commands 精确匹配执行网关（对齐插件 validate.ts 语义）
+│   │   ├── loop_policy.py           # IterateLoopPolicy：收敛判定/轮次上限/评审计划（经 QueryContext 注入 run_query）
+│   │   ├── worktree_flow.py         # 修复轮 git 隔离编排（封装 swarm/worktree.WorktreeManager + 验证失败回滚）
+│   │   ├── cost.py                  # 金额层：UsageSnapshot × 价格表 → 每轮/累计费用（补上游只算 token 的缺口）
+│   │   ├── personalization.py       # 9 类结构化个性化数据（独立存储 ~/.openharness/iterate/，按 cwd 隔离）
+│   │   └── prompts.py               # 评审/修复子代理提示词模板（含 findings schema、canonical 循环模板）
+│   ├── commands/iterate.py          # ★ /iterate slash 命令 handler（在 commands/registry.py 注册一行）
+│   ├── tools/iterate_tools.py       # ★ 5 工具：iterate_config/validate/review/decision_log/context（BaseTool 契约，注册于 tools/__init__.py）
+│   ├── skills/bundled/content/iterate.md   # ★ SKILL.md 内置（自动成为 /iterate + skill() 双入口）
+│   ├── prompts/claudemd.py          # ★ 一行改动：candidate 元组加 ITERATE.md（§11.3.2-二）
+│   └── engine/query.py              # ★ 定点改动：868 行后插 iterate 控制块 + QueryContext 加 iterate_policy 字段
+├── frontend/terminal/src/panels/    # ★ React 评审进度面板 + findings 分诊组件（protocol.py 加 review_progress 事件）
+└── tests/iterate/                   # ★ 语义层单测（移植插件 53 测）+ loop_policy 集成测试 + compact 保留性测试
+```
+
+**内核定点修改清单（全部 8 处，每处一个 diff 面）**：
+
+| # | 文件 | 改动 | 目的 |
+|---|---|---|---|
+| 1 | `engine/query.py` | `QueryContext` 加 `iterate_policy` 字段；`:868` 后插控制块（收敛判定→break / 注入评审消息 / 产出 `ReviewProgressEvent`） | 轮次控制与收敛自停 |
+| 2 | `engine/stream_events.py` | 联合类型加 `ReviewProgressEvent`（round/new_findings/per_dimension/token_cost） | TUI 实时收敛仪表盘的事件源 |
+| 3 | `engine/cost_tracker.py` | `add()` 时同步调 `iterate.cost.accumulate()`；或 QueryEngine 转发处挂钩 | 金额透明（每轮/累计） |
+| 4 | `config/settings.py` | `Settings` 加 `iterate: IterateSettings`（定义移入 `iterate/settings.py`，此处仅 import） | iterate.config.yaml 与内核 Settings 融合 |
+| 5 | `permissions/checker.py` | 加 `allowed_commands` 白名单（evaluate 顺序插在 denied_commands 前）；`path_rules` 判定加 `is_read_only` 分支实现「禁写不禁读」 | protected_paths / 验证命令白名单原生强制 |
+| 6 | `services/compact/__init__.py` | iterate 关键产物（findings 列表 / 失败 diff / 决策摘要）写入 `_build_compact_attachments` 通道 | 防 microcompact 不可逆清空评审证据 |
+| 7 | `commands/registry.py` + `tools/__init__.py` | 各加一行注册（handler/工具实体在 iterate 子包与 commands/iterate.py） | /iterate 命令与 5 工具 |
+| 8 | `prompts/claudemd.py` | candidate 元组加 `ITERATE.md`（1 行） | 项目知识库自动注入 |
+
+**评审编排数据流**（复用上游契约，零编排新造）：
+
+```
+/iterate 或 oh iterate review --dry-run
+  → iterate/loop_policy 生成评审计划（dimensions × goal）
+  → 模型同回合 N 次并行 agent 工具调用（query.py:830-844 asyncio.gather）
+  → 每评审 agent = create_agent_task + WorktreeManager 隔离（只读评审可不建 worktree，dry-run 强制不建）
+  → coordinator_drain 契约回收 task-notification 输出
+  → iterate/review 确定性聚合（去重/过滤/排序/收敛）
+  → iterate/meta_review 审计 → ReviewProgressEvent → React 面板
+  → 未收敛：loop_policy 注入「只找新问题」下一轮；收敛：出报告 + decision_log 追加
+```
+
+#### 11.4.2 fork 工作流与上游同步
+
+- **fork base**：`v0.1.9` tag（`a0f8552`，2026-05-07，最新稳定版）；同时 cherry-pick main HEAD `9b2efd7`（2026-06-04 "preserve profile auth when overriding model"——profile 覆盖模型时保留认证，对 DeepSeek 等兼容端点的 profile 切换场景直接受益）。
+- **仓库形态**：遵循 §6 决策——主仓库 `harness/iterate-harness/` 唯一开发点，subtree 拆分独立发布仓（首个大版本后建）。
+- **上游同步**：fork 仓加 `upstream` remote 定期 fetch；因内核改动锁定在 §11.4.1 的 8 个定点 diff 面，rebase 冲突面可控；每次同步跑 `tests/iterate/` 全量回归（53+ 单测是行为对齐锚）。
+- **裁剪执行**：fork 首次提交即删 `vim/`、`channels/`、`ohmo/`（§11.3.2-四 证据），后续不再引入。
+- **版本线**：与 skill/插件一致采用「主仓库统一 + 发布仓独立发版」；harness 版本独立递增（同插件 2.3.7 先例）。
+
 ### 11.5 CLI 命令集（v0）
+
+> ⚠️ v1.11 勘误（源码级）：① 会话恢复参数不存在 `--session`，上游用 `--continue` / `--resume <id>`（`cli.py:2110-2123`），iterate 命令集对齐为 `iterate-harness resume <id>`（缺省 = 最近会话）；② 入口命令沿用上游 console script `oh`，iterate 以子命令组挂载（`oh iterate ...`，参照 `cli.py:765-777` 子命令先例），同时保留独立 `iterate-harness` 别名；③ 「harness --dry-run 静态预览」直接复用上游 `oh --dry-run`（预览 settings/auth/skills/commands/tools）。
 
 | 命令 | 说明 |
 |---|---|
@@ -356,3 +535,4 @@ harness/
 - v1.8（2026-08-14）：新增 §11.2.1 用户体验场景深析——区别于 §11.2 内核能力视角，按「看（实时收敛仪表盘 / 逐 hunk diff 审批 / findings 分诊 / init 检测式向导）/ 摸（Esc 暂停干预 / 断点续跑画面）/ 跑（PR 评论 + 质量门禁 / git hook / 批量定时）/ 沉淀（finding 指纹趋势 / HTML 报告 / 评审回放）」四类记录 skill 与插件原理上做不出的独占体验；给出 v0 优先级（分诊界面 > diff 审批+干预 > PR/CI 模式）。
 - v1.9（2026-08-14）：新增 §11.2.2 代码实况深析——三路并行源码审查（iterate_cli 六模块 / wizard+tui+模板 / SKILL.md+配置层）证实：① iterate_cli 100% 确定性本地计算零 LLM，onboarding 全链路可直接复用为 harness 数据层（7 类现成数据资产清单）；② prompt 约定→机制强制全景对照：插件已强制 10 项确定性计算类约定，剩余 20 项分「副作用约束类（hooks/权限可强制）」与「状态继承类（session/持久化可强制）」；③ 维度 yaml 现仅 focus 文本，harness 可解锁 per-dimension model/并发/token 预算、维度级阈值门禁、维度专属验证命令等 7 项；④ 用户旅程断点源码级定位（TUI 实为 input() 问答、向导不问 goal/max_rounds/atomic/language、验证命令无 dry-run 预检等）；⑤ 顺带发现 4 个现有代码问题（tui.question 接口 bug、TS 示例 auto_merge 文档矛盾、决策日志模板未接线、双 __name__ 守卫）记入待修复清单。
 - v1.10（2026-08-14）：§6 增补 harness 发布仓库决策——harness 首个大版本完成后另开独立发布仓库（同 iterate-plugin subtree 模式），主仓库统一维护。同日随 v2.3.7 发布修复 §11.2.2 所列 4 个代码问题（tui.question 契约 + prompt_prefix 死代码删除、TS 示例 auto_merge 矛盾、决策日志模板角色注释、cli.py 冗余守卫移除，新增 tests/test_tui.py）。
+- v1.11（2026-08-14）：OpenHarness 源码级落地依据补全——克隆 v0.1.9 稳定版至 `.external/`（gitignored）并完成四路并行深析（内核引擎/扩展面/状态配置/编排 UI）。新增 §11.3.1 真实结构核验、§11.3.2 源码级深析（12 项草案纠偏：真循环在 run_query 而非 QueryEngine、hook 无轮次事件、plugins/bundled 空载、Textual 未接线、无 --session、CostTracker 只算 token、双 worktree 实现、无 allowed_commands、path_rules 不分读写、microcompact 不可逆清空、bundled skill 仅 *.md、personalization 模型不兼容；8 个现成挂载点清单；并行评审 ×N 源码契约；fork 裁剪清单 vim/channels/ohmo 可删）、§11.4.1 修订版架构（iterate 子包 + 8 处内核定点修改 + 评审编排数据流）、§11.4.2 fork 工作流（base=v0.1.9+cherry-pick 9b2efd7、上游同步策略）、§11.5 勘误（resume 参数/oh 子命令组/dry-run 复用）。v1.10 §11.4 目录树标注为草案存档，落地以 §11.4.1 为准。
