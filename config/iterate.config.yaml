@@ -56,8 +56,9 @@ git:
   auto_merge: false
 
 # 验证命令安全 / Validation command safety
-# 白名单中的命令前缀可直接执行。
-# 不在白名单中的命令直接拒绝，不可通过用户确认绕过。
+# 运行时只允许执行 validation.commands 中【精确匹配】的命令（唯一信任源）。
+# 不在 commands 中的命令直接拒绝，不可通过用户确认绕过。
+# command_whitelist 仅用于配置期校验（旧字段，兼容保留），不参与运行时匹配。
 validation:
   command_whitelist:
     - "ruff"
@@ -74,8 +75,10 @@ validation:
 
   # 键名对应项目模块（示例），AI 会根据改动的模块选择执行。
   # 使用者决定：这些命令完全由你配置，AI 只读取并执行你信任的命令。
+  # 运行时校验要求命令与下方某条【完全一致】（去除首尾空白后），
+  # 例如只能执行 "pytest tests/ -x -q --timeout=60"，不能改参数也不能拼接。
   # User decides: these commands are fully configurable. The AI only reads and
-  # executes commands you trust.
+  # executes commands you trust — and only if they match EXACTLY (after trim).
   commands:
     python:
       - "ruff check src/"
