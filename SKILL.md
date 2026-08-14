@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.3.2
+version: 2.3.3
 permissions:
   file_read: true
   file_write: true
@@ -877,7 +877,7 @@ iterate/
 | `atomic.max_lines` | int | `20` | 原子问题行数上限 |
 | `atomic.max_adjacent_methods` | int | `3` | 相邻方法数上限 |
 | `git.target_branch` | string | `"main"` | 合并目标分支 |
-| `git.use_worktree` | bool | `false` | 是否使用 worktree |
+| `git.use_worktree` | bool | `false` | 是否默认使用 worktree；**当工作区有未提交改动/未跟踪文件时，无论此值如何，都优先用 worktree 隔离**（见 Step 1.7） |
 | `git.push_per_round` | bool | `false` | 每轮通过后是否立即 push（默认 false，安全） |
 | `git.auto_merge` | bool | `false` | 每轮验证后是否自动 merge 回 target_branch（默认 false，安全） |
 | `validation.command_whitelist` | list | 常见命令前缀 | 允许的命令前缀；不在白名单中的命令直接拒绝，不可通过用户确认绕过 |

@@ -1,14 +1,15 @@
 /**
  * Unit tests for resolveInstallMode() — the global vs project install-mode
- * decision in the npx installer. Uses node:assert so no extra test runner is
- * required; run via `npm test`.
+ * decision — and parseChecksums() — the SHA256SUMS.txt parser — in the npx
+ * installer. Uses node:assert so no extra test runner is required; run via
+ * `npm test`.
  */
 
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums } = require('../lib/installer');
 
 const originalCwd = process.cwd();
 const originalHome = os.homedir;
@@ -79,6 +80,23 @@ async function run() {
   });
 
   console.log('mode.test.js: all resolveInstallMode tests passed');
+
+  // parseChecksums: must strip the GNU tar binary-mode marker ('*') so both
+  // "HASH  name" and "HASH *name" formats resolve, matching the Python side.
+  const plain = parseChecksums('abc123  iterate-skill.tar.gz\n');
+  assert.strictEqual(plain.get('iterate-skill.tar.gz'), 'abc123', 'plain format should parse');
+
+  const starred = parseChecksums('def456 *iterate-skill.tar.gz\n');
+  assert.strictEqual(starred.get('iterate-skill.tar.gz'), 'def456', 'starred format should strip the * marker');
+
+  const crlf = parseChecksums('abc123  iterate-skill.tar.gz\r\n');
+  assert.strictEqual(crlf.get('iterate-skill.tar.gz'), 'abc123', 'CRLF line endings should parse');
+
+  const multi = parseChecksums('aa  a.txt\nbb  b.txt\n');
+  assert.strictEqual(multi.get('a.txt'), 'aa');
+  assert.strictEqual(multi.get('b.txt'), 'bb');
+
+  console.log('mode.test.js: all parseChecksums tests passed');
 }
 
 run().catch((err) => {

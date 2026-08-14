@@ -162,7 +162,11 @@ function parseChecksums(text) {
     if (!trimmed) continue;
     const parts = trimmed.split(/\s+/);
     if (parts.length >= 2) {
-      map.set(parts[1], parts[0]);
+      // Strip the GNU tar binary-mode marker ('*') so that both
+      // "HASH  filename" and "HASH *filename" formats match the target
+      // filename, consistent with scripts/install.py (name.lstrip('*')).
+      const name = parts[1].replace(/^\*/, '');
+      map.set(name, parts[0]);
     }
   }
   return map;
@@ -487,4 +491,5 @@ module.exports = {
   InstallerError,
   resolveInstallMode,
   askYesNo,
+  parseChecksums,
 };

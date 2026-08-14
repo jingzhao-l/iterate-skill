@@ -53,6 +53,10 @@ ALL_DIMENSIONS: list[str] = [
     "ui-ux",
 ]
 
+# Maximum number of scanned top-level directories to list in the scan preview.
+# Beyond this the output is truncated with a "… and N more" hint.
+MAX_DIRS_DISPLAYED = 10
+
 # Dimension display names for the selection menu.
 DIMENSION_LABELS: dict[str, str] = {
     "correctness": "正确性 / Correctness (critical)",
@@ -388,7 +392,7 @@ def _collect_validation_commands(
 
 def _manual_collect_commands(input_func: InputFunc) -> dict[str, list[str]]:
     """Manually collect validation commands from the user."""
-    from iterate_cli.personalize import MODULE_NAME_PATTERN
+    from iterate_cli.personalize import FORBIDDEN_COMMAND_CHARS, MODULE_NAME_PATTERN
 
     tui.info("手动输入验证命令（每行一条，空行结束该模块）/")
     tui.hint("Enter commands manually (one per line, empty line to finish a module)", indent=2)
@@ -409,6 +413,18 @@ def _manual_collect_commands(input_func: InputFunc) -> dict[str, list[str]]:
             cmd = input_func(f"  └ {module} 命令 / command (留空结束 / empty to finish): ").strip()
             if not cmd:
                 break
+            # Reject shell-chaining metacharacters up front so a manually
+            # entered command cannot smuggle "; | & ` $ > <" side effects into
+            # the executable validation config. (The allowed-prefix whitelist
+            # is intentionally NOT applied here — single commands like
+            # `python manage.py test` are legitimate; the config-time
+            # command_whitelist check still governs them.)
+            if any(ch in cmd for ch in FORBIDDEN_COMMAND_CHARS):
+                tui.warning(
+                    f"拒绝命令 / Rejected: '{cmd}' — 含 shell 链接元字符 ({''.join(FORBIDDEN_COMMAND_CHARS)}), 不允许",
+                    indent=4,
+                )
+                continue
             cmds.append(cmd)
 
         if cmds:
@@ -553,10 +569,10 @@ def _print_scan_results(scan: ScanResult) -> None:
     if scan.detected_languages:
         tui.key_value("Languages", ", ".join(scan.detected_languages))
     if scan.top_level_dirs:
-        dirs = scan.top_level_dirs[:10]
+        dirs = scan.top_level_dirs[:MAX_DIRS_DISPLAYED]
         tui.key_value("Directories", ", ".join(dirs))
-        if len(scan.top_level_dirs) > 10:
-            tui.hint(f"... and {len(scan.top_level_dirs) - 10} more", indent=4)
+        if len(scan.top_level_dirs) > MAX_DIRS_DISPLAYED:
+            tui.hint(f"... and {len(scan.top_level_dirs) - MAX_DIRS_DISPLAYED} more", indent=4)
     tui.key_value("Specs", "yes" if scan.has_specs else "no")
     tui.key_value("Tests", "yes" if scan.has_tests else "no")
     tui.key_value("CI", "yes" if scan.has_ci else "no")

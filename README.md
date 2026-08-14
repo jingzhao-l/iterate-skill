@@ -128,22 +128,28 @@ iterate --version
 
 安装后可在任意项目目录使用 `iterate onboard`、`iterate personalize`、`iterate status`、`iterate refresh`、`iterate reonboard`。
 
-#### 方式 B：手动复制 SKILL.md
+#### 方式 B：手动复制 skill 目录
 
-如果你只想让某个 AI 助手认识这个 skill，把 [`SKILL.md`](./SKILL.md) 复制到对应目录即可：
+> ⚠️ **必须复制整个 `iterate/` 目录，而不是只复制 `SKILL.md`。** `SKILL.md` 运行时依赖同目录下的 `config/`、`scripts/validate.py`、`templates/`（按安装目录相对路径解析）。只拷一个文件会导致 `/iterate` 找不到配置与校验脚本而失败。
+
+如果你不想用 npx 安装器，把整个 skill 目录复制到对应助手目录即可：
 
 ```bash
+# 先在本地克隆或下载源码，得到含 SKILL.md、config/、scripts/、templates/ 的 iterate/ 目录
+git clone https://github.com/jingzhao-l/iterate-skill.git
+SKILL_DIR=$(pwd)/iterate-skill
+
 # Trae
 mkdir -p ~/.trae/skills/iterate
-cp SKILL.md ~/.trae/skills/iterate/SKILL.md
+cp -R "$SKILL_DIR"/SKILL.md "$SKILL_DIR"/config "$SKILL_DIR"/scripts "$SKILL_DIR"/templates ~/.trae/skills/iterate/
 
 # Claude Code
 mkdir -p ~/.claude/skills/iterate
-cp SKILL.md ~/.claude/skills/iterate/SKILL.md
+cp -R "$SKILL_DIR"/SKILL.md "$SKILL_DIR"/config "$SKILL_DIR"/scripts "$SKILL_DIR"/templates ~/.claude/skills/iterate/
 
 # Cursor
 mkdir -p ~/.cursor/skills/iterate
-cp SKILL.md ~/.cursor/skills/iterate/SKILL.md
+cp -R "$SKILL_DIR"/SKILL.md "$SKILL_DIR"/config "$SKILL_DIR"/scripts "$SKILL_DIR"/templates ~/.cursor/skills/iterate/
 ```
 
 更多工具的路径请参考 [`SKILL.md`](./SKILL.md) 中的“工具映射表”。

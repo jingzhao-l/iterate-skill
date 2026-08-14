@@ -826,21 +826,6 @@ def _fetch_latest_release_info(token: str | None) -> dict[str, str] | None:
     return result
 
 
-def _fetch_latest_release_tag(token: str | None) -> str | None:
-    """Query GitHub API for the latest release tag name."""
-    info = _fetch_latest_release_info(token)
-    return info["tag"] if info else None
-
-
-def _detect_installed_assistants(target: Path) -> list[str]:
-    """Return assistants that already have an iterate skill installed in target."""
-    installed: list[str] = []
-    for assistant, relative_dir in SUPPORTED_AI.items():
-        if (target / relative_dir).exists():
-            installed.append(assistant)
-    return installed
-
-
 def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
     """Extract a tarball safely, preventing path traversal outside ``path``."""
     if hasattr(tarfile, "data_filter"):
@@ -848,9 +833,12 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
         return
 
     # Fallback for Python < 3.12: validate each member resolves inside path.
+    # Uses is_relative_to (platform-agnostic) instead of a hardcoded "/" join,
+    # which would break on Windows backslash separators.
+    base = path.resolve()
     for member in tar.getmembers():
         member_path = (path / member.name).resolve()
-        if not str(member_path).startswith(str(path.resolve()) + "/"):
+        if not member_path.is_relative_to(base):
             raise tarfile.TarError(f"Suspicious member path: {member.name}")
     tar.extractall(path=path)
 
@@ -920,13 +908,18 @@ def _download_release_source(
         return None
     _success("Release tarball checksum verified.")
 
+    temp_dir = Path(tempfile.mkdtemp(prefix="iterate-release-"))
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            temp_dir = Path(tempfile.mkdtemp(prefix="iterate-release-"))
             _safe_extractall(tar, temp_dir)
             extracted = [p for p in temp_dir.iterdir() if p.is_dir()]
-            return extracted[0] if extracted else None
+            if not extracted:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+            return extracted[0]
     except (tarfile.TarError, OSError):
+        # Clean up the temp directory on any failure to avoid leaking it.
+        shutil.rmtree(temp_dir, ignore_errors=True)
         return None
 
 

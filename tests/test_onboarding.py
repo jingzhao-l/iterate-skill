@@ -1063,6 +1063,36 @@ class TestFullReonboardErrorHandling:
         captured = capsys.readouterr()
         assert "Failed to write onboarding outputs" in captured.err
 
+    def test_returns_true_on_no_changes_needed(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """Returning user declines all updates → NO_CHANGES_NEEDED is handled.
+
+        Regression: full_reonboard previously passed the NO_CHANGES_NEEDED
+        sentinel straight to write_onboarding_outputs, which crashed with
+        AttributeError after the old files had already been backed up.
+        """
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        import iterate_cli.refresh as refresh_mod
+
+        def mock_wizard(project_root, input_func=None):
+            return NO_CHANGES_NEEDED
+
+        # Ensure write_onboarding_outputs is never reached (it would crash on
+        # the sentinel). If it IS called, the test fails loudly.
+        monkeypatch.setattr(refresh_mod, "run_wizard", mock_wizard)
+        monkeypatch.setattr(
+            refresh_mod,
+            "write_onboarding_outputs",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not write")),
+        )
+
+        result = full_reonboard(fake_project)
+
+        assert result is True
+
 
 class TestParseDimensionSelectionDedup:
     """Tests for _parse_dimension_selection deduplication (S-10-1)."""
@@ -1099,6 +1129,20 @@ class TestManualCollectCommandsModuleValidation:
         assert "python; rm -rf /" not in result
         assert "python" in result
         assert result["python"] == ["ruff check src/"]
+
+    def test_command_with_shell_metacharacter_is_rejected(self) -> None:
+        """Commands containing shell-chaining metacharacters are rejected."""
+        from iterate_cli.wizard import _manual_collect_commands
+        responses = iter([
+            "python",
+            "pytest tests/ && rm -rf /",  # chain via &&
+            "pytest tests/",              # valid
+            "",                            # end module
+            "",                            # end input
+        ])
+        result = _manual_collect_commands(lambda _: next(responses))
+        assert result["python"] == ["pytest tests/"]
+        assert all("&&" not in c for c in result["python"])
 
 
 class TestValidateErrorMessages:

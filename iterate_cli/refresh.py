@@ -33,7 +33,7 @@ from iterate_cli.scan import (
     suggest_command_whitelist,
     suggest_dimensions,
 )
-from iterate_cli.wizard import run_wizard
+from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
 
 # Files managed by onboarding.
 ITERATE_MD = "ITERATE.md"
@@ -324,6 +324,10 @@ def full_reonboard(
 
     if data is None:
         return False
+    if data is NO_CHANGES_NEEDED:
+        # Returning user declined all updates; nothing to write. The old
+        # files remain intact and the .bak-<timestamp> copies are harmless.
+        return True
 
     try:
         write_onboarding_outputs(data, project_root)

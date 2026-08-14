@@ -693,6 +693,21 @@ def run_personalize_wizard(
         _print_cancelled()
         return None
 
+    # Steps 1-4: protected paths, risk areas, known intentional, dimension focus.
+    _run_personalize_steps_1_4(data, input_func)
+
+    # Steps 5-9: fix priority, forbidden fixes, notes, conventions, extra commands.
+    _run_personalize_steps_5_9(data, input_func)
+
+    if not _confirm_personalization_summary(data, input_func):
+        _print_cancelled()
+        return None
+
+    return data
+
+
+def _run_personalize_steps_1_4(data: PersonalizationData, input_func: InputFunc) -> None:
+    """Run wizard steps 1-4 (protected paths, risk areas, known intentional, focus)."""
     # Step 1: Protected paths
     data.protected_paths = _run_string_list_step(
         title="禁区 / Protected Files",
@@ -736,6 +751,9 @@ def run_personalize_wizard(
         input_func=input_func,
     )
 
+
+def _run_personalize_steps_5_9(data: PersonalizationData, input_func: InputFunc) -> None:
+    """Run wizard steps 5-9 (priority, forbidden fixes, notes, conventions, commands)."""
     # Step 5: Fix priority order
     data.fix_priority_order = _run_fix_priority_step(data.fix_priority_order, input_func)
 
@@ -773,12 +791,6 @@ def run_personalize_wizard(
     data.extra_validation_commands = _run_validation_commands_step(
         data.extra_validation_commands, input_func
     )
-
-    if not _confirm_personalization_summary(data, input_func):
-        _print_cancelled()
-        return None
-
-    return data
 
 
 # ---------------------------------------------------------------------------
