@@ -31,6 +31,12 @@ AI_END_MARKER = "<!-- ITERATE:AI-MAINTAINED:END -->"
 USER_START_MARKER = "<!-- ITERATE:USER-OWNED:START -->"
 USER_END_MARKER = "<!-- ITERATE:USER-OWNED:END -->"
 
+# Default values used when generating a fresh iterate.config.yaml.
+DEFAULT_MAX_ROUNDS = 7
+DEFAULT_ATOMIC_MAX_LINES = 20
+DEFAULT_ATOMIC_MAX_ADJACENT_METHODS = 3
+DEFAULT_GOAL = "Improve code quality and maintainability"
+
 # Default user-owned section content when generating a fresh ITERATE.md.
 DEFAULT_USER_OWNED_SECTION = """
 ## 自定义代码约定 / Custom Code Conventions
@@ -138,12 +144,15 @@ def generate_config_yaml(data: OnboardingData) -> str:
         Complete iterate.config.yaml file content as a string.
     """
     config: dict[str, Any] = {
-        "goal": "Improve code quality and maintainability",
-        "max_rounds": 7,
+        "goal": DEFAULT_GOAL,
+        "max_rounds": DEFAULT_MAX_ROUNDS,
         "language": data.language,
         "dimensions": data.dimensions,
         "review": {"scope": data.review_scope},
-        "atomic": {"max_lines": 20, "max_adjacent_methods": 3},
+        "atomic": {
+            "max_lines": DEFAULT_ATOMIC_MAX_LINES,
+            "max_adjacent_methods": DEFAULT_ATOMIC_MAX_ADJACENT_METHODS,
+        },
         "git": {
             "target_branch": data.target_branch,
             "use_worktree": False,

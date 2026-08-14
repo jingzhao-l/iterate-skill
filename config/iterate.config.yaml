@@ -43,6 +43,8 @@ atomic:
 # Git 配置 / Git configuration
 git:
   target_branch: main
+  # 默认是否使用 worktree。注意：当工作区有未提交改动/未跟踪文件时，
+  # 无论此值如何，iterate 都会优先用 worktree 隔离（见 SKILL.md Step 1.7）。
   use_worktree: false
   # 每轮修复验证通过后是否立即 push。
   # true:  每轮都 push（旧行为，高风险）。

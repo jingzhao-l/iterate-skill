@@ -5,6 +5,38 @@
 
 ---
 
+## [2.3.3] — 2026-08-14
+
+### 修复 / Fixes
+
+- **`full_reonboard` 未处理 `NO_CHANGES_NEEDED` 哨兵导致崩溃**：当回归用户同时拒绝基础更新和个性化配置时，`run_wizard` 返回的 `object()` 哨兵直接被传入 `write_onboarding_outputs`，抛出 `AttributeError`。此时旧文件已在向导运行前被备份，造成"备份了但没写入"的中间态。已新增 `NO_CHANGES_NEEDED` 判断并安全返回。
+- **JS/Python 校验和解析不一致**：`npm-installer/lib/installer.js` 的 `parseChecksums` 未剥离 GNU tar 二进制标记 `*`，而 `scripts/install.py` 做了 `lstrip("*")`。若 `SHA256SUMS.txt` 采用 `HASH *filename` 格式，npx 安装器会校验失败。已统一 JS 侧 `replace(/^\*/, '')`。
+
+### 安全 / Security
+
+- **`_manual_collect_commands` 缺少 shell 元字符校验**：手动输入的验证命令未检查 `;` `|` `&` `` ` `` `$` `>` `<` `\n` `\r` 等 shell 链接元字符，存在绕过窗口。已复用 `FORBIDDEN_COMMAND_CHARS` 黑名单在输入时拒绝含元字符的命令。
+- **`_safe_extractall` 回退分支硬编码 `/` 分隔符**：Python < 3.12 的路径遍历防护使用 `startswith(str(path) + "/")`，Windows 上永不匹配，导致所有合法成员被误判为可疑。已改用 `Path.is_relative_to()`（平台无关）。
+
+### 维护 / Maintenance
+
+- 移除死代码 `_detect_installed_assistants`（与 `detect_installed_assistants` 重复）和 `_fetch_latest_release_tag`（无调用方）。
+- 为 `_update_iterate_md_user_section` 的 `read_text`/`write_text` 增加 try/except 异常处理，防止 `OSError`/`UnicodeDecodeError` 向上传播崩溃。
+- `_download_release_source` 临时目录在异常和空提取分支增加 `shutil.rmtree` 清理，防止泄漏。
+- 提取 `generate_config_yaml` 中裸字面量（`7`/`20`/`3`/`"Improve code quality..."`）为模块级具名常量。
+- 提取 `_print_scan_results` 中目录截断上限裸字面量 `10` 为具名常量 `MAX_DIRS_DISPLAYED`。
+- 拆分 `run_personalize_wizard`（112 行）为 `_run_personalize_steps_1_4` 与 `_run_personalize_steps_5_9` 两个子函数，满足单函数 ≤ 80 行的代码质量约束。
+- 新增 `full_reonboard` 的 `NO_CHANGES_NEEDED` 回归测试（`test_returns_true_on_no_changes_needed`）。
+- 新增 `parseChecksums` 的 `*` 标记剥离 JS 测试（`mode.test.js`）。
+- 新增 `_manual_collect_commands` shell 元字符拒绝测试（`test_command_with_shell_metacharacter_is_rejected`）。
+
+### 文档 / Docs
+
+- **SKILL.md 配置表 `git.use_worktree` 描述澄清**：明确"当工作区有未提交改动时，无论此值如何，都优先用 worktree 隔离"，消除与 Step 1.7 的矛盾。
+- **README 方式 B 手动复制修复**：从"只复制 SKILL.md"改为"必须复制整个 `iterate/` 目录（含 `config/`、`scripts/`、`templates/`），否则运行时找不到依赖"。
+- `config/iterate.config.yaml` 的 `git.use_worktree` 新增注释说明。
+
+---
+
 ## [2.3.2] — 2026-08-13
 
 ### 功能 / Features

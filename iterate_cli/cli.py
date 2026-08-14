@@ -282,7 +282,12 @@ def _update_iterate_md_user_section(project_root: Path, personalization: Any) ->
     if not iterate_md_path.is_file():
         return
 
-    content = iterate_md_path.read_text(encoding="utf-8")
+    try:
+        content = iterate_md_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        tui.warning(f"Could not read existing ITERATE.md: {exc}")
+        return
+
     new_personalization_md = personalization.to_user_md_sections()
 
     start_idx = content.find(USER_START_MARKER)
@@ -301,7 +306,10 @@ def _update_iterate_md_user_section(project_root: Path, personalization: Any) ->
     after = content[end_idx:]
     updated = f"{before}\n{merged}\n{after}"
 
-    iterate_md_path.write_text(updated, encoding="utf-8")
+    try:
+        iterate_md_path.write_text(updated, encoding="utf-8")
+    except OSError as exc:
+        tui.warning(f"Could not write updated ITERATE.md: {exc}")
 
 
 def _cmd_refresh(project_root: Path) -> int:
