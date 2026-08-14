@@ -191,9 +191,32 @@ function runCommand(bin, args, options = {}) {
 }
 
 async function extractTarball(tarballPath, destDir) {
-  // Use the system tar command (available on macOS, Linux, and Windows 10+).
-  // Strip the top-level directory so files land directly in destDir.
-  await runCommand('tar', ['-xzf', tarballPath, '-C', destDir, '--strip-components=1']);
+  // Use the system tar command (available on macOS, Linux, and Windows 10+),
+  // but defend against path-traversal tarballs: before extracting we list the
+  // archive contents and refuse to extract any entry whose resolved path
+  // escapes destDir (e.g. a "../" prefix). This keeps the installer
+  // dependency-free while closing the theoretical escape vector.
+  const absoluteDest = path.resolve(destDir);
+  fs.mkdirSync(absoluteDest, { recursive: true });
+
+  // 1. List archive entries (no extraction yet).
+  const listing = await runCommand('tar', ['-tzf', tarballPath]);
+
+  // 2. Validate every entry stays inside destDir after stripping the single
+  //    top-level directory component (--strip-components=1).
+  const entries = listing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  for (const entry of entries) {
+    const stripped = entry.split('/').slice(1).join('/');
+    const resolved = path.resolve(absoluteDest, stripped || entry);
+    if (resolved !== absoluteDest && !resolved.startsWith(absoluteDest + path.sep)) {
+      throw new InstallerError(
+        `Refusing to extract tarball: entry "${entry}" escapes destination directory.`,
+      );
+    }
+  }
+
+  // 3. Now extract safely — the content has been validated above.
+  await runCommand('tar', ['-xzf', tarballPath, '-C', absoluteDest, '--strip-components=1']);
 }
 
 function runPythonInstall(pythonBin, installScript, args, options = {}) {
