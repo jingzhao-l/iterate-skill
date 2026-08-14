@@ -17,7 +17,6 @@ from typing import Any
 
 import yaml
 
-
 REQUIRED_DECISION_SECTIONS = [
     "Atomic Fixes (Direct)",
     "Architectural Fixes (Approved + Executed)",
@@ -98,9 +97,12 @@ def command_is_whitelisted(command: str, whitelist: list[str]) -> bool:
     for prefix in whitelist:
         if stripped == prefix:
             return True
-        if stripped.startswith(prefix) and len(stripped) > len(prefix):
-            if stripped[len(prefix)].isspace():
-                return True
+        if (
+            len(stripped) > len(prefix)
+            and stripped.startswith(prefix)
+            and stripped[len(prefix)].isspace()
+        ):
+            return True
     return False
 
 

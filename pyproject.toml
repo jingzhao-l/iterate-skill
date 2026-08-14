@@ -49,3 +49,4 @@ testpaths = ["tests"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402"]  # sys.path manipulation before imports is a standard test pattern
+"scripts/*" = ["EXE001"]  # 脚本固定通过 `python scripts/xxx.py` 调用，不依赖可执行位

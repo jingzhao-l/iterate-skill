@@ -45,9 +45,7 @@ def _should_show_banner(args: argparse.Namespace) -> bool:
     """
     if getattr(args, "no_banner", False):
         return False
-    if os.environ.get("ITERATE_NO_BANNER", "").strip():
-        return False
-    return True
+    return not os.environ.get("ITERATE_NO_BANNER", "").strip()
 
 
 def main(argv: list[str] | None = None) -> int:

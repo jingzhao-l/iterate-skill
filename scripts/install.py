@@ -30,8 +30,8 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import yaml
 
@@ -1126,7 +1126,7 @@ def load_config(path: Path) -> dict[str, object]:
     if data is None:
         return {}
     if not isinstance(data, dict):
-        raise ValueError(f"Configuration must be a YAML mapping: {path}")
+        raise TypeError(f"Configuration must be a YAML mapping: {path}")
     return data
 
 
