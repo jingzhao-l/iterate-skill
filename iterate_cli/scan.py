@@ -6,9 +6,9 @@ to populate onboarding suggestions and the ITERATE.md knowledge base.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 # Mapping from manifest file name to (language, package_manager).
 MANIFEST_TO_LANG: dict[str, tuple[str, str]] = {
@@ -79,21 +79,6 @@ class ScanResult:
     has_claude_md: bool = False
     has_frontend: bool = False
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dict for reporting."""
-        return {
-            "manifests": list(self.manifests),
-            "top_level_dirs": list(self.top_level_dirs),
-            "detected_languages": list(self.detected_languages),
-            "detected_package_managers": list(self.detected_package_managers),
-            "has_specs": self.has_specs,
-            "has_tests": self.has_tests,
-            "has_ci": self.has_ci,
-            "has_readme": self.has_readme,
-            "has_claude_md": self.has_claude_md,
-            "has_frontend": self.has_frontend,
-        }
-
 
 def scan_project(project_root: Path) -> ScanResult:
     """Scan a project directory and return structured findings.
@@ -138,8 +123,9 @@ def _scan_top_level_dirs(project_root: Path, result: ScanResult) -> None:
         for entry in sorted(project_root.iterdir(), key=lambda e: e.name):
             if entry.is_dir() and entry.name not in SKIP_DIRS and not entry.name.startswith("."):
                 result.top_level_dirs.append(entry.name)
-    except PermissionError:
-        pass
+    except PermissionError as exc:
+        # 目录列表失败（如权限不足）不阻断扫描，但记录到 stderr 以便排查。
+        print(f"scan: warning: cannot list directories in {project_root}: {exc}", file=sys.stderr)
 
 
 def _scan_features(project_root: Path, result: ScanResult) -> None:

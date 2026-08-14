@@ -156,22 +156,6 @@ class TUI:
             self.console.print(f"  [iterate.subtitle]{subtitle}[/]")
         self.console.print()
 
-    def outro(self, message: str, success: bool = True) -> None:
-        """输出结束横幅 — 仿 @clack/prompts outro().
-
-        Args:
-            message: 结束消息
-            success: 是否为成功结束（绿色 ✓ vs 红色 ✗）
-        """
-        self.console.print()
-        symbol = SYM_SUCCESS if success else SYM_ERROR
-        color = "iterate.success" if success else "iterate.error"
-        self.console.print(
-            f"[iterate.primary]{SYM_INTRO}[/] "
-            f"[{color}]{symbol}[/] {message}"
-        )
-        self.console.print()
-
     def section(self, title: str) -> None:
         """输出区块标题.
 
@@ -306,11 +290,6 @@ class TUI:
             self.console.print(
                 f"{prefix}[iterate.dim]{i}.[/] {marker_str}{item}"
             )
-
-    def empty_list_placeholder(self, indent: int = 4) -> None:
-        """输出空列表占位符."""
-        prefix = " " * indent
-        self.console.print(f"{prefix}[iterate.dim](空 / empty)[/]")
 
     # ------------------------------------------------------------------
     # 状态与进度
