@@ -305,6 +305,36 @@ round = 1
 while round <= maxRounds:
 ```
 
+### 纯审查模式 / review-only (dry-run) loop
+
+当调用参数含 `review-only` 或 `dry-run` 时，**跳过 Step 1 中的 git 隔离、跳过所有修复与验证**，只执行只读审查循环并产出最终审查报告。此模式**绝不修改任何文件、绝不创建分支/worktree、绝不调用 fixer**：
+
+```
+phase plan        → 获取审查计划（维度、reviewer prompt、findings schema、round cap）
+knownAng = []     → 跨轮累计已发现 findings（供 reviewer 只找新问题）
+rounds   = []     → 原始每轮 findings
+for r in 1..cap:
+    # 每个维度一个并行 reviewer，只报 NEW 问题
+    raw = parallel(每个维度 → review 该维度, 已知 = knownAng)
+    rounds.push({ round: r, findings: raw })
+    knownAng.push(...raw)
+    # 确定性收敛判定：aggregate 后本轮新 findings 数
+    conv = aggregate(rounds)   # 汇总去重/排序/每轮新发现数
+    if conv.findingsByRound[r-1] == 0:  break   # 收敛
+phase report     → finalReport = aggregate(rounds)   # 最终审查报告
+phase meta-review → metaReview = meta-review(finalReport)   # 审查报告本身：校验内部一致性
+return { rounds, converged, findingsByRound, totalFindings, bySeverity, byDimension,
+         report: finalReport,
+         metaReview: { verdict, issues, checksRun },
+         finalReport }
+```
+
+纯审查模式要点 / review-only key rules:
+- **绝不修改文件**：reviewer 只读项目，所有 aggregate / meta-review 均为纯计算。
+- **收敛驱动**：每轮把已知 findings 喂给 reviewer，迫使其只找新问题；某轮 0 新 findings 即收敛停止；否则到 cap。
+- **产出三级**：① 审查报告（findings + 收敛统计 + 修复优先级建议）；② **meta-review**（审查报告内部一致性：`COUNT_MATCH`/`SEVERITY_SUM`/`DIMENSION_SUM`/`SORT_ORDER`/`CONVERGENCE`/`ROUND_SHAPE`）；③ **最终审查报告**（带 `approved` / `needs_revision` 判定）。
+- 本模式不写入 `.iterate_decisions.md`（除一条 `report` 记录外），不产生任何 git 提交。
+
 ### 进度反馈 / Progress Feedback
 
 迭代为多轮长任务，**必须**在与用户的对话中持续输出进度，避免长时间静默造成"卡住"观感。主模型遵循以下约定（写在与用户的对话里，而非仅记录到 `.iterate_decisions.md`）：

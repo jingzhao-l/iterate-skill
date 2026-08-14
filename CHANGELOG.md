@@ -14,10 +14,12 @@
   - `harness/iterate-plugin/src/tools/review.ts`：`iterate_review` 新增 `meta-review` 操作。
   - `harness/iterate-plugin/src/skill-prompt.ts`：dry-run 规范工作流加入 meta-review 阶段。
   - `harness/iterate-plugin/test/meta-review.test.ts`：新增 11 个元审查测试用例。
+- **纯审查模式暴露到 skill 调用界面**：`/iterate <goal> review-only`（或 `dry-run`）即可触发纯审查模式。`SKILL.md` 新增 `$mode` 参数、review-only 适用场景与只读审查循环说明；`README.md` Daily Usage 补充纯审查调用示例与说明。
 
 ### 安全 / Security
 
 - **`npm-installer` 解压路径遍历防护**：`extractTarball` 在解压前先用 `tar -tzf` 列出归档成员，校验每个成员在去掉顶层目录后解析出的路径仍落在目标目录内（防 `../` 逃逸），否则拒绝解压并抛出 `InstallerError`。保持零运行时依赖。
+- **升级 `js-yaml` 至 `4.3.1`**：修复 `js-yaml@4.1.0` 的 4 个安全公告风险（含 2 个 high：prototype pollution merge、quadratic CPU consumption DoS）。`npm audit` 从 1 high 降至 **0 vulnerabilities**。js-yaml 仍为 MIT 许可证。
 
 ### 维护 / Maintenance
 
