@@ -63,8 +63,14 @@
 | 生态复用 | 强（dsh-plugin topic） | 独立 |
 | 语言栈 | TS + Python 桥 | Python 同栈 |
 
-## 6. 仓库形态（决策：方案 B 同仓库双模块）
-- `skill/` 与 `harness/` 同仓库、顶层分开维护，共享版本号。
+## 6. 仓库形态（决策：主仓库统一维护 + 独立插件发布仓库）
+> v1.7 迭代：独立插件发布仓库（subtree 拆分）作为 npm 发布源，插件独立版本线。
+
+- **主仓库（jingzhao-l/iterate-skill）**：`skill/` 与 `harness/` 同仓库、顶层分开维护，是**唯一维护点**——插件代码的提交、评审、README 变更等全在主仓库完成。
+- **独立插件发布仓库（jingzhao-l/iterate-plugin）**：由主仓库 `git subtree split` 拆分 `harness/iterate-plugin/` 推送而成，保留完整提交历史；作为 npm 发布源（`npm publish` 在此执行）、dsh 生态发现入口（打 `dsh-plugin` topic）、并引流至主仓库（README 顶部横幅 + npm `repository` 元数据指向主仓库）。
+  - 发布工作区：`/Volumes/Eng-Dev/iterate-skill/.release/iterate-plugin/`（gitignore 目录），`git subtree push` 同步后在此执行发版。
+- 同步流程：`git subtree split --prefix=harness/iterate-plugin -b subtree-plugin && git push plugin-origin subtree-plugin:main` → 在 `.release/` 工作区 `git pull` 后执行 `npm publish`。
+- **插件独立版本线**：`harness/iterate-plugin/package.json` 自 2.3.7 起独立递增，不再与 skill 版本号强绑定（仅第 9 节路由图的「全项目版本统一」约束对 skill 本体生效）。
 - 现有 skill 三平台发布流程（ClawHub / ModelScope / SkillHub）走特定子路径，不受新增 `harness/` 影响。
 - 日后需要再平滑升级为 Monorepo（workspace）。
 - 备选：方案 A 独立仓库（跨仓共享语义层协调成本高）、方案 C Monorepo（单人维护过度设计）。
@@ -266,3 +272,4 @@ harness/
 - v1.4（2026-08-14）：实现阶段补齐 meta-review 报告审计——新增 `src/meta-review.ts`（6 项一致性检查：COUNT_MATCH / SEVERITY_SUM / DIMENSION_SUM / SORT_ORDER / CONVERGENCE / ROUND_SHAPE），`iterate_review` 新增 `meta-review` 操作，dry-run 收敛报告产出前先审计自身一致性并给出 approved / needs_revision 判定；修复 ROUND_EMPTY 误报 bug（收敛轮=最后一轮空属正常成功信号，不再标记为缺陷）；插件经真实 dsh headless 运行时验证：5 个 iterate 工具全部注册、系统提示成功注入、aggregate + meta-review 端到端输出符合预期；新增 README 使用说明；33 个单元测试全绿。
 - v1.5（2026-08-14）：新增独立 harness 设计章节（§11）——确认 OpenHarness 为 Python 栈并决策独立 harness 采用 Python 同栈；以用户视角完成「skill / dsh 插件 / 独立 harness」三层能力差距分析（内核级 agent loop、token 成本透明、审批强制执行、session 恢复、持久记忆、厂商中立、技能生态复用、独立分发等）；给出 fork 定制点、模块架构、CLI 命令集（init / review --dry-run / iterate / resume / log）、v0 里程碑（M1 语义层移植 → M5 独立分发）与路线 B 新增风险。
 - v1.6（2026-08-14）：仓库形态决策迭代（§6）——新增独立插件发布仓库 jingzhao-l/iterate-plugin（git subtree 拆分 harness/iterate-plugin，保留完整历史，作为 dsh 生态镜像并引流回主仓库）；主仓库保持唯一维护点，同步走 subtree push（无 CI 同步、无 force-push）；插件 package.json 补 repository/homepage/bugs 元数据指向主仓库；插件开始独立版本线（自 2.3.7 起），第 9 节版本统一约束对插件生效范围同步更新。
+- v1.7（2026-08-14）：npm 发布源切换至插件仓库（§6）——建立本地发布工作区 `.release/iterate-plugin/`（gitignore），插件仓库从"只读镜像"升级为 npm 正式发布位：版本 bump、git tag、npm publish 均在插件仓库进行，主仓库仍是唯一开发/评审维护点；版本线确认沿用当前数值（不重置 1.0.0，npm 不允许发布低于已发布最高版本），自 2.3.7 起独立递增；主仓库 `dsh-plugin` topic 移除，仅插件仓库保留。

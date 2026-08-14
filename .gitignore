@@ -21,6 +21,9 @@ logs/
 .iterate-worktree/
 /iterate-*/
 
+# Local publishing workspace (clone of jingzhao-l/iterate-plugin, npm publish source)
+.release/
+
 # Node/Python artifacts (if examples are executed locally)
 node_modules/
 __pycache__/
