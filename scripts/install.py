@@ -972,7 +972,7 @@ def update_command(
             _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
             _hint("Run 'install --ai <assistant>' first, or use 'update --ai <assistant>'.")
             if release_source:
-                shutil.rmtree(release_source)
+                shutil.rmtree(release_source.parent, ignore_errors=True)
             return 1
         _tui_print(f"Updating detected installations: {', '.join(assistants)}", style="iterate.primary")
     elif ai == "all":
@@ -992,7 +992,9 @@ def update_command(
             )
     finally:
         if release_source:
-            shutil.rmtree(release_source, ignore_errors=True)
+            # release_source is always a subdir of a mkdtemp parent; remove the
+            # whole temp dir (subdir + parent) so no empty mkdtemp dir leaks.
+            shutil.rmtree(release_source.parent, ignore_errors=True)
 
     _success("Update complete.")
     return 0

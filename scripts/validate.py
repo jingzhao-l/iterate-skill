@@ -39,7 +39,11 @@ def validate_decisions(path: Path) -> list[str]:
         errors.append(f"File not found: {path}")
         return errors
 
-    content = path.read_text(encoding="utf-8")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        errors.append(f"Cannot read file: {exc}")
+        return errors
 
     for marker in CONFLICT_MARKERS:
         if marker in content:
@@ -57,10 +61,18 @@ def validate_decisions(path: Path) -> list[str]:
 
 
 def load_schema(schema_path: Path) -> dict[str, Any]:
-    """加载 JSON Schema 文件。"""
+    """加载 JSON Schema 文件。
+
+    Raises:
+        FileNotFoundError: 若 schema 文件不存在。
+        ValueError: 若 schema 文件内容不是合法 JSON。
+    """
     if not schema_path.exists():
         raise FileNotFoundError(f"Schema file not found: {schema_path}")
-    return json.loads(schema_path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(schema_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in schema file {schema_path}: {exc}") from exc
 
 
 def validate_config_against_schema(
