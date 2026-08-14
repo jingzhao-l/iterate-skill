@@ -128,9 +128,140 @@ harness/
 - 语义层最终落 Python 还是 TS：影响路线 B 是否与插件共享代码。
 - SKILL.md 内容是否需为 harness 形态改写（上下文压缩、记忆注入方式）。
 
-## 11. 版本记录
+## 11. 独立 harness 设计（路线 B 具体化）
+
+> 基于路线 A（dsh 插件）v0 验证通过的前提，独立 harness 的形态与方案现已明确：
+> fork OpenHarness（Python 栈），深度定制为「专用于 iterate 的 agent harness」。
+> 本章为 v1.5 新增，完整保留前文（v1.0–v1.4）内容。
+
+### 11.1 技术栈决策（OpenHarness = Python 栈）
+
+经调研确认，OpenHarness（HKUDS，MIT）为 **Python 栈**：
+
+| 项目 | 事实 |
+|---|---|
+| 语言 | Python 3.10+（uv 包管理器） |
+| 规模 | 11,733 行 / 163 文件（44× 轻于 Claude Code） |
+| 工具 | 43 个（文件 / Shell / 搜索 / Web / MCP） |
+| 技能 | 完全兼容 `anthropics/skills` 与 `claude-code/plugins` |
+| 测试 | 114 单测 + 6 端到端 |
+| 内置能力 | streaming tool-call loop、API 重试退避、并行工具执行、token 计数与成本追踪、CLAUDE.md 注入、上下文压缩、MEMORY.md、会话恢复、多级权限、PreToolUse/PostToolUse hooks、交互审批、subagent 生成与后台任务生命周期 |
+| UI | React TUI + Ink TUI 双形态 |
+| 命令 | `oh`（交互）/ `oh -p`（一次性）/ `--output-format json` / `--dry-run` 静态预览 |
+| 厂商 | Anthropic 兼容 / OpenAI 兼容 / Claude 订阅 / Codex 订阅 / Moonshot / GLM / MiniMax / Ollama 等 workflow |
+
+**结论**：独立 harness 采用 **Python 同栈**，与既有 `iterate_cli`（Python）工具链同栈，语义层移植成本最低；这也回答了 v1.0 §10 开放问题「语义层最终落 Python 还是 TS」——**独立 harness 走 Python，与插件（TS）共享的是语义约定而非代码**。
+
+### 11.2 能力差距分析（用户视角：skill / 插件实现不了 vs 独立 harness 可实现）
+
+以用户实际使用体验为视角，逐项对比「原 skill → dsh 插件 → 独立 harness」三层能实现什么：
+
+| 能力效果 | 原 skill（提示词+Python CLI） | dsh 插件（路线 A） | 独立 harness（路线 B） |
+|---|---|---|---|
+| **不依赖宿主运行** | ❌ 必须跑在宿主 IDE agent 里 | ❌ 必须跑在 dsh 运行时 + 聊天会话里 | ✅ `oh -p "..."` 一次性 / headless / CI / 批量 |
+| **agent loop 是内核级** | ❌ 靠宿主模型自觉循环 | ⚠️ 靠 dsh `workflow` 脚本模拟 | ✅ 内核原生 streaming tool-call cycle + retry + 并行执行 |
+| **token / 成本透明** | ❌ 完全不可见 | ❌ 插件无成本层（受 dsh 约束） | ✅ 内核 token counting & cost tracking 开箱即得（呼应此前 P0 建议） |
+| **审批强制执行** | ❌ 只能提示词引导 | ⚠️ 依赖 dsh approval | ✅ 内核 PreToolUse/PostToolUse hooks + 多级权限 + 交互审批弹窗，强制生效 |
+| **dry-run 静态预览** | ❌ 无 | ⚠️ 有审查型 dry-run（不写文件） | ✅ 审查型 dry-run **且** 内核 `--dry-run` 静态预览（settings/auth/skills/commands/tools） |
+| **跨会话恢复** | ❌ 每次重新 onboarding | ❌ 无状态 | ✅ session resume & history，`--session` 续跑（呼应此前 P1 resume 建议） |
+| **持久记忆** | ❌ ITERATE.md 仅靠自觉读 | ⚠️ context 工具读文件 | ✅ MEMORY.md 持久化 + 上下文自动压缩，跨天长会话 |
+| **真·并行评审** | ⚠️ 仅建议 | ✅ 但受 dsh 编排约束 | ✅ 内核并行工具 + subagent 生命周期管理，可后台任务 |
+| **多智能体协调** | ❌ | ⚠️ workflow 模拟 | ✅ team registry / 任务管理 / 后台任务生命周期（native swarm） |
+| **厂商中立** | ❌ 绑定宿主模型 | ⚠️ 受 dsh 接入 | ✅ 多 provider workflow，环境变量切换，本地 Ollama 亦可 |
+| **reasoning 模型** | ❌ | ⚠️ 受 dsh 支持 | ✅ Kimi 等 reasoning_content 原生 |
+| **技能生态复用** | ❌ | ⚠️ 需加载 SKILL.md | ✅ iterate SKILL.md 可直接挂载为 skill（anthropics 兼容） |
+| **独立分发** | ✅ skill 文件 | ⚠️ 依赖 dsh 插件体系 | ✅ pip / install.sh 独立安装，可作独立产品 |
+
+**独立 harness 独有、skill 与插件都无法实现的核心效果（用户视角）**：
+
+1. **「离开 IDE 也能自治迭代」**：在 CI 流水线 / 命令行 / 批量任务里跑 iterate 闭环，无人值守到收敛自停，产出可审计报告。
+2. **「每一次动作都强制受控」**：写文件 / 跑命令不再是模型自觉，而是被 harness 内核的权限 hooks 强制拦截并弹窗确认——从「靠自觉」到「靠强制」。
+3. **「看得见的成本」**：每轮评审 / 修复消耗多少 token、多少钱实时可查，`/cost` 一目了然，让「反复多轮审查」的成本可控、可预算。
+4. **「中断可恢复」**：长迭代中断后 `--session` 从上次断点续跑，不再推倒重来。
+5. **「一份 SKILL.md 通吃所有宿主」**：skill 生态复用意味着 iterate 的提示词可作为标准 skill 被任意兼容 harness 加载。
+
+**诚实边界（继承 v1.0 §8）**：harness 不改变模型智力；skill 的零安装、宿主天然支持优势被 harness 丢掉；独立运行时需自维护。
+
+### 11.3 fork 定制点（OpenHarness → iterate-harness）
+
+在 OpenHarness 之上定制以下内容，其余内核能力（loop / 权限 / 记忆 / 多智能体 / TUI / 厂商 workflow）直接复用：
+
+| 定制面 | 做什么 |
+|---|---|
+| 语义层移植 | 将插件 TS 语义层（review / meta-review / config-loader 逻辑）移植为 Python 模块，或直接复用 `iterate_cli` 现有 Python 逻辑（validation.commands 精确匹配、known_intentional 过滤、去重 / 排序 / 收敛统计、6 项 meta-review 检查） |
+| 内置 iterate 命令 | `iterate-harness review --dry-run` / `iterate-harness iterate` / `iterate-harness resume` / `iterate-harness init` / `iterate-harness log`（或作为 `oh` 的子命令） |
+| iterate 配置 | 加载 `iterate.config.yaml`（Master+Overrides 合并逻辑移植），权限规则映射到内核 permission 配置 |
+| 决策日志 | append-only `decision-log.jsonl` 作为内核会话日志之外的业务日志，随会话可回放 |
+| 技能挂载 | 将项目 SKILL.md 以 anthropics 兼容 skill 形式内置，harness 启动自动注入 |
+| 项目记忆 | `ITERATE.md` 投影为 CLAUDE.md 等价物（OpenHarness 已原生支持 CLAUDE.md 注入），语义与插件 context 工具一致 |
+| TUI 体验 | 复用 OpenHarness TUI；按用户偏好打磨键盘导航（↑↓ 移动、空格选择、Enter 确认）的 approve / dimension 选择界面 |
+
+### 11.4 架构与模块划分
+
+```
+harness/
+└── iterate-harness/             # fork 自 OpenHarness 的独立运行时（Python）
+    ├── pyproject.toml           # 精确版本依赖，MIT
+    ├── src/
+    │   ├── main.py              # oh / iterate-harness CLI 入口
+    │   ├── kernel/              # OpenHarness 内核（复用，尽量不改）
+    │   │   ├── agent_loop.py    # streaming tool-call cycle / retry / 并行
+    │   │   ├── permission.py    # 多级权限 + PreToolUse/PostToolUse hooks
+    │   │   ├── memory.py        # CLAUDE.md / MEMORY.md / 上下文压缩 / 会话恢复
+    │   │   ├── providers.py     # 厂商中立 workflow（Anthropic/OpenAI/本地…）
+    │   │   └── tools/           # 43 内置工具（文件/Shell/搜索/Web/MCP）
+    │   ├── iterate/             # iterate 语义层（深度定制核心）
+    │   │   ├── config.py        # iterate.config.yaml 加载 + Master/Overrides 合并
+    │   │   ├── review.py        # 确定性聚合：去重/过滤/排序/收敛（移植 TS 语义）
+    │   │   ├── meta_review.py   # 6 项一致性审计（移植 TS 语义）
+    │   │   ├── decision_log.py  # append-only 决策日志
+    │   │   ├── validate.py      # validation.commands 精确匹配 + 执行
+    │   │   └── prompts.py       # 评审/fix 子代理提示词模板（含 findings schema）
+    │   ├── commands/            # iterate-harness 内置命令
+    │   │   ├── review.py        # dry-run 纯审查（多轮收敛 + meta-review）
+    │   │   ├── iterate.py       # normal 自治闭环（评审→修复→验证→回环→自停）
+    │   │   ├── init.py          # 配置初始化向导（复用 iterate_cli onboarding 思路）
+    │   │   ├── resume.py        # 会话恢复 / 断点续跑
+    │   │   └── log.py           # 决策日志查看 / 回放
+    │   └── tui/                 # TUI 组件（复用 OpenHarness UI 框架）
+    │       ├── approve.py       # 审批弹窗（↑↓ 导航、空格、Enter）
+    │       └── dimensions.py    # 维度选择 / 评审进度面板
+    ├── skills/iterate.md        # SKILL.md 以 anthropics 兼容 skill 内置
+    ├── tests/                   # 语义层单测（移植自插件 test，≥53 项） + 内核 E2E
+    └── README.md
+```
+
+### 11.5 CLI 命令集（v0）
+
+| 命令 | 说明 |
+|---|---|
+| `iterate-harness init` | 交互式初始化 `iterate.config.yaml`（goal / dimensions / validation.commands / 个性化） |
+| `iterate-harness review --dry-run` | 纯审查：多轮收敛 + meta-review，只读不写文件，产出审计报告 |
+| `iterate-harness iterate` | 自治闭环：评审 → 原子修复 → 验证 → 回环 → 收敛自停 |
+| `iterate-harness resume --session <id>` | 从历史会话断点续跑 |
+| `iterate-harness log` | 查看 / 回放决策日志 |
+| `iterate-harness --dry-run` | 内核静态预览（settings / auth / skills / commands / tools），不动模型不跑工具 |
+
+### 11.6 v0 范围与里程碑
+
+- **M1 语义层移植**：`config.py` / `review.py` / `meta_review.py` / `validate.py` / `decision_log.py` 落地，移植 ≥53 单测全绿。
+- **M2 命令打通**：`review --dry-run` 与 `iterate` 两条主链路在 OpenHarness 内核跑通，权限 hooks 拦截修复写操作。
+- **M3 CLI 完善**：`init` / `resume` / `log`，厂商中立 provider 验证（DeepSeek + 至少一家兼容端点）。
+- **M4 TUI 打磨**：审批弹窗 + 维度选择 + 评审进度面板，键盘导航符合偏好。
+- **M5 独立分发**：`pip install` / install.sh，版本号全项目统一（遵循既有硬约束），发布到 GitHub。
+
+### 11.7 风险与开放问题（路线 B 新增）
+
+- OpenHarness 内核升级与 fork 漂移：锁定精确版本，必要时以 patch 形式跟进。
+- 语义层 TS/Python 双实现漂移：以单测对齐 + 同一份用例（tests 移植）约束行为一致。
+- `iterate_cli` 复用边界：validate / onboarding 直接调用现有 Python 代码，避免重复实现。
+- TUI 与 skill/插件 UX 的一致性：独立 harness 可自成一派，不与 dsh 对齐。
+- 许可证：OpenHarness MIT（宽松），可入生产；继续禁止 GPL/AGPL 依赖。
+
+## 12. 版本记录
 - v1.0（2026-08-14）：首版设计草案。决策点：仓库形态=方案 B 同仓库双模块；落地优先级=先 dsh 最小验证插件。
 - v1.1（2026-08-14）：新增 dry-run 纯审查模式（只评审不改文件、多轮收敛出报告）；v0 范围调整为「自治闭环 + 并行评审 + dry-run」；能力边界表补充 dry-run 与自主多轮收敛差异。
 - v1.2（2026-08-14）：实现阶段落地 dry-run——新增确定性纯函数引擎 `src/review.ts` 与 `iterate_review` 工具（plan / aggregate 两操作），v0 工具数由 4 更新为 5（config / validate / decision-log / context / review），补充 canonical dry-run 收敛循环模板说明。
 - v1.3（2026-08-14）：实现阶段落地自治闭环——`skill-prompt.ts` 补充 normal 模式 canonical 模板（配置→评审计划→并行评审→确定性聚合→原子修复→验证→回环→达标自停）；评审报告类型由 `DryRunReport` 泛化为 `ReviewReport`（mode 支持 dry-run / normal，两模式共用同一确定性聚合引擎），报告新增全局去重/过滤/排序后的 `findings` 字段，供 fixer 直接消费；20 个单元测试全绿。
 - v1.4（2026-08-14）：实现阶段补齐 meta-review 报告审计——新增 `src/meta-review.ts`（6 项一致性检查：COUNT_MATCH / SEVERITY_SUM / DIMENSION_SUM / SORT_ORDER / CONVERGENCE / ROUND_SHAPE），`iterate_review` 新增 `meta-review` 操作，dry-run 收敛报告产出前先审计自身一致性并给出 approved / needs_revision 判定；修复 ROUND_EMPTY 误报 bug（收敛轮=最后一轮空属正常成功信号，不再标记为缺陷）；插件经真实 dsh headless 运行时验证：5 个 iterate 工具全部注册、系统提示成功注入、aggregate + meta-review 端到端输出符合预期；新增 README 使用说明；33 个单元测试全绿。
+- v1.5（2026-08-14）：新增独立 harness 设计章节（§11）——确认 OpenHarness 为 Python 栈并决策独立 harness 采用 Python 同栈；以用户视角完成「skill / dsh 插件 / 独立 harness」三层能力差距分析（内核级 agent loop、token 成本透明、审批强制执行、session 恢复、持久记忆、厂商中立、技能生态复用、独立分发等）；给出 fork 定制点、模块架构、CLI 命令集（init / review --dry-run / iterate / resume / log）、v0 里程碑（M1 语义层移植 → M5 独立分发）与路线 B 新增风险。
