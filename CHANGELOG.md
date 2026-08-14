@@ -5,6 +5,26 @@
 
 ---
 
+## [2.3.4] — 2026-08-14
+
+### 新功能 / Features
+
+- **`iterate review` 纯反复审查 + 报告元审查（meta-review）**：dry-run 纯审查模式新增收尾步骤——反复审查直至某一轮出现 0 个新 findings（收敛），生成审查报告后，再对报告本身进行元审查（校验报告内部一致性：总数匹配、严重级别汇总、维度汇总、排序、收敛数学），最终给出带 `approved`/`needs_revision` 判定的最终审查报告。全部判定逻辑保持确定性、可测试、不触碰文件。
+  - `harness/iterate-plugin/src/meta-review.ts`：新增元审查引擎（`metaReviewReport` 执行 6 项一致性检查，`buildFinalReviewReport` 组装最终报告）。
+  - `harness/iterate-plugin/src/tools/review.ts`：`iterate_review` 新增 `meta-review` 操作。
+  - `harness/iterate-plugin/src/skill-prompt.ts`：dry-run 规范工作流加入 meta-review 阶段。
+  - `harness/iterate-plugin/test/meta-review.test.ts`：新增 11 个元审查测试用例。
+
+### 安全 / Security
+
+- **`npm-installer` 解压路径遍历防护**：`extractTarball` 在解压前先用 `tar -tzf` 列出归档成员，校验每个成员在去掉顶层目录后解析出的路径仍落在目标目录内（防 `../` 逃逸），否则拒绝解压并抛出 `InstallerError`。保持零运行时依赖。
+
+### 维护 / Maintenance
+
+- 版本号统一升级至 `2.3.4`（`pyproject.toml`、`iterate_cli/__init__.py`、`npm-installer/package.json`、`harness/iterate-plugin/package.json`、`package-lock.json`、`SKILL.md` frontmatter）。
+
+---
+
 ## [2.3.3] — 2026-08-14
 
 ### 修复 / Fixes
