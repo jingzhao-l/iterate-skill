@@ -72,6 +72,7 @@
 - 同步流程：`git subtree split --prefix=harness/iterate-plugin -b subtree-plugin && git push plugin-origin subtree-plugin:main` → 在 `.release/` 工作区 `git pull` 后执行 `npm publish`。
 - **插件独立版本线**：`harness/iterate-plugin/package.json` 自 2.3.7 起独立递增，不再与 skill 版本号强绑定（仅第 9 节路由图的「全项目版本统一」约束对 skill 本体生效）。
 - 现有 skill 三平台发布流程（ClawHub / ModelScope / SkillHub）走特定子路径，不受新增 `harness/` 影响。
+- **日后的 harness 发布仓库（决策 2026-08-14）**：harness 第一个大版本（v0/1.0）完成后，同样采用「主仓库统一维护 + 独立发布仓库」模式——另开独立仓库作为 harness 的发布源（npm/安装脚本等在此执行），主仓库 `harness/iterate-harness/` 仍是唯一开发与评审点，通过 subtree 拆分持续同步，与 iterate-plugin 仓库模式完全一致。
 - 日后需要再平滑升级为 Monorepo（workspace）。
 - 备选：方案 A 独立仓库（跨仓共享语义层协调成本高）、方案 C Monorepo（单人维护过度设计）。
 
@@ -354,3 +355,4 @@ harness/
 - v1.7（2026-08-14）：npm 发布源切换至插件仓库（§6）——建立本地发布工作区 `.release/iterate-plugin/`（gitignore），插件仓库从"只读镜像"升级为 npm 正式发布位：版本 bump、git tag、npm publish 均在插件仓库进行，主仓库仍是唯一开发/评审维护点；版本线确认沿用当前数值（不重置 1.0.0，npm 不允许发布低于已发布最高版本），自 2.3.7 起独立递增；主仓库 `dsh-plugin` topic 移除，仅插件仓库保留。
 - v1.8（2026-08-14）：新增 §11.2.1 用户体验场景深析——区别于 §11.2 内核能力视角，按「看（实时收敛仪表盘 / 逐 hunk diff 审批 / findings 分诊 / init 检测式向导）/ 摸（Esc 暂停干预 / 断点续跑画面）/ 跑（PR 评论 + 质量门禁 / git hook / 批量定时）/ 沉淀（finding 指纹趋势 / HTML 报告 / 评审回放）」四类记录 skill 与插件原理上做不出的独占体验；给出 v0 优先级（分诊界面 > diff 审批+干预 > PR/CI 模式）。
 - v1.9（2026-08-14）：新增 §11.2.2 代码实况深析——三路并行源码审查（iterate_cli 六模块 / wizard+tui+模板 / SKILL.md+配置层）证实：① iterate_cli 100% 确定性本地计算零 LLM，onboarding 全链路可直接复用为 harness 数据层（7 类现成数据资产清单）；② prompt 约定→机制强制全景对照：插件已强制 10 项确定性计算类约定，剩余 20 项分「副作用约束类（hooks/权限可强制）」与「状态继承类（session/持久化可强制）」；③ 维度 yaml 现仅 focus 文本，harness 可解锁 per-dimension model/并发/token 预算、维度级阈值门禁、维度专属验证命令等 7 项；④ 用户旅程断点源码级定位（TUI 实为 input() 问答、向导不问 goal/max_rounds/atomic/language、验证命令无 dry-run 预检等）；⑤ 顺带发现 4 个现有代码问题（tui.question 接口 bug、TS 示例 auto_merge 文档矛盾、决策日志模板未接线、双 __name__ 守卫）记入待修复清单。
+- v1.10（2026-08-14）：§6 增补 harness 发布仓库决策——harness 首个大版本完成后另开独立发布仓库（同 iterate-plugin subtree 模式），主仓库统一维护。同日随 v2.3.7 发布修复 §11.2.2 所列 4 个代码问题（tui.question 契约 + prompt_prefix 死代码删除、TS 示例 auto_merge 矛盾、决策日志模板角色注释、cli.py 冗余守卫移除，新增 tests/test_tui.py）。
