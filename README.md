@@ -197,9 +197,13 @@ skills.sh 等市场页面仍会保留，用于展示和发现，但不再作为�
 /iterate "你的目标"
 /iterate "你的目标" 10
 /iterate "你的目标" no-limit
+/iterate "审查代码质量" review-only    # 纯审查模式：反复审查到零 findings，只读不改代码
+/iterate "full health check" --dry-run # 纯审查别名：出审查报告 + meta-review 最终审查报告
 ```
 
 首次调用会自动触发 onboarding（如果项目还没有 `ITERATE.md`）。
+
+> **纯审查模式 / review-only（dry-run）**：调用参数含 `review-only` 或 `dry-run` 时，本 skill 只做只读健康检查，**绝不修改任何文件**。它会反复并行审查直到某一轮 0 个新 findings（收敛），生成审查报告；随后**再审查这份报告本身**（meta-review，校验报告内部一致性），给出带 `approved` / `needs_revision` 判定的最终审查报告。适用于发布前体检、代码质量审计、不想让 AI 动代码的场景。
 
 ### 在终端中
 
