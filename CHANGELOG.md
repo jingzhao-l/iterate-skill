@@ -5,6 +5,13 @@
 
 ---
 
+## [2.3.8] — 2026-08-15
+
+### 修复 / Bug Fixes (distribution)
+
+- **ClawHub 名称纠正**：修正发布于 ClawHub 的 Skill 显示名为 `Iterate`（此前误发布为 `Clawhub Stage 2.3.7`），并重新分发至新版 2.3.8。
+- **SKILL.md 顶部新增人类读者导引**：在 frontmatter 之后新增一条面向人类浏览者/开发者的说明，邀请其前往 GitHub 仓库 `jingzhao-l/iterate-skill` 阅读 README，以详细了解本 Skill 及其附属生态（iterate-harness、iterate-plugin、CLI 等）。该行对 AI 助手无副作用。
+
 ## [2.3.7] — 2026-08-14
 
 ### 修复 / Bug Fixes (skill)
