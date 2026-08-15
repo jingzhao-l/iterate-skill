@@ -393,7 +393,13 @@ def _collect_validation_commands(
 
 def _manual_collect_commands(input_func: InputFunc) -> dict[str, list[str]]:
     """Manually collect validation commands from the user."""
-    from iterate_cli.personalize import FORBIDDEN_COMMAND_CHARS, MODULE_NAME_PATTERN
+    # Reuse the single authoritative validator (personalize.validate_extra_command)
+    # so onboard manual entry and the later personalize flow enforce identical
+    # rules: shell-metacharacter blacklist AND known-safe-prefix whitelist.
+    from iterate_cli.personalize import (
+        MODULE_NAME_PATTERN,
+        validate_extra_command,
+    )
 
     tui.info("手动输入验证命令（每行一条，空行结束该模块）/")
     tui.hint("Enter commands manually (one per line, empty line to finish a module)", indent=2)
@@ -414,17 +420,13 @@ def _manual_collect_commands(input_func: InputFunc) -> dict[str, list[str]]:
             cmd = input_func(f"  └ {module} 命令 / command (留空结束 / empty to finish): ").strip()
             if not cmd:
                 break
-            # Reject shell-chaining metacharacters up front so a manually
-            # entered command cannot smuggle "; | & ` $ > <" side effects into
-            # the executable validation config. (The allowed-prefix whitelist
-            # is intentionally NOT applied here — single commands like
-            # `python manage.py test` are legitimate; the config-time
-            # command_whitelist check still governs them.)
-            if any(ch in cmd for ch in FORBIDDEN_COMMAND_CHARS):
-                tui.warning(
-                    f"拒绝命令 / Rejected: '{cmd}' — 含 shell 链接元字符 ({''.join(FORBIDDEN_COMMAND_CHARS)}), 不允许",
-                    indent=4,
-                )
+            # Single authoritative validator: rejects shell-chaining
+            # metacharacters and non-whitelisted prefixes, so a manually
+            # entered command can never smuggle side effects into the
+            # executable validation config.
+            is_valid, reason = validate_extra_command(cmd)
+            if not is_valid:
+                tui.warning(f"拒绝命令 / Rejected: '{cmd}' — {reason}", indent=4)
                 continue
             cmds.append(cmd)
 
@@ -513,7 +515,15 @@ def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
         "changed-only — 增量审查 / Changed files only",
     ], indent=4)
     scope_choice = input_func("  └ 选择 / Select (1/2, 默认 1): ").strip()
-    review_scope = "changed-only" if scope_choice == "2" else "full"
+    if not scope_choice:
+        review_scope = "full"
+    elif scope_choice == "1":
+        review_scope = "full"
+    elif scope_choice == "2":
+        review_scope = "changed-only"
+    else:
+        tui.warning(f"无效输入 / Invalid input: {scope_choice!r}，使用默认 full。")
+        review_scope = "full"
 
     push = _ask_yes_no("每轮通过后立即 push? / Push after each round?", input_func, default=False)
 
