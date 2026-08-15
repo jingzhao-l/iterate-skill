@@ -60,6 +60,38 @@ SYM_WARNING = "⚠"
 SYM_ARROW = "→"
 SYM_SPINNER = "✻"
 
+# key_value 键名对齐宽度（显示宽度，非字符数）
+KEY_VALUE_WIDTH = 22
+
+
+def _display_width(text: str) -> int:
+    """计算字符串的近似终端显示宽度（CJK 全角字符按 2 计）.
+
+    Args:
+        text: 待计算字符串
+
+    Returns:
+        显示宽度
+    """
+    width = 0
+    for ch in text:
+        # 东亚全角字符（CJK 统一表意文字、全角符号、全角标点等）
+        if ord(ch) < 0x20:
+            continue
+        if (
+            0x1100 <= ord(ch) <= 0x115F
+            or 0x2E80 <= ord(ch) <= 0xA4CF
+            or 0xAC00 <= ord(ch) <= 0xD7A3
+            or 0xF900 <= ord(ch) <= 0xFAFF
+            or 0xFE30 <= ord(ch) <= 0xFE4F
+            or 0xFF00 <= ord(ch) <= 0xFF60
+            or 0xFFE0 <= ord(ch) <= 0xFFE6
+        ):
+            width += 2
+        else:
+            width += 1
+    return width
+
 # ITERATE 立体 ASCII 横幅 — 仿 skills.sh 顶部 Logo
 _ITERATE_BANNER_LINES = (
     "██╗████████╗███████╗██████╗  █████╗ ████████╗███████╗",
@@ -258,8 +290,9 @@ class TUI:
             value: 值
             indent: 缩进空格数
         """
-        # 对齐 key 到 20 字符宽度
-        padded_key = f"{key}:".ljust(22)
+        # 按显示宽度（CJK 双宽）对齐 key，避免中文错位
+        label = f"{key}:"
+        padded_key = label + " " * max(KEY_VALUE_WIDTH - _display_width(label), 1)
         prefix = " " * indent
         self.console.print(
             f"{prefix}[iterate.label]{padded_key}[/] [iterate.value]{value}[/]"

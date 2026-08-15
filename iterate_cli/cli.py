@@ -73,26 +73,33 @@ def main(argv: list[str] | None = None) -> int:
         tui.error(f"Error: project directory not found: {project_root}")
         return 1
 
+    # Structured (JSON) output must not be polluted by the ASCII banner.
+    show_banner = _should_show_banner(args) and not getattr(args, "json", False)
+
     if args.command == "onboard":
-        if _should_show_banner(args):
+        if show_banner:
             tui.banner()
         return _cmd_onboard(project_root)
     elif args.command == "personalize":
-        if _should_show_banner(args):
+        if show_banner:
             tui.banner()
         return _cmd_personalize(project_root)
     elif args.command == "refresh":
-        if _should_show_banner(args):
+        if show_banner:
             tui.banner()
         return _cmd_refresh(project_root)
     elif args.command == "reonboard":
-        if _should_show_banner(args):
+        if show_banner:
             tui.banner()
         return _cmd_reonboard(project_root)
     elif args.command == "status":
-        if _should_show_banner(args):
+        if show_banner:
             tui.banner()
-        return _cmd_status(project_root)
+        return _cmd_status(project_root, json_output=getattr(args, "json", False))
+    elif args.command == "doctor":
+        if show_banner:
+            tui.banner()
+        return _cmd_doctor(project_root, json_output=getattr(args, "json", False))
     else:
         parser.print_help()
         return 0
@@ -115,6 +122,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Disable the ITERATE ASCII art banner at startup.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit structured JSON for status/doctor instead of TUI output.",
     )
     parser.add_argument(
         "-p", "--project",
@@ -161,12 +174,32 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Back up existing ITERATE.md and iterate.config.yaml, then run the "
         "full onboarding wizard from scratch.",
     )
-    subparsers.add_parser(
+    status_parser = subparsers.add_parser(
         "status",
         parents=[parent],
         help="Show onboarding status and drift detection.",
         description="Check whether onboarding is complete and whether the project's "
         "tech stack has drifted since the last onboarding.",
+    )
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON report instead of TUI output.",
+    )
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        parents=[parent],
+        help="Run project health diagnostics against the skill.",
+        description="Validate the project's iterate.config.yaml, ITERATE.md and "
+        "onboarding state against the skill's canonical definitions. "
+        "Exits non-zero when errors are found.",
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON report instead of TUI output.",
     )
 
     return parser
@@ -375,14 +408,52 @@ def _count_personalization_rules(personalization: dict[str, Any]) -> int:
     return total
 
 
-def _cmd_status(project_root: Path) -> int:
+def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     """Handle the 'status' subcommand.
 
     Output is routed through the TUI layer but keeps plain-text keywords
     (``Onboarded``, ``Not onboarded``, ``Drift``, ``No drift``,
     ``Personalization: N rule(s)``) so that automated tests and grep-based
-    checks continue to work.
+    checks continue to work. When ``json_output`` is True, a structured JSON
+    blob is emitted instead (useful for scripts and CI).
     """
+    # Structured gathering shared by both render modes.
+    data: dict[str, Any] = {"project": str(project_root)}
+
+    if not is_onboarding_complete(project_root):
+        data["onboarded"] = False
+    else:
+        data["onboarded"] = True
+        config = load_onboarding_config(project_root)
+        if config:
+            onboarding = config.get("onboarding") or {}
+            data["completed_at"] = onboarding.get("completed_at", "unknown")
+            data["channel"] = onboarding.get("channel", "unknown")
+            data["skill_version"] = onboarding.get("skill_version", "unknown")
+            data["drift_check"] = onboarding.get("drift_check", True)
+            raw_fingerprints = onboarding.get("fingerprints") or []
+            data["fingerprints"] = (
+                len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
+            )
+            personalization = config.get("personalization") or {}
+            data["personalization_rules"] = (
+                _count_personalization_rules(personalization) if personalization else 0
+            )
+
+            drift = check_onboarding_drift(project_root)
+            if drift is None:
+                data["drift"] = "unknown"
+            elif drift.has_drift:
+                data["drift"] = drift.summary()
+            else:
+                data["drift"] = "none"
+
+    if json_output:
+        import json
+
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+
     tui.intro("Iterate Skill — Status")
     tui.key_value("Project", str(project_root))
     tui.empty_line()
@@ -440,4 +511,20 @@ def _cmd_status(project_root: Path) -> int:
         tui.hint("(iterate.config.yaml not found — only ITERATE.md exists)", indent=2)
 
     return 0
+
+
+def _cmd_doctor(project_root: Path, json_output: bool = False) -> int:
+    """Handle the 'doctor' subcommand — project health diagnostics.
+
+    Args:
+        project_root: Project root directory.
+        json_output: When True, emit a structured JSON report.
+
+    Returns:
+        Exit code: 0 when healthy, 1 when errors are found.
+    """
+    from iterate_cli.doctor import render_report, run_doctor
+
+    report = run_doctor(project_root)
+    return render_report(report, json_output=json_output)
 

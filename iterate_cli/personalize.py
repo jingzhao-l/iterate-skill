@@ -111,12 +111,38 @@ def _is_known_safe_command(cmd: str) -> bool:
     operator_prefixes = _operator_extra_prefixes()
     # Handle "python -m pytest" style invocations: accept if the
     # *effective* tool (after -m) is whitelisted.
-    if first_token in ("python", "python3", "py") and " -m " in stripped:
-        parts = stripped.split(" -m ", 1)
-        if len(parts) == 2:
-            inner = parts[1].strip().split(None, 1)[0]
+    if first_token in ("python", "python3", "py"):
+        rest = stripped.split(None, 1)
+        # "python -m <tool> ..." — the tool after -m governs.
+        if len(rest) > 1 and " -m " in stripped:
+            inner = stripped.split(" -m ", 1)[1].strip().split(None, 1)[0]
             return inner in KNOWN_SAFE_COMMAND_PREFIXES or inner in operator_prefixes
+        # "python <script>.py ..." — a plain script invocation is legitimate
+        # (e.g. `python manage.py test`). Reject anything that is not a
+        # simple script path so a bare `python` can't be persisted.
+        if len(rest) > 1:
+            script = rest[1].strip().split(None, 1)[0]
+            return _is_plain_script_path(script)
+        return False
     return first_token in KNOWN_SAFE_COMMAND_PREFIXES or first_token in operator_prefixes
+
+
+def _is_plain_script_path(script: str) -> bool:
+    """Return True for a safe script-path token (``path/to/x.py``).
+
+    Rejects flags (``-x``), bare names with no ``.py`` suffix, and any token
+    containing shell metacharacters or a path traversal escape.
+    """
+    if not script or script.startswith("-"):
+        return False
+    if not script.endswith(".py"):
+        return False
+    if "/" in script:
+        # Reject absolute paths and parent-dir traversal; only allow
+        # relative paths within the project.
+        if script.startswith("/") or ".." in script:
+            return False
+    return not _has_forbidden_chars(script)
 
 
 def _has_forbidden_chars(cmd: str) -> bool:
