@@ -34,11 +34,14 @@
 
 | 项目 | 是什么 | 适合谁 |
 |---|---|---|
-| **[iterate-harness](https://github.com/jingzhao-l/iterate-harness)** | 独立的 iterate 专用命令行引擎（`ih` 命令）。把 `/iterate` 的多轮审查-修复闭环落地为无头运行时：CI/PR 模式（GitHub 批注 + 幂等 PR 评论 + 严重度门禁）、托管 pre-commit 钩子、定时评审、HTML 单文件报告、token 预算与阈值门禁、批量仓库排行 | 想在终端 / CI / 钩子里脱离对话式助手跑 iterate 的人 |
+| **[iterate-harness](https://github.com/jingzhao-l/iterate-harness)**（npm: `iterate-harness`） | 独立的 iterate 专用命令行引擎（`ih` 命令）。把 `/iterate` 的多轮审查-修复闭环落地为无头运行时：CI/PR 模式（GitHub 批注 + 幂等 PR 评论 + 严重度门禁）、托管 pre-commit 钩子、定时评审、HTML 单文件报告、token 预算与阈值门禁、批量仓库排行 | 想在终端 / CI / 钩子里脱离对话式助手跑 iterate 的人 |
 | **[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)**（npm: `iterate-plugin`） | dsh（cordis）桌面客户端插件。把 iterate 的收敛仪表盘、review 进度、Esc 中途干预带进 dsh 的会话界面 | 已在使用 dsh 桌面客户端的人 |
 
 ```bash
-# iterate-harness 一键安装（oh/ohmo 已全面迁移为 ih）
+# iterate-harness 一键安装（npm 包装器，最简）
+npm install -g iterate-harness
+
+# 或脚本安装（oh/ohmo 已全面迁移为 ih）
 curl -fsSL https://raw.githubusercontent.com/jingzhao-l/iterate-harness/main/scripts/install.sh | bash
 ih iterate init && ih iterate review
 ```
