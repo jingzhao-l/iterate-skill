@@ -167,16 +167,37 @@ function detectPython(env) {
 // Bootstrap (venv + pip install of the pinned release tarball)
 // ---------------------------------------------------------------------------
 
+const CERT_VERIFY_FAILURE_MARKER = "CERTIFICATE_VERIFY_FAILED";
+
 function runStep(command, args, options) {
   const result = spawnSync(command, args, {
-    stdio: ["ignore", "inherit", "inherit"],
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    maxBuffer: 16 * 1024 * 1024,
     ...options,
   });
+  const capturedOutput = `${result.stdout || ""}${result.stderr || ""}`;
+  if (capturedOutput) {
+    process.stderr.write(capturedOutput);
+  }
   if (result.error) {
     throw new BootstrapError(`failed to run ${command}: ${result.error.message}`);
   }
   if (result.status !== 0) {
+    if (capturedOutput.includes(CERT_VERIFY_FAILURE_MARKER)) {
+      throw new BootstrapError(
+        [
+          `${command} ${args.join(" ")} exited with code ${result.status}`,
+          "",
+          "The download failed TLS certificate verification. This is a local",
+          "Python/pip trust-store issue, not a harness problem. Common fixes:",
+          "  - macOS python.org installs: run",
+          "      /Applications/Python 3.1x/Install Certificates.command",
+          "  - Point pip at a CA bundle:  export PIP_CERT=$(python3 -m certifi)",
+          `  - Or use another interpreter: ${PYTHON_ENV_VAR}=/opt/homebrew/bin/python3.12 npm i -g iterate-harness`,
+        ].join("\n")
+      );
+    }
     throw new BootstrapError(`${command} ${args.join(" ")} exited with code ${result.status}`);
   }
 }
