@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.3.8
+version: 2.3.9
 permissions:
   file_read: true
   file_write: true
@@ -14,9 +14,11 @@ permissions:
     skip: [".env", ".env.*", "*.key", "*.pem", "*.p12", "*.crt", "*.cer", "credentials.json", ".aws/", ".ssh/"]
 ---
 
+# /iterate `<goal>` `[rounds]` `[no-limit]`
+
 > **面向人类读者 / For human readers**：本文件是供 AI 助手消费的 Skill 指令。若您是开发者或浏览者，欢迎前往 GitHub 仓库 [jingzhao-l/iterate-skill](https://github.com/jingzhao-l/iterate-skill) 阅读 README，详细了解本 Skill 及其附属生态（iterate-harness、iterate-plugin、CLI 等）。
 
-# /iterate `<goal>` `[rounds]` `[no-limit]`
+> **For Human Readers — English**: This file is a Skill manifest consumed by AI assistants. If you are a developer or a human visitor, welcome to the GitHub repository [jingzhao-l/iterate-skill](https://github.com/jingzhao-l/iterate-skill) — read the README to learn more about this Skill and its ecosystem (iterate-harness, iterate-plugin, CLI, etc.).
 
 > 中文：全自动多轮代码迭代。每轮从 N 个已启用维度并行审查整个项目（默认 9 个），原子问题直接修复，架构问题经用户批准后由子代理串行执行，验证通过后（合并与推送为 opt-in，默认关闭）循环直到零 findings 或达到轮数上限。
 >

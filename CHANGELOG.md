@@ -5,6 +5,13 @@
 
 ---
 
+## [2.3.9] — 2026-08-15
+
+### 修复 / Bug Fixes (display)
+
+- **ClawHub 人类读者导引位置调整**：将 SKILL.md 中的人类读者邀请语从 frontmatter 之后移至 `# /iterate` 标题之后，确保其在 ClawHub 平台渲染可见（原位置被平台过滤）。该行对 AI 助手无副作用。
+- **人类读者导引补充英文版**：在中文导引旁新增英文版 `For human readers` 说明，邀请浏览者前往 GitHub 阅读 README，保持双语一致。
+
 ## [2.3.8] — 2026-08-15
 
 ### 修复 / Bug Fixes (distribution)
