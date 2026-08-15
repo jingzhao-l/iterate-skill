@@ -5,6 +5,52 @@
 
 ---
 
+## [iterate-plugin 2.3.7] — 2026-08-15（独立版本线）
+
+本节记录 `harness/iterate-plugin`（dsh 插件）的独立版本线变更，不再跟随 skill 版本号。
+
+### 插件安全 / Security (iterate-plugin)
+
+- **S1 路径逃逸防护**：5 个插件工具（`config/validate/context/review/decision_log`）新增 `resolveProjectRoot` 路径校验，解析后拒绝以文件系统根目录作为项目根，杜绝模型可控的 `path` 参数指向任意系统目录的路径遍历逃逸。
+- **S2 `timeout` 上限**：`iterate_validate` 的 `timeout` 参数经 `clampTimeout` 钳制在 600s 上限内，模型无法通过无界 `timeout` 无限拉长命令运行时间。
+
+### 插件功能修复 / Bug Fixes (iterate-plugin)
+
+- **B1** `reviewerTaskPrompt` 的 `is_atomic` 阈值从此前未插值的 `{atomic.max_lines}` 占位符改为真实读取 `config.atomic.max_lines`，`is_atomic` 判定恢复阈值依据。
+- **B2** `known_intentional` 个性化过滤端到端打通：canonical 脚本从 `plan` 读取并透传给 `aggregate`，此前配置项实际不生效。
+- **B3** normal 模式 architectural findings 跨轮去重，避免相同架构问题在多轮重复累积。
+- **B4** 原子修复按文件分组、同一文件由单个 fixer 串行应用，杜绝不同 fixer 并发写同一文件产生的竞态。
+- **M3** `sortFindings` 对非法 severity 兜底为 `low`，杜绝 NaN 进入比较器导致排序异常。
+- **M4** dry-run 的 known 反馈改用去重后的 findings，避免已知列表随轮次无限膨胀。
+
+### 一致性 / Consistency
+
+- **C1** 清理 `package.json` 中指向不存在测试文件的 5 个失效脚本，仅保留 `test` 与 `test:validate`。
+- **C2** README 测试数由过时的 31 更正为 63。
+- **C3** 插件版本号统一为独立版本线 2.3.7（`package.json` / `package-lock.json`）。
+
+### 新增单元测试 / Tests
+
+- 新增 `resolveProjectRoot`（路径校验）、`clampTimeout`（超时钳制）、`reviewerTaskPrompt` 阈值插值、`sortFindings` 非法 severity 等测试；共 63 个全绿，类型检查通过。
+
+---
+
+## [2.3.10] — 2026-08-15
+
+### 新功能 / Features (skill CLI)
+
+- **`iterate doctor` 命令**：新增项目健康诊断命令，校验项目 `iterate.config.yaml` / `ITERATE.md` 与技能本体的规范一致性（onboarding 完整性、配置可解析、维度 id 合法性、review.scope 取值、git.target_branch 有效性、validation.commands 结构、skill_version 匹配、manifest 漂移）。发现错误时退出码非零，便于接入 CI。新增 `iterate_cli/doctor.py`。
+- **`--json` 结构化输出**：`iterate status` 与 `iterate doctor` 支持 `--json`，输出机器可读的 JSON（用于脚本与 CI 消费）。JSON 模式下自动抑制 ASCII banner，避免污染输出。
+
+### 修复 / Bug Fixes (skill)
+
+- **统一手动验证命令校验逻辑**：`wizard._manual_collect_commands`（onboard 路径）此前只拦截 shell 元字符，与 `personalize.validate_extra_command`（后者严格白名单）强度不一致。现统一复用 `validate_extra_command` 作为唯一权威校验点，杜绝两路径校验割裂。`validate_extra_command` 同时扩展支持 `python <script>.py` 合法脚本调用（非 `-m`），保持 onboard 合法用例可用。
+- **`_render_dimensions` priority_map 纳入维度锁**：generator 内硬编码的 priority_map 此前未被 `tests/test_dimension_lock.py` 覆盖，priority 变更会漂移。现新增六源维度锁第 7 个来源，锁定其与 `config/dimensions.yaml` 的 priority 一致。
+- **onboard scope 输入防呆**：`wizard._collect_git_config` 中对非法 scope 输入（非 1/2）显式提示并回退默认 full，不再静默降级。
+- **TUI 键值对齐**：`tui.key_value` 由字符宽度 `ljust` 改为 CJK 显示宽度感知对齐（新增 `_display_width`），修复中文键名错位。
+
+---
+
 ## [2.3.9] — 2026-08-15
 
 ### 修复 / Bug Fixes (display)
