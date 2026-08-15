@@ -28,6 +28,25 @@
 
 ---
 
+## 生态 / Ecosystem
+
+本仓库（skill + 安装器）之外，iterate 还有两个配套项目，按你的使用场景选择：
+
+| 项目 | 是什么 | 适合谁 |
+|---|---|---|
+| **[iterate-harness](https://github.com/jingzhao-l/iterate-harness)** | 独立的 iterate 专用命令行引擎（`ih` 命令）。把 `/iterate` 的多轮审查-修复闭环落地为无头运行时：CI/PR 模式（GitHub 批注 + 幂等 PR 评论 + 严重度门禁）、托管 pre-commit 钩子、定时评审、HTML 单文件报告、token 预算与阈值门禁、批量仓库排行 | 想在终端 / CI / 钩子里脱离对话式助手跑 iterate 的人 |
+| **[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)**（npm: `iterate-plugin`） | dsh（cordis）桌面客户端插件。把 iterate 的收敛仪表盘、review 进度、Esc 中途干预带进 dsh 的会话界面 | 已在使用 dsh 桌面客户端的人 |
+
+```bash
+# iterate-harness 一键安装（oh/ohmo 已全面迁移为 ih）
+curl -fsSL https://raw.githubusercontent.com/jingzhao-l/iterate-harness/main/scripts/install.sh | bash
+ih iterate init && ih iterate review
+```
+
+三者关系：**skill**（本仓库）面向任意 AI 助手的对话式迭代；**harness** 面向无头/CI 场景的同一闭环引擎实现；**plugin** 把 harness 的运行时体验接入 dsh。配置（`iterate.config.yaml`）与维度体系在三者间保持一致。
+
+---
+
 ## 3 分钟上手 / Quick Start
 
 ### 1. 安装技能
