@@ -19,13 +19,18 @@ All checks can be run in a structured (``--json``) or human (TUI) mode.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from iterate_cli import __version__ as SKILL_VERSION
 from iterate_cli.refresh import (
+    CONFIG_YAML,
     check_onboarding_drift,
     is_onboarding_complete,
     load_onboarding_config,
@@ -289,6 +294,116 @@ def run_doctor(project_root: Path) -> DoctorReport:
         _ok(report, "drift", "No manifest drift detected.")
 
     return report
+
+
+def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Apply safe, non-destructive fixes to a config dict.
+
+    Only fixes deterministic, unambiguous problems that cannot lose user
+    data. Every fix mirrors a ``doctor`` check, so a repaired config no
+    longer triggers that warning/error.
+
+    Args:
+        config: The parsed iterate.config.yaml content.
+
+    Returns:
+        A tuple of (possibly-updated config, human-readable fix list).
+        The fix list is empty when nothing needed fixing.
+    """
+    new_config = dict(config)
+    fixes: list[str] = []
+
+    # dimensions: must be non-empty and unique (schema minItems/uniqueItems).
+    dims = new_config.get("dimensions")
+    if isinstance(dims, list):
+        seen: set[str] = set()
+        deduped = [d for d in dims if not (d in seen or seen.add(d))]
+        if len(deduped) != len(dims):
+            fixes.append(f"dimensions: removed {len(dims) - len(deduped)} duplicate(s).")
+        if not deduped:
+            deduped = list(CANONICAL_DIMENSIONS)
+            fixes.append("dimensions: empty, restored canonical defaults.")
+        new_config["dimensions"] = deduped
+
+    # language: must be one of zh/en.
+    language = new_config.get("language")
+    if language is not None and language not in SUPPORTED_LANGUAGES:
+        new_config["language"] = "en"
+        fixes.append(f"language: {language!r} invalid, reset to 'en'.")
+
+    # max_rounds: must be an integer in [1, 50].
+    max_rounds = new_config.get("max_rounds")
+    if max_rounds is not None:
+        if isinstance(max_rounds, bool) or not isinstance(max_rounds, int):
+            new_config.pop("max_rounds", None)
+            fixes.append("max_rounds: removed non-integer value.")
+        elif not (MAX_ROUNDS_MIN <= max_rounds <= MAX_ROUNDS_MAX):
+            clamped = max(MAX_ROUNDS_MIN, min(MAX_ROUNDS_MAX, max_rounds))
+            new_config["max_rounds"] = clamped
+            fixes.append(f"max_rounds: clamped to {clamped}.")
+
+    # git.target_branch: must be a non-empty string.
+    git_cfg = new_config.get("git")
+    if isinstance(git_cfg, dict):
+        branch = git_cfg.get("target_branch")
+        if branch is not None and (not isinstance(branch, str) or not branch.strip()):
+            git_cfg["target_branch"] = "main"
+            fixes.append("git.target_branch: empty, reset to 'main'.")
+
+    # onboarding.skill_version: must match the installed skill version.
+    onboarding = new_config.get("onboarding")
+    if isinstance(onboarding, dict):
+        recorded = onboarding.get("skill_version")
+        if recorded is not None and recorded != SKILL_VERSION:
+            onboarding["skill_version"] = SKILL_VERSION
+            fixes.append(f"onboarding.skill_version: updated {recorded!r} → {SKILL_VERSION!r}.")
+
+    return new_config, fixes
+
+
+def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
+    """Apply safe fixes to iterate.config.yaml with a timestamped backup.
+
+    A backup with a ``.doctorfix-<timestamp>`` suffix is written before any
+    change so the original config is always recoverable. Returns
+    ``(True, [])`` when nothing needed fixing.
+
+    Args:
+        project_root: Project root directory.
+
+    Returns:
+        A tuple of (success, list of applied fixes). On failure the fixes
+        already detected are still returned so the caller can log them.
+    """
+    config_path = project_root / CONFIG_YAML
+    if not config_path.is_file():
+        return False, []
+
+    config = load_onboarding_config(project_root)
+    if config is None:
+        return False, []
+
+    new_config, fixes = apply_safe_fixes(config)
+    if not fixes:
+        return True, []
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = config_path.with_name(f"{CONFIG_YAML}.doctorfix-{timestamp}")
+    try:
+        shutil.copy2(config_path, backup_path)
+        config_path.write_text(
+            yaml.safe_dump(
+                new_config,
+                default_flow_style=False,
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"⚠️  Doctor --fix: failed to write fixed config: {exc}", file=sys.stderr)
+        return False, fixes
+    return True, fixes
 
 
 def render_report(report: DoctorReport, json_output: bool = False) -> int:

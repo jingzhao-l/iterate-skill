@@ -35,6 +35,18 @@
 
 ---
 
+## [2.3.12] — 2026-08-16
+
+### 新功能 / Features (skill CLI)
+
+- **`iterate doctor --fix` 安全自动修复**：补齐"诊断→修复→确认"闭环。`--fix` 仅修复确定性、无损、可逆的配置问题（重复/空维度、非法 language、越界/非整数 max_rounds、空 target_branch、skill_version 漂移），写前自动生成 `.doctorfix-<timestamp>` 备份，随后重跑诊断确认健康。新增 `doctor.apply_safe_fixes` 与 `doctor.run_doctor_fix`。
+
+### 新增单元测试 / Tests
+
+- `tests/test_doctor.py` 新增 `apply_safe_fixes`（干净配置无改动、去重、默认回填、clamp、类型移除、分支重置、版本同步）与 `run_doctor_fix`（写回+备份、无操作、缺配置、CLI `--fix`）共 12 个用例；全测试集 441 个全绿。
+
+---
+
 ## [2.3.11] — 2026-08-16
 
 ### 新功能 / Features (skill CLI)
