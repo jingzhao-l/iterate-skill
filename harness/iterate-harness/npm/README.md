@@ -66,7 +66,9 @@ rm -rf ~/.iterate-harness-npm   # the managed venv
 This package's version is kept in lockstep with the harness: wrapper `x.y.z`
 installs harness tag `vx.y.z`. The wrapper is maintained in the
 [iterate-skill monorepo](https://github.com/jingzhao-l/iterate-skill) at
-`npm/iterate-harness/` and published to npm from there.
+`harness/iterate-harness/npm/`, synced to the
+[iterate-harness release repo](https://github.com/jingzhao-l/iterate-harness)
+via `git subtree` and published to npm from there.
 
 ## License
 
