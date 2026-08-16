@@ -1207,15 +1207,27 @@ def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) ->
     return 0
 
 
-def prompt_choice(question: str, choices: list[str], default: str | None = None) -> str:
-    """Ask the user to select one option from a list."""
+def prompt_choice(
+    question: str,
+    choices: list[str],
+    default: str | None = None,
+    input_func: InputFunc = input,
+) -> str:
+    """Ask the user to select one option from a list.
+
+    Args:
+        question: The prompt shown to the user.
+        choices: List of valid options to choose from.
+        default: Optional default option returned on an empty answer.
+        input_func: Callable used to read user input (injectable for tests).
+    """
     _tui_print("")
     _tui_print(question, style="iterate.primary")
     for idx, choice in enumerate(choices, start=1):
         marker = " (default)" if choice == default else ""
         _hint(f"{idx}. {choice}{marker}")
     while True:
-        answer = input("  \u2514 Enter number or name: ").strip()
+        answer = input_func("  \u2514 Enter number or name: ").strip()
         if not answer and default is not None:
             return default
         if answer.isdigit():
@@ -1227,11 +1239,21 @@ def prompt_choice(question: str, choices: list[str], default: str | None = None)
         _warning("Invalid choice, please try again.")
 
 
-def prompt_text(question: str, default: str | None = None) -> str:
-    """Ask the user for free-form text input."""
+def prompt_text(
+    question: str,
+    default: str | None = None,
+    input_func: InputFunc = input,
+) -> str:
+    """Ask the user for free-form text input.
+
+    Args:
+        question: The prompt shown to the user.
+        default: Optional default returned when the answer is empty.
+        input_func: Callable used to read user input (injectable for tests).
+    """
     default_hint = f" [{default}]" if default else ""
     while True:
-        answer = input(f"\n{question}{default_hint}: ").strip()
+        answer = input_func(f"\n{question}{default_hint}: ").strip()
         if answer:
             return answer
         if default is not None:
@@ -1239,11 +1261,21 @@ def prompt_text(question: str, default: str | None = None) -> str:
         _warning("A value is required.")
 
 
-def prompt_int(question: str, default: int | None = None) -> int:
-    """Ask the user for an integer."""
+def prompt_int(
+    question: str,
+    default: int | None = None,
+    input_func: InputFunc = input,
+) -> int:
+    """Ask the user for an integer.
+
+    Args:
+        question: The prompt shown to the user.
+        default: Optional default returned when the answer is empty.
+        input_func: Callable used to read user input (injectable for tests).
+    """
     default_hint = f" [{default}]" if default is not None else ""
     while True:
-        answer = input(f"\n{question}{default_hint}: ").strip()
+        answer = input_func(f"\n{question}{default_hint}: ").strip()
         if not answer and default is not None:
             return default
         try:
@@ -1252,11 +1284,21 @@ def prompt_int(question: str, default: int | None = None) -> int:
             _warning("Please enter a valid integer.")
 
 
-def prompt_bool(question: str, default: bool = True) -> bool:
-    """Ask the user a yes/no question."""
+def prompt_bool(
+    question: str,
+    default: bool = True,
+    input_func: InputFunc = input,
+) -> bool:
+    """Ask the user a yes/no question.
+
+    Args:
+        question: The prompt shown to the user.
+        default: Default answer returned on an empty input.
+        input_func: Callable used to read user input (injectable for tests).
+    """
     default_text = "Y/n" if default else "y/N"
     while True:
-        answer = input(f"\n{question} [{default_text}]: ").strip().lower()
+        answer = input_func(f"\n{question} [{default_text}]: ").strip().lower()
         if not answer:
             return default
         if answer in ("y", "yes"):
@@ -1266,8 +1308,18 @@ def prompt_bool(question: str, default: bool = True) -> bool:
         _warning("Please enter 'y' or 'n'.")
 
 
-def interactive_config(target: Path, source: Path) -> int:
-    """Run an interactive wizard to create or update the project config."""
+def interactive_config(
+    target: Path,
+    source: Path,
+    input_func: InputFunc = input,
+) -> int:
+    """Run an interactive wizard to create or update the project config.
+
+    Args:
+        target: Project directory (where iterate.config.yaml lives).
+        source: Skill source directory (for the master config + schema).
+        input_func: Callable used to read user input (injectable for tests).
+    """
     project_path = target / "iterate.config.yaml"
     master_path = source / DEFAULT_CONFIG_PATH
 
@@ -1284,28 +1336,45 @@ def interactive_config(target: Path, source: Path) -> int:
 
     _intro("iterate-skill configuration wizard")
 
-    config["goal"] = prompt_text("Iteration goal", config.get("goal", "Improve code quality"))
+    config["goal"] = prompt_text(
+        "Iteration goal",
+        config.get("goal", "Improve code quality"),
+        input_func=input_func,
+    )
     config["max_rounds"] = prompt_int_in_range(
         "Max rounds",
         MIN_ROUNDS,
         MAX_ROUNDS,
         config.get("max_rounds", 7),
+        input_func=input_func,
     )
     config["language"] = prompt_choice(
-        "Output language", LANGUAGE_CHOICES, config.get("language", "en")
+        "Output language",
+        LANGUAGE_CHOICES,
+        config.get("language", "en"),
+        input_func=input_func,
     )
-    config["dimensions"] = prompt_dimensions(config.get("dimensions", DIMENSION_CHOICES))
+    config["dimensions"] = prompt_dimensions(
+        config.get("dimensions", DIMENSION_CHOICES), input_func=input_func
+    )
     config["review"] = config.get("review", {})
     config["review"]["scope"] = prompt_choice(
-        "Review scope", SCOPE_CHOICES, config["review"].get("scope", "full")
+        "Review scope",
+        SCOPE_CHOICES,
+        config["review"].get("scope", "full"),
+        input_func=input_func,
     )
     config["atomic"] = config.get("atomic", {})
     config["atomic"]["max_lines"] = prompt_int(
-        "Atomic issue max lines", config["atomic"].get("max_lines", 20)
+        "Atomic issue max lines",
+        config["atomic"].get("max_lines", 20),
+        input_func=input_func,
     )
     config["git"] = config.get("git", {})
     config["git"]["push_per_round"] = prompt_bool(
-        "Push after each round", config["git"].get("push_per_round", False)
+        "Push after each round",
+        config["git"].get("push_per_round", False),
+        input_func=input_func,
     )
 
     save_config(project_path, config)
@@ -1326,18 +1395,22 @@ def interactive_config(target: Path, source: Path) -> int:
 
 
 def prompt_int_in_range(
-    question: str, min_value: int, max_value: int, default: int | None = None
+    question: str,
+    min_value: int,
+    max_value: int,
+    default: int | None = None,
+    input_func: InputFunc = input,
 ) -> int:
     """Ask the user for an integer constrained to [min_value, max_value]."""
     full_question = f"{question} ({min_value}-{max_value})"
     while True:
-        value = prompt_int(full_question, default)
+        value = prompt_int(full_question, default, input_func=input_func)
         if min_value <= value <= max_value:
             return value
         _warning(f"Please enter a value between {min_value} and {max_value}.")
 
 
-def prompt_dimensions(current: object) -> list[str]:
+def prompt_dimensions(current: object, input_func: InputFunc = input) -> list[str]:
     """Interactively select enabled dimensions."""
     current_set = set(current) if isinstance(current, list) else set(DIMENSION_CHOICES)
     selected: list[str] = []
@@ -1346,7 +1419,7 @@ def prompt_dimensions(current: object) -> list[str]:
     for idx, dim in enumerate(DIMENSION_CHOICES, start=1):
         marker = " [enabled]" if dim in current_set else ""
         _hint(f"{idx}. {dim}{marker}")
-    answer = input("Dimensions: ").strip()
+    answer = input_func("Dimensions: ").strip()
     if not answer:
         return _ensure_non_empty_dimensions(list(current_set))
 
@@ -1375,8 +1448,19 @@ def config_command(
     list_config_flag: bool,
     interactive: bool,
     set_pairs: list[list[str]] | None = None,
+    input_func: InputFunc = input,
 ) -> int:
-    """Manage the project-level iterate.config.yaml."""
+    """Manage the project-level iterate.config.yaml.
+
+    Args:
+        target: Project directory (where iterate.config.yaml lives).
+        source: Skill source directory (master config + schema).
+        init: Copy the master config to the project root if missing.
+        list_config_flag: Print the current project-level config.
+        interactive: Run the interactive config wizard.
+        set_pairs: ``--set`` key=value pairs to apply, then validate.
+        input_func: Callable used to read user input (interactive wizard).
+    """
     if init:
         return init_config(target, source)
     if list_config_flag:
@@ -1384,7 +1468,7 @@ def config_command(
     if set_pairs:
         return set_config_values(target, source, set_pairs)
     if interactive:
-        return interactive_config(target, source)
+        return interactive_config(target, source, input_func=input_func)
 
     _warning("No config action specified. Use --init, --list, --set, or --interactive.")
     return 1
