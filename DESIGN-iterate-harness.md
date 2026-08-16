@@ -1,7 +1,7 @@
 # iterate-harness 设计文档 v1.0
 
 > 目标：把 iterate 从 Skill 形态升级为「专门用于 iterate 的极简 agent harness」，深度适配原 skill 的体系与功能。
-> 状态：已实现至 v1 稳定期（当前发布 1.5.0）；设计文档迭代至 v1.23。
+> 状态：已实现至 v1 稳定期（当前发布 1.9.1）；设计文档迭代至 v1.32。
 > 版本记录：见文末。
 
 ## 1. 背景与目标
@@ -192,6 +192,8 @@ harness/
 #### 11.2.1 用户体验场景深析（v1.8：站在用户面前的具体交互，非内核能力清单）
 
 > §11.2 的表是"内核能力"视角；本节补齐"用户能看到什么、点什么、玩到什么"视角，只列 skill 与插件**原理上做不出**的体验，按「看 / 摸 / 跑 / 沉淀」四类分。
+>
+> ⚠️ **v1.32 修正**：本节多处「插件被 dsh 卡片样式锁死 / 插件无法自绘组件」的表述是**错误结论**——dsh 官方定位 UI 本身也是插件，社区已有大量换肤 / 背景 / 动画插件（详见 §14）。本节「看得见的 UI」相关独占体验的归类已按修正重估，见 §14.3。
 
 **一、看得见的 UI**（skill 只能吐 markdown，插件被 dsh 卡片样式锁死）
 
@@ -555,3 +557,216 @@ iterate-harness/                     # fork 自 HKUDS/OpenHarness @ v0.1.9
 - v1.28（2026-08-16）：1.9.0「TUI 方向键化 personalize 向导」落地，闭合 v1.24 遗留（向导为 CLI 交互式、TUI 内 `/iterate personalize` 仅摘要 + 指引、方向键化为 v2 候选）——9 类个性化向导在 TUI 内完整可用，无需切终端。**① 新模块 `iterate/personalize_tui.py`**：`run_tui_personalize` 复用 CLI 向导的数据模型与保存链（`PersonalizationData` 深拷贝上做全部变更，取消即干净丢弃），但每一步经 TUI 交互通道驱动——`ask_select(title, options)`（方向键选择弹窗，options 为 `{value,label,description?}`）+ `ask_prompt(question)`（自由文本弹窗）；两通道运行时可选，任一缺失 slash 命令回退摘要 + CLI 指引；所有 handler 防御式——弹窗取消（空/未知应答）中止当前步骤而非整个向导。菜单哨兵值（`__add__`/`__back__`/`__save__`/`__cancel__`/`__reset__`/`__rm__` 前缀/`__dim__` 前缀）永不与用户文本或维度键冲突。主菜单列出 9 分类（带实时条目数预览，LABEL_PREVIEW_LIMIT=60 截断）+ Save&finish / Cancel；各分类编辑器支持添加（文本经问题弹窗）与逐条删除；`known_intentional` 结构化采集 file → dimension（canonical 9 选一）→ line（非法输入回退 0）→ reason；`dimension_focus` 维度选择配 focus 追问；`fix_priority_order` 经 move-to-front 重排（任意排列可达）+ reset-to-default；`extra_validation_commands` 保持严格白名单校验（`validate_extra_command`），拒绝原因直接回显在重提示里；末尾确认门 save / keep-editing / discard。保存链与 CLI 向导字节一致（`save_personalization_to_config` + `update_iterate_md_user_section`）。**② 通道暴露**：`QueryEngine.ask_user_select_channel` / `ask_user_prompt_channel` 只读属性把交互通道暴露给 slash 命令（无头运行均为 None）。**③ 接线**：`commands/iterate.py` `/iterate personalize` 检测交互通道——有则进向导（保存失败返回错误消息、取消返回提示），无通道（无头）保持摘要 + `ih iterate personalize` 指引；engine 为 None 时 `getattr` 防御。**测试**：新增 tests/test_iterate/test_personalize_tui.py 25 项（主菜单取消保留原值/字符串类增删存盘/known_intentional 结构化采集含非法行号回退/dimension_focus 配对/fix_priority move-to-front 与 reset/白名单拒绝原因回显重试/确认门三分支/保存失败错误消息/无通道回退摘要/slash 集成 e2e 写盘验证 config 与 ITERATE.md 双产物）；tests/test_iterate 559 全绿（534+25）。**版本与验证**：1.9.0 对齐（pyproject / cli `__version__` / CHANGELOG 1.9.0 / README badge 双语 + 特性表「Personalization wizard/个性化向导」行补 TUI 向导描述 + REPL 速览 `/iterate personalize` / npm 包装器 package.json）。
 - v1.29（2026-08-16）：1.9.1「npm 包装器 tarball 下载降级链」落地，修复 1.9.0 发布 e2e 暴露的真实缺陷——本机（python.org Python、信任链损坏）`pip install <github tarball>` 因 `CERTIFICATE_VERIFY_FAILED` 死失败，而同机 curl/Node 下载同一 URL 正常；包装器此前只打印修复指引直接退出，用户无法自愈。**① 两级安装链 `installHarness`**（可注入 runStepFn/downloader 供测试）：第一级维持原状（pip 直接装 tag URL）；失败且目标为 http(s) URL 时进第二级——Node 自有 https 栈下载 tarball 至 `<npm-home>/cache/iterate-harness-<version>.tar.gz` 后 pip 安装本地文件；非 http 目标（本地路径 / ITERATE_HARNESS_INSTALL_URL 指向 git+ 等）保持单次尝试原语义；双失败时抛出的 BootstrapError 携带原始 pip 诊断 + 降级失败原因（cert 指引文案保留）。**② `downloadFile`**：重定向跟随（GitHub archive→codeload 恰需 1 跳，MAX_DOWNLOAD_REDIRECTS=5 防环）、DOWNLOAD_TIMEOUT_MS=120s 超时销毁、2xx/3xx/其它状态码三分支、URL 解析失败即拒；`downloadTarballTo` 包装 mkdir 缓存目录 + 失败清理半写文件。**③ 异步化 ripple**：bootstrap/ensureRuntime/runHarness 转 async（runStep 仍 spawnSync），runHarness 内部 catch 统一 `reportBootstrapFailure`（BootstrapError 打 message、其它打 stack）+ exit 1；bin/ih.js 与 bin/iterate-harness.js 改为 promise `.catch` + 同步 catch 双保险，杜绝 unhandled rejection。**测试**：bootstrap.test.js 新增 10 项（isRemoteHttpUrl 真值表含 git+/本地路径/空值/downloadCachePath 路径形状/pipInstallArgs 参数序/MAX_DOWNLOAD_REDIRECTS=5 稳定性/installHarness 首次成功不下载/TLS 失败→下载→本地装全链断言/双失败包装消息断言/非 http 直抛原错/二次 pip 失败透传/downloadFile 重定向预算耗尽即拒），20/20 全绿；node --check 三文件语法通过。**版本与验证**：1.9.1 对齐（pyproject / cli `__version__` / CHANGELOG 1.9.1 Fixed 小节 / README badge 双语 / npm 包装器 package.json）；发布 e2e 在暴露缺陷的同一台机器上不走 INSTALL_URL 旁路、以真实降级链完成引导（pip TLS 失败→Node 下载→本地安装→`iterate_harness 1.9.1`），缺陷修复即被原始环境验证。**补充（同轮迭代内）**：首轮 e2e 显示降级链触发了 Node 层、但本机 Node 26 同样验签失败（`unable to verify the first certificate`——Node 自带 CA 不读系统钥匙串，本机疑似存在 TLS 拦截代理，而 curl 走系统信任链可用），遂把下载降级扩为两级：`downloadTarballTo` 先 Node https、失败后 `curlDownload`（`curl -fsSL --max-time 240 -o <dest> <url>`，spawnSync、参数与双失败路径可注入测试；macOS 必有 curl、Win10 1803+ 自带、Linux 常见；两级 TLS 验证全程开启，仅换验证者不降安全，层级间清理半写文件，双失败抛聚合错误）；测试增至 25 项（curlDownload 参数序与非零退出/ENOENT、downloadTarballTo node 成功跳过 curl/node 失败落 curl/双失败聚合消息），25/25 全绿；重打 tag 重发 Release 后 e2e 全链成功（pip TLS 失败→Node 失败→curl 成功→本地安装→`iterate_harness 1.9.1`）。
 - v1.30（2026-08-16）：发布架构调整「npm 包装器并入 harness subtree，与 iterate-plugin 对称」。v1.25 的「包装器不进 subtree、主仓库为 npm 维护点」决策被本条目修订——npm 包装器从主仓库顶层 `npm/iterate-harness/` 迁移至 `harness/iterate-harness/npm/`，随 Python 源一起经 `git subtree split --prefix=harness/iterate-harness` 发布到独立仓库 `jingzhao-l/iterate-harness`；并建立 `.release/iterate-harness/` 发布工作区（克隆独立仓库），`npm publish` 在 `npm/` 子目录执行，与 plugin 的 `.release/iterate-plugin/` 模式完全对称。**动机**：用户要求保持两项目发布架构对称（plugin 的 npm 包即住在 subtree 仓库）；代价是独立仓库同时承载 Python 源 + npm 包装器两条分发内容（v1.25 曾为避免此而刻意区分，现接受以换取统一心智模型与发布工作区）。**落地**：`git mv npm/iterate-harness harness/iterate-harness/npm`；harness README 与 CHANGELOG 中 npm 路径引用更新为 `harness/iterate-harness/npm`；npm 发布流程 = subtree push（含 npm/）→ `.release/iterate-harness` 克隆/git pull → `npm publish`（在 npm/ 子目录）。**验证**：npm 包装器 25/25 单元测试在迁移后位置通过，`node --check` 语法通过。**残留说明**：独立仓库 `jingzhao-l/iterate-harness` 因同时含 Python 源与 npm 子目录，tag 仍按 harness 版本锁步（vX.Y.Z 同时作 Python tarball 锚点与 npm 包装器版本依据）。
+- v1.31（2026-08-16）：收尾与发布流程固化——将 `RELEASE.md` 发布手册并入本文档为 §13（独立 `RELEASE.md` 保留为发布时直接勾选的 checklist，两者内容互为镜像、以 §13 为准）；同步更新文档头部状态行（当前发布 1.9.1，设计文档迭代至 v1.31）。
+- v1.32（2026-08-16）：**修正「插件无法改 dsh UI」的错误结论**（新增 §14）——§11.2.1（v1.8）曾断言「插件被 dsh 卡片样式锁死 / 插件无法自绘组件」并把实时仪表盘、分诊界面等归入插件原理上做不出的独占体验，该断言错误。证据：dsh 官方「Everything is a plugin」将 UI 本身列为可插拔能力，前端为插件提供 Client UI 槽位 / 主题令牌 / Cordis 事件 / `dsh.client` 声明（`clientModules` 扫描）；社区实证（2026-08）`dsh-gui-customization`（主题/氛围光/背景）、`dsh-skin-picker`、`dsh-dream-skin`、`Nagi-ovo/dsh-ads`（CSS 动画）均为正规插件而非 hack。修正后：换肤/自绘组件/仪表盘/分诊界面插件侧可实现；独立 harness 真正独占的是**内核级**能力（Esc 中途干预、循环/收敛控制、无人值守、独立存储），原因不是样式被锁死而是编排层不在插件 UI 权限面内。§11.2.1 原文保留存档，以 §14 重估为准。同步在 §11.2.1 引言追加修正指引注记，头部状态行更新至 v1.32。
+
+## 13. 发布手册（Release Manual）
+
+> 本节为 `RELEASE.md` 的镜像章节（v1.31 并入），是 iterate 生态三个对外发布项目的统一发布 checklist。发布操作以本节为准，独立 `RELEASE.md` 保留便于快速勾选。
+
+iterate 生态目前有 **三个** 会独立对外发布的项目：iterate-skill（skill 本体 + CLI + 安装器）、iterate-harness（Python 引擎 + npm 包装器）、iterate-plugin（dsh 插件）。三个项目共用同一主仓库 `jingzhao-l/iterate-skill` 作为唯一开发/评审点，`harness/` 下的两个子项目通过 `git subtree` 拆分到各自的独立发布仓库，再在 `.release/` 发布工作区执行 npm 发布。
+
+### 13.1 生态项目一览
+
+| 项目 | 仓库 | 分发渠道 | 版本线 |
+|---|---|---|---|
+| **iterate-skill**（skill 本体 + CLI + 安装器） | `jingzhao-l/iterate-skill`（主仓库，唯一维护点） | GitHub Release / npm / ClawHub / ModelScope / Tencent SkillHub | 2.3.x（与 skill 同步） |
+| **iterate-harness**（Python 引擎 + npm 包装器） | `jingzhao-l/iterate-harness`（subtree 独立发布仓） | GitHub tag / npm 包装器 | 1.9.x（独立） |
+| **iterate-plugin**（dsh 插件） | `jingzhao-l/iterate-plugin`（subtree 独立发布仓） | npm | 2.3.x（独立，自 2.3.7 起） |
+
+### 13.2 项目 1：iterate-skill（skill 本体）
+
+**需要同步的版本号文件**（step 1 一次性完成）：
+
+| 文件 | 字段 |
+|---|---|
+| `pyproject.toml` | `[project].version` |
+| `iterate_cli/__init__.py` | `__version__` |
+| `SKILL.md` | frontmatter `version` |
+| `npm-installer/package.json` | `version` |
+| `CHANGELOG.md` | 新增版本条目 |
+
+**发布清单**：
+
+- [ ] **1. 同步版本号**：人工编辑上述 5 个文件 + 更新 `CHANGELOG.md`（保留旧版本条目，只新增）。
+- [ ] **2. 本地验证**：跑通全部测试（`pytest tests/ -q`、`ruff check`），确认 `iterate --version` 输出新版本。
+- [ ] **3. 提交并推送主仓库**：`git add -A && git commit && git push origin main`。
+- [ ] **4. 打 GitHub Release tag**：`git tag v<X.Y.Z> && git push origin v<X.Y.Z>`，在 GitHub 创建 Release。
+      > `.github/workflows/release.yml` 会在 Release published 时自动生成并上传 `iterate-skill.tar.gz` + `SHA256SUMS.txt`（从 tag 树确定性构建）。
+- [ ] **5. 发布 npm 安装器**（安装器从 GitHub Release 下载 tarball，务必先于/同步于 npm 发布）：
+      ```bash
+      cd npm-installer
+      npm publish
+      ```
+      验证：`npx iterate-skill-installer --version` 能拉到新版本。
+- [ ] **6. 发布 ClawHub**：
+      ```bash
+      clawhub publish <stage 目录> --slug iterate-skill --name Iterate --version <X.Y.Z> --no-input
+      ```
+      > **坑**：必须显式传 `--name Iterate`，否则显示名会被默认取为发布目录 basename（历史上出现过 `Clawhub Stage 2.3.12`）。ClawHub 有已知 bug（issue #2983），偶发 `skillId/versionId invalid value`，发布前需清理残留的 suspended 进程。
+- [ ] **7. 发布 ModelScope**：
+      - 用 **精简包**（zip 需 < 5MiB，只含核心文件，不含前端/文档等）。
+      - 通过 OpenAPI 更新：`openapi.update_skill_settings(owner, name, {'skill_file': file_id})`。
+      > **坑**：完整包常超 5MiB 上限，必须用精简包。
+- [ ] **8. 发布 Tencent SkillHub**：
+      - 用 **SkillHub 专用包 `iterate-skill-skillhub.zip`**（**排除 LICENSE**），skillId `104490`。
+      > **坑**：必须用去掉 LICENSE 的精简专用包（约 288KB）防止上传 `Broken pipe`；完整包（含 LICENSE）会因过大上传失败。
+- [ ] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+
+### 13.3 项目 2：iterate-harness（Python 引擎 + npm 包装器）
+
+**版本锁步规则**：`npm 包装器 version == harness 版本 == GitHub tag`（npm `1.9.1` → tag `v1.9.1`）。包装器首次运行会把匹配版本的 release tarball pip 安装进托管 venv，npm 升级后 stamp 不匹配会自动重装到新 tag。
+
+**需要同步的版本号文件**：
+
+| 文件 | 字段 |
+|---|---|
+| `harness/iterate-harness/pyproject.toml` | `[project].version` |
+| `harness/iterate-harness/src/iterate_harness/__init__.py` | `__version__`（若存在） |
+| `harness/iterate-harness/npm/package.json` | `version` |
+| `harness/iterate-harness/CHANGELOG.md` | 新增版本条目 |
+
+**发布清单**：
+
+- [ ] **1. 同步版本号**：编辑上述文件 + 更新 `CHANGELOG.md`（保留旧条目）。
+- [ ] **2. 本地验证**：跑通 harness 测试（`cd harness/iterate-harness && pytest tests/ -q`）与 npm 包装器测试（`cd harness/iterate-harness/npm && node --test test/bootstrap.test.js`）。
+- [ ] **3. 提交并推送主仓库**：`git commit && git push origin main`。
+- [ ] **4. subtree 拆分到独立发布仓**：
+      ```bash
+      git subtree split --prefix=harness/iterate-harness -b subtree-harness
+      git push harness-origin subtree-harness:main
+      git branch -D subtree-harness
+      ```
+      > 独立仓 `jingzhao-l/iterate-harness` 同时承载 Python 源码 + `npm/` 包装器。
+- [ ] **5. 独立仓打 tag + Release**：在独立仓打 `v<X.Y.Z>` tag 并创建 GitHub Release（作为 npm 包装器 pip-install 的 tarball 锚点）。
+- [ ] **6. 同步发布工作区 + npm publish**：
+      ```bash
+      # 进入发布工作区（克隆的独立仓，gitignore）
+      cd .release/iterate-harness
+      git pull origin main
+      cd npm
+      npm publish
+      ```
+      验证：`npm install -g iterate-harness && ih --version` 输出新版本。
+      > npm `repository` 元数据指向独立仓 `jingzhao-l/iterate-harness`。
+
+### 13.4 项目 3：iterate-plugin（dsh 插件）
+
+**版本规则**：独立版本线（自 2.3.7 起），不再与 skill 本体版本号强绑定。仅改 `harness/iterate-plugin/package.json` 的 `version`。
+
+**需要同步的版本号文件**：
+
+| 文件 | 字段 |
+|---|---|
+| `harness/iterate-plugin/package.json` | `version` |
+| `harness/iterate-plugin/package-lock.json` | `version` |
+| `harness/iterate-plugin/CHANGELOG.md`（若存在） | 新增版本条目 |
+
+**发布清单**：
+
+- [ ] **1. 同步版本号**：编辑 `package.json`（含 `package-lock.json` 若已提交）。
+- [ ] **2. 本地验证**：`cd harness/iterate-plugin && npm install && npm run typecheck && npm test`。
+- [ ] **3. 提交并推送主仓库**：`git commit && git push origin main`。
+- [ ] **4. subtree 拆分到独立发布仓**：
+      ```bash
+      # 若尚未配置 plugin 独立仓 remote（主仓库默认只有 origin / harness-origin）：
+      git remote add plugin-origin https://github.com/jingzhao-l/iterate-plugin.git
+
+      git subtree split --prefix=harness/iterate-plugin -b subtree-plugin
+      git push plugin-origin subtree-plugin:main
+      git branch -D subtree-plugin
+      ```
+      > 独立仓 `jingzhao-l/iterate-plugin` 带 `dsh-plugin` topic，作为 dsh 生态发现入口。
+- [ ] **5. 同步发布工作区 + npm publish**：
+      ```bash
+      cd .release/iterate-plugin
+      git pull origin main
+      npm publish
+      ```
+      验证：npm 上 `iterate-plugin` 版本为 `<X.Y.Z>`。
+      > npm `repository` 元数据指向主仓库 `jingzhao-l/iterate-skill`（目录 `harness/iterate-plugin`）。
+
+### 13.5 常见遗漏点（Checklist 之外）
+
+- **skill 侧**：改了代码但忘记同步 `npm-installer/package.json` 版本 → npx 拉到旧版安装器。
+- **skill 侧**：ClawHub 发布未传 `--name Iterate` → 显示名变成目录名。
+- **skill 侧**：ModelScope 用完整 zip → 超 5MiB 失败；SkillHub 忘了去掉 LICENSE → `Broken pipe`。
+- **harness 侧**：npm 包装器版本与 harness/tag 不同步 → 用户升级后装错版本。
+- **harness 侧**：subtree 拆分后忘记在独立仓打 tag → npm 包装器 pip-install 找不到 tarball。
+- **plugin / harness 侧**：subtree push 后忘记同步 `.release/` 工作区就直接 `npm publish` → 发布会发布旧版本。
+
+### 13.6 快速对照（命令速查）
+
+| 动作 | 命令 |
+|---|---|
+| skill 打 tag | `git tag v<X.Y.Z> && git push origin v<X.Y.Z>` |
+| skill npm 安装器 | `cd npm-installer && npm publish` |
+| skill ClawHub | `clawhub publish <stage> --slug iterate-skill --name Iterate --version <X.Y.Z> --no-input` |
+| skill ModelScope | `openapi.update_skill_settings(owner, name, {'skill_file': file_id})`（精简 zip <5MiB） |
+| skill SkillHub | 上传 `iterate-skill-skillhub.zip`（去 LICENSE），skillId `104490` |
+| harness subtree | `git subtree split --prefix=harness/iterate-harness -b subtree-harness && git push harness-origin subtree-harness:main` |
+| harness npm | `cd .release/iterate-harness/npm && npm publish`（先 `git pull`） |
+| plugin subtree | `git subtree split --prefix=harness/iterate-plugin -b subtree-plugin && git push plugin-origin subtree-plugin:main`（先 `git remote add plugin-origin https://github.com/jingzhao-l/iterate-plugin.git` 若未配置） |
+| plugin npm | `cd .release/iterate-plugin && npm publish`（先 `git pull`） |
+
+## 14. UI 能力修正（v1.32：推翻「插件无法改 dsh UI」的错误结论）
+
+> **背景**：§11.2.1（v1.8）曾断言「插件被 dsh 卡片样式锁死」「dsh 卡片是静态文本，插件无法自绘组件」，并把「实时收敛仪表盘 / diff 审批 / 分诊界面」全部归入 skill 与插件**原理上做不出**的独占体验。该断言**错误**，本节予以修正；§11.2.1 原文保留存档，以本节重估为准。
+>
+> **证据链**：dsh 官方架构「Everything is a plugin」，明确将 **UI 本身列为可插拔能力**（官方文档原话：Plugins provide every agent capability, including … the UI）。dsh Web 前端是独立的 Cordis 应用插件（`@deepseek-ai/dsh-web-app`），前端运行时为插件提供：**Client UI 槽位（slot）**、**主题令牌（theme token）**、**Cordis 事件 / 服务**，且 `package.json` 通过 `dsh.client` 声明被 `clientModules` 服务扫描进 Web 启动图。
+>
+> **社区实证**（2026-08 上线的真实插件）：
+>
+> | 插件 | 改了什么 | 用的扩展点 |
+> |---|---|---|
+> | `dsh-gui-customization` | 主题配色 / 氛围光 / 背景图，设置页持久化 | Client UI 槽位 + 主题令牌 + `dsh.client` 声明 |
+> | `dsh-skin-picker` / `dsh-skins` | 多套皮肤、自然语言换肤、自定义背景 | 主题令牌 + CSS 注入 |
+> | `dsh-dream-skin` | 壁纸 / 主题包导入导出 | 主题令牌 |
+> | `Nagi-ovo/dsh-ads` | 界面加动态鲸鱼动画 | Cordis 插件监听事件 + CSS 动画 |
+>
+> 结论：**皮肤 / 主题 / 背景 / 动画 / 自绘 UI 组件，插件侧都是正经支持的能力**，不是 hack。
+
+### 14.1 修正后的能力边界
+
+| 能力 | skill | dsh 插件（路线 A） | 独立 harness（路线 B） |
+|---|---|---|---|
+| 换肤 / 主题令牌 / 背景 / 氛围光 | ❌ 无法 | ✅ 原生槽位 + token 系统 | ✅ 自研 |
+| 往界面加自绘组件 / 动态动画 | ❌ 无法 | ✅ Client slot + CSS/事件 | ✅ 自研 |
+| 自定义审批交互（逐 hunk diff、Esc 暂停干预） | ❌ 无法 | ⚠️ 依赖 dsh 审批框架是否暴露对应 slot / 事件 | ✅ 内核自定 |
+| 会话 / 循环 / 编排层深度改造 | ❌ 无法 | ⚠️ 只能走 dsh workflow / 事件，受框架约束 | ✅ 内核原样可控 |
+| 无人值守（离开 dsh 会话自治跑） | ❌ | ❌ 仍需 dsh 会话 | ✅ headless / CI |
+| 数据沉淀 / 趋势库 / 回放 | ❌ 纯文本 | ⚠️ 可注册工具+持久化，但受 dsh 存储约束 | ✅ 自建本地库 |
+
+### 14.2 对「§11.2.1 独占体验」的重估
+
+| §11.2.1 条目 | 原结论 | v1.32 重估 |
+|---|---|---|
+| 实时收敛仪表盘（Round/N/维度 spinner/token 累计） | 插件无法自绘 | **插件可实现**：自绘组件进 Client slot，消费 `iterate_review` 事件流 |
+| findings 分诊界面（y/修复 n/跳过 a/忽略） | 插件无交互入口 | **插件可实现**：自绘交互组件 + 写回 `iterate.config.yaml` 工具 |
+| 细粒度逐 hunk diff 审批 | 插件只能整文件审批 | **视 dsh 审批框架而定**：若暴露 diff 粒度 slot 则可行，否则保持整文件级 |
+| init 检测式向导 | 插件没做 init | 插件可实现（自绘 + 复用 `iterate_config` 探测） |
+| Esc 暂停 / 中途改道 | 插件 workflow 不可中途改道 | **仍为路线 B 独占**（循环控制需内核级） |
+| 无人值守场景（PR 评论 / git hook / 批量定时） | 插件依赖 dsh 会话 | **仍为路线 B 独占**（存在性缺口，与 UI 无关） |
+| 数据沉淀趋势 / HTML 报告 / 回放 | 插件做不了 | ⚠️ 插件可部分（工具+持久化），完整趋势库仍需独立存储 |
+
+### 14.3 修正后的设计含义
+
+1. **「看得见的 UI」不再是独立 harness 的独占卖点**：实时仪表盘、分诊界面这类 iterate 专属 UI，走 dsh 插件（路线 A）也可实现，成本是熟悉 dsh 前端 slot / token / `dsh.client` 机制。
+2. **路线 B（独立 harness）真正独占的仍是「内核级」能力**：Esc 中途干预、循环/收敛控制、无人值守、独立存储——这些靠 UI 插件做不到，理由不是"样式被锁死"，而是**循环与会话的编排层不在插件 UI 的权限面内**。
+3. **插件（路线 A）的 UI 定位建议**：优先做「iterate 专属可视化」——收敛仪表盘、分诊面板、迭代统计，走 Client slot + 事件；不做皮肤 / 主题类（与社区已有插件同质化，且非 iterate 价值点）。
+4. **本节不影响已发布的 iterate-plugin 形态**：插件保持瘦实现（prompt 注入 + 5 工具）仍成立，UI 层按需增量演进；是否投入 UI 层由用户决策（见 §14.4 候选清单）。
+
+### 14.4 UI 层候选实现清单（供决策）
+
+> 均以「客户端（web 前端）slot + 主题令牌 + `dsh.client` 声明 + 事件」为技术底座；按 iterate 价值、实现成本、与社区差异化三维评估。
+
+| # | 候选 UI 层实现 | 做什么 | 技术路径 | 价值 | 成本 | 差异化 |
+|---|---|---|---|---|---|---|
+| 1 | **迭代收敛仪表盘** | 会话侧边/消息内显示 `Round N/M`、五维度 spinner + findings 计数、token/费用累计条、收敛 sparkline | 自绘组件注册 Client slot，消费 `iterate_review` 运行事件流 | 高（iterate 最核心的"看得见收敛"体验） | 中 | 高（生态暂无 iterate 专属可视化） |
+| 2 | **findings 分诊面板** | 审查完逐条过 `y/n/a`，`a` 自动写回 `known_intentional` | 自绘交互组件 + 复用 `iterate_config` 读写 | 高（个性化闭环做成交互） | 中 | 高 |
+| 3 | **迭代统计卡片** | 每次 iterate 结束生成统计卡：修复数 / 剩余数 / 各维度分布 / 耗时 | 消息卡片（现有卡片机制即可） | 中 | 低 | 中 |
+| 4 | **iterate 主题 / 皮肤** | 给 dsh 出一套 iterate 专属配色皮肤 | 主题令牌 + CSS 注入 | 低-中 | 低 | 低（与社区皮肤插件同质化） |
+| 5 | **进度通知 / 事件联动** | 迭代轮次变更时做视觉/角标联动（如子代理派发时动画） | Cordis 事件 + CSS 动画 | 中 | 低 | 中 |
+| 6 | **设置页扩展** | 在 dsh「设置」里加 iterate 配置管理入口（读取/修改 `iterate.config.yaml`） | 设置页 slot + `iterate_config` 工具 | 中 | 中 | 中 |
+
+**决策建议**：优先 #1 收敛仪表盘 + #2 分诊面板（价值与差异化双高、直接兑现"看得见收敛"）；#3/#5 低成本可作为第一批落地；#4 皮肤与社区同质化不建议投入；#6 视迭代节奏定。
