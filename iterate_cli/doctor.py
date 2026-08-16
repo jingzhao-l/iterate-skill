@@ -48,6 +48,13 @@ CANONICAL_DIMENSIONS: tuple[str, ...] = (
 # Supported review.scope values.
 SUPPORTED_SCOPES: frozenset[str] = frozenset({"full", "changed-only"})
 
+# Supported output languages (config/schema: language enum).
+SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"zh", "en"})
+
+# Bounds enforced by config/config.schema.json for max_rounds.
+MAX_ROUNDS_MIN: int = 1
+MAX_ROUNDS_MAX: int = 50
+
 # config keys that must be a mapping of module -> non-empty command list.
 _COMMAND_MODULES_KEYS: tuple[str, ...] = ("validation.commands", "commands.validation")
 
@@ -160,6 +167,49 @@ def run_doctor(project_root: Path) -> DoctorReport:
     else:
         _ok(report, "dimensions", f"All {len(dims)} configured dimension(s) are canonical.")
 
+    # 3b. Dimensions must be non-empty (schema minItems >= 1) and unique.
+    if not dims:
+        _err(report, "dimensions", "dimensions must not be an empty list.", "Configure at least one dimension.")
+    else:
+        seen: set[str] = set()
+        dups = [d for d in dims if d in seen or seen.add(d)]
+        if dups:
+            _warn(
+                report,
+                "dimensions",
+                f"dimensions contains duplicate(s): {', '.join(sorted(set(dups)))}.",
+                "Remove duplicate entries (schema requires uniqueItems).",
+            )
+
+    # 3c. max_rounds must be an integer within [1, 50].
+    max_rounds = config.get("max_rounds")
+    if max_rounds is not None:
+        if (
+            not isinstance(max_rounds, int)
+            or isinstance(max_rounds, bool)
+            or not (MAX_ROUNDS_MIN <= max_rounds <= MAX_ROUNDS_MAX)
+        ):
+            _err(
+                report,
+                "max_rounds",
+                f"max_rounds must be an integer in [{MAX_ROUNDS_MIN}, {MAX_ROUNDS_MAX}], got {max_rounds!r}.",
+            )
+        else:
+            _ok(report, "max_rounds", f"max_rounds={max_rounds} is within bounds.")
+
+    # 3d. language must be one of zh/en.
+    language = config.get("language")
+    if language is not None:
+        if language not in SUPPORTED_LANGUAGES:
+            _warn(
+                report,
+                "language",
+                f"language {language!r} is not supported.",
+                f"Supported: {', '.join(sorted(SUPPORTED_LANGUAGES))}.",
+            )
+        else:
+            _ok(report, "language", f"language {language!r} is supported.")
+
     # 4. review.scope is supported.
     scope = (config.get("review") or {}).get("scope") if isinstance(config.get("review"), dict) else None
     if scope is not None and scope not in SUPPORTED_SCOPES:
@@ -199,6 +249,22 @@ def run_doctor(project_root: Path) -> DoctorReport:
             _ok(report, "validation.commands", "validation.commands module lists are valid.")
     else:
         _ok(report, "validation.commands", "no validation.commands configured (optional).")
+
+    # 6b. validation.command_whitelist must be a non-empty list of unique non-empty strings.
+    whitelist = validation.get("command_whitelist") if validation else None
+    if whitelist is not None:
+        invalid = not isinstance(whitelist, list) or not whitelist
+        if not invalid:
+            cleaned = [w for w in whitelist if isinstance(w, str) and w.strip()]
+            invalid = len(cleaned) != len(whitelist) or len(set(cleaned)) != len(cleaned)
+        if invalid:
+            _warn(
+                report,
+                "validation.command_whitelist",
+                "command_whitelist must be a non-empty list of unique non-empty strings.",
+            )
+        else:
+            _ok(report, "validation.command_whitelist", "command_whitelist is a valid non-empty list.")
 
     # 7. Onboarding skill_version vs installed skill version.
     onboarding = config.get("onboarding") if isinstance(config.get("onboarding"), dict) else None

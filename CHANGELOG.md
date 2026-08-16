@@ -35,6 +35,22 @@
 
 ---
 
+## [2.3.11] — 2026-08-16
+
+### 新功能 / Features (skill CLI)
+
+- **`iterate doctor` 补齐 schema 对齐检查**：新增 `max_rounds` 边界（1–50）、`language` 枚举（zh/en）、`dimensions` 非空与唯一性、`validation.command_whitelist` 非空唯一字符串等健康检查，与 `config/config.schema.json` 约束逐一对齐。
+
+### 修复 / Bug Fixes (skill)
+
+- **`jsonschema` 缺失运行时依赖**：`validate` 模块依赖 `jsonschema` 但未在 `pyproject.toml` 声明，导致任意安装用户执行 schema 校验必失败。已补入依赖并固定版本。
+
+### 新增单元测试 / Tests
+
+- `tests/test_doctor.py` 新增空维度、重复维度、越界 `max_rounds`、非法 `language`、非法/合法 `command_whitelist` 等用例；全测试集 429 个全绿。
+
+---
+
 ## [2.3.10] — 2026-08-15
 
 ### 新功能 / Features (skill CLI)
