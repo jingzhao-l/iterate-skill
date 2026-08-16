@@ -3,12 +3,15 @@
 
 "use strict";
 
-const { BootstrapError, runHarness } = require("../lib/bootstrap");
+const { reportBootstrapFailure, runHarness } = require("../lib/bootstrap");
+
+const fail = (error) => {
+  reportBootstrapFailure(error);
+  process.exit(1);
+};
 
 try {
-  runHarness(process.argv.slice(2));
+  Promise.resolve(runHarness(process.argv.slice(2))).catch(fail);
 } catch (error) {
-  const message = error instanceof BootstrapError ? error.message : (error && error.stack) || error;
-  process.stderr.write(`[iterate-harness] ${message}\n`);
-  process.exit(1);
+  fail(error);
 }
