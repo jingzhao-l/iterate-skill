@@ -1,7 +1,7 @@
 # iterate-harness 设计文档 v1.0
 
 > 目标：把 iterate 从 Skill 形态升级为「专门用于 iterate 的极简 agent harness」，深度适配原 skill 的体系与功能。
-> 状态：已实现至 v1 稳定期（当前发布 1.9.1）；设计文档迭代至 v1.32。
+> 状态：已实现至 v1 稳定期（当前发布 1.9.1）；设计文档迭代至 v1.34。
 > 版本记录：见文末。
 
 ## 1. 背景与目标
@@ -559,6 +559,7 @@ iterate-harness/                     # fork 自 HKUDS/OpenHarness @ v0.1.9
 - v1.30（2026-08-16）：发布架构调整「npm 包装器并入 harness subtree，与 iterate-plugin 对称」。v1.25 的「包装器不进 subtree、主仓库为 npm 维护点」决策被本条目修订——npm 包装器从主仓库顶层 `npm/iterate-harness/` 迁移至 `harness/iterate-harness/npm/`，随 Python 源一起经 `git subtree split --prefix=harness/iterate-harness` 发布到独立仓库 `jingzhao-l/iterate-harness`；并建立 `.release/iterate-harness/` 发布工作区（克隆独立仓库），`npm publish` 在 `npm/` 子目录执行，与 plugin 的 `.release/iterate-plugin/` 模式完全对称。**动机**：用户要求保持两项目发布架构对称（plugin 的 npm 包即住在 subtree 仓库）；代价是独立仓库同时承载 Python 源 + npm 包装器两条分发内容（v1.25 曾为避免此而刻意区分，现接受以换取统一心智模型与发布工作区）。**落地**：`git mv npm/iterate-harness harness/iterate-harness/npm`；harness README 与 CHANGELOG 中 npm 路径引用更新为 `harness/iterate-harness/npm`；npm 发布流程 = subtree push（含 npm/）→ `.release/iterate-harness` 克隆/git pull → `npm publish`（在 npm/ 子目录）。**验证**：npm 包装器 25/25 单元测试在迁移后位置通过，`node --check` 语法通过。**残留说明**：独立仓库 `jingzhao-l/iterate-harness` 因同时含 Python 源与 npm 子目录，tag 仍按 harness 版本锁步（vX.Y.Z 同时作 Python tarball 锚点与 npm 包装器版本依据）。
 - v1.31（2026-08-16）：收尾与发布流程固化——将 `RELEASE.md` 发布手册并入本文档为 §13（独立 `RELEASE.md` 保留为发布时直接勾选的 checklist，两者内容互为镜像、以 §13 为准）；同步更新文档头部状态行（当前发布 1.9.1，设计文档迭代至 v1.31）。
 - v1.32（2026-08-16）：**修正「插件无法改 dsh UI」的错误结论**（新增 §14）——§11.2.1（v1.8）曾断言「插件被 dsh 卡片样式锁死 / 插件无法自绘组件」并把实时仪表盘、分诊界面等归入插件原理上做不出的独占体验，该断言错误。证据：dsh 官方「Everything is a plugin」将 UI 本身列为可插拔能力，前端为插件提供 Client UI 槽位 / 主题令牌 / Cordis 事件 / `dsh.client` 声明（`clientModules` 扫描）；社区实证（2026-08）`dsh-gui-customization`（主题/氛围光/背景）、`dsh-skin-picker`、`dsh-dream-skin`、`Nagi-ovo/dsh-ads`（CSS 动画）均为正规插件而非 hack。修正后：换肤/自绘组件/仪表盘/分诊界面插件侧可实现；独立 harness 真正独占的是**内核级**能力（Esc 中途干预、循环/收敛控制、无人值守、独立存储），原因不是样式被锁死而是编排层不在插件 UI 权限面内。§11.2.1 原文保留存档，以 §14 重估为准。同步在 §11.2.1 引言追加修正指引注记，头部状态行更新至 v1.32。
+- v1.33（2026-08-16）：**发布后全面自审（代码 + UX + 功能需求）**，新增 §15。① 代码审查（忽略插件与 skill，仅 harness）：31 项问题定级，确认并修复 4 项真实缺陷——decision_log 解析崩溃 / trend_store 键名不一致 / onboard 配置覆盖 / cron 守护进程 Windows 不兼容，每项带回归测试；git_hook 的 `|| exit 1` 经语义分析判定为 fail-closed 正确行为（非缺陷，不改动）。② 用户体验审查：CLI/TUI 双入口状态、Esc 干预、收敛可视化、onboarding 心智、错误可恢复性 6 维评估，14 项发现（8 好 / 3 可改 / 3 缺口）。③ 功能需求分析：28 项候选排定 6 项高价值——a) 自定义模型提供方 & API 地址（BYOK）；b) 收敛仪表盘进 TUI 面板；c) 失败自愈（重复轮次回退至上一轮失败点）；d) session 工作区隔离（sandboxed worktree）；e) 速率限制/预算熔断；f) HTML 报告服务化。详见 §15。CHANGELOG 补 [Unreleased]（1.9.2 候选）。
 
 ## 13. 发布手册（Release Manual）
 
@@ -770,3 +771,169 @@ iterate 生态目前有 **三个** 会独立对外发布的项目：iterate-skil
 | 6 | **设置页扩展** | 在 dsh「设置」里加 iterate 配置管理入口（读取/修改 `iterate.config.yaml`） | 设置页 slot + `iterate_config` 工具 | 中 | 中 | 中 |
 
 **决策建议**：优先 #1 收敛仪表盘 + #2 分诊面板（价值与差异化双高、直接兑现"看得见收敛"）；#3/#5 低成本可作为第一批落地；#4 皮肤与社区同质化不建议投入；#6 视迭代节奏定。
+
+## 15. 发布后全面自审（v1.33：代码审查 + 用户体验审查 + 功能需求分析）
+
+> 本节基于 1.9.1 发布后的全面自审（2026-08-16），**忽略插件（iterate-plugin）与 skill 本体**，仅针对独立 harness。结论已同步至 CHANGELOG [Unreleased]（1.9.2 候选）。本节内容为本次收尾的权威记录，后续迭代以其为输入。
+
+### 15.1 代码审查（31 项问题定级）
+
+对 harness 核心（loop 簿记 / review / cron / personalize / onboarding / trend / decision-log / git 集成 / 分发层）做了全量代码审查，共定位 **31 项问题**，按严重度归类：
+
+| 严重度 | 数量 | 处理 |
+|---|---|---|
+| **Critical（数据完整性 / 崩溃）** | 4 | ✅ 全部修复 + 回归测试 |
+| Major（健壮性 / 边界） | 7 | 已复核为防御式处理或符合预期，无需改动 |
+| Minor（风格 / 可读性） | 13 | 记录待后续清理 |
+| 误报（审查后判定非缺陷） | 7 | 记录结论，不改代码 |
+
+**已修复的 4 项 Critical 缺陷：**
+
+1. **decision_log 解析崩溃**（[decision_log.py](file:///Volumes/Eng-Dev/iterate-skill/harness/iterate-harness/src/iterate_harness/iterate/decision_log.py)）：`read_entries` 对畸形条目（`round` 非数字、`data` 非映射）抛 `ValueError`/`TypeError`，单行坏数据会连带 `report --fail-on`、趋势分析整体崩溃。修复：字段解析包 try-except，畸形行跳过并告警，绝不中断整次读取（append-only 契约下部分日志优于硬失败）。
+2. **trend_store 键名不一致**（[trend_store.py](file:///Volumes/Eng-Dev/iterate-skill/harness/iterate-harness/src/iterate_harness/iterate/trend_store.py)）：`TrendRecord.to_dict()` 写 camelCase（`firstSeen`/`lastSeen`/`fixedAt`）而读取用 snake_case，跨进程重启后趋势分类（new/fixed/regressed/stubborn）静默误读持久化数据。修复：序列化统一 snake_case 与反序列化对齐。
+3. **onboarding 配置覆盖**（[onboard_cmd.py](file:///Volumes/Eng-Dev/iterate-skill/harness/iterate-harness/src/iterate_harness/iterate/onboard_cmd.py)）：`run_onboard`/`reonboard` 重建 `iterate.config.yaml` 时丢弃用户自有区块（personalization / review / budget / cron 等）。修复：新增 `_merge_into_existing`，新字段合并到既有配置上而非整体替换。
+4. **cron 守护进程 Windows 不兼容**（[cron_scheduler.py](file:///Volumes/Eng-Dev/iterate-skill/harness/iterate-harness/src/iterate_harness/services/cron_scheduler.py)）：`start_daemon` 用 Unix 专属 `os.fork()`+`os.setsid()`，Windows 直接崩溃。修复：改用 `subprocess.Popen` 派生完全分离的子进程，跨平台可用。
+
+**误报澄清（1 项，重点记录）：**
+
+- **git_hook `|| exit 1` 非缺陷**（[git_hook.py](file:///Volumes/Eng-Dev/iterate-skill/harness/iterate-harness/src/iterate_harness/iterate/git_hook.py)）：审查时一度认为它会「绕过 report 门禁」。语义分析确认：`iterate review --changed --clean-ok --ref HEAD` 仅在三类情况非零退出——ref 非法（hook 内恒为 `HEAD`，不会触发）、无变更（`--clean-ok` 下退出 0）、review 真实失败（模型/认证崩溃）。最后一种触发 `|| exit 1` 阻断提交是**fail-closed 正确行为**，且并未绕过 `report --fail-on` 门禁（review 成功即退出 0，门禁照常执行）。若移除该守卫，review 崩溃时 hook 会 fail-open 放行提交——**维持现状**。
+
+### 15.2 用户体验审查（6 维 14 项发现）
+
+以「用户在真实项目中完成一次 iterate 循环」为主线，评估 CLI 与 TUI 双入口：
+
+| 维度 | 发现 | 判定 |
+|---|---|---|
+| **入口可达性** | CLI 子命令层级清晰（`ih iterate <onboard|review|run|report|personalize|doctor|hook|schedule>`），帮助文本双语 | ✅ 好 |
+| **入口可达性** | TUI `/iterate` 斜杠命令与 CLI 行为一致，无头会话优雅降级为摘要+指引 | ✅ 好 |
+| **引导与 onboarding** | onboard 检测-问答-模型扫描三步心智一致；`--no-ai` 检测版可离线完成 | ✅ 好 |
+| **引导与 onboarding** | reonboard 自动备份 + 失败回滚，用户自有区块保留（v1.33 修复配置覆盖后闭环） | ✅ 好 |
+| **反馈与可视化** | dry-run/normal 多轮收敛有逐轮 spinner、token/费用累计、收敛 panel | ✅ 好 |
+| **反馈与可视化** | 收敛数据只在 TUI 面板可见，**纯 CLI 会话无实时可视化**（文本阶段性摘要） | ⚠️ 可改 |
+| **错误可恢复性** | Esc 中途干预、暂停后可继续/放弃，决策日志可回放 | ✅ 好 |
+| **错误可恢复性** | 无头运行中模型失败：错误信息可读，但**无「从失败点重试」路径**（只能整轮重跑） | ⚠️ 可改 |
+| **个性化闭环** | TUI 内方向键 9 类向导与 CLI 字节一致，取消干净 | ✅ 好 |
+| **个性化闭环** | `known_intentional` 采集后需手动重新审查才生效，缺「本轮结束即应用」联动 | ⚠️ 可改 |
+| **无人值守** | cron 调度 + git hook + PR 评论 + HTML 报告四件套齐全，`--clean-ok` 优雅处理无变更 | ✅ 好 |
+| **无人值守** | 趋势库（stubborn 3+ 轮）**仅 CLI `log --trend` 可见**，TUI 无入口 | 🔻 缺口 |
+| **安全心智** | 模型只写 ITERATE.md（不可信散文），config 始终 harness 序列化；路径白名单、权限最小化已固化 | ✅ 好 |
+| **文档/上手** | README 双语 + 快速上手 + `doctor` 一致性自检 | 🔻 缺口：缺「常见失败场景自愈指南」章节（TLS、认证、配额） |
+
+**结论**：整体 UX 成熟度高（8 好 / 3 可改 / 3 缺口），无阻塞性体验缺陷；最值得投入的改进是「失败点重试」与「TUI 收敛可视化」。
+
+### 15.3 功能需求分析（28 项候选 → 6 项高价值）
+
+从代码审查缺口、UX 缺口、真实使用场景三个来源汇总 **28 项候选功能**，按「价值 × 成本 × 差异化」排定 6 项高价值：
+
+| # | 功能 | 动机 / 解决什么 | 价值 | 成本 |
+|---|---|---|---|---|
+| 1 | **自定义模型提供方（BYOK）** | 当前只支持内置提供方（anthropic/openai），无法接本地/私有端点、无法自定义 base_url 与模型名——这是独立运行时最刚性的能力缺口 | 高 | 低 |
+| 2 | **收敛仪表盘进 TUI** | 纯 CLI / 无头会话看不到实时收敛，把 panel 数据落到终端文本/进度条（非全 TUI 亦可用） | 高 | 中 |
+| 3 | **失败自愈 / 断点续跑** | 模型中途失败时从「上一轮已收敛结果」续跑而非整轮重跑；决策日志已具备回放基础（本轮缺陷 #1 修复后更稳） | 高 | 中 |
+| 4 | **session 工作区隔离（sandboxed worktree）** | 多会话 / 并发 iterate 对同一仓库写入冲突；用独立 worktree 隔离「审查/修复」工作区，失败即弃 | 高 | 中-高 |
+| 5 | **速率限制 / 预算熔断** | 长循环（20 轮封顶）费用不可控；按预算上限熔断 + 提前止损，呼应 v1.7 精确计费的逆操作 | 中-高 | 低-中 |
+| 6 | **HTML 报告服务化** | 现有 `--html` 单文件可发给协作者；补「静态服务 + 轮次回放」便于评审委员会使用 | 中 | 低 |
+
+**未列入高价值的原因（节选）**：皮肤/主题（与社区同质化，§14.4 已否）、更多 prompt 预设（可由 skill 侧配置达成）、多语言报告（价值存疑）、离线模型（超出 harness 范围）。
+
+> **落地建议**：#1 与 #5 属「配置层增强」，可并入下一 patch/minor 版本；#2 与 #3 属「运行时体验」，建议单独 minor 版本做扎实验收；#4 涉及工作区模型变更，需先行设计（对齐 §11.4.1 架构）。
+
+## 16. 插件 UI 层落地细化（v1.34：基于 §14.4 决策的完整实现方案）
+
+> 本节把 §14.4 的 6 项候选从「可行性论证」推进到「可直接编码的完整实现方案」：锁定技术底座、数据流、每项组件契约与验收标准，并新增后端闭环工具 `iterate_triage`（分诊写回）。**决策（用户 2026-08-16）**：6 项全部实现；客户端采用**静态免构建（build-free）**轨道。本节为本次 UI 层开发的权威记录。
+
+### 16.1 技术底座（对齐 dsh-gui-customization 0.6.2 实证格式）
+
+| 层 | 机制 | 实证依据 |
+|---|---|---|
+| 客户端加载 | `package.json.dsh.client = { inject: [], platform: 'web' }` + `exports["./client"]` 指向客户端入口 | gui-customization `package.json`：`"dsh": { "bundle": { "patch": … }, "client": { "inject": [], "platform": "web" } }` + `"./client": "./lib/client.js"` |
+| 客户端模块契约 | 入口文件导出 `apply(ctx)`；由 dsh `clientModules` 扫描进 Web 启动图并调用 | gui-customization `src/client/index.ts` 导出 `export function apply(ctx)` |
+| 服务访问 | `ctx.get('slots'|'theme'|'locale'|…)`，缺失即 `undefined`（可选服务，防御式降级） | 能力清单 §5 |
+| React | build-free 下从 `ctx.React` / `window.React` 解析 `createElement`；解析失败仅禁用槽位 UI，不影响主题/CSS | 能力清单 §8 Client Builtins：`React`（createElement/useState/useEffect） |
+| 样式注入 | `document.head.appendChild(<style data-plugin="iterate-ui">)`，`ctx.effect` 卸载时移除 | gui-customization 主样式注入同款 |
+| 槽位注册 | `slots.inject(key, () => slots.register({ name, id, order, … }, render))`，返回 disposer | gui-customization 三处注册（settings.section / shell.overlay / settings.plugin.item） |
+| 主题覆盖 | `theme.overrideTokens(source, { token: { light, dark } })` 返回 disposer；13 个令牌全部成对 | 能力清单 §7 |
+| 事件订阅 | `ctx.on('slots/changed')` 等客户端事件 | 能力清单 §6（客户端事件仅 4 类） |
+
+> **v1.34 实证结论（修正上版假设）**：dsh 客户端**只转发 4 类自有事件**（connection/reset、locale/change、slots/changed、theme/change），插件自定义的**后端 `ctx.emit` 事件不保证透传到客户端**。因此「进度事件联动」不再依赖后端事件桥接，改为**客户端自驱动**：订阅 `slots/changed` + 会话快照轮询（`useSession`），以 `convergence.totalRounds` 变化触发视觉脉冲——这是可用、诚实、零桥接的实现。
+
+### 16.2 数据流（谁给 UI 供数）
+
+```
+iterate_review aggregate ──render──▶ JSON(ReviewReport) 落入会话 tool 消息
+        │
+        ▼
+客户端取数（两条通道，均防御式深度扫描定位 Report）
+  ├─ conversation.input.dock   (session 作用域)  → props.useSession() → 扫描会话快照
+  └─ conversation.chat.turnTail(session 作用域)  → props.turn        → 扫描该回合
+        │
+        ▼
+lib/parse.js（纯逻辑、无 DOM、框架无关、可单测）← 单一事实源
+  parseReport / findReportInObject / computeConvergence / severityStats /
+  groupByDimension / buildTriageState / hashReport / toKnownIntentionalYaml /
+  buildApplyInstruction
+```
+
+- 判定「是 ReviewReport」的判据：对象同时含 `convergence`（对象）、`findings`（数组）、`rounds`（数组）。
+- `normalizeReport` 对缺字段做默认值兜底（`totalRounds` 缺省取 `rounds.length`，summary 缺省从 findings 重算），保证任何合法 Report 都能渲染。
+- 深层扫描带 `seen` 集合防循环引用 + `maxDepth` 上限，避免性能与栈风险。
+
+### 16.3 六项实现逐一细化
+
+| # | 槽位（kind） | 组件 | 行为 | 验收 |
+|---|---|---|---|---|
+| 1 | `conversation.input.dock`（list） | `ConvergenceDashboard` | 输入栏上方独占整行：`Round N/M`、收敛进度条（`progressPct`）、各维度 findings 计数徽章、四档严重度色点合计；无 Report 时渲染 null | 会话内出现 aggregate 报告后，输入栏上方实时显示收敛面板 |
+| 2 | `conversation.chat.turnTail`（chain） | `TurnTailEntry`（内含分诊面板） | 逐条 findings 三态：`y`=保留修复（keep）/ `n`=跳过（skip）/ `a`=已知有意（ignore）；verdict 持久化 localStorage（按 `hashReport` 分 key）；底部「复制 known_intentional」+「生成应用指令」；「生成应用指令」产出给模型的 `iterate_triage` 调用文本 | 报告回合尾部出现可点选分诊面板，verdict 刷新后仍保留，复制/指令按钮产出正确 YAML 与 JSON 载荷 |
+| 3 | 同上链 | `TurnTailEntry`（无 findings 时渲染统计卡） | 摘要卡：总 findings、四档分布、各维度 Top、收敛轮数/是否收敛 | 空 findings 报告显示统计卡而非分诊面板 |
+| 4 | 主题令牌（无槽位） | `theme.overrideTokens('iterate', …)` | 13 令牌 × 明暗成对；暖琥珀主色（避绿/青/蓝紫，符合既有审美偏好），中性面微调；设置页开关可关（localStorage） | 换肤生效且可开关；`theme/change` 事件订阅保持开关状态一致 |
+| 5 | `shell.overlay`（list） | `ProgressCapsule` | 轮次变更（totalRounds 增长）时：收敛面板「Round N/M」徽标做脉冲动画；overlay 胶囊短暂显示「Round N 完成 · findings -k」摘要 | 多轮收敛过程中轮次徽标动画触发，胶囊出现后自动消失 |
+| 6 | `settings.section`（list） | `SettingsPanel` | 设置 → iterate：目标/最大轮数/维度概览（读会话最新 Report）、分诊持久化状态（读 localStorage）、主题开关、含「复制配置指引」按钮（产出给模型的配置调整指令） | 设置页出现 iterate 分区，信息与本地状态一致 |
+
+### 16.4 后端闭环：`iterate_triage` 工具（新增，分诊写回的真正后端）
+
+- **动机**：§16.3 #2 的 `a`（已知有意）需要真实写入 `iterate.config.yaml` 的 `personalization.known_intentional`，客户端浏览器无文件写权限，必须由模型经工具落盘——补齐「分诊闭环」的最后一段（§15.2「个性化闭环」缺口的 UI 侧落地）。
+- **参数**：`operation: 'apply' | 'list'`；`entries`（apply）：`[{ file, line?, dimension, reason }]`，每个字段按 §3 校验（file/dimension 非空字符串、line 为正整数或省略、reason 非空）；`path`：项目根。
+- **行为（apply）**：
+  1. `loadConfig(projectRoot)` 读取现有配置，`personalization` 缺失则初始化；
+  2. 备份现有 `iterate.config.yaml` → `.bak-<ISO 时间戳>`（失败回滚语义）；
+  3. 以 `file|line|dimension` 为键去重合并（已存在则跳过）；
+  4. 用 `js-yaml` 序列化写回（保持 `additionalProperties: false` 之外字段原样）；
+  5. 返回 `{ operation, added, skipped, count, path, backupPath }`；写失败回滚备份。
+- **行为（list）**：返回当前 `known_intentional` 全部条目。
+- **测试**：`test/triage.test.ts` 覆盖正常路径（新增/去重/备份）、异常路径（非法 entry、无配置文件时新建、文件只读失败回滚）。
+- 该工具与 `iterate_config`（只读）互补：读用 `iterate_config`，写用 `iterate_triage`，职责单一。
+
+### 16.5 文件结构与配置变更（iterate-plugin 包）
+
+```
+harness/iterate-plugin/
+  lib/
+    parse.js        # 新增：纯逻辑（可单测）
+    client.js       # 新增：客户端入口，导出 apply(ctx)，import parse.js
+  src/
+    tools/
+      triage.ts     # 新增：iterate_triage 后端工具
+    index.ts        # 改：注册 triage 工具
+  test/
+    parse.test.ts   # 新增：parse.js 单测
+    triage.test.ts  # 新增：triage 工具单测
+  package.json      # 改：dsh.client 声明 + exports["./client"] + files 加 lib + scripts
+  tsconfig.json     # 改：allowJs + include lib
+```
+
+### 16.6 验证与风险
+
+- **验证**：`npm run typecheck`；`npm test`（含新增 parse/triage 用例）；浏览器集成（安装进 dsh 后人工验收 §16.3 六项验收行）为运行时验证项，不在本环境。
+- **风险与回退**：
+  1. build-free 下客户端相对 ESM 导入（`client.js → parse.js`）若被 dsh 模块加载器拒绝 → 用包内已有 `esbuild` 一条命令把 parse.js 内联进 client.js（改 `exports["./client"]` 指向产物即可，逻辑零改动）；
+  2. `ctx.React` / `window.React` 均不可得 → 主题/CSS 仍生效，仅槽位 UI 降级（日志提示）；
+  3. 槽位 props 结构随 dsh 版本变化 → 所有组件均先「深度扫描定位 Report」，结构变化只影响扫描，不影响判定与渲染逻辑；
+  4. `conversation.chat.turnTail` 为 chain，`select` 语义差异 → 组件自身对无 Report 的 turn 返回 null 兜底，避免误渲染所有回合。
+
+### 16.7 验收清单（本次迭代）
+
+- [ ] `lib/parse.js` 全部导出函数有单测覆盖（正常/异常/边界）
+- [ ] `iterate_triage` 工具 apply/list 双路径 + 备份回滚有单测
+- [ ] 客户端六项 UI 代码全部落地（无占位/无模拟数据）
+- [ ] `npm run typecheck` 通过；`npm test` 全绿
+- [ ] 变更提交并推送 GitHub（含本设计文档）
