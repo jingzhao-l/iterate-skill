@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "refresh":
         if show_banner:
             tui.banner()
-        return _cmd_refresh(project_root)
+        return _cmd_refresh(project_root, dry_run=getattr(args, "dry_run", False))
     elif args.command == "reonboard":
         if show_banner:
             tui.banner()
@@ -168,12 +168,18 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Skip basic onboarding and go directly to the 9-step "
         "personalization wizard. Ideal for adding constraints mid-project.",
     )
-    subparsers.add_parser(
+    refresh_parser = subparsers.add_parser(
         "refresh",
         parents=[parent],
         help="Incrementally refresh ITERATE.md (preserve user sections).",
         description="Re-scan the project and update AI-maintained sections of ITERATE.md "
         "while preserving user-owned sections. Also updates manifest fingerprints.",
+    )
+    refresh_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Preview what would change without writing any files.",
     )
     subparsers.add_parser(
         "reonboard",
@@ -357,11 +363,47 @@ def _update_iterate_md_user_section(project_root: Path, personalization: Any) ->
         tui.warning(f"Could not write updated ITERATE.md: {exc}")
 
 
-def _cmd_refresh(project_root: Path) -> int:
-    """Handle the 'refresh' subcommand."""
+def _cmd_refresh(project_root: Path, dry_run: bool = False) -> int:
+    """Handle the 'refresh' subcommand.
+
+    Args:
+        project_root: Project root directory.
+        dry_run: When True, only preview what would change without writing.
+
+    Returns:
+        Exit code: 0 on success, 1 on failure.
+    """
     if not is_onboarding_complete(project_root):
         tui.warning("Onboarding not yet completed. Run 'iterate onboard' first.")
         return 1
+
+    if dry_run:
+        from iterate_cli.refresh import preview_refresh
+
+        preview = preview_refresh(project_root)
+        if not preview["ok"]:
+            tui.error(
+                f"Refresh preview failed. Could not read ITERATE.md / iterate.config.yaml: "
+                f"{preview['error']}"
+            )
+            return 1
+        if preview["changed"]:
+            stats = preview["stats"]
+            tui.warning("Refresh would make the following changes:")
+            tui.key_value("ITERATE.md", f"{preview['md_changed_lines']} line(s) changed")
+            tui.bullet(
+                f"+{stats.get('added', 0)} / -{stats.get('removed', 0)}",
+                indent=4,
+            )
+            tui.key_value(
+                "iterate.config.yaml",
+                "would be updated" if preview["config_changed"] else "unchanged",
+            )
+            tui.empty_line()
+            tui.hint("Run 'iterate refresh' (without --dry-run) to apply these changes.", indent=2)
+        else:
+            tui.success("No changes needed — ITERATE.md and iterate.config.yaml are already up to date.")
+        return 0
 
     success = incremental_refresh(project_root)
     if success:
@@ -552,20 +594,36 @@ def _cmd_doctor(
     """
     from iterate_cli.doctor import render_report, run_doctor, run_doctor_fix
 
+    fixes: list[str] = []
     if fix:
         ok, fixes = run_doctor_fix(project_root)
         if not ok:
+            if json_output:
+                import json
+
+                print(
+                    json.dumps(
+                        {"error": "doctor --fix: could not apply fixes"},
+                        ensure_ascii=False,
+                    )
+                )
+                return 1
             tui.error("doctor --fix: could not apply fixes (see stderr).")
             return 1
-        if fixes:
-            tui.success(f"doctor --fix: applied {len(fixes)} safe fix(es).")
-            for fix_note in fixes:
-                tui.bullet(fix_note, indent=4)
-            tui.empty_line()
-        else:
-            tui.success("doctor --fix: no safe fixes needed.")
-            tui.empty_line()
+        if not json_output:
+            if fixes:
+                tui.success(f"doctor --fix: applied {len(fixes)} safe fix(es).")
+                for fix_note in fixes:
+                    tui.bullet(fix_note, indent=4)
+                tui.empty_line()
+            else:
+                tui.success("doctor --fix: no safe fixes needed.")
+                tui.empty_line()
 
     report = run_doctor(project_root)
+    if json_output:
+        # Attach applied fixes to the structured report so JSON consumers
+        # see them without the JSON blob being polluted by TUI text.
+        report.fixes = fixes
     return render_report(report, json_output=json_output)
 

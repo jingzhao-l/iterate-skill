@@ -6,11 +6,13 @@ project drifting from the skill's expectations is surfaced early.
 
 Checks performed:
 - Onboarding completeness (ITERATE.md + iterate.config.yaml exist).
-- Config loads as a YAML mapping.
+- Config loads as a YAML mapping and fully matches config/config.schema.json.
 - ``dimensions`` reference only canonical dimension ids.
 - ``review.scope`` is one of the supported values.
 - ``git.target_branch`` is a non-empty string.
 - ``validation.commands`` values are non-empty lists of strings.
+- ``validation.command_whitelist`` entries are safe and every command is whitelisted.
+- ``personalization`` dimension references point at enabled dimensions.
 - Onboarding ``skill_version`` vs the installed skill version.
 - Manifest drift (tech-stack changed since onboarding).
 
@@ -19,6 +21,8 @@ All checks can be run in a structured (``--json``) or human (TUI) mode.
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -29,6 +33,7 @@ from typing import Any
 import yaml
 
 from iterate_cli import __version__ as SKILL_VERSION
+from iterate_cli.generator import atomic_write
 from iterate_cli.refresh import (
     CONFIG_YAML,
     check_onboarding_drift,
@@ -60,6 +65,17 @@ SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"zh", "en"})
 MAX_ROUNDS_MIN: int = 1
 MAX_ROUNDS_MAX: int = 50
 
+# Cap on schema-violation messages reported in a single doctor run, to avoid
+# flooding output when a config has many malformed keys.
+SCHEMA_MAX_ERRORS: int = 5
+
+# Config schema location: prefer the bundled copy (shipped in the package via
+# pyproject package-data), fall back to the repo-relative config/ so running
+# from source still works — mirrors TEMPLATE_PATH in generator.py.
+_BUNDLED_SCHEMA = Path(__file__).resolve().parent / "data" / "config.schema.json"
+_REPO_SCHEMA = Path(__file__).resolve().parent.parent / "config" / "config.schema.json"
+SCHEMA_PATH = _BUNDLED_SCHEMA if _BUNDLED_SCHEMA.exists() else _REPO_SCHEMA
+
 
 @dataclass
 class DoctorFinding:
@@ -77,6 +93,7 @@ class DoctorReport:
 
     project: str
     findings: list[DoctorFinding] = field(default_factory=list)
+    fixes: list[str] = field(default_factory=list)
 
     def has_errors(self) -> bool:
         return any(f.severity == "error" for f in self.findings)
@@ -90,6 +107,7 @@ class DoctorReport:
             "project": self.project,
             "skill_version": SKILL_VERSION,
             "healthy": not self.has_errors(),
+            "fixes": list(self.fixes),
             "findings": [
                 {
                     "severity": f.severity,
@@ -120,6 +138,65 @@ def _dimension_ids(config: dict[str, Any]) -> list[str]:
     if isinstance(dims, list):
         return [str(d) for d in dims]
     return list(CANONICAL_DIMENSIONS)
+
+
+def _load_config_schema() -> dict[str, Any] | None:
+    """Load the canonical config JSON Schema, or None if unavailable.
+
+    Uses the packaged copy (SCHEMA_PATH) so doctor works both from source
+    and inside an installed package. Returns None when the schema file is
+    missing or malformed, in which case schema validation is skipped.
+    """
+    try:
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return schema if isinstance(schema, dict) else None
+
+
+def _schema_violations(config: dict[str, Any]) -> list[str]:
+    """Validate ``config`` against the canonical JSON Schema.
+
+    Returns a list of human-readable ``path: message`` violations (empty when
+    the config is valid or schema validation is unavailable). Mirrors the
+    schema pass in scripts/validate.py so the two diagnostic paths agree.
+    """
+    schema = _load_config_schema()
+    if schema is None:
+        return []
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError:
+        return []
+    violations: list[str] = []
+    for error in Draft202012Validator(schema).iter_errors(config):
+        path = "/".join(str(part) for part in error.path) or "<root>"
+        violations.append(f"{path}: {error.message}")
+    return violations
+
+
+def _command_is_whitelisted(command: Any, whitelist: Any) -> bool:
+    """True when a command equals or is prefixed by a whitelisted entry.
+
+    Mirrors scripts/validate.py::command_is_whitelisted: a command is allowed
+    when it equals a whitelisted prefix, or starts with one followed by
+    whitespace (so ``pytest tests/`` is ``pytest`` plus an argument).
+    """
+    if not isinstance(command, str) or not isinstance(whitelist, list):
+        return False
+    stripped = command.strip()
+    for prefix in whitelist:
+        if not isinstance(prefix, str):
+            continue
+        if stripped == prefix:
+            return True
+        if (
+            len(stripped) > len(prefix)
+            and stripped.startswith(prefix)
+            and stripped[len(prefix)].isspace()
+        ):
+            return True
+    return False
 
 
 def run_doctor(project_root: Path) -> DoctorReport:
@@ -155,6 +232,24 @@ def run_doctor(project_root: Path) -> DoctorReport:
         )
         return report
     _ok(report, "config.parse", "iterate.config.yaml parsed as a valid YAML mapping.")
+
+    # 2b. Full config validation against the canonical JSON Schema. Surfaced as
+    #     a warning (not an error) so valid-but-tuned configs that a targeted
+    #     check already flags (e.g. unknown dimension) keep their warn severity.
+    schema_violations = _schema_violations(config)
+    if schema_violations:
+        shown = schema_violations[:SCHEMA_MAX_ERRORS]
+        detail = "\n".join(f"  - {violation}" for violation in shown)
+        if len(schema_violations) > SCHEMA_MAX_ERRORS:
+            detail += f"\n  … and {len(schema_violations) - SCHEMA_MAX_ERRORS} more violation(s)."
+        _warn(
+            report,
+            "config.schema",
+            f"iterate.config.yaml does not fully match the schema ({len(schema_violations)} violation(s)).",
+            detail,
+        )
+    else:
+        _ok(report, "config.schema", "iterate.config.yaml fully matches the config schema.")
 
     # 3. Dimensions reference only canonical ids.
     dims = _dimension_ids(config)
@@ -268,6 +363,42 @@ def run_doctor(project_root: Path) -> DoctorReport:
         else:
             _ok(report, "validation.command_whitelist", "command_whitelist is a valid non-empty list.")
 
+    # 6c. command_whitelist compliance: every configured command must be
+    #     prefixed by a whitelisted entry, and whitelist entries must not
+    #     contain shell metacharacters. Mirrors scripts/validate.py. Only
+    #     runs when a whitelist is configured (doctor keeps it optional).
+    if whitelist is not None and commands is not None:
+        safe_prefix = re.compile(r"^[A-Za-z0-9_. -]+$")
+        bad_entries = [
+            entry
+            for entry in whitelist
+            if not (isinstance(entry, str) and safe_prefix.match(entry))
+        ]
+        if bad_entries:
+            _warn(
+                report,
+                "validation.whitelist",
+                "command_whitelist contains entry(ies) with unsafe shell characters.",
+                "Allowed in a whitelist entry: letters, digits, underscore, dash, dot and space.",
+            )
+        else:
+            non_whitelisted: list[str] = []
+            for module, cmds in commands.items():
+                if not isinstance(cmds, list):
+                    continue
+                for idx, command in enumerate(cmds):
+                    if not _command_is_whitelisted(command, whitelist):
+                        non_whitelisted.append(f"{module}[{idx}] {command!r}")
+            if non_whitelisted:
+                _warn(
+                    report,
+                    "validation.whitelist",
+                    f"{len(non_whitelisted)} configured validation command(s) are not in command_whitelist.",
+                    "; ".join(non_whitelisted[:SCHEMA_MAX_ERRORS]),
+                )
+            else:
+                _ok(report, "validation.whitelist", "All configured validation commands are whitelisted.")
+
     # 7. Onboarding skill_version vs installed skill version.
     onboarding = config.get("onboarding") if isinstance(config.get("onboarding"), dict) else None
     recorded_version = onboarding.get("skill_version") if onboarding else None
@@ -289,6 +420,31 @@ def run_doctor(project_root: Path) -> DoctorReport:
         _warn(report, "drift", f"Manifest drift detected: {drift.summary()}", drift.advice())
     else:
         _ok(report, "drift", "No manifest drift detected.")
+
+    # 8b. personalization consistency: dimension references must point at
+    #     enabled dimensions. Mirrors scripts/validate.py.
+    personalization = config.get("personalization") if isinstance(config.get("personalization"), dict) else None
+    if personalization is not None and dims:
+        enabled = set(dims)
+        broken: list[str] = []
+        for idx, item in enumerate(personalization.get("fix_priority_order") or []):
+            if isinstance(item, str) and item not in enabled:
+                broken.append(f"fix_priority_order[{idx}] {item!r}")
+        for idx, item in enumerate(personalization.get("dimension_focus") or []):
+            if isinstance(item, dict) and item.get("dimension") not in enabled:
+                broken.append(f"dimension_focus[{idx}] {item.get('dimension')!r}")
+        for idx, item in enumerate(personalization.get("known_intentional") or []):
+            if isinstance(item, dict) and item.get("dimension") not in enabled:
+                broken.append(f"known_intentional[{idx}] {item.get('dimension')!r}")
+        if broken:
+            _warn(
+                report,
+                "personalization.consistency",
+                f"{len(broken)} personalization reference(s) point to disabled dimensions.",
+                "; ".join(broken[:SCHEMA_MAX_ERRORS]),
+            )
+        else:
+            _ok(report, "personalization.consistency", "personalization dimension references are consistent.")
 
     return report
 

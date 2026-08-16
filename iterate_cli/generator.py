@@ -7,6 +7,7 @@ user-owned sections from an existing ITERATE.md.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +83,13 @@ class OnboardingData:
     fingerprints: list[FingerprintEntry] = field(default_factory=list)
     iterate_notes: str = ""
     language: str = "en"
+    goal: str = DEFAULT_GOAL
+    max_rounds: int = DEFAULT_MAX_ROUNDS
+    atomic_max_lines: int = DEFAULT_ATOMIC_MAX_LINES
+    atomic_max_adjacent_methods: int = DEFAULT_ATOMIC_MAX_ADJACENT_METHODS
+    use_worktree: bool = False
+    auto_merge: bool = False
+    output_schema_validation: bool = True
     personalization: PersonalizationData | None = None
 
     def completed_at(self) -> str:
@@ -144,26 +152,26 @@ def generate_config_yaml(data: OnboardingData) -> str:
         Complete iterate.config.yaml file content as a string.
     """
     config: dict[str, Any] = {
-        "goal": DEFAULT_GOAL,
-        "max_rounds": DEFAULT_MAX_ROUNDS,
+        "goal": data.goal,
+        "max_rounds": data.max_rounds,
         "language": data.language,
         "dimensions": data.dimensions,
         "review": {"scope": data.review_scope},
         "atomic": {
-            "max_lines": DEFAULT_ATOMIC_MAX_LINES,
-            "max_adjacent_methods": DEFAULT_ATOMIC_MAX_ADJACENT_METHODS,
+            "max_lines": data.atomic_max_lines,
+            "max_adjacent_methods": data.atomic_max_adjacent_methods,
         },
         "git": {
             "target_branch": data.target_branch,
-            "use_worktree": False,
+            "use_worktree": data.use_worktree,
             "push_per_round": data.push_per_round,
-            "auto_merge": False,
+            "auto_merge": data.auto_merge,
         },
         "validation": {
             "command_whitelist": data.command_whitelist,
             "commands": data.validation_commands,
         },
-        "reviewer": {"output_schema_validation": True},
+        "reviewer": {"output_schema_validation": data.output_schema_validation},
         "onboarding": {
             "version": FINGERPRINT_VERSION,
             "completed_at": data.completed_at(),
@@ -185,6 +193,34 @@ def generate_config_yaml(data: OnboardingData) -> str:
         config = merge_personalization_into_config(config, data.personalization)
 
     return yaml.safe_dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Write ``content`` to ``path`` atomically (temp file + ``os.replace``).
+
+    Creating the temp file in the same directory keeps the rename on one
+    mount point, and ``os.replace`` is atomic on POSIX, so readers never
+    observe a partially written file. The temp file is removed on failure.
+
+    Args:
+        path: Destination file path.
+        content: Full file content.
+        encoding: Text encoding (default UTF-8).
+
+    Raises:
+        OSError: If the write or the final replace fails.
+    """
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        with open(tmp_path, "w", encoding=encoding) as handle:
+            handle.write(content)
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def write_onboarding_outputs(
@@ -230,8 +266,18 @@ def write_onboarding_outputs(
             user_content = merge_user_sections(user_content, new_personalization_md)
         iterate_md_content = _replace_user_owned_section(fresh, user_content)
 
-    iterate_md_path.write_text(iterate_md_content, encoding="utf-8")
-    config_path.write_text(generate_config_yaml(data), encoding="utf-8")
+    config_yaml = generate_config_yaml(data)
+    atomic_write(iterate_md_path, iterate_md_content)
+    try:
+        atomic_write(config_path, config_yaml)
+    except OSError:
+        # Roll back the already-written ITERATE.md so the two files stay
+        # consistent (best effort; the error is re-raised for the caller).
+        try:
+            atomic_write(iterate_md_path, existing_md or generate_iterate_md(data))
+        except OSError:
+            pass
+        raise
 
     return iterate_md_path, config_path
 
@@ -305,20 +351,25 @@ def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
     # Generate fresh content with default user section.
     fresh = generate_iterate_md(data)
 
-    # Extract user-owned content from the existing file.
-    user_content = extract_user_owned_section(existing_md)
-
-    # Replace the default user section with the preserved content.
-    start_idx = fresh.find(USER_START_MARKER)
-    end_idx = fresh.find(USER_END_MARKER)
-
-    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+    # Locate markers in the existing file.
+    e_start = existing_md.find(USER_START_MARKER)
+    e_end = existing_md.find(USER_END_MARKER)
+    if e_start == -1 or e_end == -1 or e_end <= e_start + len(USER_START_MARKER):
         return fresh
 
-    before = fresh[: start_idx + len(USER_START_MARKER)]
-    after = fresh[end_idx:]
+    # Preserve the user-owned block verbatim (start marker through end marker,
+    # including its original blank-line layout) so an unchanged refresh is a
+    # byte-for-byte no-op instead of silently rewriting whitespace.
+    user_block = existing_md[e_start : e_end + len(USER_END_MARKER)]
 
-    return f"{before}\n{user_content}\n{after}"
+    # Locate markers in the freshly regenerated content.
+    f_start = fresh.find(USER_START_MARKER)
+    f_end = fresh.find(USER_END_MARKER)
+    if f_start == -1 or f_end == -1 or f_end <= f_start + len(USER_START_MARKER):
+        return fresh
+
+    # Splice the verbatim user block into the regenerated AI-maintained parts.
+    return fresh[:f_start] + user_block + fresh[f_end + len(USER_END_MARKER):]
 
 
 def _render_project_overview(data: OnboardingData) -> str:

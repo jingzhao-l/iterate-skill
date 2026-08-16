@@ -24,6 +24,7 @@ from iterate_cli.fingerprint import (
 )
 from iterate_cli.generator import (
     OnboardingData,
+    atomic_write,
     generate_refreshed_md,
     write_onboarding_outputs,
 )
@@ -171,14 +172,10 @@ def check_onboarding_drift(project_root: Path) -> DriftResult | None:
 def incremental_refresh(project_root: Path) -> bool:
     """Perform an incremental refresh of ITERATE.md.
 
-    Re-scans the project and regenerates the AI-maintained sections of
-    ITERATE.md while preserving user-owned sections. Also updates the
-    fingerprints in iterate.config.yaml.
-
-    Best-effort rollback is attempted on write failure: if either file
-    write fails, the other is rolled back to its pre-refresh state.
-    If rollback itself fails, files may be in an inconsistent state
-    (the rollback failure is logged to stderr).
+    Re-scans the project, regenerates the AI-maintained sections of
+    ITERATE.md while preserving user-owned sections, and updates the
+    fingerprints in iterate.config.yaml. Both files are written atomically;
+    on failure the previous state is restored where possible.
 
     Args:
         project_root: The project root directory.
@@ -187,62 +184,138 @@ def incremental_refresh(project_root: Path) -> bool:
         True if refresh succeeded, False if ITERATE.md does not exist,
         cannot be read, or a write failure occurred.
     """
+    ok, refreshed_md, config_yaml, error = _build_refresh_outputs(project_root)
+    if not ok:
+        print(f"⚠️  {error}", file=sys.stderr)
+        return False
+    return _write_refresh_outputs(project_root, refreshed_md, config_yaml)
+
+
+def preview_refresh(project_root: Path) -> dict[str, Any]:
+    """Compute a dry-run preview of what ``incremental_refresh`` would change.
+
+    No files are written. Intended for ``iterate refresh --dry-run`` so a
+    user can review the impact before committing to a refresh.
+
+    Args:
+        project_root: The project root directory.
+
+    Returns:
+        A dict:
+        - ``ok``: bool — whether a preview could be computed.
+        - ``error``: str — human-readable reason when ``ok`` is False.
+        - ``changed``: bool — whether ITERATE.md or config would change.
+        - ``config_changed``: bool — whether iterate.config.yaml would change.
+        - ``md_changed_lines``: int — total added+removed lines in ITERATE.md.
+        - ``stats``: dict with added/removed/changed line counts.
+    """
+    empty = {
+        "ok": False,
+        "error": "",
+        "changed": False,
+        "config_changed": False,
+        "md_changed_lines": 0,
+        "stats": {},
+    }
+    ok, refreshed_md, config_yaml, error = _build_refresh_outputs(project_root)
+    if not ok:
+        empty["error"] = error
+        return empty
+
+    try:
+        current_md = (project_root / ITERATE_MD).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        empty["error"] = f"Failed to read {ITERATE_MD}: {exc}"
+        return empty
+
+    current_config = ""
+    try:
+        current_config = (project_root / CONFIG_YAML).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        current_config = ""  # Config may not exist yet; treat as empty.
+
+    md_changed = refreshed_md != current_md
+    config_changed = config_yaml != current_config
+    stats = _diff_stats(current_md, refreshed_md)
+    return {
+        "ok": True,
+        "error": "",
+        "changed": md_changed or config_changed,
+        "config_changed": config_changed,
+        "md_changed_lines": stats["changed"],
+        "stats": stats,
+    }
+
+
+def _build_refresh_outputs(project_root: Path) -> tuple[bool, str, str, str]:
+    """Build the refreshed ITERATE.md and config YAML without writing.
+
+    Args:
+        project_root: The project root directory.
+
+    Returns:
+        ``(ok, refreshed_md, config_yaml, error)``. When ``ok`` is False,
+        the two content strings are empty and ``error`` explains why.
+    """
     iterate_md_path = project_root / ITERATE_MD
     if not iterate_md_path.is_file():
-        return False
-
-    # Read existing ITERATE.md defensively (file may have been removed
-    # between is_file() and read_text(), or contain non-UTF-8 bytes).
+        return False, "", "", f"{ITERATE_MD} does not exist."
     try:
         existing_md = iterate_md_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        print(f"⚠️  Failed to read {iterate_md_path}: {exc}", file=sys.stderr)
-        return False
+        return False, "", "", f"Failed to read {iterate_md_path}: {exc}"
 
     scan = scan_project(project_root)
-
-    # Load existing config to preserve user-confirmed settings.
     existing_config = load_onboarding_config(project_root) or {}
-
-    # Build refreshed data from existing config + fresh scan.
     data = _build_refresh_data(project_root, scan, existing_config)
-
-    # Generate refreshed ITERATE.md preserving user sections.
     refreshed_md = generate_refreshed_md(data, existing_md)
-
-    # Prepare new config content (do not write yet).
     new_config = _build_refreshed_config(existing_config, data.fingerprints)
+    config_yaml = yaml.safe_dump(
+        new_config,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    return True, refreshed_md, config_yaml, ""
 
-    # Atomic commit: write both files, rollback on failure.
+
+def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: str) -> bool:
+    """Atomically write refreshed ITERATE.md and config, rolling back on failure.
+
+    Both files are written with ``_atomic_write`` (temp file + ``os.replace``).
+    If either write fails, the other is rolled back to its pre-refresh state.
+    If rollback itself fails, files may be inconsistent (logged to stderr).
+
+    Args:
+        project_root: The project root directory.
+        refreshed_md: New ITERATE.md content.
+        config_yaml: New iterate.config.yaml YAML content.
+
+    Returns:
+        True on success, False if a write or rollback failed.
+    """
+    iterate_md_path = project_root / ITERATE_MD
     config_path = project_root / CONFIG_YAML
-    # existing_md is the pre-refresh ITERATE.md content (already read
-    # above) — reuse it as the rollback target.
-    backup_md = existing_md
-    backup_config: str | None = None
 
+    backup_md: str | None = None
+    backup_config: str | None = None
     try:
-        # Back up current config content so we can rollback on failure.
+        try:
+            backup_md = iterate_md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            backup_md = None
         try:
             backup_config = config_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
-            backup_config = None  # File may not exist yet.
+            backup_config = None
 
-        iterate_md_path.write_text(refreshed_md, encoding="utf-8")
-        config_path.write_text(
-            yaml.safe_dump(
-                new_config,
-                default_flow_style=False,
-                allow_unicode=True,
-                sort_keys=False,
-            ),
-            encoding="utf-8",
-        )
+        atomic_write(iterate_md_path, refreshed_md)
+        atomic_write(config_path, config_yaml)
     except OSError as exc:
-        # Rollback both files to their pre-refresh state.
         print(f"⚠️  Failed to write refresh outputs: {exc}", file=sys.stderr)
         if backup_md is not None:
             try:
-                iterate_md_path.write_text(backup_md, encoding="utf-8")
+                atomic_write(iterate_md_path, backup_md)
             except OSError as rollback_exc:
                 print(
                     f"⚠️  Rollback failed for {iterate_md_path}: {rollback_exc}",
@@ -250,15 +323,39 @@ def incremental_refresh(project_root: Path) -> bool:
                 )
         if backup_config is not None:
             try:
-                config_path.write_text(backup_config, encoding="utf-8")
+                atomic_write(config_path, backup_config)
             except OSError as rollback_exc:
                 print(
                     f"⚠️  Rollback failed for {config_path}: {rollback_exc}",
                     file=sys.stderr,
                 )
         return False
-
     return True
+
+
+def _diff_stats(before: str, after: str) -> dict[str, int]:
+    """Count added/removed lines between two text blobs.
+
+    Args:
+        before: Original text.
+        after: New text.
+
+    Returns:
+        A dict with ``added``, ``removed`` and ``changed`` (added + removed)
+        line counts.
+    """
+    import difflib
+
+    added = 0
+    removed = 0
+    for line in difflib.unified_diff(
+        before.splitlines(), after.splitlines(), lineterm=""
+    ):
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    return {"added": added, "removed": removed, "changed": added + removed}
 
 
 def _build_refreshed_config(
@@ -279,8 +376,14 @@ def _build_refreshed_config(
     """
     config = dict(existing_config)
     onboarding = dict(config.get("onboarding") or {})
-    onboarding["fingerprints"] = fingerprints_to_dict(new_fingerprints)
-    onboarding["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    new_fp = fingerprints_to_dict(new_fingerprints)
+    # Idempotent refresh: only restamp ``completed_at`` when the manifest
+    # fingerprints actually changed. This keeps ``iterate refresh`` a no-op
+    # when nothing drifted, so ``--dry-run`` reports "no changes needed"
+    # instead of always showing a diff due to a fresh timestamp.
+    if onboarding.get("fingerprints") != new_fp:
+        onboarding["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    onboarding["fingerprints"] = new_fp
     config["onboarding"] = onboarding
     return config
 
