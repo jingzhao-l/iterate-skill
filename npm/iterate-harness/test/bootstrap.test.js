@@ -12,8 +12,10 @@ const {
   INSTALL_URL_ENV_VAR,
   MAX_DOWNLOAD_REDIRECTS,
   PYTHON_ENV_VAR,
+  curlDownload,
   downloadCachePath,
   downloadFile,
+  downloadTarballTo,
   installHarness,
   installUrl,
   isRemoteHttpUrl,
@@ -262,5 +264,93 @@ test("downloadFile rejects immediately when the redirect budget is exhausted", a
     downloadFile("https://github.com/x/y.tar.gz", "/tmp/never-written.tar.gz", -1),
     (error) =>
       error instanceof BootstrapError && error.message.includes("too many redirects")
+  );
+});
+
+test("curlDownload invokes curl with fail-fast, redirects, timeout and output pinning", () => {
+  const calls = [];
+  const spawnFn = (command, args) => {
+    calls.push([command, args]);
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const outcome = curlDownload("https://github.com/x/y.tar.gz", "/tmp/y.tar.gz", spawnFn);
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.error, undefined);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "curl");
+  assert.deepEqual(calls[0][1], [
+    "-fsSL",
+    "--max-time",
+    "240",
+    "-o",
+    "/tmp/y.tar.gz",
+    "https://github.com/x/y.tar.gz",
+  ]);
+});
+
+test("curlDownload reports non-zero exits and spawn errors as BootstrapError", () => {
+  const exitOutcome = curlDownload("https://x/y.tar.gz", "/tmp/y.tar.gz", () => ({
+    status: 22,
+    stdout: "",
+    stderr: "curl: (22) The requested URL returned error: 404",
+  }));
+  assert.equal(exitOutcome.ok, false);
+  assert.ok(exitOutcome.error.message.includes("404"));
+
+  const errorOutcome = curlDownload("https://x/y.tar.gz", "/tmp/y.tar.gz", () => ({
+    status: null,
+    error: new Error("spawn curl ENOENT"),
+    stdout: "",
+    stderr: "",
+  }));
+  assert.equal(errorOutcome.ok, false);
+  assert.ok(errorOutcome.error.message.includes("ENOENT"));
+});
+
+test("downloadTarballTo tries node-https first and skips curl on success", async () => {
+  const curlCalls = [];
+  const dest = await downloadTarballTo("https://x/y.tar.gz", "/tmp/never-curl.tar.gz", {
+    nodeDownload: async () => "/tmp/never-curl.tar.gz",
+    curlDownload: (...args) => {
+      curlCalls.push(args);
+      return { ok: true, error: undefined };
+    },
+  });
+  assert.equal(dest, "/tmp/never-curl.tar.gz");
+  assert.equal(curlCalls.length, 0);
+});
+
+test("downloadTarballTo falls back to curl when node-https fails", async () => {
+  const nodeCalls = [];
+  const curlCalls = [];
+  await downloadTarballTo("https://x/y.tar.gz", "/tmp/fallback.tar.gz", {
+    nodeDownload: async (url) => {
+      nodeCalls.push(url);
+      throw new Error("unable to verify the first certificate");
+    },
+    curlDownload: (url, dest) => {
+      curlCalls.push([url, dest]);
+      return { ok: true, error: undefined };
+    },
+  });
+  assert.deepEqual(nodeCalls, ["https://x/y.tar.gz"]);
+  assert.deepEqual(curlCalls, [["https://x/y.tar.gz", "/tmp/fallback.tar.gz"]]);
+});
+
+test("downloadTarballTo aggregates both download failures", async () => {
+  await assert.rejects(
+    downloadTarballTo("https://x/y.tar.gz", "/tmp/both-fail.tar.gz", {
+      nodeDownload: async () => {
+        throw new Error("node TLS broke");
+      },
+      curlDownload: () => ({
+        ok: false,
+        error: new BootstrapError("curl download of https://x/y.tar.gz failed: exit code 6"),
+      }),
+    }),
+    (error) =>
+      error instanceof BootstrapError &&
+      error.message.includes("node-https: node TLS broke") &&
+      error.message.includes("curl: curl download of https://x/y.tar.gz failed: exit code 6")
   );
 });

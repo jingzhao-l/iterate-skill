@@ -8,7 +8,11 @@
  * 1. Resolve a Python interpreter >= 3.10 (env override first).
  * 2. Create/reuse the venv at ~/.iterate-harness-npm/venv.
  * 3. pip-install the harness release tarball pinned to THIS npm package's
- *    version (lockstep: npm 1.6.0 installs harness v1.6.0).
+ *    version (lockstep: npm 1.6.0 installs harness v1.6.0). When pip cannot
+ *    fetch the tarball (typically a broken Python TLS trust store on macOS
+ *    python.org builds), the wrapper retries by downloading the tarball with
+ *    Node's own https stack — and, failing that, with curl (system trust
+ *    store) — then pip-installs the local file.
  * 4. Stamp the installed version; a mismatch (npm upgrade) triggers a
  *    re-install on the next run.
  * 5. Spawn the venv's `ih` with argv/stdio/signals forwarded and the exit
@@ -37,6 +41,7 @@ const TARBALL_CACHE_DIR_NAME = "cache";
 
 const MAX_DOWNLOAD_REDIRECTS = 5;
 const DOWNLOAD_TIMEOUT_MS = 120000;
+const CURL_MAX_TIME_SECONDS = 240;
 
 const PYTHON_ENV_VAR = "ITERATE_HARNESS_PYTHON";
 const HOME_ENV_VAR = "ITERATE_HARNESS_NPM_HOME";
@@ -283,15 +288,68 @@ function downloadFile(url, dest, redirectBudget) {
   });
 }
 
-async function downloadTarballTo(url, dest) {
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  try {
-    await downloadFile(url, dest);
-  } catch (error) {
-    fs.rmSync(dest, { force: true });
-    throw error;
+function curlDownload(url, dest, spawnFn) {
+  const runner = spawnFn || spawnSync;
+  const result = runner("curl", [
+    "-fsSL",
+    "--max-time",
+    String(CURL_MAX_TIME_SECONDS),
+    "-o",
+    dest,
+    url,
+  ], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  if (result.error) {
+    return {
+      ok: false,
+      error: new BootstrapError(`curl download of ${url} failed: ${result.error.message}`),
+    };
   }
-  return dest;
+  if (result.status !== 0) {
+    const detail = `${result.stderr || result.stdout || ""}`.trim() || `exit code ${result.status}`;
+    return { ok: false, error: new BootstrapError(`curl download of ${url} failed: ${detail}`) };
+  }
+  return { ok: true, error: undefined };
+}
+
+async function downloadTarballTo(url, dest, deps) {
+  const nodeDownload = (deps && deps.nodeDownload) || downloadFile;
+  const curlDownloadFn = (deps && deps.curlDownload) || curlDownload;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+
+  const attempts = [
+    {
+      name: "node-https",
+      run: () => nodeDownload(url, dest),
+    },
+    {
+      name: "curl",
+      run: async () => {
+        const outcome = curlDownloadFn(url, dest);
+        if (!outcome.ok) {
+          throw outcome.error;
+        }
+        return dest;
+      },
+    },
+  ];
+
+  const failures = [];
+  for (const attempt of attempts) {
+    try {
+      await attempt.run();
+      return dest;
+    } catch (error) {
+      failures.push(`${attempt.name}: ${error.message}`);
+      process.stderr.write(
+        `[iterate-harness] ${attempt.name} download failed (${error.message}); trying next strategy ...\n`
+      );
+      fs.rmSync(dest, { force: true });
+    }
+  }
+  throw new BootstrapError(`direct download of ${url} failed (${failures.join("; ")})`);
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +497,7 @@ module.exports = {
   INSTALL_URL_ENV_VAR,
   SKIP_INSTALL_ENV_VAR,
   detectPython,
+  curlDownload,
   downloadCachePath,
   downloadFile,
   downloadTarballTo,
