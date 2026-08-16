@@ -99,7 +99,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "doctor":
         if show_banner:
             tui.banner()
-        return _cmd_doctor(project_root, json_output=getattr(args, "json", False))
+        return _cmd_doctor(
+            project_root,
+            json_output=getattr(args, "json", False),
+            fix=getattr(args, "fix", False),
+        )
     else:
         parser.print_help()
         return 0
@@ -200,6 +204,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Emit a structured JSON report instead of TUI output.",
+    )
+    doctor_parser.add_argument(
+        "--fix",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Apply safe, non-destructive fixes to iterate.config.yaml "
+        "(backup written first) before running diagnostics.",
     )
 
     return parser
@@ -513,17 +524,39 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     return 0
 
 
-def _cmd_doctor(project_root: Path, json_output: bool = False) -> int:
+def _cmd_doctor(
+    project_root: Path,
+    json_output: bool = False,
+    fix: bool = False,
+) -> int:
     """Handle the 'doctor' subcommand — project health diagnostics.
+
+    When ``fix`` is True, safe non-destructive config fixes are applied
+    (with a timestamped backup) before diagnostics are re-run.
 
     Args:
         project_root: Project root directory.
         json_output: When True, emit a structured JSON report.
+        fix: When True, apply safe config fixes before running diagnostics.
 
     Returns:
         Exit code: 0 when healthy, 1 when errors are found.
     """
-    from iterate_cli.doctor import render_report, run_doctor
+    from iterate_cli.doctor import render_report, run_doctor, run_doctor_fix
+
+    if fix:
+        ok, fixes = run_doctor_fix(project_root)
+        if not ok:
+            tui.error("doctor --fix: could not apply fixes (see stderr).")
+            return 1
+        if fixes:
+            tui.success(f"doctor --fix: applied {len(fixes)} safe fix(es).")
+            for fix_note in fixes:
+                tui.bullet(fix_note, indent=4)
+            tui.empty_line()
+        else:
+            tui.success("doctor --fix: no safe fixes needed.")
+            tui.empty_line()
 
     report = run_doctor(project_root)
     return render_report(report, json_output=json_output)

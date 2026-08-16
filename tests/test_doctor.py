@@ -20,9 +20,12 @@ from iterate_cli.cli import main as cli_main
 from iterate_cli.doctor import (
     CANONICAL_DIMENSIONS,
     DoctorReport,
+    apply_safe_fixes,
     render_report,
     run_doctor,
+    run_doctor_fix,
 )
+from iterate_cli.refresh import load_onboarding_config
 
 ITERATE_MD = "ITERATE.md"
 CONFIG_YAML = "iterate.config.yaml"
@@ -47,7 +50,7 @@ def _base_config() -> dict:
     return {
         "dimensions": ["correctness", "security"],
         "onboarding": {
-            "skill_version": "2.3.11",
+            "skill_version": "2.3.12",
             "channel": "cli",
             "completed_at": "2026-08-15T00:00:00Z",
             "drift_check": False,
@@ -73,7 +76,7 @@ class TestDoctorReport:
         report = run_doctor(project)
         data = report.to_dict()
         assert data["project"] == str(project)
-        assert data["skill_version"] == "2.3.11"
+        assert data["skill_version"] == "2.3.12"
         assert isinstance(data["healthy"], bool)
         assert isinstance(data["findings"], list)
 
@@ -235,7 +238,7 @@ class TestRenderReport:
         code = render_report(report, json_output=True)
         out = capsys.readouterr().out
         data = json.loads(out)
-        assert data["skill_version"] == "2.3.11"
+        assert data["skill_version"] == "2.3.12"
         assert code == 0
 
     def test_error_report_returns_nonzero(self, tmp_path, capsys) -> None:
@@ -279,3 +282,119 @@ class TestDoctorCLI:
         assert code == 0
         data = json.loads(capsys.readouterr().out)
         assert data["onboarded"] is True
+
+
+# ---------------------------------------------------------------------------
+# apply_safe_fixes — non-destructive config repair
+# ---------------------------------------------------------------------------
+
+
+class TestApplySafeFixes:
+    def test_clean_config_is_unchanged(self) -> None:
+        config = _base_config()
+        new_config, fixes = apply_safe_fixes(config)
+        assert fixes == []
+        assert new_config == config
+
+    def test_duplicate_dimensions_deduped(self) -> None:
+        config = _base_config()
+        config["dimensions"] = ["correctness", "correctness", "security"]
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["dimensions"] == ["correctness", "security"]
+        assert any("duplicate" in f for f in fixes)
+
+    def test_empty_dimensions_restored(self) -> None:
+        config = _base_config()
+        config["dimensions"] = []
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["dimensions"] == list(CANONICAL_DIMENSIONS)
+        assert any("defaults" in f for f in fixes)
+
+    def test_invalid_language_reset(self) -> None:
+        config = _base_config()
+        config["language"] = "fr"
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["language"] == "en"
+        assert any("language" in f for f in fixes)
+
+    def test_max_rounds_clamped(self) -> None:
+        config = _base_config()
+        config["max_rounds"] = 999
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["max_rounds"] == 50
+        assert any("clamped" in f for f in fixes)
+
+    def test_max_rounds_non_integer_removed(self) -> None:
+        config = _base_config()
+        config["max_rounds"] = "lots"
+        new_config, fixes = apply_safe_fixes(config)
+        assert "max_rounds" not in new_config
+        assert any("non-integer" in f for f in fixes)
+
+    def test_empty_target_branch_reset(self) -> None:
+        config = _base_config()
+        config["git"] = {"target_branch": "   "}
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["git"]["target_branch"] == "main"
+        assert any("target_branch" in f for f in fixes)
+
+    def test_skill_version_synced(self) -> None:
+        config = _base_config()
+        config["onboarding"]["skill_version"] = "9.9.9"
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["onboarding"]["skill_version"] == "2.3.12"
+        assert any("skill_version" in f for f in fixes)
+
+
+# ---------------------------------------------------------------------------
+# run_doctor_fix — writes fixed config with a backup
+# ---------------------------------------------------------------------------
+
+
+class TestRunDoctorFix:
+    def test_repairs_and_writes_backup(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimensions"] = ["correctness", "correctness"]
+        _write_config(project, config)
+
+        ok, fixes = run_doctor_fix(project)
+        assert ok
+        assert fixes
+
+        # Backup file created.
+        backups = list(project.glob(f"{CONFIG_YAML}.doctorfix-*"))
+        assert len(backups) == 1
+
+        # Config now deduplicated.
+        fixed = load_onboarding_config(project)
+        assert fixed["dimensions"] == ["correctness"]
+
+        # Re-running doctor reports no dimensions warning.
+        report = run_doctor(project)
+        assert not any(f.check == "dimensions" and f.severity == "warn" for f in report.findings)
+
+    def test_noop_when_clean(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        ok, fixes = run_doctor_fix(project)
+        assert ok
+        assert fixes == []
+        assert list(project.glob(f"{CONFIG_YAML}.doctorfix-*")) == []
+
+    def test_missing_config_returns_false(self, tmp_path) -> None:
+        # _make_project creates ITERATE.md but not iterate.config.yaml.
+        project = _make_project(tmp_path)
+        ok, fixes = run_doctor_fix(project)
+        assert not ok
+        assert fixes == []
+
+    def test_cli_fix_flag_applies(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["language"] = "fr"
+        _write_config(project, config)
+        code = cli_main(["doctor", "-p", str(project), "--fix"])
+        assert code == 0
+        fixed = load_onboarding_config(project)
+        assert fixed["language"] == "en"
