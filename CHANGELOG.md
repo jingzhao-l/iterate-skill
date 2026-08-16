@@ -35,6 +35,14 @@
 
 ---
 
+## [2.3.13] — 2026-08-16
+
+### 修复 / Bug Fixes (distribution)
+
+- **ClawHub 显示名回归修正**：此前发布流程未显式传 `--name`，导致 ClawHub 上 skill 显示名被默认取为发布目录 basename（`Clawhub Stage 2.3.12`）。本次发布显式指定 `--name Iterate`，恢复为正确显示名 `Iterate`。版本号统一升至 2.3.13 以确保三平台（ClawHub / ModelScope / SkillHub）版本一致。
+
+---
+
 ## [2.3.12] — 2026-08-16
 
 ### 新功能 / Features (skill CLI)
