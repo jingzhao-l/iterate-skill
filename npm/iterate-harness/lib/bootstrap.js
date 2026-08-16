@@ -21,6 +21,8 @@
 
 const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
+const http = require("http");
+const https = require("https");
 const os = require("os");
 const path = require("path");
 
@@ -31,6 +33,10 @@ const path = require("path");
 const RUNTIME_DIR_NAME = ".iterate-harness-npm";
 const VENV_DIR_NAME = "venv";
 const STAMP_FILE_NAME = "version.stamp";
+const TARBALL_CACHE_DIR_NAME = "cache";
+
+const MAX_DOWNLOAD_REDIRECTS = 5;
+const DOWNLOAD_TIMEOUT_MS = 120000;
 
 const PYTHON_ENV_VAR = "ITERATE_HARNESS_PYTHON";
 const HOME_ENV_VAR = "ITERATE_HARNESS_NPM_HOME";
@@ -108,6 +114,18 @@ function venvExecutablePaths(venvDir, platform) {
 
 function needsBootstrap(stampContent, expectedVersion) {
   return String(stampContent || "").trim() !== String(expectedVersion || "").trim();
+}
+
+function isRemoteHttpUrl(target) {
+  return /^https?:\/\//i.test(String(target || ""));
+}
+
+function downloadCachePath(homeDir, version) {
+  return path.join(homeDir, TARBALL_CACHE_DIR_NAME, `iterate-harness-${version}.tar.gz`);
+}
+
+function pipInstallArgs(target) {
+  return ["-m", "pip", "install", "--upgrade", "--force-reinstall", target];
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +228,105 @@ function installUrl(version, env) {
   return releaseTarballUrl(version);
 }
 
-function bootstrap(homeDir, version, env) {
+// ---------------------------------------------------------------------------
+// Tarball download fallback (Node-side TLS — survives broken pip trust stores)
+// ---------------------------------------------------------------------------
+
+function downloadFile(url, dest, redirectBudget) {
+  const budget = redirectBudget === undefined ? MAX_DOWNLOAD_REDIRECTS : redirectBudget;
+  return new Promise((resolve, reject) => {
+    if (budget < 0) {
+      reject(new BootstrapError(`too many redirects while downloading ${url}`));
+      return;
+    }
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (error) {
+      reject(new BootstrapError(`invalid download URL ${url}: ${error.message}`));
+      return;
+    }
+    const client = parsed.protocol === "http:" ? http : https;
+    const request = client.get(url, { timeout: DOWNLOAD_TIMEOUT_MS }, (response) => {
+      const status = response.statusCode || 0;
+      if (status >= 300 && status < 400 && response.headers.location) {
+        response.resume();
+        const nextUrl = new URL(response.headers.location, url).toString();
+        resolve(downloadFile(nextUrl, dest, budget - 1));
+        return;
+      }
+      if (status < 200 || status >= 300) {
+        response.resume();
+        reject(new BootstrapError(`downloading ${url} failed with HTTP ${status}`));
+        return;
+      }
+      const file = fs.createWriteStream(dest);
+      response.pipe(file);
+      file.on("finish", () => {
+        file.close((closeError) => {
+          if (closeError) {
+            reject(closeError);
+            return;
+          }
+          resolve(dest);
+        });
+      });
+      file.on("error", (fileError) => {
+        file.destroy();
+        reject(fileError);
+      });
+    });
+    request.on("timeout", () => {
+      request.destroy(new BootstrapError(`downloading ${url} timed out`));
+    });
+    request.on("error", (requestError) => reject(requestError));
+  });
+}
+
+async function downloadTarballTo(url, dest) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  try {
+    await downloadFile(url, dest);
+  } catch (error) {
+    fs.rmSync(dest, { force: true });
+    throw error;
+  }
+  return dest;
+}
+
+// ---------------------------------------------------------------------------
+// Install chain: pip from URL first, Node-download + local pip as fallback
+// ---------------------------------------------------------------------------
+
+async function installHarness(options) {
+  const python = options.python;
+  const url = options.url;
+  const runStepFn = options.runStepFn || runStep;
+  const downloader = options.downloader || downloadTarballTo;
+
+  try {
+    runStepFn(python, pipInstallArgs(url));
+    return;
+  } catch (primaryError) {
+    if (!isRemoteHttpUrl(url)) {
+      throw primaryError;
+    }
+    process.stderr.write(
+      `[iterate-harness] pip install from ${url} failed; retrying via direct download ...\n`
+    );
+    const cachePath = downloadCachePath(options.homeDir, options.version);
+    try {
+      await downloader(url, cachePath);
+    } catch (downloadError) {
+      throw new BootstrapError(
+        `${primaryError.message}\n\n(direct-download fallback also failed: ${downloadError.message})`
+      );
+    }
+    runStepFn(python, pipInstallArgs(cachePath));
+  }
+}
+
+async function bootstrap(homeDir, version, env) {
   fs.mkdirSync(homeDir, { recursive: true });
 
   const venvDir = path.join(homeDir, VENV_DIR_NAME);
@@ -231,20 +347,13 @@ function bootstrap(homeDir, version, env) {
 
   const url = installUrl(version, env);
   process.stderr.write(`[iterate-harness] pip installing iterate-harness ${version} ...\n`);
-  runStep(executable.python, [
-    "-m",
-    "pip",
-    "install",
-    "--upgrade",
-    "--force-reinstall",
-    url,
-  ]);
+  await installHarness({ python: executable.python, url, homeDir, version });
 
   const stampPath = path.join(homeDir, STAMP_FILE_NAME);
   fs.writeFileSync(stampPath, `${version}\n`, "utf8");
 }
 
-function ensureRuntime(env) {
+async function ensureRuntime(env) {
   const environment = env || process.env;
   const version = packageVersion();
   const homeDir = runtimeHomeDir(environment);
@@ -258,7 +367,7 @@ function ensureRuntime(env) {
     : "";
 
   if (!skipInstall && needsBootstrap(stampContent, version)) {
-    bootstrap(homeDir, version, environment);
+    await bootstrap(homeDir, version, environment);
   }
 
   if (!fs.existsSync(executable.ih)) {
@@ -279,8 +388,20 @@ function ensureRuntime(env) {
 // Delegation to the real ih executable
 // ---------------------------------------------------------------------------
 
-function runHarness(args, env) {
-  const target = ensureRuntime(env);
+function reportBootstrapFailure(error) {
+  const message = error instanceof BootstrapError ? error.message : (error && error.stack) || error;
+  process.stderr.write(`[iterate-harness] ${message}\n`);
+}
+
+async function runHarness(args, env) {
+  let target;
+  try {
+    target = await ensureRuntime(env);
+  } catch (error) {
+    reportBootstrapFailure(error);
+    process.exit(1);
+    return;
+  }
   const child = spawn(target, args, {
     stdio: "inherit",
     windowsHide: false,
@@ -310,6 +431,7 @@ function runHarness(args, env) {
 
 module.exports = {
   BootstrapError,
+  MAX_DOWNLOAD_REDIRECTS,
   MIN_PYTHON_MAJOR,
   MIN_PYTHON_MINOR,
   PYTHON_ENV_VAR,
@@ -317,14 +439,21 @@ module.exports = {
   INSTALL_URL_ENV_VAR,
   SKIP_INSTALL_ENV_VAR,
   detectPython,
+  downloadCachePath,
+  downloadFile,
+  downloadTarballTo,
   ensureRuntime,
+  installHarness,
   installUrl,
+  isRemoteHttpUrl,
   isSupportedPython,
   needsBootstrap,
   packageVersion,
   parsePythonVersion,
+  pipInstallArgs,
   pythonCandidates,
   releaseTarballUrl,
+  reportBootstrapFailure,
   runHarness,
   venvExecutablePaths,
 };

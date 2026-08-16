@@ -7,13 +7,20 @@ const assert = require("node:assert/strict");
 const path = require("path");
 
 const {
+  BootstrapError,
   HOME_ENV_VAR,
   INSTALL_URL_ENV_VAR,
+  MAX_DOWNLOAD_REDIRECTS,
   PYTHON_ENV_VAR,
+  downloadCachePath,
+  downloadFile,
+  installHarness,
   installUrl,
+  isRemoteHttpUrl,
   isSupportedPython,
   needsBootstrap,
   parsePythonVersion,
+  pipInstallArgs,
   pythonCandidates,
   releaseTarballUrl,
   venvExecutablePaths,
@@ -101,4 +108,159 @@ test("needsBootstrap ignores surrounding whitespace and requires exact match", (
 
 test("HOME_ENV_VAR name is stable (documented in README)", () => {
   assert.equal(HOME_ENV_VAR, "ITERATE_HARNESS_NPM_HOME");
+});
+
+// ---------------------------------------------------------------------------
+// Tarball download fallback (TLS resilience)
+// ---------------------------------------------------------------------------
+
+test("isRemoteHttpUrl matches only http(s) URLs", () => {
+  assert.equal(isRemoteHttpUrl("https://github.com/x.tar.gz"), true);
+  assert.equal(isRemoteHttpUrl("HTTP://example.com/x.tar.gz"), true);
+  assert.equal(isRemoteHttpUrl("http://mirror/x.tar.gz"), true);
+  assert.equal(isRemoteHttpUrl("git+https://github.com/repo.git@main"), false);
+  assert.equal(isRemoteHttpUrl("/tmp/iterate-harness-1.9.1.tar.gz"), false);
+  assert.equal(isRemoteHttpUrl("./iterate-harness-1.9.1.tar.gz"), false);
+  assert.equal(isRemoteHttpUrl(""), false);
+  assert.equal(isRemoteHttpUrl(undefined), false);
+});
+
+test("downloadCachePath lands inside the runtime cache dir with the version pinned", () => {
+  assert.equal(
+    downloadCachePath(path.join("home", "npm"), "1.9.1"),
+    path.join("home", "npm", "cache", "iterate-harness-1.9.1.tar.gz")
+  );
+});
+
+test("pipInstallArgs pins upgrade, force-reinstall and the target", () => {
+  assert.deepEqual(pipInstallArgs("https://example.com/x.tar.gz"), [
+    "-m",
+    "pip",
+    "install",
+    "--upgrade",
+    "--force-reinstall",
+    "https://example.com/x.tar.gz",
+  ]);
+});
+
+test("MAX_DOWNLOAD_REDIRECTS stays at 5 (GitHub archive needs exactly 1)", () => {
+  assert.equal(MAX_DOWNLOAD_REDIRECTS, 5);
+});
+
+test("installHarness succeeds on the first pip attempt without downloading", async () => {
+  const pipCalls = [];
+  const downloads = [];
+  await installHarness({
+    python: "/venv/bin/python",
+    url: "https://github.com/jingzhao-l/iterate-harness/archive/refs/tags/v1.9.1.tar.gz",
+    homeDir: path.join("home", "npm"),
+    version: "1.9.1",
+    runStepFn: (command, args) => pipCalls.push([command, args]),
+    downloader: async (downloadUrl, dest) => downloads.push([downloadUrl, dest]),
+  });
+  assert.equal(pipCalls.length, 1);
+  assert.deepEqual(
+    pipCalls[0][1],
+    pipInstallArgs("https://github.com/jingzhao-l/iterate-harness/archive/refs/tags/v1.9.1.tar.gz")
+  );
+  assert.equal(downloads.length, 0);
+});
+
+test("installHarness falls back to a local pip install after a TLS failure", async () => {
+  const url = "https://github.com/jingzhao-l/iterate-harness/archive/refs/tags/v1.9.1.tar.gz";
+  const cache = downloadCachePath(path.join("home", "npm"), "1.9.1");
+  const pipCalls = [];
+  const downloads = [];
+  const runStepFn = (command, args) => {
+    pipCalls.push([command, args]);
+    if (pipCalls.length === 1) {
+      throw new BootstrapError("pip exited with code 1: CERTIFICATE_VERIFY_FAILED");
+    }
+  };
+  await installHarness({
+    python: "/venv/bin/python",
+    url,
+    homeDir: path.join("home", "npm"),
+    version: "1.9.1",
+    runStepFn,
+    downloader: async (downloadUrl, dest) => downloads.push([downloadUrl, dest]),
+  });
+  assert.equal(pipCalls.length, 2);
+  assert.deepEqual(pipCalls[1][1], pipInstallArgs(cache));
+  assert.deepEqual(downloads, [[url, cache]]);
+});
+
+test("installHarness wraps both failures when the download fallback dies too", async () => {
+  const pipCalls = [];
+  const runStepFn = (command, args) => {
+    pipCalls.push([command, args]);
+    throw new BootstrapError("pip exited with code 1: CERTIFICATE_VERIFY_FAILED");
+  };
+  await assert.rejects(
+    installHarness({
+      python: "/venv/bin/python",
+      url: "https://github.com/x/y.tar.gz",
+      homeDir: path.join("home", "npm"),
+      version: "1.9.1",
+      runStepFn,
+      downloader: async () => {
+        throw new Error("socket hang up");
+      },
+    }),
+    (error) =>
+      error instanceof BootstrapError &&
+      error.message.includes("CERTIFICATE_VERIFY_FAILED") &&
+      error.message.includes("direct-download fallback also failed: socket hang up")
+  );
+  assert.equal(pipCalls.length, 1);
+});
+
+test("installHarness rethrows the primary error verbatim for non-http targets", async () => {
+  const downloads = [];
+  const primary = new BootstrapError("pip exited with code 1: build failed");
+  await assert.rejects(
+    installHarness({
+      python: "/venv/bin/python",
+      url: "/tmp/iterate-harness-1.9.1.tar.gz",
+      homeDir: path.join("home", "npm"),
+      version: "1.9.1",
+      runStepFn: () => {
+        throw primary;
+      },
+      downloader: async (downloadUrl, dest) => downloads.push([downloadUrl, dest]),
+    }),
+    (error) => error === primary
+  );
+  assert.equal(downloads.length, 0);
+});
+
+test("installHarness propagates the second pip failure untouched", async () => {
+  const cacheFailure = new BootstrapError("pip exited with code 1: no matching distribution");
+  let pipCalls = 0;
+  await assert.rejects(
+    installHarness({
+      python: "/venv/bin/python",
+      url: "https://github.com/x/y.tar.gz",
+      homeDir: path.join("home", "npm"),
+      version: "1.9.1",
+      runStepFn: () => {
+        pipCalls += 1;
+        if (pipCalls === 1) {
+          throw new BootstrapError("pip exited with code 1: CERTIFICATE_VERIFY_FAILED");
+        }
+        throw cacheFailure;
+      },
+      downloader: async () => undefined,
+    }),
+    (error) => error === cacheFailure
+  );
+  assert.equal(pipCalls, 2);
+});
+
+test("downloadFile rejects immediately when the redirect budget is exhausted", async () => {
+  await assert.rejects(
+    downloadFile("https://github.com/x/y.tar.gz", "/tmp/never-written.tar.gz", -1),
+    (error) =>
+      error instanceof BootstrapError && error.message.includes("too many redirects")
+  );
 });
