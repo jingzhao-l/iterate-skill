@@ -26,6 +26,10 @@ from iterate_cli.generator import (
     write_onboarding_outputs,
 )
 from iterate_cli.refresh import (
+    REONBOARD_CANCELLED,
+    REONBOARD_COMPLETED,
+    REONBOARD_FAILED,
+    REONBOARD_NO_CHANGES,
     check_onboarding_drift,
     full_reonboard,
     incremental_refresh,
@@ -365,7 +369,7 @@ def _cmd_refresh(project_root: Path) -> int:
         tui.hint("AI-maintained sections updated, user-owned sections preserved.", indent=2)
         return 0
     else:
-        tui.error("Refresh failed. ITERATE.md not found.")
+        tui.error("Refresh failed. Could not read or write ITERATE.md / iterate.config.yaml (see stderr).")
         return 1
 
 
@@ -375,9 +379,13 @@ def _cmd_reonboard(project_root: Path) -> int:
         tui.warning("No existing onboarding found. Run 'iterate onboard' first.")
         return 1
 
-    success = full_reonboard(project_root)
-    if success:
+    status = full_reonboard(project_root)
+    if status == REONBOARD_COMPLETED:
         tui.success("Full re-onboarding complete.")
+        tui.hint("Old files backed up with .bak-<timestamp> suffix.", indent=2)
+        return 0
+    elif status == REONBOARD_NO_CHANGES:
+        tui.info("Re-onboarding not needed — no changes to apply.")
         tui.hint("Old files backed up with .bak-<timestamp> suffix.", indent=2)
         return 0
     else:
