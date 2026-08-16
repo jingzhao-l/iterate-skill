@@ -35,6 +35,25 @@
 
 ---
 
+## [2.3.14] — 2026-08-16
+
+### 新功能 / Features (skill CLI)
+- **`iterate doctor` 全量 JSON Schema 校验**：`run_doctor` 新增 `config.schema` 检查，将 `iterate.config.yaml` 与 `config/config.schema.json` 逐项比对（`additionalProperties:false` 全覆盖），不匹配时以 warn 级别列出前 N 条违规路径，与 `scripts/validate.py` 保持一致。
+- **`iterate refresh --dry-run` 预览**：新增 `refresh.preview_refresh`，仅计算不写入，展示 ITERATE.md 增减行数与 iterate.config.yaml 是否变更，用户可在实际刷新前确认影响面。
+- **非交互式优雅降级**：`onboard`/`personalize` 向导新增终端交互性检测（`_ensure_interactive`），在管道/重定向/CI 环境下打印指引并以非零状态退出，不再因 `input()` 抛 `EOFError` 崩溃。
+- **原子写**：`generator.atomic_write`（临时文件 + `os.replace`）统一应用于 onboarding、refresh、reonboard 的写入路径，配合失败回滚，杜绝半写文件。
+
+### 修复 / Bug Fixes (skill CLI)
+- **Bug A — 返回用户自定义配置丢失**：`wizard._load_existing_onboarding_data` 现完整保留 goal/max_rounds/atomic/git/reviewer 等自定义字段，返回用户更新配置时不再静默丢弃。
+- **Bug B — `doctor --fix --json` 输出污染**：修复信息整合进 JSON 报告的 `fixes` 字段，移除混入 stdout 的 TUI 文本，保证 `--json` 输出纯净可解析。
+- **refresh 幂等化**：`_build_refreshed_config` 仅在指纹实际变化时重写 `completed_at`；`generate_refreshed_md` 原样拼接用户区块（保留原有空行布局）。未漂移时刷新为字节级 no-op，`--dry-run` 正确报告"无需变更"。
+- **`_write_refresh_outputs` 引用修复**：统一改用 `atomic_write`，消除重构遗留的未定义 `_atomic_write` 引用。
+
+### 测试 / Tests
+- 新增 `config.schema`、`validation.whitelist` 合规、`personalization.consistency`、`refresh --dry-run` 预览、非 TTY 降级等测试；适配原子写后的回滚测试（改 monkeypatch `atomic_write`）。全套 457 个测试通过。
+
+---
+
 ## [2.3.13] — 2026-08-16
 
 ### 修复 / Bug Fixes (distribution)

@@ -28,6 +28,7 @@ from iterate_cli.wizard import (
     DIMENSION_LABELS,
     InputFunc,
     _ask_yes_no,
+    _ensure_interactive,
 )
 
 # Personalization schema version. Increment when the personalization
@@ -710,8 +711,12 @@ def run_personalize_wizard(
         existing: Existing PersonalizationData to pre-populate (for editing).
 
     Returns:
-        PersonalizationData if the user completes the wizard, None if cancelled.
+        PersonalizationData if the user completes the wizard, None if cancelled
+        or the wizard could not prompt (non-interactive stdin).
     """
+    if not _ensure_interactive(input_func):
+        return None
+
     data = existing or PersonalizationData()
 
     _print_personalize_welcome()

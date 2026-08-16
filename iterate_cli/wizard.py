@@ -14,6 +14,7 @@ for consistent skills.sh / Claude Code style styling.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,13 @@ from typing import Any
 import yaml
 
 from iterate_cli.fingerprint import capture_fingerprints
-from iterate_cli.generator import OnboardingData
+from iterate_cli.generator import (
+    DEFAULT_ATOMIC_MAX_ADJACENT_METHODS,
+    DEFAULT_ATOMIC_MAX_LINES,
+    DEFAULT_GOAL,
+    DEFAULT_MAX_ROUNDS,
+    OnboardingData,
+)
 from iterate_cli.scan import (
     ScanResult,
     scan_project,
@@ -72,6 +79,45 @@ DIMENSION_LABELS: dict[str, str] = {
 }
 
 
+def _stdin_is_interactive() -> bool:
+    """Return True when stdin is a real terminal (not piped/redirected)."""
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _ensure_interactive(input_func: InputFunc) -> bool:
+    """Guard the interactive wizard against a non-interactive stdin.
+
+    When the wizard would use the real ``builtins.input`` on a piped,
+    redirected or CI stdin, ``input()`` either hangs or raises ``EOFError``.
+    In that case a clear guidance message is printed to stderr and False is
+    returned so callers degrade gracefully instead of crashing.
+
+    Injected ``input_func`` (tests, automation) bypasses the guard entirely.
+
+    Args:
+        input_func: The input callable the wizard is about to use.
+
+    Returns:
+        True when prompting is safe, False when it is not.
+    """
+    if input_func is not input:
+        return True
+    if _stdin_is_interactive():
+        return True
+    print(
+        "\n⚠️  Interactive wizard requires a terminal.\n"
+        "  Detected non-interactive stdin (piped/redirected/CI), so the wizard "
+        "cannot prompt.\n"
+        "  Use the AI channel (run `/iterate` in your coding tool) to onboard, "
+        "or run this command in an interactive terminal.\n",
+        file=sys.stderr,
+    )
+    return False
+
+
 def run_wizard(
     project_root: Path,
     input_func: InputFunc = input,
@@ -88,10 +134,14 @@ def run_wizard(
 
     Returns:
         OnboardingData if the user completes the wizard,
-        None if the user cancelled mid-flow,
+        None if the user cancelled mid-flow or the wizard could not prompt
+            (non-interactive stdin),
         NO_CHANGES_NEEDED if a returning user explicitly declined all
             updates (no files need to be written).
     """
+    if not _ensure_interactive(input_func):
+        return None
+
     _print_welcome()
 
     iterate_md_exists = (project_root / "ITERATE.md").is_file()
@@ -281,6 +331,12 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         project_description = str(onboarding_section.get("project_description") or "")
         code_conventions = str(onboarding_section.get("code_conventions") or "")
 
+        # Preserve every user-customised field so a returning user who declines
+        # the basic-config update does not lose them during regeneration.
+        atomic = config.get("atomic") or {}
+        git = config.get("git") or {}
+        reviewer = config.get("reviewer") or {}
+
         return OnboardingData(
             project_root=project_root,
             channel=channel,
@@ -288,13 +344,22 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             project_description=project_description,
             code_conventions=code_conventions,
             dimensions=config.get("dimensions") or [],
-            target_branch=(config.get("git") or {}).get("target_branch", "main"),
+            target_branch=git.get("target_branch", "main"),
             review_scope=(config.get("review") or {}).get("scope", "full"),
-            push_per_round=(config.get("git") or {}).get("push_per_round", False),
+            push_per_round=git.get("push_per_round", False),
             validation_commands=(config.get("validation") or {}).get("commands") or {},
             command_whitelist=(config.get("validation") or {}).get("command_whitelist") or [],
             fingerprints=capture_fingerprints(project_root),
             language=config.get("language", "en"),
+            goal=config.get("goal", DEFAULT_GOAL),
+            max_rounds=config.get("max_rounds", DEFAULT_MAX_ROUNDS),
+            atomic_max_lines=atomic.get("max_lines", DEFAULT_ATOMIC_MAX_LINES),
+            atomic_max_adjacent_methods=atomic.get(
+                "max_adjacent_methods", DEFAULT_ATOMIC_MAX_ADJACENT_METHODS
+            ),
+            use_worktree=git.get("use_worktree", False),
+            auto_merge=git.get("auto_merge", False),
+            output_schema_validation=reviewer.get("output_schema_validation", True),
         )
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         tui.error(f"Failed to load existing config: {exc}")

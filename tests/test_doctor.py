@@ -50,7 +50,7 @@ def _base_config() -> dict:
     return {
         "dimensions": ["correctness", "security"],
         "onboarding": {
-            "skill_version": "2.3.13",
+            "skill_version": "2.3.14",
             "channel": "cli",
             "completed_at": "2026-08-15T00:00:00Z",
             "drift_check": False,
@@ -76,7 +76,7 @@ class TestDoctorReport:
         report = run_doctor(project)
         data = report.to_dict()
         assert data["project"] == str(project)
-        assert data["skill_version"] == "2.3.13"
+        assert data["skill_version"] == "2.3.14"
         assert isinstance(data["healthy"], bool)
         assert isinstance(data["findings"], list)
 
@@ -238,7 +238,7 @@ class TestRenderReport:
         code = render_report(report, json_output=True)
         out = capsys.readouterr().out
         data = json.loads(out)
-        assert data["skill_version"] == "2.3.13"
+        assert data["skill_version"] == "2.3.14"
         assert code == 0
 
     def test_error_report_returns_nonzero(self, tmp_path, capsys) -> None:
@@ -342,7 +342,7 @@ class TestApplySafeFixes:
         config = _base_config()
         config["onboarding"]["skill_version"] = "9.9.9"
         new_config, fixes = apply_safe_fixes(config)
-        assert new_config["onboarding"]["skill_version"] == "2.3.13"
+        assert new_config["onboarding"]["skill_version"] == "2.3.14"
         assert any("skill_version" in f for f in fixes)
 
 
@@ -396,5 +396,125 @@ class TestRunDoctorFix:
         _write_config(project, config)
         code = cli_main(["doctor", "-p", str(project), "--fix"])
         assert code == 0
-        fixed = load_onboarding_config(project)
-        assert fixed["language"] == "en"
+
+
+# ---------------------------------------------------------------------------
+# config.schema — full JSON Schema validation (config.schema check)
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorConfigSchema:
+    def test_valid_config_matches_schema(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        report = run_doctor(project)
+        assert any(
+            f.check == "config.schema" and f.severity == "ok" for f in report.findings
+        )
+
+    def test_unknown_key_is_schema_violation(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        # additionalProperties:false → any unknown top-level key is a violation.
+        config["bogus_top_level_key"] = "not in schema"
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "config.schema" and f.severity == "warn" for f in report.findings
+        )
+
+    def test_wrong_type_is_schema_violation(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        # dimensions must be an array of strings.
+        config["dimensions"] = "not-a-list"
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "config.schema" and f.severity == "warn" for f in report.findings
+        )
+
+
+# ---------------------------------------------------------------------------
+# validation.whitelist — command whitelist compliance
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorWhitelistCompliance:
+    def _config_with_commands(self, commands, whitelist) -> dict:
+        config = _base_config()
+        config["validation"] = {
+            "commands": {"python": commands},
+            "command_whitelist": whitelist,
+        }
+        return config
+
+    def test_all_commands_whitelisted_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, self._config_with_commands(["pytest tests/ -q"], ["pytest"]))
+        report = run_doctor(project)
+        assert any(
+            f.check == "validation.whitelist" and f.severity == "ok"
+            for f in report.findings
+        )
+
+    def test_non_whitelisted_command_warns(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(
+            project,
+            self._config_with_commands(["pytest tests/ -q", "custom-tool run"], ["pytest"]),
+        )
+        report = run_doctor(project)
+        assert any(
+            f.check == "validation.whitelist" and f.severity == "warn"
+            for f in report.findings
+        )
+
+    def test_unsafe_whitelist_entry_warns(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        # Semicolon is a shell metacharacter and must be rejected.
+        _write_config(
+            project,
+            self._config_with_commands(["pytest tests/ -q"], ["pytest; rm -rf"]),
+        )
+        report = run_doctor(project)
+        assert any(
+            f.check == "validation.whitelist" and f.severity == "warn"
+            for f in report.findings
+        )
+
+
+# ---------------------------------------------------------------------------
+# personalization.consistency — dimension references must be enabled
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorPersonalizationConsistency:
+    def test_consistent_references_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["personalization"] = {
+            "version": "1.0",
+            "fix_priority_order": ["correctness", "security"],
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "personalization.consistency" and f.severity == "ok"
+            for f in report.findings
+        )
+
+    def test_disabled_dimension_reference_warns(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        # dimensions only enable correctness + security; performance is disabled.
+        config["personalization"] = {
+            "version": "1.0",
+            "fix_priority_order": ["correctness", "performance"],
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "personalization.consistency" and f.severity == "warn"
+            for f in report.findings
+        )

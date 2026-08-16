@@ -69,6 +69,7 @@ from iterate_cli.refresh import (
     incremental_refresh,
     is_onboarding_complete,
     load_onboarding_config,
+    preview_refresh,
 )
 from iterate_cli.scan import (
     ScanResult,
@@ -795,6 +796,106 @@ class TestIncrementalRefresh:
         assert refreshed.push_per_round is False
 
 
+class TestRefreshDryRun:
+    """Tests for ``preview_refresh`` and the ``iterate refresh --dry-run`` CLI."""
+
+    def test_preview_up_to_date_returns_no_changes(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        preview = preview_refresh(fake_project)
+        assert preview["ok"] is True
+        assert preview["changed"] is False
+        assert preview["config_changed"] is False
+        assert preview["md_changed_lines"] == 0
+
+    def test_preview_detects_stale_md(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        # Corrupt the AI-maintained section so a refresh would change ITERATE.md.
+        iterate_md = fake_project / "ITERATE.md"
+        iterate_md.write_bytes(b"this is not the generated content")
+        preview = preview_refresh(fake_project)
+        assert preview["ok"] is True
+        assert preview["changed"] is True
+        assert preview["md_changed_lines"] > 0
+
+    def test_preview_detects_stale_config(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        # Write a config that lacks fingerprints so refresh would update it.
+        config_path = fake_project / "iterate.config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        config["onboarding"].pop("fingerprints", None)
+        config_path.write_text(
+            yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        preview = preview_refresh(fake_project)
+        assert preview["ok"] is True
+        assert preview["changed"] is True
+        assert preview["config_changed"] is True
+
+    def test_cli_dry_run_does_not_write(self, fake_project: Path, capsys) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        iterate_md = fake_project / "ITERATE.md"
+        md_before = iterate_md.read_text(encoding="utf-8")
+        config_before = (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+
+        code = cli_main(["refresh", "-p", str(fake_project), "--dry-run"])
+        assert code == 0
+
+        # No files changed.
+        assert iterate_md.read_text(encoding="utf-8") == md_before
+        assert (fake_project / "iterate.config.yaml").read_text(encoding="utf-8") == config_before
+
+
+class TestNonInteractiveDegradation:
+    """Wizards must degrade gracefully when stdin is not a terminal."""
+
+    def test_run_wizard_returns_none_when_non_interactive(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        import iterate_cli.wizard as wizard_mod
+
+        monkeypatch.setattr(wizard_mod, "_stdin_is_interactive", lambda: False)
+        result = run_wizard(fake_project)
+        assert result is None
+
+    def test_first_time_wizard_not_prompted_when_non_interactive(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        import iterate_cli.wizard as wizard_mod
+
+        # No ITERATE.md → first-time flow. Guard must short-circuit before
+        # any prompt, so no input_func is consumed.
+        monkeypatch.setattr(wizard_mod, "_stdin_is_interactive", lambda: False)
+        result = run_wizard(fake_project)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "non-interactive" in captured.err.lower() or "terminal" in captured.err.lower()
+
+    def test_run_personalize_wizard_returns_none_when_non_interactive(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        import iterate_cli.wizard as wizard_mod
+
+        monkeypatch.setattr(wizard_mod, "_stdin_is_interactive", lambda: False)
+        result = run_personalize_wizard(fake_project)
+        assert result is None
+
+    def test_injected_input_func_bypasses_guard(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """A custom input_func means the guard is skipped (tests/automation)."""
+        import iterate_cli.wizard as wizard_mod
+
+        monkeypatch.setattr(wizard_mod, "_stdin_is_interactive", lambda: False)
+        # A custom input_func (not builtins.input) must bypass the guard even
+        # when stdin is non-interactive.
+        assert wizard_mod._ensure_interactive(lambda _: "n") is True
+
+
 class TestLoadOnboardingConfigErrorHandling:
     """Tests for load_onboarding_config error handling (I-6-2 regression)."""
 
@@ -934,17 +1035,19 @@ class TestIncrementalRefreshAtomicity:
         md_before = iterate_md.read_text(encoding="utf-8")
         config_before = config_path.read_text(encoding="utf-8")
 
-        # Force write_text to fail on the config file only.
-        # Using monkeypatch instead of chmod so the test is stable even
-        # when run as root (root bypasses the read-only bit).
-        original_write_text = Path.write_text
+        # Force atomic_write to fail on the config file only.
+        # atomic_write uses temp file + os.replace (not Path.write_text),
+        # so monkeypatch the imported name in the refresh module.
+        import iterate_cli.refresh as refresh_mod
 
-        def failing_write_text(self, data, encoding=None, errors=None):
-            if self == config_path:
+        original_atomic_write = refresh_mod.atomic_write
+
+        def failing_atomic_write(path, content, encoding="utf-8"):
+            if path == config_path:
                 raise OSError("simulated write failure")
-            return original_write_text(self, data, encoding, errors)
+            return original_atomic_write(path, content, encoding)
 
-        monkeypatch.setattr(Path, "write_text", failing_write_text)
+        monkeypatch.setattr(refresh_mod, "atomic_write", failing_atomic_write)
 
         result = incremental_refresh(fake_project)
 
@@ -969,15 +1072,17 @@ class TestIncrementalRefreshAtomicity:
         config_path = fake_project / "iterate.config.yaml"
         config_before = config_path.read_text(encoding="utf-8")
 
-        # Force write_text to fail on ITERATE.md only.
-        original_write_text = Path.write_text
+        # Force atomic_write to fail on ITERATE.md only.
+        import iterate_cli.refresh as refresh_mod
 
-        def failing_write_text(self, data, encoding=None, errors=None):
-            if self == iterate_md:
+        original_atomic_write = refresh_mod.atomic_write
+
+        def failing_atomic_write(path, content, encoding="utf-8"):
+            if path == iterate_md:
                 raise OSError("simulated write failure")
-            return original_write_text(self, data, encoding, errors)
+            return original_atomic_write(path, content, encoding)
 
-        monkeypatch.setattr(Path, "write_text", failing_write_text)
+        monkeypatch.setattr(refresh_mod, "atomic_write", failing_atomic_write)
 
         result = incremental_refresh(fake_project)
 
@@ -996,11 +1101,13 @@ class TestIncrementalRefreshAtomicity:
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
 
-        # Make ALL write_text calls fail — both initial write and rollback.
-        def always_failing_write_text(self, data, encoding=None, errors=None):
+        # Make ALL atomic_write calls fail — both initial write and rollback.
+        import iterate_cli.refresh as refresh_mod
+
+        def always_failing_atomic_write(path, content, encoding="utf-8"):
             raise OSError("simulated write failure")
 
-        monkeypatch.setattr(Path, "write_text", always_failing_write_text)
+        monkeypatch.setattr(refresh_mod, "atomic_write", always_failing_atomic_write)
 
         result = incremental_refresh(fake_project)
 
@@ -1054,11 +1161,14 @@ class TestFullReonboardErrorHandling:
 
         monkeypatch.setattr(refresh_mod, "run_wizard", mock_wizard)
 
-        # Force write_text to fail.
-        def failing_write_text(self, data, encoding=None, errors=None):
+        # Force atomic_write to fail (write_onboarding_outputs uses
+        # generator.atomic_write, not Path.write_text).
+        import iterate_cli.generator as generator_mod
+
+        def failing_atomic_write(path, content, encoding="utf-8"):
             raise OSError("simulated write failure")
 
-        monkeypatch.setattr(Path, "write_text", failing_write_text)
+        monkeypatch.setattr(generator_mod, "atomic_write", failing_atomic_write)
 
         result = full_reonboard(fake_project)
 
