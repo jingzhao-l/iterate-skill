@@ -60,9 +60,6 @@ SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"zh", "en"})
 MAX_ROUNDS_MIN: int = 1
 MAX_ROUNDS_MAX: int = 50
 
-# config keys that must be a mapping of module -> non-empty command list.
-_COMMAND_MODULES_KEYS: tuple[str, ...] = ("validation.commands", "commands.validation")
-
 
 @dataclass
 class DoctorFinding:

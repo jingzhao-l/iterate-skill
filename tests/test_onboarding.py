@@ -59,6 +59,10 @@ from iterate_cli.personalize import (
     validate_extra_command,
 )
 from iterate_cli.refresh import (
+    REONBOARD_CANCELLED,
+    REONBOARD_COMPLETED,
+    REONBOARD_FAILED,
+    REONBOARD_NO_CHANGES,
     _build_refresh_data,
     check_onboarding_drift,
     full_reonboard,
@@ -1030,7 +1034,7 @@ class TestFullReonboardErrorHandling:
         # Pass a dummy input_func in case it's called.
         result = full_reonboard(fake_project, input_func=lambda _: "n")
 
-        assert result is False
+        assert result == REONBOARD_FAILED
         captured = capsys.readouterr()
         assert "Backup failed" in captured.err
 
@@ -1058,7 +1062,7 @@ class TestFullReonboardErrorHandling:
 
         result = full_reonboard(fake_project)
 
-        assert result is False
+        assert result == REONBOARD_FAILED
         captured = capsys.readouterr()
         assert "Failed to write onboarding outputs" in captured.err
 
@@ -1090,7 +1094,7 @@ class TestFullReonboardErrorHandling:
 
         result = full_reonboard(fake_project)
 
-        assert result is True
+        assert result == REONBOARD_NO_CHANGES
 
 
 class TestParseDimensionSelectionDedup:
@@ -1287,7 +1291,7 @@ class TestFullReonboard:
             "n",          # personalization offer: no
         ])
         result = full_reonboard(fake_project, input_func=lambda _: next(responses))
-        assert result is True
+        assert result == REONBOARD_COMPLETED
 
         # Backup file exists.
         backups = list(fake_project.glob("ITERATE.md.bak-*"))
@@ -1312,10 +1316,10 @@ class TestFullReonboard:
             "n",          # confirm: no (cancel)
         ])
         result = full_reonboard(fake_project, input_func=lambda _: next(responses))
-        assert result is False
+        assert result == REONBOARD_CANCELLED
 
     def test_fails_without_existing(self, empty_project: Path) -> None:
-        assert full_reonboard(empty_project) is False
+        assert full_reonboard(empty_project) == REONBOARD_FAILED
 
 
 # ---------------------------------------------------------------------------

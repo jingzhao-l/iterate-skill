@@ -39,6 +39,13 @@ from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
 ITERATE_MD = "ITERATE.md"
 CONFIG_YAML = "iterate.config.yaml"
 
+# Outcomes of full_reonboard (returned as strings so callers can render
+# accurate user-facing messages instead of conflating every success path).
+REONBOARD_COMPLETED = "completed"
+REONBOARD_NO_CHANGES = "no-changes"
+REONBOARD_CANCELLED = "cancelled"
+REONBOARD_FAILED = "failed"
+
 
 def load_onboarding_config(project_root: Path) -> dict[str, Any] | None:
     """Load the project-level iterate.config.yaml if it exists.
@@ -281,7 +288,7 @@ def _build_refreshed_config(
 def full_reonboard(
     project_root: Path,
     input_func=None,
-) -> bool:
+) -> str:
     """Perform a full re-onboarding, backing up old files first.
 
     Backs up existing ITERATE.md and iterate.config.yaml, then runs the
@@ -292,14 +299,19 @@ def full_reonboard(
         input_func: Optional input callable for testing.
 
     Returns:
-        True if re-onboarding completed, False if cancelled, no existing
-        files, or backup/write failed (errors are logged to stderr).
+        One of the REONBOARD_* status strings:
+        - ``REONBOARD_COMPLETED`` — wizard produced data and outputs were written.
+        - ``REONBOARD_NO_CHANGES`` — returning user declined all updates;
+          nothing was written (old files remain intact).
+        - ``REONBOARD_CANCELLED`` — wizard was cancelled before any write.
+        - ``REONBOARD_FAILED`` — no existing files, or backup/write failed
+          (errors are logged to stderr).
     """
     iterate_md_path = project_root / ITERATE_MD
     config_path = project_root / CONFIG_YAML
 
     if not iterate_md_path.is_file() and not config_path.is_file():
-        return False
+        return REONBOARD_FAILED
 
     # Backup existing files.
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -314,7 +326,7 @@ def full_reonboard(
             )
     except OSError as exc:
         print(f"⚠️  Backup failed, aborting re-onboarding: {exc}", file=sys.stderr)
-        return False
+        return REONBOARD_FAILED
 
     # Run the full wizard.
     if input_func is not None:
@@ -323,19 +335,19 @@ def full_reonboard(
         data = run_wizard(project_root)
 
     if data is None:
-        return False
+        return REONBOARD_CANCELLED
     if data is NO_CHANGES_NEEDED:
         # Returning user declined all updates; nothing to write. The old
         # files remain intact and the .bak-<timestamp> copies are harmless.
-        return True
+        return REONBOARD_NO_CHANGES
 
     try:
         write_onboarding_outputs(data, project_root)
     except OSError as exc:
         print(f"⚠️  Failed to write onboarding outputs: {exc}", file=sys.stderr)
-        return False
+        return REONBOARD_FAILED
 
-    return True
+    return REONBOARD_COMPLETED
 
 
 def _build_refresh_data(

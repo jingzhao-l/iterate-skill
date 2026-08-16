@@ -41,9 +41,15 @@
 
 - **`iterate doctor --fix` 安全自动修复**：补齐"诊断→修复→确认"闭环。`--fix` 仅修复确定性、无损、可逆的配置问题（重复/空维度、非法 language、越界/非整数 max_rounds、空 target_branch、skill_version 漂移），写前自动生成 `.doctorfix-<timestamp>` 备份，随后重跑诊断确认健康。新增 `doctor.apply_safe_fixes` 与 `doctor.run_doctor_fix`。
 
+### 修复 / Bug Fixes (skill CLI)
+
+- **`iterate refresh` 失败提示误导**：此前失败时一律提示 `ITERATE.md not found`，但 `incremental_refresh` 对读取失败、写失败（已打 stderr）同样返回失败。现改为中性的 `Could not read or write ITERATE.md / iterate.config.yaml (see stderr)`，准确反映各类失败原因。
+- **`iterate reonboard` 无变更时提示夸大**：`full_reonboard` 对"正常完成"与"返回用户拒绝全部更新（NO_CHANGES_NEEDED）"均返回 True，导致无写入场景也提示 `Full re-onboarding complete`。现将返回值改为 `REONBOARD_*` 状态码（`completed`/`no-changes`/`cancelled`/`failed`），`_cmd_reonboard` 据此输出准确提示。
+- **清理死代码**：删除 `doctor._COMMAND_MODULES_KEYS` 未使用常量（其取值 `commands.validation` 本身为错误键名）。
+
 ### 新增单元测试 / Tests
 
-- `tests/test_doctor.py` 新增 `apply_safe_fixes`（干净配置无改动、去重、默认回填、clamp、类型移除、分支重置、版本同步）与 `run_doctor_fix`（写回+备份、无操作、缺配置、CLI `--fix`）共 12 个用例；全测试集 441 个全绿。
+- `tests/test_onboarding.py` 的 `full_reonboard` 相关断言更新为 `REONBOARD_*` 状态码；`tests/test_doctor.py` 保留既有 `apply_safe_fixes` / `run_doctor_fix` / CLI `--fix` 用例；全测试集 441 个全绿。
 
 ---
 
