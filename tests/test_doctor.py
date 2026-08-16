@@ -47,7 +47,7 @@ def _base_config() -> dict:
     return {
         "dimensions": ["correctness", "security"],
         "onboarding": {
-            "skill_version": "2.3.10",
+            "skill_version": "2.3.11",
             "channel": "cli",
             "completed_at": "2026-08-15T00:00:00Z",
             "drift_check": False,
@@ -73,7 +73,7 @@ class TestDoctorReport:
         report = run_doctor(project)
         data = report.to_dict()
         assert data["project"] == str(project)
-        assert data["skill_version"] == "2.3.10"
+        assert data["skill_version"] == "2.3.11"
         assert isinstance(data["healthy"], bool)
         assert isinstance(data["findings"], list)
 
@@ -147,6 +147,69 @@ class TestDoctorConfig:
         assert not report.has_errors()
         assert any(f.check == "validation.commands" and f.severity == "ok" for f in report.findings)
 
+    def test_empty_dimensions_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimensions"] = []
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert report.has_errors()
+        assert any(f.check == "dimensions" and f.severity == "error" for f in report.findings)
+
+    def test_duplicate_dimensions_is_warning(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimensions"] = ["correctness", "correctness"]
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(f.check == "dimensions" and f.severity == "warn" for f in report.findings)
+
+    def test_max_rounds_out_of_bounds_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["max_rounds"] = 51
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert report.has_errors()
+        assert any(f.check == "max_rounds" and f.severity == "error" for f in report.findings)
+
+    def test_max_rounds_valid_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["max_rounds"] = 3
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(f.check == "max_rounds" and f.severity == "ok" for f in report.findings)
+
+    def test_invalid_language_is_warning(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["language"] = "fr"
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(f.check == "language" and f.severity == "warn" for f in report.findings)
+
+    def test_invalid_command_whitelist_is_warning(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {"command_whitelist": ["pytest", "pytest"]}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(f.check == "validation.command_whitelist" and f.severity == "warn" for f in report.findings)
+
+    def test_valid_command_whitelist_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {"command_whitelist": ["pytest"]}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(f.check == "validation.command_whitelist" and f.severity == "ok" for f in report.findings)
+
 
 class TestDoctorSkillVersion:
     def test_version_mismatch_is_warning(self, tmp_path) -> None:
@@ -172,7 +235,7 @@ class TestRenderReport:
         code = render_report(report, json_output=True)
         out = capsys.readouterr().out
         data = json.loads(out)
-        assert data["skill_version"] == "2.3.10"
+        assert data["skill_version"] == "2.3.11"
         assert code == 0
 
     def test_error_report_returns_nonzero(self, tmp_path, capsys) -> None:

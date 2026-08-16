@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iterate-skill"
-version = "2.3.10"
+version = "2.3.11"
 description = "Iterate skill CLI — onboarding and project knowledge management for the iterate AI coding assistant skill."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,7 @@ classifiers = [
 dependencies = [
     "PyYAML==6.0.2",
     "rich==13.7.1",
+    "jsonschema==4.26.0",
 ]
 
 [project.scripts]
