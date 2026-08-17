@@ -11,6 +11,46 @@
 
 ---
 
+## 这是什么 / About This Project
+
+**iterate** 是一个让 AI 编程助手具备**多轮自主代码审查与修复**能力的开源项目。你无需从任何"iterate"概念开始——它解决的是一个很具体的痛点：
+
+> AI 助手往往"说得多、做得浅"：一次对话只改几行、看过一个文件就不再管全局，也很少回头复核自己改坏的东西。`/iterate` 把这些琐碎但关键的收尾工作——逐项审查、分维度排查、修复、验证、再迭代——自动化，让 AI 真正像一位资深工程师一样把改动**做完、做对**。
+
+它的运行机制可以概括为一条自闭合流水线：
+
+```text
+定目标 → 多维度并行审查 → 原子修复 + 架构修复（需你批准）→ 验证 → 再审查 → 循环直到收敛 / 达轮数上限 → 输出总结
+```
+
+**iterate 不是一个独立的工具，而是一套附着在现有 AI 助手之上的技能生态。** 它不会替换你的 IDE 或 AI 工具，而是在你已有的工作流里，加一层"严格的代码把关"。整个生态由三个组件构成，共用同一套配置与审查维度：
+
+| 组件 | 形态与位置 | 面向场景 |
+|---|---|---|
+| **Core Skill + CLI** | 可移植 AI 技能 `/iterate` + `iterate` 命令行（本仓库根目录） | 在 Trae / Claude Code / Cursor / Copilot / Codex 等 25+ 助手的对话式界面里多轮迭代 |
+| **iterate-harness** | 独立无头引擎，命令 `ih`（`harness/iterate-harness`，npm: `iterate-harness`） | 在终端 / CI / Git 钩子里，脱离对话式助手运行同一套闭环 |
+| **iterate-plugin** | dsh 桌面客户端插件（`harness/iterate-plugin`，npm: `iterate-plugin`） | 使用 dsh 桌面客户端，把 iterate 的收敛仪表盘、review 进度带进界面 |
+
+三者的关系：**skill**（本仓库核心交付物）面向任意 AI 助手的对话式迭代；**harness** 面向无头 / CI 场景的同一闭环引擎实现；**plugin** 把 harness 的运行时体验接入 dsh。配置（`iterate.config.yaml`）与维度体系在三者间完全一致——理解其一即可举一反三。
+
+其中，harness 与 plugin 也可脱离本仓库独立安装使用：
+
+```bash
+# iterate-harness：一键安装（npm 包装器，最简）
+npm install -g iterate-harness
+
+# 或脚本安装（oh / ohmo 已全面迁移为 ih）
+curl -fsSL https://raw.githubusercontent.com/jingzhao-l/iterate-harness/main/scripts/install.sh | bash
+ih iterate init && ih iterate review
+
+# iterate-plugin：dsh 桌面插件的 GitHub 安装
+dsh plugin --profile web add github:jingzhao-l/iterate-plugin#main
+```
+
+> 本文档接下来以 **skill（本仓库根目录）** 为核心，讲解最常用的对话式用法。harness 与 plugin 的详细文档见它们各自的 README（`harness/iterate-harness/README.md`、`harness/iterate-plugin/README.md`）。
+
+---
+
 ## 30 秒了解 / At a Glance
 
 **Iterate Skill** 让 AI 助手像一位严谨的资深工程师一样，对代码库进行多轮审查与修复。
@@ -25,28 +65,6 @@
 | **校验和验证** | 从 GitHub Release 更新时强制 SHA256 校验 |
 | **多助手支持** | Trae、Claude Code、Cursor、Windsurf、GitHub Copilot、Codex、Roo Code 等 25+ 工具 |
 | **项目知识库** | 自动生成 `ITERATE.md` + `iterate.config.yaml`，支持漂移检测和增量刷新 |
-
----
-
-## 生态 / Ecosystem
-
-本仓库（skill + 安装器）之外，iterate 还有两个配套项目，按你的使用场景选择：
-
-| 项目 | 是什么 | 适合谁 |
-|---|---|---|
-| **[iterate-harness](https://github.com/jingzhao-l/iterate-harness)**（npm: `iterate-harness`） | 独立的 iterate 专用命令行引擎（`ih` 命令）。把 `/iterate` 的多轮审查-修复闭环落地为无头运行时：CI/PR 模式（GitHub 批注 + 幂等 PR 评论 + 严重度门禁）、托管 pre-commit 钩子、定时评审、HTML 单文件报告、token 预算与阈值门禁、批量仓库排行 | 想在终端 / CI / 钩子里脱离对话式助手跑 iterate 的人 |
-| **[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)**（npm: `iterate-plugin`） | dsh（cordis）桌面客户端插件。把 iterate 的收敛仪表盘、review 进度、Esc 中途干预带进 dsh 的会话界面 | 已在使用 dsh 桌面客户端的人 |
-
-```bash
-# iterate-harness 一键安装（npm 包装器，最简）
-npm install -g iterate-harness
-
-# 或脚本安装（oh/ohmo 已全面迁移为 ih）
-curl -fsSL https://raw.githubusercontent.com/jingzhao-l/iterate-harness/main/scripts/install.sh | bash
-ih iterate init && ih iterate review
-```
-
-三者关系：**skill**（本仓库）面向任意 AI 助手的对话式迭代；**harness** 面向无头/CI 场景的同一闭环引擎实现；**plugin** 把 harness 的运行时体验接入 dsh。配置（`iterate.config.yaml`）与维度体系在三者间保持一致。
 
 ---
 
@@ -465,6 +483,16 @@ iterate-skill/
 │   ├── dimensions.yaml               # 聚合版维度定义
 │   └── dimensions/                   # 数据驱动的维度定义
 ├── examples/                         # 各语言项目示例
+├── harness/                          # iterate 生态的两个工程化落地组件（monorepo）
+│   ├── iterate-harness/              # 独立无头引擎（npm: iterate-harness，命令 ih）
+│   │   ├── src/iterate_harness/      #   CLI / 引擎 / web / UI 源码
+│   │   ├── frontend/                 #   终端 / web 前端界面
+│   │   ├── npm/                      #   npm 包装器（ih）
+│   │   └── scripts/                  #   安装脚本与 e2e 测试
+│   └── iterate-plugin/               # dsh 桌面插件（npm: iterate-plugin）
+│       ├── src/                      #   服务端逻辑（TypeScript，编译到 dist/）
+│       ├── lib/                      #   客户端 UI 注入入口
+│       └── cordis.patch.yml          #   dsh bundle 声明
 ├── templates/                        # 模板文件
 ├── iterate_cli/                      # onboarding CLI 源码
 │   └── data/
