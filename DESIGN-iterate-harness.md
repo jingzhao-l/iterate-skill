@@ -1368,7 +1368,7 @@ harness/iterate-harness/
 | 项 | 设计 |
 |---|---|
 | 列表 | `GET /workspaces`：主工作区（kind=primary，含隔离配置开关 / 决策日志规模 / config 是否存在 / git 元数据：分支、HEAD、dirty）+ 每个 `original_path` 匹配项目根的隔离 worktree（kind=worktree，含 slug / branch / agent_id / created_at / 轮次） |
-| 删除 | `POST /workspaces/remove`：`{slug}`，先经 `swarm.worktree.validate_worktree_slug` 校验（拒绝绝对路径 / `.`/`..` 段 / 非法字符，防路径遍历），需 `confirm=true`，删除成功写审计日志；不存在返回 404 |
+| 删除 | `POST /workspaces/remove`：`{slug}`，先经 `swarm.worktree.validate_worktree_slug` 校验（拒绝绝对路径 / `.`/`..` 段 / 非法字符，防路径遍历），需 `confirm=true`，删除成功写审计日志；不存在返回 404。**陈旧判定**：仅当该 worktree 的轮次小于本项目最新轮次（`detail.stale=true`）时才允许删除，避免删除当前活跃轮次的沙箱 |
 | 读容错 | git 元数据 best-effort（非 git 目录 / git 不可用时字段为 null/False，页面优雅降级）；worktree 列表读取失败返回 500 并带原因 |
 
 **前端**（`pages/Workspaces.tsx` 新增 + `App.tsx` 路由）：卡片/表格展示主工作区与各 worktree（活跃状态、分支、创建时间、轮次）；删除走二次确认对话框，成功后刷新；加载态骨架屏、失败态错误提示。
