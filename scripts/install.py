@@ -117,15 +117,6 @@ def _hint(message: str) -> None:
     _tui_print(message, style="iterate.hint")
 
 
-def _key_value(key: str, value: str) -> None:
-    """Aligned key: value line."""
-    padded = f"{key}:".ljust(18)
-    if _RICH_AVAILABLE:
-        _CONSOLE.print(f"  [iterate.label]{padded}[/] {value}")
-    else:
-        print(f"  {padded} {value}")
-
-
 def _strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences for width calculation."""
     import re
@@ -175,6 +166,43 @@ RELEASE_API_URL = (
 )
 CHECKSUMS_ASSET_NAME = "SHA256SUMS.txt"
 EXPECTED_TARBALL_FILENAME = "iterate-skill.tar.gz"
+
+# Accepted GitHub Personal Access Token prefixes (classic ``ghp_``/``gho_``/``ghu_``
+# and fine-grained ``github_pat_``). Used to fail fast when a token is mistyped
+# rather than sending an arbitrary header value to GitHub.
+GITHUB_TOKEN_PREFIXES: tuple[str, ...] = (
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+)
+
+
+def _validate_github_token(token: str | None) -> str | None:
+    """Return an error message when ``token`` is malformed, else None.
+
+    Accepts common GitHub token prefixes and requires reasonable length.
+    Empty/whitespace-only tokens are treated as absent (None, no error).
+    """
+    if token is None:
+        return None
+    stripped = token.strip()
+    if not stripped:
+        return None
+    if len(stripped) < 20 or len(stripped) > 256:
+        return (
+            "GitHub token looks malformed: expected a PAT (starts with "
+            "ghp_/gho_/github_pat_ etc.) of ~40-256 chars, got a very different length."
+        )
+    if not stripped.startswith(GITHUB_TOKEN_PREFIXES):
+        return (
+            "GitHub token does not look valid: expected a Personal Access Token "
+            "starting with one of (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_). "
+            "Double-check the value passed to --token."
+        )
+    return None
 
 SUPPORTED_AI: dict[str, str] = {
     # Universal / 通用 AI 编程工具（skills.sh 热门支持）
@@ -526,6 +554,24 @@ def _render_arrow_select(state: _ArrowSelectState, title: str) -> str:
     return "\n".join(lines)
 
 
+def _arrow_select_available() -> bool:
+    """Whether the raw arrow-key selector can run on this platform.
+
+    The selector uses ``termios``/``tty`` which are POSIX-only. On Windows
+    (and other platforms where they are unavailable) installation falls back
+    to the number-based menu so interactive install never crashes.
+    """
+    if os.name == "nt":
+        return False
+    try:
+        import termios  # noqa: F401 - presence check only
+        import tty  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def _prompt_arrow_multi_select(
     options: list[str],
     title: str = "Select items",
@@ -536,7 +582,8 @@ def _prompt_arrow_multi_select(
 
     Uses raw terminal mode to read arrow keys, Space and Enter. On a non-TTY
     stdin (pipes, tests) this function is not used; callers fall back to
-    ``_prompt_multi_select`` instead.
+    ``_prompt_multi_select`` instead. On platforms without ``termios``/``tty``
+    (e.g. Windows) this falls back to the number-based menu so it never crashes.
 
     Args:
         options: List of option identifiers (e.g. assistant keys).
@@ -549,6 +596,15 @@ def _prompt_arrow_multi_select(
     Returns:
         List of selected option identifiers (empty if cancelled).
     """
+    if not _arrow_select_available():
+        return _prompt_multi_select(
+            options,
+            input,
+            title=title,
+            default_all=default_all,
+            preselected=preselected,
+        )
+
     import sys as _sys
     import termios
     import tty
@@ -633,7 +689,7 @@ def interactive_select_assistants(
         preselected = set()
 
     title = "选择要安装的 AI 工具 / Select AI assistants to install to"
-    if sys.stdin.isatty():
+    if sys.stdin.isatty() and _arrow_select_available():
         return _prompt_arrow_multi_select(options, title, preselected=preselected)
     return _prompt_multi_select(options, input_func, title, preselected=preselected)
 
@@ -714,6 +770,22 @@ def install_command(
     return 0
 
 
+def _is_iterate_install_dir(path: Path) -> bool:
+    """Whether ``path`` looks like an actual iterate-skill installation.
+
+    Returns True only when ``path`` is a directory (not a symlink), exists,
+    and contains ``SKILL.md`` (the canonical skill marker). This guards
+    uninstall / update against recursively deleting an unrelated directory
+    that happens to live at a configured relative path (e.g. ``skills/iterate``
+    for OpenClaw when a project merely has such a directory).
+    """
+    if not path.exists():
+        return False
+    if path.is_symlink() or not path.is_dir():
+        return False
+    return (path / "SKILL.md").is_file()
+
+
 def uninstall_command(
     ai: str | None,
     target: Path,
@@ -741,7 +813,7 @@ def uninstall_command(
         existing_keys = [
             assistant
             for assistant in SUPPORTED_AI
-            if (effective_target / SUPPORTED_AI[assistant]).exists()
+            if _is_iterate_install_dir(effective_target / SUPPORTED_AI[assistant])
         ]
         if not existing_keys:
             _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
@@ -753,7 +825,7 @@ def uninstall_command(
     existing = [
         (assistant, effective_target / SUPPORTED_AI[assistant])
         for assistant in targets
-        if (effective_target / SUPPORTED_AI[assistant]).exists()
+        if _is_iterate_install_dir(effective_target / SUPPORTED_AI[assistant])
     ]
     if not existing:
         _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
@@ -768,10 +840,20 @@ def uninstall_command(
             _hint("Uninstall cancelled.")
             return 0
 
+    skipped: list[tuple[str, Path]] = []
     for assistant, destination in existing:
+        if not _is_iterate_install_dir(destination):
+            # Defensive re-check just before deletion; SKILL.md may have been
+            # removed concurrently, in which case we refuse rather than rmtree
+            # an arbitrary directory.
+            _warning(f"Skipped (no SKILL.md marker, refusing to delete): {destination}")
+            skipped.append((assistant, destination))
+            continue
         shutil.rmtree(destination)
         _success(f"Uninstalled {assistant}{mode_label}: {destination}")
 
+    if skipped:
+        _warning(f"Skipped {len(skipped)} target(s) that did not look like iterate-skill installations.")
     _success("Uninstall complete.")
     return 0
 
@@ -1040,6 +1122,17 @@ def _run_validate_subprocess(
             errors.append(stripped[2:])
         elif stripped and not stripped.startswith("Validation failed"):
             errors.append(stripped)
+    # Also surface stdout lines: some validate frontends write diagnostics to
+    # stdout rather than stderr, and dropping them would degrade the error
+    # report to a generic message. Deduplicate while preserving order.
+    if not errors:
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            detail = stripped[2:] if stripped.startswith("- ") else stripped
+            if detail and detail not in errors and not detail.startswith("Validation failed"):
+                errors.append(detail)
     return errors if errors else ["Validation failed (see stderr for details)"]
 
 
