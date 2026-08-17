@@ -36,6 +36,13 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 | `npm-installer/package.json` | `version` |
 | `CHANGELOG.md` | 新增版本条目 |
 
+> **核心规范（skill 就是 skill）**：ClawHub / ModelScope / SkillHub 的 skill 分发包
+> **一律不得携带 `harness/` 下的两个独立子项目源码**（`iterate-plugin`、`iterate-harness`
+> 各有自己的分发仓库，不属于 skill 本体）。历史版本曾把 `harness/iterate-plugin`
+> 完整源码夹带进 ModelScope（2.3.14/2.3.15）与旧 SkillHub 包，属误报，已废弃。
+> 自 2.3.16 起所有平台包均剔除 `harness/*`。重建/发布前用
+> `unzip -l <zip> | grep harness/` 复核必须为 0。
+
 ### 发布清单
 
 - [ ] **1. 同步版本号**：人工编辑上述 5 个文件 + 更新 `CHANGELOG.md`（保留旧版本条目，只新增）。
@@ -57,14 +64,24 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **坑**：必须显式传 `--name Iterate`，否则显示名会被默认取为发布目录 basename
       > （历史上出现过 `Clawhub Stage 2.3.12`）。ClawHub 有已知 bug（issue #2983），
       > 偶发 `skillId/versionId invalid value`，发布前需清理残留的 suspended 进程。
+      >
+      > **串行上传慢**：ClawHub 逐文件串行上传慢网络下极易假死，可用并发脚本
+      > `.dist_tmp/clawhub_publish.py`（`--concurrency N`）并行上传。
+      >
+      > **stage 必须干净**：stage 目录不得含 `harness/iterate-harness`（历史 2.3.14–2.3.16
+      > 误打包 65MB clone 超 50MB 上限）。只保留 skill 本体 + `harness/iterate-plugin` 为 0。
 - [ ] **7. 发布 ModelScope**：
-      - 用 **精简包**（zip 需 < 5MiB，只含核心文件，不含前端/文档等）。
-      - 通过 OpenAPI 更新：`openapi.update_skill_settings(owner, name, {'skill_file': file_id})`。
-      > **坑**：完整包常超 5MiB 上限，必须用精简包。
+      - 用 **精简包**（重建脚本 `.dist_tmp/rebuild_ms.py` 已剔除 `harness/*`）。
+      - zip 需 < 5MiB；通过 OpenAPI 更新：`openapi.update_skill_settings(owner, name, {'skill_file': file_id})`。
+      > **坑**：完整包常超 5MiB 上限，必须用精简包；且历史版本曾夹带 `harness/iterate-plugin` 源码，重构后必须为 0。
 - [ ] **8. 发布 Tencent SkillHub**：
-      - 用 **SkillHub 专用包 `iterate-skill-skillhub.zip`**（**排除 LICENSE**），skillId `104490`。
+      - 用 **SkillHub 专用包 `iterate-skill-skillhub.zip`**（重建脚本 `.dist_tmp/rebuild_skillhub.py`
+        在剔 harness 的 ms 精简包基础上**再剔除 LICENSE**），skillId `104490`。
       > **坑**：必须用去掉 LICENSE 的精简专用包（约 288KB）防止上传 `Broken pipe`；
       > 完整包（含 LICENSE）会因过大上传失败。
+      >
+      > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
+      > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [ ] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
 
 ---
