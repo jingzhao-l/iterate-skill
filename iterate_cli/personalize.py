@@ -141,8 +141,7 @@ def _is_plain_script_path(script: str) -> bool:
     if "/" in script:
         # Reject absolute paths and parent-dir traversal; only allow
         # relative paths within the project.
-        if script.startswith("/") or ".." in script:
-            return False
+        return not (script.startswith("/") or ".." in script)
     return not _has_forbidden_chars(script)
 
 

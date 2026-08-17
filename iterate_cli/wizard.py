@@ -580,9 +580,7 @@ def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
         "changed-only — 增量审查 / Changed files only",
     ], indent=4)
     scope_choice = input_func("  └ 选择 / Select (1/2, 默认 1): ").strip()
-    if not scope_choice:
-        review_scope = "full"
-    elif scope_choice == "1":
+    if not scope_choice or scope_choice == "1":
         review_scope = "full"
     elif scope_choice == "2":
         review_scope = "changed-only"

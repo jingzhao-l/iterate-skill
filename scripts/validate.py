@@ -111,6 +111,12 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
 
     同时校验白名单条目本身不含 shell 特殊字符（; | & $ ` 等），
     避免恶意白名单条目绕过前缀匹配。
+
+    白名单是配置期校验用的可选字段（schema 非必填、doctor 按可选处理，
+    运行时只信任 validation.commands）：
+    - 未配置 command_whitelist：跳过白名单结构及合规性校验。
+    - 已配置：必须是非空列表，条目须安全，且每条 validation.commands
+      必须以白名单前缀匹配。
     """
     errors: list[str] = []
     validation = config.get("validation", {})
@@ -119,13 +125,16 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
         errors.append("validation must be a mapping")
         return errors
 
-    whitelist = validation.get("command_whitelist", [])
-    commands_by_module = validation.get("commands", {})
+    whitelist = validation.get("command_whitelist")
+    if whitelist is None:
+        # 白名单未配置：视为可选，跳过结构/合规性校验（与 doctor/schema 一致）。
+        return errors
 
     if not isinstance(whitelist, list) or not whitelist:
         errors.append("validation.command_whitelist must be a non-empty list")
         return errors
 
+    commands_by_module = validation.get("commands", {})
     if not isinstance(commands_by_module, dict):
         errors.append("validation.commands must be a mapping")
         return errors

@@ -22,7 +22,11 @@ jobs:
           # checksum file can be uploaded *before* the installer downloads it.
           # GitHub's release tarball_url is auto-generated; we recreate a
           # stable archive here to publish a matching SHA256SUMS.txt asset.
-          git archive --format=tar.gz --prefix=iterate-skill/ -o iterate-skill.tar.gz HEAD
+          # The harness/ directory holds two independent distribution
+          # sub-projects (iterate-harness, iterate-plugin) and must NOT ship
+          # in the skill release tarball (see 2.3.17 release notes).
+          git archive --format=tar.gz --prefix=iterate-skill/ \
+            -o iterate-skill.tar.gz HEAD -- . ':!harness'
 
       - name: Generate SHA256 checksums
         run: |
