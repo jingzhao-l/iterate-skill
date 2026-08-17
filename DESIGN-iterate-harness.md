@@ -1,7 +1,7 @@
 # iterate-harness 设计文档 v1.0
 
 > 目标：把 iterate 从 Skill 形态升级为「专门用于 iterate 的极简 agent harness」，深度适配原 skill 的体系与功能。
-> 状态：已实现至 v1 稳定期（当前发布 1.9.4）；设计文档迭代至 v1.38。
+> 状态：已实现至 v1 稳定期（当前发布 1.10.0）；设计文档迭代至 v1.39。
 > 版本记录：见文末。
 
 ## 1. 背景与目标
@@ -566,6 +566,7 @@ iterate-harness/                     # fork 自 HKUDS/OpenHarness @ v0.1.9
 - v1.37（2026-08-17）：**28 项完整清单固化 + 剩余 22 项补齐实现（1.9.4）**——§15.3 的「28 项候选」在 §15.4 完整列出并逐项标注来源/价值/成本/实现状态（不再只记录 6 项高价值子集）。其中 1.9.3 已实现 #1-#6 + 历史版本已实现 #7/#13/#14/#16/#17/#20/#23-#27 后，本次把剩余待实现/部分覆盖项全部落地：**#8** 分诊结果本轮即应用（`personalization.sync_known_intentional_to_config` 配置桥，把 `known_intentional` 合并写入 `iterate.config.yaml`，去重/原子写/保留手写项）；**#9** 常见失败自愈指南章节（README Troubleshooting，TLS/认证/配额/断点/模型未找到五类）；**#10** prompt 模板预设（`prompts.py` TEMPLATE_PRESETS standard/strict/quick + CLI `--template`，`template_suffix` 模式归一化 `dry-run`→`dry_run`）；**#11** 多语言报告（`ci_report.py` L10N_TEXTS en/zh + CLI `--lang`）；**#15** CSV 导出（`render_csv` UTF-8 BOM 供 Excel 直接打开 + CLI `--csv`）；**#21** webhook 推送（新模块 `webhook.py`，自动识别 Slack/飞书/generic，富 Blocks/卡片 + CLI `--webhook`）；**#18** 两次运行 diff（`trend_store.diff_runs`/`RunDiff` new/fixed/regressed/unchanged + `render_diff`，回归经 `previously_fixed_findings` 识别）；**#19** 多分支审查入口（CLI `review|run --branch` + worktree 隔离）；**#22** 维度查看（TUI `/iterate dimensions` 展示维度及资源配置）；**#12** 离线模型（`settings.py` 新增 `local`/`ollama` profile，`auth_source: local`）。**质量与验证**：harness 全量 1602 通过 / 1 失败（`test_bash_tool` 部分输出断言为既有环境限制：macOS 无 `script` 包装时 PTY 无法流式回读，与本次无关，留待跨平台跟进）；npm wrapper 25/25；新增测试 `test_prompts.py`/`test_webhook.py`/`test_branch_review.py` 及 trend diff/ci_report l10n 扩展。**版本**：1.9.3 已发布（npm 不可重发），本次版本推进至 **1.9.4**——pyproject / cli `__version__` / npm / README badge 对齐 1.9.4，CHANGELOG 新增 [1.9.4]。头部状态行更新至 1.9.4 / v1.37。
 - v1.38（2026-08-17）：**独立 WebUI 管理台设计（新增 §17）**——路线 B 的「活管理后端」。决策（用户）：完整管理台；技术栈 FastAPI + React；落地形态先独立 Web、后 Electron 壳；**自建、不拉取 DSH WebUI 代码**。论证：DSH WebUI 是 Cordis/Node 主进程的前端壳（WebSocket/RPC 通信），数据模型（会话 + trajectory 事件流）与 harness（decision log + 收敛 + checkpoint + 预算）不对应，桥接层仍需全量重写，且 DSH 处于 developer preview（v0.1.0-rc.5）有破坏性变更，fork 双重维护——故仅借鉴其 UX 设计语言（trajectory 时间线 / 可回溯复盘 / 审批确认流），不拷贝代码（§17.2）。范围：7 页面（Dashboard / Runs / Checkpoints / Workspaces / Budget & Rate / Config / Reports），写操作「只读默认 + 显式确认 + 写入前备份 + 失败回滚」（§17.3）。后端：新模块 `iterate_harness/web/`（api / routes / events SSE / security），默认绑定 127.0.0.1、CORS 仅本机回环、路径白名单、API key 脱敏、写操作审计（§17.4）。前端：Vite + React 18 + TS + react-router + zustand，视觉对齐既有 HTML 报告（severity 固定色表、蓝灰基调），借鉴 DSH trajectory 信息密度（§17.5）。依赖全部宽松许可（fastapi MIT / uvicorn BSD-3 / react MIT / vite MIT 等）并精确锁版（§17.6）。目录镜像既有 `frontend/terminal` force-include 打包模式，`ih web` 一键拉起（§17.7）。Electron 壳锁定为第二阶段、本版不实现（§17.8）。里程碑 M1-M4 与质量门（§17.9）、风险（§17.10）。**本版为纯设计细化，不修改 harness 源文件**。头部状态行更新至 v1.38（当前发布 1.9.4）。
 
+- v1.39（2026-08-17）：**WebUI 迭代：对话界面人类-in-the-loop 控制（新增 §18）**——在 WebUI 管理台中嵌入可折叠侧边对话面板，支持启动/暂停/用户输入/停滞检测/督促注入，匹配 iterate 垂直领域定位（主体是管理台，对话是辅助干预）。
 ## 13. 发布手册（Release Manual）
 
 > 本节为 `RELEASE.md` 的镜像章节（v1.31 并入），是 iterate 生态三个对外发布项目的统一发布 checklist。发布操作以本节为准，独立 `RELEASE.md` 保留便于快速勾选。
@@ -1148,3 +1149,181 @@ harness/iterate-harness/
 2. **运行中状态读取一致性**：SSE 尾部读取需处理 decision log append-only 语义（只追加、不重写），实现时以文件尾部游标推进。
 3. **Electron 打包体积与分发**：第二阶段再评估（electron-builder 等），本阶段不引入。
 4. **是否纳入独立仓库同步**：沿用 `jingzhao-l/iterate-harness` subtree 同步流程，WebUI 随主仓库演进。
+
+## 18. 对话界面：人类-in-the-loop 控制（v1.39：WebUI 迭代，面向 iterate 垂直领域）
+
+> 本节为 v1.38 独立 WebUI 管理台的迭代增量。**决策（用户 2026-08-17）**：WebUI 主体不是对话，但对话仍需保留用于确认决策、状态更新、处理模型惰性（中途停滞需要用户督促/补充信息）。不强制复刻业界通用对话式 agent 界面，匹配 iterate 专用垂直领域做定制创新。
+
+### 18.1 背景与目标
+
+**现状（v1.38 WebUI）**：已实现仪表盘/运行时间线/checkpoint/预算/配置/报告全量只读+受控操作，但缺少「动态人类介入通道」：
+1. 模型存在惰性：多轮迭代中可能出现「停止不动、卡住、重复无新发现」，需要用户通过对话督促/注入补充提示。
+2. 引擎设计本身需要：`AskUserPrompt/AskUserSelect/PermissionPrompt` 三个人类交互通道在 TUI/CLI 已闭环，但 WebUI 尚未提供。
+3. iterate 循环需要启动/暂停：用户可从 WebUI 直接启动 `review/run/resume`，而不是切回 CLI/TUI。
+4. 停滞感知与干预：轮次边界检测到连续零新发现时，主动挂起并等待用户决策（继续/跳过/停止/补充提示）。
+
+**目标**：
+1. 在 WebUI 管理台中嵌入**侧边对话面板**（而非主体全对话）——匹配「主体是管理台，对话是辅助干预」的 iterate 垂直定位。
+2. 复用引擎既有的人机交互契约（三通道），不重写引擎逻辑，只做 Web 适配。
+3. 支持四种场景：
+   - 用户主动发起：从 WebUI 输入提示注入循环；
+   - 引擎主动询问：模型通过 `ask_user_question` 工具提出问题，WebUI 弹出输入框收集回答；
+   - 停滞自动暂停：`IterateLoopPolicy` 检测到连续 0 新发现 → 暂停 → 等待用户决策；
+   - 启停控制：WebUI 一键 `start review/run/resume` → 实时推送 `ReviewProgressEvent` → 用户观测 → 干预。
+
+### 18.2 架构决策（为什么是侧边面板，不是主体对话）
+
+| 方案 | 适配 iterate 垂直领域？ | 优点 | 缺点 | 结论 |
+|---|---|---|---|---|
+| 全页对话（DSH 风格） | ❌ 主体错配 | 业界标准方案 | iterate 核心是「多轮收敛审查 → 修复 → 验证」，不是自由对话；管理仪表盘/时间线/checkpoint 都挤不见了 | 不选 |
+| 底部浮动对话框 | ❌ 信息密度低 | 不占主空间 | 历史对话看不到，长对话无法回溯 | 不选 |
+| **右侧侧边面板（可折叠）** | ✅ 匹配定位 | 主空间留给管理台（仪表盘/时间线），对话始终可见可追溯；折叠后不占空间 | 需要处理窄屏响应式 | 选 |
+
+**垂直领域创新点**（相对于通用对话 agent）：
+- 对话角色分工清晰：**模型产出审查/修复 → 用户只做决策/督促/补充**，不是自由闲聊；
+- 对话历史只记录「干预交互」，不是全量 prompt 历史（全量在 decision log，这里只记人类干预）；
+- 「暂停等待用户」是核心场景 → 轮次边界主动挂起，UI 高亮提示用户输入；
+- 支持「督促注入」快捷短语：「继续，请寻找新发现」「请聚焦 XXX 维度」等，一键发送。
+
+### 18.3 后端设计（FastAPI 新增路由）
+
+**新模块/路由**：复用现有 `iterate_harness/web/` 结构，新增 `web/routes/chat.py` 和 `web/schemas/chat.py`。
+
+| 文件 | 职责 |
+|---|---|
+| `web/routes/chat.py` | 启动循环 (`POST /start`)、状态查询 (`GET /status`)、发送用户消息 (`POST /message`)、暂停/继续 (`POST /control`)、历史对话列表 (`GET /history`) |
+| `web/schemas/chat.py` | Pydantic 模型：`ChatMessage` (role/content/timestamp)、`IterateRunStatus` (state/currentRound/newFindings/totalCost)、`StartRequest` (mode/subcommand/changed/ref)、`ControlRequest` (action) |
+| `web/events.py` 扩展 | 现有 SSE 流新增 `chat-message` 事件类型（实时推送引擎生成的系统消息/提问） |
+
+**运行状态机**（对齐引擎既有契约）：
+
+```
+idle → starting → running → paused (user_input_needed) → running
+                         paused → stopped (done/failed)
+```
+
+| 状态 | 含义 | 可操作 |
+|---|---|---|
+| idle | 无运行中循环 | start review/run/resume |
+| starting | 正在启动引擎 | （等待） |
+| running | 循环正在推进 | pause / stop |
+| paused | 暂停，等待用户输入/决策 | send message / resume / stop |
+| stopped | 运行已结束（完成/失败） | （不可操作，查看结果） |
+
+**关键接口契约**：
+
+| Method | Path | 说明 | Request / Response |
+|---|---|---|---|
+| POST | `/api/v1/chat/start` | 启动 iterate 循环 | `{mode: "review"/"run", changed: bool, ref: string}` → `{runId: string, status: "starting"}` |
+| GET | `/api/v1/chat/status` | 查询当前运行状态 | → `{state: RunState, round: int, newFindings: int, totalFindings: int, costUsd: float, waitingFor: "user_prompt"/"user_select"/"permission", question: string?}` |
+| GET | `/api/v1/chat/history` | 获取对话历史（仅人机交互） | → `ChatMessage[]` |
+| POST | `/api/v1/chat/message` | 发送用户消息（回答提问/注入督促） | `{content: string}` → `{ok: true}` |
+| POST | `/api/v1/chat/control` | 控制命令（pause/resume/stop） | `{action: "pause"/"resume"/"stop"}` → `{ok: true, newState: RunState}` |
+
+**引擎集成路径**（复用既有 runtime，不重写）：
+1. Web 启动 → `build_runtime()` 组装 `RuntimeBundle` → 替换 `ask_user_prompt/ask_user_select/permission_prompt` 为 Web 版回调 → 回调通过 `awaitable` 挂起等待 WebUI 用户输入 → 用户提交 → 唤醒继续。
+2. 所有 `StreamEvent`（含 `ReviewProgressEvent`）通过 SSE 推送到前端 → 前端实时更新状态面板。
+3. 对话历史（仅人机交互）持久化到 `.iterate/web-chat.jsonl` 追加写入，重启可恢复。
+
+**安全设计**（延续 §17.4 安全模型）：
+1. 路径校验：启动的项目 root 必须是已存在目录，通过 `resolve_within` 校验防止遍历。
+2. 审计日志：所有写操作（start/stop/send message）记入 `.iterate/web-audit.jsonl`。
+3. 单运行约束：同一时间只允许一个 iterate 循环运行，防止并发冲突。
+
+### 18.4 前端设计（React 增量）
+
+**布局**：现有 WebUI 布局扩展为三栏（可折叠）：
+- 左：导航（不变）
+- 中：主内容区（仪表盘/runs/checkpoints 等，占 65-70% 宽度）
+- 右：**对话面板**（可折叠，默认展开当有运行时，折叠宽 48px 只显示图标 + 未读红点）
+
+**对话面板组件**：
+
+| 组件 | 职责 |
+|---|---|
+| `RunStatusCard` | 显示当前状态（running/paused/stopped）、当前轮次、新发现数、累计成本、等待提示 |
+| `ChatMessageList` | 滚动对话历史，区分角色：system（引擎状态）、assistant（模型提问）、user（用户输入） |
+| `UserInputBar` | 文本输入框 + 快捷短语按钮（"继续，请寻找新发现" / "请聚焦 XXX" / "停止当前运行"） |
+| `DecisionDialog` | 当引擎需要选择（`AskUserSelect`）时弹出模态框，展示选项供用户点击选择 |
+| `PermissionDialog` | 当需要审批确认（`PermissionPrompt`）时弹出，展示 diff 摘要 + 确认/取消按钮 |
+
+**状态管理**（Zustand 扩展 `store.ts`）：
+- `chat.messages`: 对话历史数组
+- `chat.runState`: 当前运行状态机状态
+- `chat.currentRound`: 当前轮次数
+- `chat.waitingFor`: 正在等待何种用户输入（prompt/select/permission/none）
+- `chat.currentQuestion`: 当前等待的问题文本
+- `chat.connectionState`: SSE 连接状态（connected/disconnected/reconnecting）
+
+**SSE 事件扩展**（现有 `events.ts` 新增类型）：
+- `chat-message`: 推送新聊天消息 → 追加到 `chat.messages`
+- `run-state-change`: 运行状态变更 → 更新 `chat.runState`
+- `progress-update`: 实时更新轮次/发现/成本 → 更新状态卡片
+
+**UX 特性**（垂直领域定制）：
+1. **可折叠侧边**：不使用对话时可折叠，最大化主内容区；
+2. **未读提醒**：引擎等待用户输入时，折叠状态显示红点提醒；
+3. **快捷短语**：预置「继续寻找新发现」「请聚焦 XXX 维度」「停止当前运行」，用户点击即发送，减少打字；
+4. **自动滚动**：新消息到来自动滚动到底部；
+5. **响应式**：窄屏（手机/小窗）自动全屏对话，返回按钮折叠回侧边。
+
+### 18.5 停滞检测与主动暂停
+
+**检测逻辑**（嵌入 `IterateLoopPolicy.on_turn_end`）：
+- 连续两轮 `new_findings == 0` 且未收敛 → 触发自动暂停；
+- 已配置 `token_budget/budget_usd` 且剩余不足一轮 → 在耗尽前一轮触发暂停，询问用户是否追加预算；
+- 暂停行为：设置 `paused = True` → 向对话面板推送系统消息 "检测到连续无新发现，已暂停。请指示：继续/跳过当前轮/停止/" → 等待用户决策。
+
+**用户决策选项**（预置快捷按钮）：
+- ▶️ **继续**：沿用原下一轮指令继续；
+- ⏭️ **跳过当前发现**：注入指令跳过当前回合卡住的发现，进入下一轮；
+- ✋ **停止**：终止当前运行，生成最终报告；
+- 💬 **补充提示**：用户输入自定义提示注入循环。
+
+### 18.6 依赖与许可核查
+
+| 依赖 | 现有/新增 | 许可 | 合规 |
+|---|---|---|---|
+| fastapi | 已有 | MIT | ✅ |
+| uvicorn | 已有 | BSD-3-Clause | ✅ |
+| react/react-router/zustand | 已有 | MIT | ✅ |
+| **无新增依赖** | - | - | ✅ |
+
+全部为宽松许可，无 GPL/AGPL/SSPL 强传染依赖，符合项目依赖准入规则。
+
+### 18.7 目录结构与文件
+
+```
+harness/iterate-harness/
+├── src/iterate_harness/web/
+│   ├── routes/chat.py          # 新增：对话/运行控制路由
+│   ├── schemas/chat.py         # 新增：Pydantic 模型
+│   └── events.py               # 修改：扩展 SSE 事件类型
+└── frontend/web/
+    └── src/
+        ├── pages/Chat.tsx     # 新增：对话面板页面（嵌入布局）
+        ├── components/       # 新增：RunStatusCard / ChatMessageList / DecisionDialog
+        ├── store.ts          # 修改：扩展 chat 相关 state
+        ├── api.ts            # 修改：新增 chat API 客户端
+        └── App.tsx           # 修改：布局集成侧边面板
+```
+
+### 18.8 里程碑与验收
+
+| 里程碑 | 内容 | 验收 |
+|---|---|---|
+| M1 | 后端：启动/状态/消息/控制路由 + 运行状态机 + SSE 扩展 | 单测覆盖所有状态转移 + 异常路径；启动 → 暂停 → 继续 → 停止全流程可跑通 |
+| M2 | 前端：侧边面板 + 状态卡片 + 对话列表 + 用户输入 + SSE 订阅 | 页面布局正确；折叠/展开正常；状态实时更新；不同等待类型（prompt/select/permission）UI 正确弹出 |
+| M3 | 停滞检测：连续零新发现自动暂停 + 用户决策快捷按钮 | 检测触发时机正确；决策注入指令正确进入引擎循环 |
+| M4 | 全链路端到端 | `ih web serve` 启动 → WebUI 打开 → 启动 `review` → 观测实时进度 → 暂停 → 发送用户消息 → 继续 → 停止 → 对话历史持久化 |
+
+**质量门**：
+- 后端：ruff 零告警、mypy 零错误；所有新路由有单测（覆盖正常/异常/边界）；
+- 前端：`npm run typecheck` 零错误；无占位实现，所有分支逻辑完整；
+- 安全：所有用户输入做校验；路径遍历防护；敏感信息不回传；审计日志完整。
+
+### 18.9 风险与开放问题
+
+1. **长轮次内存**：`RuntimeBundle.engine` 持有全量对话消息，多轮后内存增长可控吗？→ iterate 天然有 `max_rounds` 上限，内存增长在预期范围内；
+2. **多标签页并发**：多个浏览器标签页同时连接 → SSE 多连接状态同步靠后端单运行约束保证，最后启动者抢占，前面标签页会收到 "another run already active"；
+3. **阻塞等待用户输入**：`ask_user_prompt` 回调挂起 async 任务 → 后端进程阻塞等待，这是预期行为（和 TUI 一样），不影响其他 API 只读请求。
