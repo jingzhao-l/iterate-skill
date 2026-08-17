@@ -24,6 +24,24 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 
 ## 项目 1：iterate-skill（skill 本体）
 
+### ⚠️ 核心规范（skill 就是 skill，发布前必读）
+
+> **skill 发布只发 skill 本体，`harness/` 下的两个独立子项目一律排除。**
+>
+> 生态里 `harness/iterate-plugin`（dsh 插件）与 `harness/iterate-harness`（Python 引擎）
+> 各有自己的分发仓库（`jingzhao-l/iterate-plugin` / `jingzhao-l/iterate-harness`），
+> **不属于 skill 分发包**。任何平台（ClawHub / ModelScope / SkillHub / GitHub release
+> tarball）的 skill 发布包都不得携带 `harness/*` 源码。
+>
+> - 失效规范示例（历史误报，已废弃）：2.3.14/2.3.15 曾把 `harness/iterate-plugin`
+>   完整源码夹带进 ModelScope 与旧 SkillHub 包，全部跳过。
+> - **自 2.3.16 起所有平台包均剔除 `harness/*`。**
+> - **发布前强制复核**：任意平台的包/目录发出前，先跑
+>   `unzip -l <zip> | grep harness/`（zip）或 `find <stage目录> -path '*/harness/*'`（stage 目录），
+>   结果为 **0 条**才允许发出。
+>
+> 每步发布清单中凡是碰包的，都会在对应步骤再次带回这条提醒。
+
 ### 需要同步的版本号文件
 
 发版前必须同步以下文件的版本号（step 1 一次性完成）：
@@ -36,12 +54,9 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 | `npm-installer/package.json` | `version` |
 | `CHANGELOG.md` | 新增版本条目 |
 
-> **核心规范（skill 就是 skill）**：ClawHub / ModelScope / SkillHub 的 skill 分发包
-> **一律不得携带 `harness/` 下的两个独立子项目源码**（`iterate-plugin`、`iterate-harness`
-> 各有自己的分发仓库，不属于 skill 本体）。历史版本曾把 `harness/iterate-plugin`
-> 完整源码夹带进 ModelScope（2.3.14/2.3.15）与旧 SkillHub 包，属误报，已废弃。
-> 自 2.3.16 起所有平台包均剔除 `harness/*`。重建/发布前用
-> `unzip -l <zip> | grep harness/` 复核必须为 0。
+> **核心规范（参见上文 ⚠️ 总则）**：skill 分发包只发 skill 本体，
+> `harness/` 下两个独立子项目一律排除、不得携带。自 2.3.16 起所有平台包均剔除 `harness/*`。
+> 重建/发布前用 `unzip -l <zip> | grep harness/` 复核必须为 0。
 
 ### 发布清单
 
@@ -51,6 +66,7 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 - [ ] **4. 打 GitHub Release tag**：`git tag v<X.Y.Z> && git push origin v<X.Y.Z>`，在 GitHub 创建 Release。
       > `.github/workflows/release.yml` 会在 Release published 时自动生成并上传
       > `iterate-skill.tar.gz` + `SHA256SUMS.txt`（从 tag 树确定性构建）。
+      > **（skill 只发 skill）**：`git archive` 使用 pathspec `':!harness'` 剔除 harness，tarball 不含 `harness/`。
 - [ ] **5. 发布 npm 安装器**（安装器从 GitHub Release 下载 tarball，务必先于/同步于 npm 发布）：
       ```bash
       cd npm-installer
@@ -68,17 +84,23 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **串行上传慢**：ClawHub 逐文件串行上传慢网络下极易假死，可用并发脚本
       > `.dist_tmp/clawhub_publish.py`（`--concurrency N`）并行上传。
       >
-      > **stage 必须干净**：stage 目录不得含 `harness/iterate-harness`（历史 2.3.14–2.3.16
-      > 误打包 65MB clone 超 50MB 上限）。只保留 skill 本体 + `harness/iterate-plugin` 为 0。
-- [ ] **7. 发布 ModelScope**：
+      > **stage 必须干净（skill 只发 skill）**：stage 目录不得含任何 `harness/` 子项目
+      > （`harness/iterate-harness`、`harness/iterate-plugin` 均为 0；历史 2.3.14–2.3.16
+      > 误打包 65MB clone 超 50MB 上限）。
+      > 发布前复核：`find <stage目录> -path '*/harness/*'` 结果为空。
+      >
+      > 唯一可发的纯 skill 本体文件集就是 `git archive ':!harness'` 产出的 tarball 解包结果。
+- [ ] **7. 发布 ModelScope**（skill 只发 skill）：
       - 用 **精简包**（重建脚本 `.dist_tmp/rebuild_ms.py` 已剔除 `harness/*`）。
       - zip 需 < 5MiB；通过 OpenAPI 更新：`openapi.update_skill_settings(owner, name, {'skill_file': file_id})`。
-      > **坑**：完整包常超 5MiB 上限，必须用精简包；且历史版本曾夹带 `harness/iterate-plugin` 源码，重构后必须为 0。
-- [ ] **8. 发布 Tencent SkillHub**：
+      > **坑**：完整包常超 5MiB 上限，必须用精简包；且历史版本曾夹带 `harness/iterate-plugin`
+      > 源码，重构后必须为 0。发出前复核 `unzip -l <ms.zip> | grep harness/` 为空。
+- [ ] **8. 发布 Tencent SkillHub**（skill 只发 skill）：
       - 用 **SkillHub 专用包 `iterate-skill-skillhub.zip`**（重建脚本 `.dist_tmp/rebuild_skillhub.py`
         在剔 harness 的 ms 精简包基础上**再剔除 LICENSE**），skillId `104490`。
       > **坑**：必须用去掉 LICENSE 的精简专用包（约 288KB）防止上传 `Broken pipe`；
-      > 完整包（含 LICENSE）会因过大上传失败。
+      > 完整包（含 LICENSE）会因过大上传失败。该专用包源自剔 harness 的 ms 精简包，
+      > 故天然不含 `harness/`；发出前仍复核 `unzip -l <skillhub.zip> | grep harness/` 为空。
       >
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
