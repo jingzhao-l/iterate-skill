@@ -1,7 +1,7 @@
 # iterate-harness 设计文档 v1.0
 
 > 目标：把 iterate 从 Skill 形态升级为「专门用于 iterate 的极简 agent harness」，深度适配原 skill 的体系与功能。
-> 状态：已实现至 v1 稳定期（当前发布 1.10.0）；设计文档迭代至 v1.39。
+> 状态：已实现至 v1 稳定期（当前发布 1.11.0）；设计文档迭代至 v1.40。
 > 版本记录：见文末。
 
 ## 1. 背景与目标
@@ -567,6 +567,7 @@ iterate-harness/                     # fork 自 HKUDS/OpenHarness @ v0.1.9
 - v1.38（2026-08-17）：**独立 WebUI 管理台设计（新增 §17）**——路线 B 的「活管理后端」。决策（用户）：完整管理台；技术栈 FastAPI + React；落地形态先独立 Web、后 Electron 壳；**自建、不拉取 DSH WebUI 代码**。论证：DSH WebUI 是 Cordis/Node 主进程的前端壳（WebSocket/RPC 通信），数据模型（会话 + trajectory 事件流）与 harness（decision log + 收敛 + checkpoint + 预算）不对应，桥接层仍需全量重写，且 DSH 处于 developer preview（v0.1.0-rc.5）有破坏性变更，fork 双重维护——故仅借鉴其 UX 设计语言（trajectory 时间线 / 可回溯复盘 / 审批确认流），不拷贝代码（§17.2）。范围：7 页面（Dashboard / Runs / Checkpoints / Workspaces / Budget & Rate / Config / Reports），写操作「只读默认 + 显式确认 + 写入前备份 + 失败回滚」（§17.3）。后端：新模块 `iterate_harness/web/`（api / routes / events SSE / security），默认绑定 127.0.0.1、CORS 仅本机回环、路径白名单、API key 脱敏、写操作审计（§17.4）。前端：Vite + React 18 + TS + react-router + zustand，视觉对齐既有 HTML 报告（severity 固定色表、蓝灰基调），借鉴 DSH trajectory 信息密度（§17.5）。依赖全部宽松许可（fastapi MIT / uvicorn BSD-3 / react MIT / vite MIT 等）并精确锁版（§17.6）。目录镜像既有 `frontend/terminal` force-include 打包模式，`ih web` 一键拉起（§17.7）。Electron 壳锁定为第二阶段、本版不实现（§17.8）。里程碑 M1-M4 与质量门（§17.9）、风险（§17.10）。**本版为纯设计细化，不修改 harness 源文件**。头部状态行更新至 v1.38（当前发布 1.9.4）。
 
 - v1.39（2026-08-17）：**WebUI 迭代：对话界面人类-in-the-loop 控制（新增 §18）**——在 WebUI 管理台中嵌入可折叠侧边对话面板，支持启动/暂停/用户输入/停滞检测/督促注入，匹配 iterate 垂直领域定位（主体是管理台，对话是辅助干预）。
+- v1.40（2026-08-17）：**WebUI 迭代：工作区 / Findings 分诊 / 健壮性（新增 §19）**——落地 §17.3 P2 的 Findings 分诊（持久化 approve/reject 审批日志）与 P4 的工作区管理（主工作区 + 隔离 worktree 列表/删除）；对话面板新增工具调用可视化卡片；管理台新增 ErrorBoundary / Skeleton / 键盘快捷键 / SSE 断线轮询兜底 / 连接状态 toast / 浏览器通知等健壮性增强。
 ## 13. 发布手册（Release Manual）
 
 > 本节为 `RELEASE.md` 的镜像章节（v1.31 并入），是 iterate 生态三个对外发布项目的统一发布 checklist。发布操作以本节为准，独立 `RELEASE.md` 保留便于快速勾选。
@@ -1327,3 +1328,75 @@ harness/iterate-harness/
 1. **长轮次内存**：`RuntimeBundle.engine` 持有全量对话消息，多轮后内存增长可控吗？→ iterate 天然有 `max_rounds` 上限，内存增长在预期范围内；
 2. **多标签页并发**：多个浏览器标签页同时连接 → SSE 多连接状态同步靠后端单运行约束保证，最后启动者抢占，前面标签页会收到 "another run already active"；
 3. **阻塞等待用户输入**：`ask_user_prompt` 回调挂起 async 任务 → 后端进程阻塞等待，这是预期行为（和 TUI 一样），不影响其他 API 只读请求。
+
+## 19. WebUI 迭代：工作区 / Findings 分诊 / 健壮性（v1.40：WebUI 迭代，落地 §17.3 遗留能力 + 管理台健壮性）
+
+> 本节为 v1.39 对话面板的迭代增量。**决策（用户 2026-08-17）**：全量实现 §17.3 规划中尚未落地的 P2 Findings 分诊与 P4 工作区管理，同时为管理台补齐健壮性（错误边界 / 骨架屏 / 键盘快捷键 / SSE 断线兜底 / 浏览器通知）。对话面板新增工具调用可视化，让模型的工具活动可被用户直接感知。
+
+### 19.1 背景与目标
+
+**现状（v1.38/v1.39 WebUI）**：管理台已覆盖 Dashboard / Runs / Checkpoints / Budget & Rate / Config / Reports 与对话侧边面板，但存在以下功能缺口：
+1. **Findings 分诊（P2 缺口）**：Runs 页能看 findings 表格，但无法对单条 finding 做「批准/拒绝」决策并持久化——无法表达「这条修复意见我认可 / 这是误报」的人类判断。
+2. **工作区管理（P4 缺口）**：`worktree_isolation` 开启后每轮产生隔离 worktree，但没有可视化入口查看主工作区与各 worktree 状态、清理陈旧 worktree。
+3. **对话工具可视化（§18 增量）**：对话面板只显示文本消息，模型调用工具（审查/修复/验证）的过程不可见，用户难以判断「它现在在干什么」。
+4. **健壮性缺口**：单个页面渲染异常会整页崩溃；数据加载无骨架屏；无键盘导航；SSE 断线后状态静默停滞，用户无法区分「没新事件」与「连接断了」。
+
+**目标**：
+1. Findings 分诊：Runs 页每条 finding 可批准/拒绝，决策持久化到 `.iterate/findings-triage.jsonl`，可筛选已分诊项、可一键清除全部决策；
+2. 工作区管理：新页面列出主工作区 + 隔离 worktree（git 元数据 / 隔离配置 / 决策日志规模），支持删除陈旧 worktree（防路径遍历 + 二次确认 + 审计）；
+3. 工具调用可视化：对话消息中工具执行渲染为状态卡片（执行中 / 完成 / 空闲）；
+4. 健壮性：ErrorBoundary 防整页崩溃、Skeleton 骨架屏、`g <key>` 快捷键 + `/` 或 `Cmd/Ctrl+K` 切换对话、SSE 断线轮询兜底、连接状态 toast、等待人类决策时浏览器通知。
+
+### 19.2 Findings 分诊（落地 §17.3 P2）
+
+**后端**（`web/findings_triage.py` 新增 + `web/routes/runs.py` 扩展）：
+
+| 项 | 设计 |
+|---|---|
+| 存储 | `.iterate/findings-triage.jsonl` append-only 日志，镜像 `security.AuditLog` 模式；`(file, line, dimension)` 去重键，**最新一条生效**（重复分诊只追加不改写历史） |
+| 端点 | `GET /runs/findings/triage`（全部决策，最近优先）、`POST /runs/findings/triage`（记录，需 `confirm=true` + 审计）、`DELETE /runs/findings/triage`（清除全部，需 `confirm=true` + 审计） |
+| 请求模型 | `FindingsTriageRequest{file, line?, dimension, decision: "approve"|"reject", note?}`（decision 用 `Literal` 限定） |
+| 健壮性 | 读取对损坏行防御（跳过非 JSON / 非 dict / 空 key）；写入 best-effort 永不抛；非法 decision 抛 `ValueError` |
+| 语义 | `approve`=同意该 finding / 接受其修复建议；`reject`=误报 / 跳过修复。与 §18 引擎暂停菜单的审批互补：这是**人类对历史 run 的持久记录**，引擎审批是**进行中 run 的实时决策** |
+
+**前端**（`pages/Runs.tsx`）：findings 表格每行追加「批准 / 拒绝」按钮（busy 态禁用），分诊成功后即时反映到行状态；新增「仅看已分诊」筛选与「清除全部决策」操作（二次确认对话框）；初始化时加载全部已存决策并按去重键映射。
+
+### 19.3 工作区管理（落地 §17.3 P4）
+
+**后端**（`web/routes/workspaces.py` 新增）：
+
+| 项 | 设计 |
+|---|---|
+| 列表 | `GET /workspaces`：主工作区（kind=primary，含隔离配置开关 / 决策日志规模 / config 是否存在 / git 元数据：分支、HEAD、dirty）+ 每个 `original_path` 匹配项目根的隔离 worktree（kind=worktree，含 slug / branch / agent_id / created_at / 轮次） |
+| 删除 | `POST /workspaces/remove`：`{slug}`，先经 `swarm.worktree.validate_worktree_slug` 校验（拒绝绝对路径 / `.`/`..` 段 / 非法字符，防路径遍历），需 `confirm=true`，删除成功写审计日志；不存在返回 404 |
+| 读容错 | git 元数据 best-effort（非 git 目录 / git 不可用时字段为 null/False，页面优雅降级）；worktree 列表读取失败返回 500 并带原因 |
+
+**前端**（`pages/Workspaces.tsx` 新增 + `App.tsx` 路由）：卡片/表格展示主工作区与各 worktree（活跃状态、分支、创建时间、轮次）；删除走二次确认对话框，成功后刷新；加载态骨架屏、失败态错误提示。
+
+### 19.4 工具调用可视化（§18 增量）
+
+**前端**（`components/ChatPanel.tsx`）：`kind === "tool"` 的对话消息解析为工具调用卡片——工具名（等宽字体）+ 状态标签（执行中 / 完成 / 空闲）+ 时间戳 + 详情。状态以左侧色条区分（accent=执行中、绿=完成、中性=空闲），让用户一眼看到模型当前在执行哪类工具。
+
+### 19.5 管理台健壮性
+
+| 组件 | 实现 |
+|---|---|
+| `ErrorBoundary` | 类组件捕获子树渲染异常，展示错误卡片（图标 + 标题 + 详情 + 重试 / 刷新），`componentDidCatch` 记录错误；`App.tsx` 包裹全部路由 |
+| `Skeleton` | `SkeletonRows` / `SkeletonCard` / `SkeletonTable` 骨架屏组件，数据加载期替代空白，减少布局抖动 |
+| 键盘快捷键 | `App.tsx` 全局监听：`g <key>` 跳转导航（忽略输入框内按键）、`/` 或 `Cmd/Ctrl+K` 切换对话面板 |
+| SSE 断线兜底 | `store.ts`：SSE 断开时启动 5s 轮询（`startPolling` 刷新 status + chat status），重连成功即停止；连接状态变化推送 toast（连接成功 / 已断开，正在轮询兜底） |
+| 浏览器通知 | `store.ts`：当运行进入等待人类决策（`permission` / `user_select` / `user_prompt`）且状态变化时，请求通知权限并发送浏览器通知，提醒用户切回确认 |
+
+### 19.6 里程碑与验收
+
+| 里程碑 | 内容 | 验收 |
+|---|---|---|
+| M1 | Findings 分诊后端 + 前端 | 后端：GET/POST/DELETE 全路径单测（空列表 / 需 confirm / 记录并审计 / 最近优先 / 清除）；前端：批准/拒绝即时反映、筛选、清除二次确认 |
+| M2 | 工作区后端 + 前端 | 后端：列表含主工作区、删除需 confirm、遍历 slug 被拒、不存在 404；前端：主工作区 + worktree 展示、删除刷新 |
+| M3 | 工具调用可视化 | 对话面板工具消息渲染状态卡片，三类状态样式正确 |
+| M4 | 健壮性四件套 | ErrorBoundary 捕获渲染错误可恢复；骨架屏在加载期显示；快捷键生效；SSE 断开进入轮询兜底并在重连恢复；等待人类决策时浏览器通知 |
+
+**质量门**：
+- 后端：`tests/test_web/test_routes.py` 新增 `TestFindingsTriage`（6 项）与 `TestWorkspaces`（4 项），全量 pytest 通过；
+- 前端：`npm run typecheck` 零错误、`npm run build` 产出正常；
+- 安全：分诊与工作区删除全部走 `confirm=true` + 审计；worktree slug 防路径遍历；敏感信息不回传。
