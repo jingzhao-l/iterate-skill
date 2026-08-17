@@ -172,6 +172,37 @@ class TestValidateConfig:
         errors = validate.validate_config(path, schema_path)
         assert any("command_whitelist must be a non-empty list" in e for e in errors)
 
+    def test_absent_whitelist_is_optional(
+        self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path
+    ) -> None:
+        """Absent command_whitelist must not fail validation (optional field).
+
+        Mirrors config.schema.json (command_whitelist not in required) and
+        iterate_cli.doctor.run_doctor, both of which treat it as optional:
+        runtime trusts validation.commands as the single source of truth.
+        """
+        valid_config["validation"].pop("command_whitelist", None)
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        assert not any(
+            "command_whitelist" in e
+            for e in errors
+        )
+
+    def test_absent_whitelist_still_rejects_malformed_commands(
+        self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path
+    ) -> None:
+        """Absent whitelist skips whitelist compliance but schema still catches
+        a structurally malformed validation.commands value."""
+        valid_config["validation"].pop("command_whitelist", None)
+        valid_config["validation"]["commands"] = "not-a-mapping"
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        # Either the schema pass or the whitelist pass flags the non-mapping.
+        assert any("Schema error" in e or "commands must be a mapping" in e for e in errors)
+
     def test_validation_not_mapping(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:
         valid_config["validation"] = "not-a-mapping"
         path = tmp_path / "iterate.config.yaml"

@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 sys.path.insert(0, str(REPO_ROOT))
 
-import install  # noqa: E402  (sys.path set above)
+import install  # noqa: I001  (module imported after sys.path setup for scripts/)
 
 
 # --------------------------------------------------------------------------- #
@@ -466,9 +466,8 @@ class TestSafeExtractall:
         tar_path = self._build_tar(tmp_path, ["../evil", "ok.md"])
         dest = tmp_path / "out"
         dest.mkdir()
-        with pytest.raises(tarfile.TarError):
-            with tarfile.open(tar_path) as tar:
-                install._safe_extractall(tar, dest)
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
 
 
 # --------------------------------------------------------------------------- #

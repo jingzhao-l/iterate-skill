@@ -5,6 +5,18 @@
 
 ---
 
+## [2.3.18] — 2026-08-17
+
+### 修复 / Fixes (skill CLI + validate 脚本)
+
+- **`validation.command_whitelist` 改为可选**：[scripts/validate.py](scripts/validate.py) 此前强制要求该字段为非空列表，与 [config.schema.json](config/config.schema.json)（非必填）及 `iterate doctor`（按可选处理）不一致。现对齐三者：未配置白名单视为可选、跳过白名单结构/合规性校验（运行时仍以 `validation.commands` 为唯一信任源）；已配置但为空列表仍报错。新增 `test_absent_whitelist_is_optional` / `test_absent_whitelist_still_rejects_malformed_commands` 回归用例。
+- **GitHub release tarball 不再携带 `harness/`**：[release.yml](.github/workflows/release.yml) 的 `git archive` 此前将整个 `harness/` 打入发布包，与 2.3.17「skill 分发包不携带 harness 源码」的规范不一致。现通过 pathspec `:!harness` 在源头上剔除该目录。
+- **ruff 全绿**：清理 `iterate_cli/personalize.py`（SIM102）、`iterate_cli/wizard.py`（SIM114）、`tests/test_install_script.py`（I001/RUF100/SIM117）共 5 处 lint 违规，消除 CI 中 `ruff check scripts/ tests/ iterate_cli/` 的潜在失败。
+
+### 测试 / Tests
+
+- 全套 Python 测试 536 全绿。
+
 ## [2.3.17] — 2026-08-17
 
 ### 发布规范 / Release (skill CLI + installer)
