@@ -50,7 +50,7 @@ def _base_config() -> dict:
     return {
         "dimensions": ["correctness", "security"],
         "onboarding": {
-            "skill_version": "2.3.14",
+            "skill_version": "2.3.15",
             "channel": "cli",
             "completed_at": "2026-08-15T00:00:00Z",
             "drift_check": False,
@@ -76,7 +76,7 @@ class TestDoctorReport:
         report = run_doctor(project)
         data = report.to_dict()
         assert data["project"] == str(project)
-        assert data["skill_version"] == "2.3.14"
+        assert data["skill_version"] == "2.3.15"
         assert isinstance(data["healthy"], bool)
         assert isinstance(data["findings"], list)
 
@@ -238,7 +238,7 @@ class TestRenderReport:
         code = render_report(report, json_output=True)
         out = capsys.readouterr().out
         data = json.loads(out)
-        assert data["skill_version"] == "2.3.14"
+        assert data["skill_version"] == "2.3.15"
         assert code == 0
 
     def test_error_report_returns_nonzero(self, tmp_path, capsys) -> None:
@@ -342,7 +342,7 @@ class TestApplySafeFixes:
         config = _base_config()
         config["onboarding"]["skill_version"] = "9.9.9"
         new_config, fixes = apply_safe_fixes(config)
-        assert new_config["onboarding"]["skill_version"] == "2.3.14"
+        assert new_config["onboarding"]["skill_version"] == "2.3.15"
         assert any("skill_version" in f for f in fixes)
 
 

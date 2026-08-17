@@ -5,6 +5,18 @@
 
 ---
 
+## [2.3.15] — 2026-08-16
+
+### 重构 / Refactor (skill CLI installer)
+
+- `install.py` 全部交互函数（`prompt_choice/text/int/bool/int_in_range/dimensions`、`interactive_config`、`config_command`）接入可注入的 `input_func`（默认 `input`），安装 / 更新 / 卸载 / config 向导可无需真实 stdin 端到端测试，UX 输出保持不变。
+
+### 测试 / Tests
+
+- 新增 `tests/test_install_script.py`（75+ 项）：覆盖文件拷贝（必选/可选、dry-run、force）、助手检测与选择、config 管理（init/list/set/交互向导，含校验失败原子回退）、update 发布下载与校验和强制校验、`_safe_extractall` 路径穿越防护、全部交互 prompt。
+- 修复测试设置，使向导/`--set` 生成的 config 能通过真实 schema 校验（以真实 master config + 真实 dimensions 作为默认值基准）。
+- 全套 Python 测试 532 全绿。
+
 ## [iterate-plugin 2.3.7] — 2026-08-15（独立版本线）
 
 本节记录 `harness/iterate-plugin`（dsh 插件）的独立版本线变更，不再跟随 skill 版本号。
