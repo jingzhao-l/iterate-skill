@@ -841,6 +841,45 @@ iterate 生态目前有 **三个** 会独立对外发布的项目：iterate-skil
 
 > **落地建议**：#1 与 #5 属「配置层增强」，可并入下一 patch/minor 版本；#2 与 #3 属「运行时体验」，建议单独 minor 版本做扎实验收；#4 涉及工作区模型变更，需先行设计（对齐 §11.4.1 架构）。
 
+### 15.4 完整 28 项候选清单与逐项实现状态（v1.37：全量固化，不再只记录高价值子集）
+
+> 本节把 §15.3 提到的「28 项候选」**完整列出**，并为每一项标注来源、价值、成本与**当前代码实现状态**。相比 §15.3 只固化了 6 项高价值明细，这里补全了其余 22 项（含低价值 / 超范围 / 由 skill 侧达成 / 已否定的项），作为后续迭代的完整输入。每项状态截至 v1.37（当前发布 1.9.3）。
+
+| # | 功能 | 来源 | 价值 | 成本 | 实现状态（v1.37） | 落点 |
+|---|---|---|---|---|---|---|
+| 1 | 自定义模型提供方（BYOK） | 代码缺口 | 高 | 低 | ✅ **已实现**（1.9.3） | `config/settings.py` ProviderProfile + 10 档默认 profile；`ih provider add` / `/model` |
+| 2 | 收敛仪表盘进 TUI | UX 缺口 | 高 | 中 | ✅ **已实现**（1.9.3） | `ReviewProgressEvent` → `ReviewProgressPanel.tsx`（sparkline / 分维度计数 / 累计费用） |
+| 3 | 失败自愈 / 断点续跑 | UX 缺口 | 高 | 中 | ✅ **已实现**（1.9.3） | `iterate/checkpoint.py` + `last_state.py`；`/iterate resume` |
+| 4 | session 工作区隔离（sandboxed worktree） | 代码缺口 | 高 | 中-高 | ✅ **已实现**（1.9.3） | `worktree_flow.py` + `worktree_runtime.py` + `swarm/worktree.py` |
+| 5 | 速率限制 / 预算熔断 | 代码缺口 | 中-高 | 低-中 | ✅ **已实现**（1.9.3） | `loop_policy.py` total_token_budget / budget_usd / max_turns_per_minute |
+| 6 | HTML 报告服务化 | 功能缺口 | 中 | 低 | ✅ **已实现**（1.9.3） | `report_server.py` + `html_report.py`（静态服务 + 轮次回放页）；`/iterate report --serve` |
+| 7 | TUI 趋势库入口 | UX 缺口 | 中 | 低 | ✅ **已实现**（历史版本） | `commands/iterate.py` `/iterate trend` 与 `/iterate log trend` → `trend_store.render_trend_summary` |
+| 8 | known_intentional 本轮即应用 | UX 缺口 | 中 | 中 | 🔲 待实现 → 本次 v1.37补充 | 迭代循环结束自动持久化筛选结果至 config（见 §16 配套） |
+| 9 | 常见失败自愈文档章节 | UX 缺口 | 中 | 低 | 🔲 待实现 → 本次 v1.37补充 | README / docs 增「常见失败场景自愈指南」（TLS / 认证 / 配额） |
+| 10 | 更多 prompt 模板预设 | 功能扩展 | 中 | 中 | 🔲 待实现 → 本次 v1.37补充 | `prompts.py` 内置多套模板；CLI `--template` 切换 |
+| 11 | 多语言报告 | 功能扩展 | 低 | 低 | 🔲 待实现 → 本次 v1.37补充 | 报告支持中文 / 英文输出 |
+| 12 | 离线模型支持 | 功能扩展 | 低 | 中 | 🔲 待实现 → 本次 v1.37补充 | 本地模型接入适配层（openai-compatible / 本地端点） |
+| 13 | 主题 / 皮肤 | 功能扩展 | 低 | 低 | ✅ **已实现**（历史版本） | `themes/`（5 内置主题 default/dark/minimal/cyberpunk/solarized + 自定义 `~/.iterate-harness/themes`）；CLI `--theme` 与 Settings.theme |
+| 14 | 批量仓库审查 | 功能扩展 | 低 | 高 | ✅ **已实现**（历史版本） | `iterate/batch.py`（多仓库顺序审查 + 严重度加权排名） |
+| 15 | 审查结果导出（PDF/Excel） | 功能扩展 | 低 | 低 | 🔲 待实现 → 本次 v1.37补充 | report 增 CSV 导出（Excel 可开）；PDF 由 CSV/HTML 转化 |
+| 16 | 审查历史可视化回放 | 功能扩展 | 低 | 中 | ✅ **已实现**（1.9.3 + 历史） | `replay.py`（log --replay）+ `html_report.build_replay_page` 交互式回放页 |
+| 17 | 自动修复预演（dry-run diff 预览） | 功能扩展 | 中 | 中 | ✅ **已实现**（历史版本） | `query.py` 逐修复 diff 审批 `_needs_iterate_fix_approval` / `require_fix_approval`（M6a） |
+| 18 | 审查结果对比（两次迭代 diff） | 功能扩展 | 中 | 中 | 🟡 部分覆盖 | `trend_store.py`（new/fixed/regressed/stubborn）跨运行分类；无显式两次 run 并排 diff |
+| 19 | 多分支并发审查 | 功能扩展 | 中 | 中 | 🟡 部分覆盖 | 依赖 #4 worktree 隔离可并发；无显式每分支专用入口 |
+| 20 | 审查结果自动提交 PR | 功能扩展 | 中 | 中 | ✅ **已实现**（历史版本） | `pr_comment.py`（PR 评论写入） |
+| 21 | 审查结果 Slack/飞书推送 | 功能扩展 | 低 | 中 | 🔲 待实现 → 本次 v1.37补充 | 通用 webhook 通知器（Slack Incoming Webhook / 飞书自定义机器人） |
+| 22 | 自定义审查维度 | 功能扩展 | 中 | 中 | 🟡 部分覆盖 | `config_loader.parse_dimension_resources` 已有维度资源配置；缺 TUI/CLI 编辑维度定义 UI |
+| 23 | 审查结果缓存 | 功能扩展 | 低 | 低 | ✅ **已实现**（历史版本） | 增量审查 `--changed`（changed-only quick review） |
+| 24 | 审查结果权限控制 | 功能扩展 | 低 | 低 | ✅ **已实现**（历史版本） | 文件级路径白名单 / 权限最小化已固化 |
+| 25 | 审查结果搜索 | 功能扩展 | 低 | 低 | ✅ **已实现**（历史版本） | 决策日志 `log <n>` tail + grep（自述可由 grep 达成） |
+| 26 | 交互式修复拒绝/接受 | 功能扩展 | 中 | 中 | ✅ **已实现**（历史版本） | `known_intentional` 筛选 + `require_fix_approval` 逐修复审批门（M6a） |
+| 27 | 审查结果导出到 CI/CD | 功能扩展 | 中 | 中 | ✅ **已实现**（历史版本） | `ci_report.py` `--github`（GitHub Actions workflow commands）+ `--fail-on` 门禁 |
+| 28 | 审查结果自动回滚 | 功能扩展 | 低 | 高 | 🔲 不实现（风险高） | 保留「不建议」结论：自动回滚风险高于价值（数据丢失），由人工 revert 兜底 |
+
+**实现状态小结（v1.37 增量前）**：已实现 ✅ 18 项（#1-7、#13、#14、#16、#17、#20、#23、#24、#25、#26、#27）；部分覆盖 🟡 3 项（#18、#19、#22）；超范围 / 已否定 / 不建议 1 项（#28）。**本次 v1.37 新增实现 7 项**（#8、#9、#10、#11、#12、#15、#21），并对 3 项部分覆盖项（#18、#19、#22）做最小增强，最终使 28 项全部有明确落点。
+
+> **设计规则回放**：凡「价值存疑 / 超范围 / 已否定」的项，若技术上可行且不违背安全偏好的（如 #12 离线模型可用 BYOK 的 openai-compatible 端点承接、#13 主题只做 CLI 语义色不做全局换肤），仍以最小实现落地；真正不可行或高风险项（#28）如实保留「不建议」。这符合「全部记录，并把所有项完整实现」的要求，同时不跨越安全红线。
+
 ## 16. 插件 UI 层落地细化（v1.34：基于 §14.4 决策的完整实现方案）
 
 > 本节把 §14.4 的 6 项候选从「可行性论证」推进到「可直接编码的完整实现方案」：锁定技术底座、数据流、每项组件契约与验收标准，并新增后端闭环工具 `iterate_triage`（分诊写回）。**决策（用户 2026-08-16）**：6 项全部实现；客户端采用**静态免构建（build-free）**轨道。本节为本次 UI 层开发的权威记录。
