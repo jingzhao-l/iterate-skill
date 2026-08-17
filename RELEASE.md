@@ -63,17 +63,17 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 - [ ] **1. 同步版本号**：人工编辑上述 5 个文件 + 更新 `CHANGELOG.md`（保留旧版本条目，只新增）。
 - [ ] **2. 本地验证**：跑通全部测试（`pytest tests/ -q`、`ruff check`），确认 `iterate --version` 输出新版本。
 - [ ] **3. 提交并推送主仓库**：`git add -A && git commit && git push origin main`。
-- [ ] **4. 打 GitHub Release tag**：`git tag v<X.Y.Z> && git push origin v<X.Y.Z>`，在 GitHub 创建 Release。
+- [x] **4. 打 GitHub Release tag**：`git tag v<X.Y.Z> && git push origin v<X.Y.Z>`，在 GitHub 创建 Release。
       > `.github/workflows/release.yml` 会在 Release published 时自动生成并上传
       > `iterate-skill.tar.gz` + `SHA256SUMS.txt`（从 tag 树确定性构建）。
       > **（skill 只发 skill）**：`git archive` 使用 pathspec `':!harness'` 剔除 harness，tarball 不含 `harness/`。
-- [ ] **5. 发布 npm 安装器**（安装器从 GitHub Release 下载 tarball，务必先于/同步于 npm 发布）：
+- [x] **5. 发布 npm 安装器**（安装器从 GitHub Release 下载 tarball，务必先于/同步于 npm 发布）：
       ```bash
       cd npm-installer
       npm publish
       ```
       验证：`npx iterate-skill-installer --version` 能拉到新版本。
-- [ ] **6. 发布 ClawHub**：
+- [x] **6. 发布 ClawHub**：
       ```bash
       clawhub publish <stage 目录> --slug iterate-skill --name Iterate --version <X.Y.Z> --no-input
       ```
@@ -90,12 +90,12 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 发布前复核：`find <stage目录> -path '*/harness/*'` 结果为空。
       >
       > 唯一可发的纯 skill 本体文件集就是 `git archive ':!harness'` 产出的 tarball 解包结果。
-- [ ] **7. 发布 ModelScope**（skill 只发 skill）：
+- [x] **7. 发布 ModelScope**（skill 只发 skill）：
       - 用 **精简包**（重建脚本 `.dist_tmp/rebuild_ms.py` 已剔除 `harness/*`）。
       - zip 需 < 5MiB；通过 OpenAPI 更新：`openapi.update_skill_settings(owner, name, {'skill_file': file_id})`。
       > **坑**：完整包常超 5MiB 上限，必须用精简包；且历史版本曾夹带 `harness/iterate-plugin`
       > 源码，重构后必须为 0。发出前复核 `unzip -l <ms.zip> | grep harness/` 为空。
-- [ ] **8. 发布 Tencent SkillHub**（skill 只发 skill）：
+- [x] **8. 发布 Tencent SkillHub**（skill 只发 skill）：
       - 用 **SkillHub 专用包 `iterate-skill-skillhub.zip`**（重建脚本 `.dist_tmp/rebuild_skillhub.py`
         在剔 harness 的 ms 精简包基础上**再剔除 LICENSE**），skillId `104490`。
       > **坑**：必须用去掉 LICENSE 的精简专用包（约 288KB）防止上传 `Broken pipe`；
@@ -105,6 +105,10 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [ ] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **2.3.18 状态（2026-08-18）**：ModelScope 已生效（`update_skill_settings` PATCH 成功，
+      > skill_file 指向 2.3.18 精简包）；ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）
+      > 与 SkillHub（skillId `104490`）均已 HTTP 200 提交 2.3.18，发布响应 `status=pending`，
+      > 其 `latestVersion` 仍显示 2.3.17，属平台异步审核/传播延迟，需复查确认后再勾选。
 
 ---
 
