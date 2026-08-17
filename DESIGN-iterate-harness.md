@@ -1,7 +1,7 @@
 # iterate-harness 设计文档 v1.0
 
 > 目标：把 iterate 从 Skill 形态升级为「专门用于 iterate 的极简 agent harness」，深度适配原 skill 的体系与功能。
-> 状态：已实现至 v1 稳定期（当前发布 1.9.4）；设计文档迭代至 v1.37。
+> 状态：已实现至 v1 稳定期（当前发布 1.9.4）；设计文档迭代至 v1.38。
 > 版本记录：见文末。
 
 ## 1. 背景与目标
@@ -564,6 +564,7 @@ iterate-harness/                     # fork 自 HKUDS/OpenHarness @ v0.1.9
 - v1.35（2026-08-16）：**6 项高价值功能完整实现**——本轮迭代将 §15.3 识别的 6 项能力缺口全部落地为可运行代码，覆盖 BYOK / 收敛仪表盘 / 断点续跑 / 工作区隔离 / 预算熔断 / HTML 报告服务。**① 自定义模型提供方（BYOK）**：`config/settings.py` 扩展 `ProviderProfile`（BaseModel，支持自定义 API 格式/Auth 来源/base_url/默认模型），内置 10 档默认 profile（claude-api/claude-subscription/openai-compatible/codex/copilot/moonshot/gemini/minimax/nvidia/qwen/modelscope）+ `default_provider_profiles()`/`merged_profiles()`/`resolve_profile()`；CLI `provider add` 注册自定义端点，`auth/manager.py` 按 profile 装载凭据，`commands/registry.py` `/model` 选择与 profile 状态展示。**② 收敛仪表盘进 TUI**：`ReviewProgressEvent`（round/new_findings/per_dimension/token_cost）经 `ui/app.py` 事件分发渲染——findings 递减 sparkline + 分维度计数 + 累计费用，React 前端 `ReviewProgressPanel.tsx` 实时面板。**③ 失败自愈/断点续跑**：`checkpoint.py` 原子检查点（`save_checkpoint`/`load_checkpoint`/`clear_checkpoint`，保存/加载最后一轮成功 states）；`last_state.py` 持久化上次运行快照供续跑恢复；`loop_policy.py` `on_turn_end` 经 `read_state` 评估进度，引擎在每次成功收敛点落盘 checkpoint。**④ 会话工作区隔离**：`worktree_flow.py` 封装 worktree 创建/合并/回滚（`WorktreeSession` 序列化 + git 命令封装）；`worktree_runtime.py` 管理运行时生命周期（`enter_for_round`/`finalize`/`resume_if_needed`）；`engine/query.py` 集成隔离逻辑（`worktree_isolation` 开启时修复轮在专用 git worktree 内执行，成功合并/异常丢弃）；`swarm/worktree.py` 复用软链复用与 stale 清理。**⑤ 预算熔断/限流**：`loop_policy.py` 扩展 `IterateLoopPolicy`——`total_token_budget`（token 硬上限，超出即 STOP 并引导收尾报告）与 `budget_usd`（美元预算，CostMeter 累计超限即 STOP）经 `_budget_stop_reason()` 熔断；`max_turns_per_minute` 速率限制（`RATE_LIMIT_WINDOW_SECONDS=60` 滚动窗口 + `_throttle_delay` 回退），`before_request` 被引擎每请求前调用返回需休眠秒数。**⑥ HTML 报告服务**：`report_server.py` 新增静态 HTTP 服务器（`serve_report`，oneshot/persist 双模式 + 自动开浏览器 + 扩展 MIME）；`html_report.py` 新增 `build_replay_page` 交互式轮次回放页（按轮分组 panel + prev/next 导航 + jump 圆点 + 键盘 ←/→ + 类型化 entry 卡片 + HTML 转义防 XSS）；CLI `iterate report --serve/--serve-port/--serve-persist` 与 TUI `/iterate report --serve` 双入口。**测试与质量**：新增测试 `test_checkpoint.py`/`test_report_server.py` 及 `test_html_report.py`/`test_loop_policy.py`/`test_last_state.py` 扩展，本轮新增 74 项全绿；新增模块 ruff 零告警、mypy 零错误；本轮同步清理 2 处存量 mypy（worktree_flow 元组收窄、loop_policy 变量遮蔽）。**版本与验证**：1.9.2 对齐（pyproject / cli `__version__` / CHANGELOG 1.9.2 / README badge 双语）。
 - v1.36（2026-08-16）：**1.9.3 发布收口 + 版本修正**——v1.35 所述「1.9.2 对齐」因 1.9.2（4 缺陷版，commit `9ff88df`）已先期发布并同步至独立仓库 `jingzhao-l/iterate-harness`，6 项高价值功能实际以 **1.9.3** 发布：pyproject / cli `__version__` / CHANGELOG 新增 [1.9.3] / README badge 双语全部对齐 1.9.3。**质量收口**：全量测试 1526 通过 / 6 跳过（1 项 `test_bash_tool` 沙箱无 Node.js 环境失败为既有环境限制）；新增 6 模块 104 项全绿；ruff 零告警；修复 2 项工具链问题——`mcp` 依赖收窄 `>=1.0.0,<2.0.0`（2.0 移除 `mcp.server.fastmcp` 破坏 MCP HTTP 测试）与补充 `py.typed` 标记（此前缺失导致 mypy 把包当第三方跳过分析，暴露 477 项存量类型债，均为既存代码、非本轮引入，不在本次范围）。头部状态行更新至 1.9.3 / v1.36。
 - v1.37（2026-08-17）：**28 项完整清单固化 + 剩余 22 项补齐实现（1.9.4）**——§15.3 的「28 项候选」在 §15.4 完整列出并逐项标注来源/价值/成本/实现状态（不再只记录 6 项高价值子集）。其中 1.9.3 已实现 #1-#6 + 历史版本已实现 #7/#13/#14/#16/#17/#20/#23-#27 后，本次把剩余待实现/部分覆盖项全部落地：**#8** 分诊结果本轮即应用（`personalization.sync_known_intentional_to_config` 配置桥，把 `known_intentional` 合并写入 `iterate.config.yaml`，去重/原子写/保留手写项）；**#9** 常见失败自愈指南章节（README Troubleshooting，TLS/认证/配额/断点/模型未找到五类）；**#10** prompt 模板预设（`prompts.py` TEMPLATE_PRESETS standard/strict/quick + CLI `--template`，`template_suffix` 模式归一化 `dry-run`→`dry_run`）；**#11** 多语言报告（`ci_report.py` L10N_TEXTS en/zh + CLI `--lang`）；**#15** CSV 导出（`render_csv` UTF-8 BOM 供 Excel 直接打开 + CLI `--csv`）；**#21** webhook 推送（新模块 `webhook.py`，自动识别 Slack/飞书/generic，富 Blocks/卡片 + CLI `--webhook`）；**#18** 两次运行 diff（`trend_store.diff_runs`/`RunDiff` new/fixed/regressed/unchanged + `render_diff`，回归经 `previously_fixed_findings` 识别）；**#19** 多分支审查入口（CLI `review|run --branch` + worktree 隔离）；**#22** 维度查看（TUI `/iterate dimensions` 展示维度及资源配置）；**#12** 离线模型（`settings.py` 新增 `local`/`ollama` profile，`auth_source: local`）。**质量与验证**：harness 全量 1602 通过 / 1 失败（`test_bash_tool` 部分输出断言为既有环境限制：macOS 无 `script` 包装时 PTY 无法流式回读，与本次无关，留待跨平台跟进）；npm wrapper 25/25；新增测试 `test_prompts.py`/`test_webhook.py`/`test_branch_review.py` 及 trend diff/ci_report l10n 扩展。**版本**：1.9.3 已发布（npm 不可重发），本次版本推进至 **1.9.4**——pyproject / cli `__version__` / npm / README badge 对齐 1.9.4，CHANGELOG 新增 [1.9.4]。头部状态行更新至 1.9.4 / v1.37。
+- v1.38（2026-08-17）：**独立 WebUI 管理台设计（新增 §17）**——路线 B 的「活管理后端」。决策（用户）：完整管理台；技术栈 FastAPI + React；落地形态先独立 Web、后 Electron 壳；**自建、不拉取 DSH WebUI 代码**。论证：DSH WebUI 是 Cordis/Node 主进程的前端壳（WebSocket/RPC 通信），数据模型（会话 + trajectory 事件流）与 harness（decision log + 收敛 + checkpoint + 预算）不对应，桥接层仍需全量重写，且 DSH 处于 developer preview（v0.1.0-rc.5）有破坏性变更，fork 双重维护——故仅借鉴其 UX 设计语言（trajectory 时间线 / 可回溯复盘 / 审批确认流），不拷贝代码（§17.2）。范围：7 页面（Dashboard / Runs / Checkpoints / Workspaces / Budget & Rate / Config / Reports），写操作「只读默认 + 显式确认 + 写入前备份 + 失败回滚」（§17.3）。后端：新模块 `iterate_harness/web/`（api / routes / events SSE / security），默认绑定 127.0.0.1、CORS 仅本机回环、路径白名单、API key 脱敏、写操作审计（§17.4）。前端：Vite + React 18 + TS + react-router + zustand，视觉对齐既有 HTML 报告（severity 固定色表、蓝灰基调），借鉴 DSH trajectory 信息密度（§17.5）。依赖全部宽松许可（fastapi MIT / uvicorn BSD-3 / react MIT / vite MIT 等）并精确锁版（§17.6）。目录镜像既有 `frontend/terminal` force-include 打包模式，`ih web` 一键拉起（§17.7）。Electron 壳锁定为第二阶段、本版不实现（§17.8）。里程碑 M1-M4 与质量门（§17.9）、风险（§17.10）。**本版为纯设计细化，不修改 harness 源文件**。头部状态行更新至 v1.38（当前发布 1.9.4）。
 
 ## 13. 发布手册（Release Manual）
 
@@ -980,3 +981,170 @@ harness/iterate-plugin/
 - [ ] 客户端六项 UI 代码全部落地（无占位/无模拟数据）
 - [ ] `npm run typecheck` 通过；`npm test` 全绿
 - [ ] 变更提交并推送 GitHub（含本设计文档）
+
+## 17. 独立 WebUI 管理台（v1.38：路线 B 的「活管理后端」）
+
+> 本节为 iterate-harness（路线 B 独立 harness）新增「WebUI 完整管理台」的设计。**决策（用户 2026-08-17）**：完整管理台；技术栈 FastAPI + React；落地形态先独立 Web、后 Electron 壳；**自建、不拉取 DSH WebUI 代码**（DSH 仅作 UX 设计参考）。本节为本次 WebUI 开发的权威设计记录，后续迭代以其为输入。
+
+### 17.1 背景与目标
+
+**现状**：harness 已有完整 CLI（`ih ...`）与 TUI（`/iterate ...` 斜杠命令），以及 1.9.3 引入的**单文件 HTML 报告 + 交互式回放页**（[html_report.py](file:///Volumes/Eng-Dev/iterate-skill/harness/iterate-harness/src/iterate_harness/iterate/html_report.py)、[report_server.py](file:///Volumes/Eng-Dev/iterate-skill/harness/iterate-harness/src/iterate_harness/iterate/report_server.py)）。CLI / TUI / 静态报告三者已闭环，但缺少**活的、可交互的管理后端**：
+
+| 现状能力 | 形态 | WebUI 补的缺口 |
+|---|---|---|
+| 迭代运行 | CLI/TUI | 浏览器查看/受控操作 |
+| 收敛可视化 | TUI 面板 / 静态 HTML | 实时 web 仪表 |
+| 决策日志（decision log） | 文件 | trajectory 式逐轮回放/检索 |
+| checkpoint / 断点续跑 | CLI | 可视化列表 + 受控恢复 |
+| 预算 / 限流 | CLI 日志 | 实时消耗仪表 + 熔断状态 |
+| 配置 / provider | 文件编辑 | 受控 web 编辑（脱敏） |
+
+**目标**：
+1. 提供「完整管理台」：运行状态、决策日志回放、checkpoint 管理、预算仪表、配置管理一站式 web 界面。
+2. 先独立 Web（本地服务 + 浏览器访问），验证价值后再包 Electron 桌面壳（§17.8）。
+3. 复用既有数据层（decision log / trend store / checkpoint / config / report），**不重写业务逻辑**，只新增「读取 + 受控操作」的 web 层。
+
+### 17.2 为什么自建，而不拉取 DSH WebUI 代码（决策论证）
+
+用户曾提议「直接拉取 DeepSeek Harness（DSH）WebUI 代码二次开发以减少工作量」。经调研（2026-08-17，[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)）：
+
+| 维度 | 结论 |
+|---|---|
+| 许可证 | ✅ DSH 为 MIT，合规可用 |
+| 是否独立前端 | ❌ 不是：它是 Cordis 插件系统的一部分，靠 WebSocket/RPC 与 Node 主机通信，UI 由 `apps/web` 承载 |
+| 数据模型匹配 | ❌ DSH 用「会话 + trajectory 只增事件流」；harness 用「decision log + 收敛 + checkpoint + 预算」，模型不对应，桥接层仍需全量重写 |
+| 稳定性 | ❌ 仍处 developer preview（v0.1.0-rc.5），官方明示有破坏性变更；fork 意味着冻结或持续跟进，双重维护 |
+| 净工作量 | 前端拉来也省不了工：**数据/桥接层改写成本占大头**，还多背一份不需要的 UI 复杂度 |
+
+**结论**：不整包拉取 DSH WebUI。**借鉴的只是它的 UX 设计语言**（trajectory 时间线、可回溯复盘、审批确认流），作为自建前端的设计参照，不拷贝代码。
+
+### 17.3 功能范围（页面与能力）
+
+| # | 页面 | 核心能力 | 数据来源 |
+|---|---|---|---|
+| P1 | Dashboard 仪表盘 | 运行状态卡片、收敛曲线（findings/round）、预算/限流实时仪表、最近报告入口 | decision log / loop_policy / cost meter |
+| P2 | Runs 迭代详情 | trajectory 式逐轮时间线：round_start → review_result → atomic_fix / architectural_fix → revert → validation → decision；findings 表格；diff 展开 | decision log（`read_entries`） |
+| P3 | Checkpoints | 断点列表、状态标签、恢复（受控操作，二次确认） | checkpoint / last_state |
+| P4 | Workspaces | 工作区列表、隔离状态（worktree）、切换/选择 | worktree_runtime / 配置 |
+| P5 | Budget & Rate | 累计 token / 美元预算、限流窗口、熔断状态 | loop_policy / cost meter |
+| P6 | Config | iterate.config.yaml 只读预览 + 受控编辑（校验后写回、备份回滚）；provider / BYOK 管理（key 脱敏） | config/settings.py / auth/manager.py |
+| P7 | Reports | 报告列表、HTML 报告内嵌预览、回放页入口 | report 目录 / html_report |
+
+**操作边界（安全默认）**：P2/P3/P6 涉及写操作（启动/停止/恢复 checkpoint/保存配置）一律「只读默认 + 显式确认 + 写入前备份 + 失败回滚」，与 CLI 既有语义一致。
+
+### 17.4 后端设计（FastAPI）
+
+**新模块**：`iterate_harness/web/`（镜像 CLI / `iterate` 分层，不跨层放文件）
+
+| 文件 | 职责 |
+|---|---|
+| `web/api.py` | FastAPI 应用工厂 + 路由注册 + CORS（仅本机回环）+ 启动钩子 |
+| `web/routes/status.py` | Dashboard 聚合接口 |
+| `web/routes/runs.py` | decision log 列表 / 单 run 时间线 / findings / diff |
+| `web/routes/checkpoints.py` | 断点查询 + 恢复操作 |
+| `web/routes/config.py` | 配置读 / 校验写回 / provider 管理（脱敏） |
+| `web/routes/reports.py` | 报告列表 / 内嵌预览 |
+| `web/events.py` | SSE 实时推送（尾部读取 decision log 增量 + cost meter 增量） |
+| `web/security.py` | 本机回环校验 / 路径白名单 / 操作审计日志 |
+
+**关键路由契约（示例）**：
+
+| Method | Path | 说明 | 返回 |
+|---|---|---|---|
+| GET | `/api/v1/status` | 运行状态 + 收敛 + 预算聚合 | `StatusResponse` |
+| GET | `/api/v1/runs` | 决策日志概览（分页） | `RunSummary[]` |
+| GET | `/api/v1/runs/{id}/timeline` | trajectory 式逐轮条目 | `TimelineEntry[]` |
+| POST | `/api/v1/checkpoints/{id}/restore` | 恢复断点（审计 + 确认） | `OperationResult` |
+| GET | `/api/v1/config` | 配置只读视图（key 脱敏） | `ConfigView` |
+| PUT | `/api/v1/config` | 校验后写回（备份 + 回滚） | `SaveResult` |
+| GET | `/api/v1/events?stream=status` | SSE 实时推送 | `text/event-stream` |
+
+**错误码约定**：`400` 参数非法 / `401` 未授权（非本机）/ `404` 资源不存在 / `409` 冲突（如恢复中再操作）/ `422` 校验失败 / `500` 内部错误（含日志 trace）。
+
+**实时性**：采用 **SSE（Server-Sent Events）**——比 WebSocket 简单、单向推送足够；由 `events.py` 定时尾部读取 decision log 增量 + 轮询 cost meter，推送收敛更新。不新增消息总线，保持极简。
+
+**安全（本机单用户形态）**：
+1. 默认只绑定 `127.0.0.1`，不对外暴露；服务启动打印 URL。
+2. CORS 仅允许本机回环 origin；所有写操作带 CSRF 校验。
+3. 路径类参数一律做**路径白名单**校验（解析后落在报告/工作区目录内），防路径遍历。
+4. API key 只回显脱敏描述符，永不明文回传；写配置沿用既有合并/备份/回滚语义。
+5. 写操作记审计日志（时间 / 操作 / 参数摘要）。
+
+### 17.5 前端设计（React）
+
+**技术底座**：Vite + React 18 + TypeScript；路由 `react-router`；状态 `zustand`；请求统一 `fetch` 封装（`/api/v1`）。不引入 UI 框架，沿用项目「全局自定义配色系统」的偏好（不引入 liquid glass 类 API）。
+
+**视觉语言**（对齐现有报告 + 借鉴 DSH UX）：
+- 基调：浅色卡片 + 蓝灰边框（与 [html_report.py](file:///Volumes/Eng-Dev/iterate-skill/harness/iterate-harness/src/iterate_harness/iterate/html_report.py) 现有 `_BASE_CSS` 一脉相承）；severity 沿用固定色表（critical `#b91c1c` / high `#ea580c` / medium `#ca8a04` / low `#2563eb`）。
+- 借鉴 DSH：**trajectory 时间线**（按轮堆叠、可回溯、每轮可展开 diff）、「每一步在做什么都摊开」的信息密度。
+- 字体：系统 UI 栈 + 等宽 diff。
+
+**页面路由**：
+
+| 路由 | 页面 |
+|---|---|
+| `/` | Dashboard |
+| `/runs/:id` | Runs 详情（时间线） |
+| `/checkpoints` | Checkpoints |
+| `/workspaces` | Workspaces |
+| `/budget` | Budget & Rate |
+| `/config` | Config |
+| `/reports` | Reports |
+
+**组件拆分**（示例）：`ConvergenceChart`（复用现有 SVG 曲线思路）、`TimelinePanel`、`FindingsTable`、`DiffViewer`、`BudgetMeter`、`ConfirmDialog`（受控操作二次确认）。
+
+### 17.6 依赖与许可核查
+
+| 依赖 | 版本策略 | 许可 | 合规 |
+|---|---|---|---|
+| fastapi | 精确锁定 | MIT | ✅ |
+| uvicorn | 精确锁定 | BSD-3-Clause | ✅ |
+| sse-starlette（可选 SSE） | 精确锁定 | BSD-3-Clause | ✅ |
+| react / react-dom | 精确锁定 | MIT | ✅ |
+| vite（dev） | 精确锁定 | MIT | ✅ |
+| react-router | 精确锁定 | MIT | ✅ |
+| zustand | 精确锁定 | MIT | ✅ |
+
+**全部为宽松许可，无 GPL/AGPL/SSPL 强传染依赖**，符合项目依赖准入规则。新增依赖以精确版本号锁定（禁止 `latest` / `*` / `^` 模糊范围），具体版本号在实现时 resolve 后固化。
+
+### 17.7 目录结构与文件
+
+```
+harness/iterate-harness/
+├── web/                        # 后端（iterate_harness/web/ 源目录）
+│   └── iterate_harness/web/    # api.py / routes/ / events.py / security.py
+└── frontend/web/               # React 前端（镜像既有 frontend/terminal 模式）
+    ├── package.json
+    ├── vite.config.ts
+    └── src/                    # 页面 / 组件 / api client / store
+```
+
+**打包**：沿用 [pyproject.toml](file:///Volumes/Eng-Dev/iterate-skill/harness/iterate-harness/pyproject.toml) 既有 `force-include` 机制（`frontend/terminal` → `iterate_harness/_frontend` 的先例），构建后的 `frontend/web/dist` 静态资源 force-include 进 wheel，由 FastAPI `StaticFiles` 托管；`ih web`（或 `iterate web`）子命令一键拉起服务并开浏览器。
+
+### 17.8 Electron 壳（第二阶段，本版不实现）
+
+- **形态**：Electron 主进程负责拉起/连接本地 FastAPI 服务（若未运行则 spawn 子进程）、管理窗口（独立窗口 + 系统托盘 + 系统通知 + 开机自启）；渲染进程只加载 `http://127.0.0.1:<port>` 的 WebUI。
+- **职责划分**（符合桌面客户端专项规则）：渲染进程禁止直接调用 Node 系统 API，一律经 IPC → 主进程 → FastAPI；窗口/托盘/通知由主进程负责。
+- **前提**：Web 版（§17.3-17.5）落地并验证价值后再投入；本节仅锁定形态与边界，不展开实现细节。
+
+### 17.9 里程碑与验收
+
+| 里程碑 | 内容 | 验收 |
+|---|---|---|
+| M1 | 后端只读 API + Dashboard + Runs 时间线 | 接口单测；页面可查真实 decision log |
+| M2 | 受控操作：checkpoint 恢复 / 运行启停 | 操作二次确认 + 审计 + 回滚测试 |
+| M3 | Config 管理 + Budget 仪表 + Reports 内嵌 | 配置校验写回测试（含备份/回滚） |
+| M4 | Electron 壳（第二阶段） | 托盘/通知/窗口闭环；渲染进程无 Node API 直调 |
+
+**质量门**（对照项目规则）：
+- 所有后端路由/业务函数配套单测，覆盖正常/异常/边界（含 400/401/404/409/422/500）。
+- 写操作全部走「校验 → 备份 → 写回 → 失败回滚」，有单测。
+- ruff 零告警、mypy 零错误；前端 `npm run typecheck` + `npm test` 全绿。
+- 无占位 / 无模拟数据；决策日志等一律读真实文件。
+
+### 17.10 风险与开放问题
+
+1. **端口占用 / 多实例**：`ih web` 需处理端口冲突（已占用时自动换端口并提示）。
+2. **运行中状态读取一致性**：SSE 尾部读取需处理 decision log append-only 语义（只追加、不重写），实现时以文件尾部游标推进。
+3. **Electron 打包体积与分发**：第二阶段再评估（electron-builder 等），本阶段不引入。
+4. **是否纳入独立仓库同步**：沿用 `jingzhao-l/iterate-harness` subtree 同步流程，WebUI 随主仓库演进。
