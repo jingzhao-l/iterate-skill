@@ -1,5 +1,10 @@
 # iterate-skill-installer
 
+<p align="center">
+  <a href="README.md"><strong>English</strong></a> ·
+  <a href="README.zh-CN.md"><strong>简体中文</strong></a>
+</p>
+
 One-command installer for [iterate-skill](https://github.com/jingzhao-l/iterate-skill) across AI coding assistants.
 
 ## Usage
