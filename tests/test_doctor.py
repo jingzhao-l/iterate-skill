@@ -18,6 +18,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from iterate_cli.cli import main as cli_main
 from iterate_cli.doctor import (
     CANONICAL_DIMENSIONS,
+    SKILL_VERSION,
     DoctorReport,
     apply_safe_fixes,
     render_report,
@@ -49,7 +50,7 @@ def _base_config() -> dict:
     return {
         "dimensions": ["correctness", "security"],
         "onboarding": {
-            "skill_version": "2.3.15",
+            "skill_version": SKILL_VERSION,
             "channel": "cli",
             "completed_at": "2026-08-15T00:00:00Z",
             "drift_check": False,
@@ -75,7 +76,7 @@ class TestDoctorReport:
         report = run_doctor(project)
         data = report.to_dict()
         assert data["project"] == str(project)
-        assert data["skill_version"] == "2.3.15"
+        assert data["skill_version"] == SKILL_VERSION
         assert isinstance(data["healthy"], bool)
         assert isinstance(data["findings"], list)
 
@@ -237,7 +238,7 @@ class TestRenderReport:
         code = render_report(report, json_output=True)
         out = capsys.readouterr().out
         data = json.loads(out)
-        assert data["skill_version"] == "2.3.15"
+        assert data["skill_version"] == SKILL_VERSION
         assert code == 0
 
     def test_error_report_returns_nonzero(self, tmp_path, capsys) -> None:
@@ -275,7 +276,7 @@ class TestDoctorCLI:
         assert out_path.is_file()
         data = json.loads(out_path.read_text(encoding="utf-8"))
         assert data["project"] == str(project)
-        assert data["skill_version"] == "2.3.15"
+        assert data["skill_version"] == SKILL_VERSION
         assert data["healthy"] is True
 
     def test_status_cli_json(self, tmp_path, capsys) -> None:
@@ -353,7 +354,7 @@ class TestApplySafeFixes:
         config = _base_config()
         config["onboarding"]["skill_version"] = "9.9.9"
         new_config, fixes = apply_safe_fixes(config)
-        assert new_config["onboarding"]["skill_version"] == "2.3.15"
+        assert new_config["onboarding"]["skill_version"] == SKILL_VERSION
         assert any("skill_version" in f for f in fixes)
 
 

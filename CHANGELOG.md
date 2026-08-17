@@ -5,6 +5,26 @@
 
 ---
 
+## [2.3.16] — 2026-08-17
+
+### 修复 / Fixes (skill CLI + installer)
+
+- `install.py`：校验子进程同时解析 stdout + stderr（stdout 诊断不再被吞掉，统一为结构化错误列表）。
+- `install.py`：`_validate_github_token` 校验 GitHub PAT 前缀（`ghp_/gho_/ghu_/ghs_/ghr_/github_pat_`）与长度范围（20–256），写入 `--token` 前 fail fast。
+- `install.py`：卸载 / 更新删除前新增 `_is_iterate_install_dir` 标识防护，确认目标目录含 `SKILL.md` 才允许 `rmtree`，防止误删非 skill 目录。
+- `install.py`：Windows 无 `termios` 环境回退到数字选择，不再崩溃。
+- `install.py`：删除未使用的死代码 `_key_value`；stdout 解析改用 `str.removeprefix`（消除 ruff FURB188）。
+- `iterate_cli/personalize.py`：`load_personalization_from_config` 拒绝 `fix_priority_order` / `forbidden_fixes` 的标量字符串值，防止手动编辑的 config 被逐字符膨胀进列表。
+
+### 新增 / Features (skill CLI + installer)
+
+- `iterate doctor --json-out <PATH>`：把结构化 Dr.Report 导出到文件（自动创建父目录），便于 CI / 脚本消费健康报告。
+
+### 测试 / Tests
+
+- 新增 `--json-out` 文件导出、`fix_priority_order`/`forbidden_fixes` 标量字符串防御等用例。
+- 全套 Python 测试 534 全绿。
+
 ## [2.3.15] — 2026-08-16
 
 ### 重构 / Refactor (skill CLI installer)
