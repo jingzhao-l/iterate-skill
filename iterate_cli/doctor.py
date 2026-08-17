@@ -33,7 +33,6 @@ from typing import Any
 import yaml
 
 from iterate_cli import __version__ as SKILL_VERSION
-from iterate_cli.generator import atomic_write
 from iterate_cli.refresh import (
     CONFIG_YAML,
     check_onboarding_drift,
