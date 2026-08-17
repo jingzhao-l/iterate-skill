@@ -558,6 +558,21 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
     return True, fixes
 
 
+def export_report_json(report: DoctorReport, out_path: Path) -> None:
+    """Write the structured DoctorReport to ``out_path`` as JSON.
+
+    Args:
+        report: The report to serialize.
+        out_path: Destination file path (UTF-8, JSON with 2-space indent).
+
+    Raises:
+        OSError: When the file cannot be written.
+    """
+    payload = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(payload + "\n", encoding="utf-8")
+
+
 def render_report(report: DoctorReport, json_output: bool = False) -> int:
     """Render a DoctorReport to the terminal.
 

@@ -474,8 +474,18 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
                 )
             )
 
-    fix_order = [str(d) for d in raw.get("fix_priority_order") or []]
-    forbidden = [str(f) for f in raw.get("forbidden_fixes") or []]
+    # fix_priority_order / forbidden_fixes must be lists of dimension ids.
+    # Guard against a scalar string (which would otherwise be iterated
+    # character-by-character) and non-list junk from a hand-edited config.
+    raw_fix_order = raw.get("fix_priority_order") or []
+    if isinstance(raw_fix_order, str):
+        raw_fix_order = []
+    fix_order = [str(d) for d in raw_fix_order]
+
+    raw_forbidden = raw.get("forbidden_fixes") or []
+    if isinstance(raw_forbidden, str):
+        raw_forbidden = []
+    forbidden = [str(f) for f in raw_forbidden]
 
     # Module name pattern: only allow alphanumeric, dash, underscore, dot.
     # Prevents shell metacharacter injection via module key.

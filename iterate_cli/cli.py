@@ -105,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             project_root,
             json_output=getattr(args, "json", False),
             fix=getattr(args, "fix", False),
+            json_out=getattr(args, "json_out", None),
         )
     else:
         parser.print_help()
@@ -212,6 +213,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Emit a structured JSON report instead of TUI output.",
+    )
+    doctor_parser.add_argument(
+        "--json-out",
+        metavar="PATH",
+        default=argparse.SUPPRESS,
+        help="Write a structured JSON report to PATH (created if missing).",
     )
     doctor_parser.add_argument(
         "--fix",
@@ -576,21 +583,31 @@ def _cmd_doctor(
     project_root: Path,
     json_output: bool = False,
     fix: bool = False,
+    json_out: str | None = None,
 ) -> int:
     """Handle the 'doctor' subcommand — project health diagnostics.
 
     When ``fix`` is True, safe non-destructive config fixes are applied
     (with a timestamped backup) before diagnostics are re-run.
 
+    When ``json_out`` is set, the structured report is additionally written
+    to that file (its parent directory is created as needed).
+
     Args:
         project_root: Project root directory.
         json_output: When True, emit a structured JSON report.
         fix: When True, apply safe config fixes before running diagnostics.
+        json_out: When set, export the JSON report to this path.
 
     Returns:
         Exit code: 0 when healthy, 1 when errors are found.
     """
-    from iterate_cli.doctor import render_report, run_doctor, run_doctor_fix
+    from iterate_cli.doctor import (
+        export_report_json,
+        render_report,
+        run_doctor,
+        run_doctor_fix,
+    )
 
     fixes: list[str] = []
     if fix:
@@ -623,5 +640,16 @@ def _cmd_doctor(
         # Attach applied fixes to the structured report so JSON consumers
         # see them without the JSON blob being polluted by TUI text.
         report.fixes = fixes
-    return render_report(report, json_output=json_output)
+    code = render_report(report, json_output=json_output)
+
+    if json_out:
+        try:
+            export_report_json(report, Path(json_out).resolve())
+            if not json_output:
+                tui.hint(f"doctor: JSON report written to {json_out}")
+        except OSError as exc:
+            tui.error(f"doctor: failed to write JSON report to {json_out}: {exc}")
+            return 1
+
+    return code
 

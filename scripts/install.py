@@ -1130,7 +1130,7 @@ def _run_validate_subprocess(
             stripped = line.strip()
             if not stripped:
                 continue
-            detail = stripped[2:] if stripped.startswith("- ") else stripped
+            detail = stripped.removeprefix("- ")
             if detail and detail not in errors and not detail.startswith("Validation failed"):
                 errors.append(detail)
     return errors if errors else ["Validation failed (see stderr for details)"]

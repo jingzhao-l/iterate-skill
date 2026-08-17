@@ -266,6 +266,18 @@ class TestDoctorCLI:
         code = cli_main(["doctor", "-p", str(project)])
         assert code == 1
 
+    def test_doctor_cli_json_out_writes_file(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        out_path = tmp_path / "nested" / "report.json"
+        code = cli_main(["doctor", "-p", str(project), "--json-out", str(out_path)])
+        assert code == 0
+        assert out_path.is_file()
+        data = json.loads(out_path.read_text(encoding="utf-8"))
+        assert data["project"] == str(project)
+        assert data["skill_version"] == "2.3.15"
+        assert data["healthy"] is True
+
     def test_status_cli_json(self, tmp_path, capsys) -> None:
         project = _make_project(tmp_path)
         _write_config(project, _base_config())
