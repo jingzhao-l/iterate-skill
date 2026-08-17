@@ -1793,6 +1793,19 @@ class TestLoadPersonalizationFromConfig:
         data = load_personalization_from_config({})
         assert data.is_empty() is True
 
+    def test_load_ignores_scalar_string_lists(self) -> None:
+        """A hand-edited config that sets a scalar string for a list field
+        must not be iterated character-by-character into item lists."""
+        config = {
+            "personalization": {
+                "fix_priority_order": "correctness",
+                "forbidden_fixes": "# noqa",
+            },
+        }
+        data = load_personalization_from_config(config)
+        assert data.fix_priority_order == []
+        assert data.forbidden_fixes == []
+
     def test_load_config_without_personalization(self) -> None:
         config = {"dimensions": ["correctness"], "goal": "test"}
         data = load_personalization_from_config(config)
