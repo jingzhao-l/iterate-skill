@@ -5,6 +5,13 @@
 
 ---
 
+## [2.3.17] — 2026-08-17
+
+### 发布规范 / Release (skill CLI + installer)
+
+- **skill 发布包不再携带 `harness/` 源码**：ClawHub / ModelScope / SkillHub 的分发包此前一直夹带 `harness/iterate-plugin`（dsh 插件源码），skill 包不应包含 harness 下两个独立分发子项目的源码。现从所有分发包中剔除整个 `harness/` 目录（ModelScope 精简包 72→51 文件、SkillHub 包 49 文件），并统一升版至 2.3.17 以覆盖 SkillHub 的版本锁。
+- 更新 `rebuild_ms.py`（去 harness 出 ModelScope 包）与 `rebuild_skillhub.py`（去 harness + 去 LICENSE 出 SkillHub 包）构建脚本。
+
 ## [iterate-plugin 2.6.0] — 2026-08-17（独立版本线）
 
 ### 新增 / Features (iterate-plugin)
