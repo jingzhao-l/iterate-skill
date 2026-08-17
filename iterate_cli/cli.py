@@ -26,9 +26,7 @@ from iterate_cli.generator import (
     write_onboarding_outputs,
 )
 from iterate_cli.refresh import (
-    REONBOARD_CANCELLED,
     REONBOARD_COMPLETED,
-    REONBOARD_FAILED,
     REONBOARD_NO_CHANGES,
     check_onboarding_drift,
     full_reonboard,

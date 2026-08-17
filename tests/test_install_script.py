@@ -15,17 +15,14 @@ on failed validation) are verified deterministically.
 from __future__ import annotations
 
 import io
-import os
 import shutil
 import sys
 import tarfile
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
 
 import pytest
-import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
