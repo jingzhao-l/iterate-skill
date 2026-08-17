@@ -30,6 +30,15 @@ npx iterate-skill-installer --force
    - Detects installed AI coding assistants on your machine.
    - Prompts you to select targets (default: all detected assistants).
    - Copies the skill files into the correct skills directories.
+7. Installs the `iterate` CLI onto your PATH (prefers `pipx`, otherwise
+   `pip install --user`) so you can run `iterate onboard` directly.
+
+> **Note:** the installer always puts the `iterate` CLI on your PATH so a single
+> command gives you both the skill and the CLI. If you **don't** want the CLI
+> auto-installed, use a manual install instead — copy `SKILL.md` + `config/` +
+> `scripts/` + `templates/` to your assistant dir, or run
+> `python scripts/install.py install` directly. If the CLI install fails, you can
+> still install it later with `pipx install .` or `pip install .` from a checkout.
 
 ## Supported AI assistants
 
