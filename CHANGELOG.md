@@ -5,6 +5,30 @@
 
 ---
 
+## [iterate-plugin 2.6.0] — 2026-08-17（独立版本线）
+
+### 新增 / Features (iterate-plugin)
+
+- **`iterate_history` 历史审计工具**：读取决策日志（支持按 `type` / `since` / `limit` 过滤，默认最新 50 条、上限 200 条）+ 修复注册表汇总（各轮 fixed/failed 计数）。只读不落盘，用于审查运行过程、审计日志、盘点修复明细。
+- **`iterate_prune` 运行时清理工具**：清理过期决策日志条目（`retainDays` 默认 30 天）、陈旧断点、孤儿修复备份与空轮次；默认 dry-run 只报告不删除，显式 `dryRun:false` 才真正清理，每次清理写入决策日志。
+- **UX — 收敛看板修复计数徽章**：normal 模式在看板显示已修复原子问题计数徽章。
+- **UX — 分诊面板一键全选**：可对所有 findings（非仅当前筛选集）批量 y/n/a 判定。
+- **UX — 设置区运行时状态概览**：展示 `.iterate/` 产物布局与 `iterate_status` / `iterate_history` / `iterate_prune` 查看/清理指引，支持一键清空分诊数据。
+
+### 代码质量 / 安全 / Security (iterate-plugin)
+
+- 修复多处静默 catch 块：统一记录上下文并向上抛出可诊断错误，杜绝空 catch。
+- `iterate_fix` 对 `content` 设字符上限、`iterate_triage` 对 `entries` 设数量上限，防止异常超大负载。
+- `applyEntries` 失败回滚逻辑加固，配置写入失败时还原现场。
+
+### 文档 / Docs (iterate-plugin)
+
+- README 全面重写：工具数更新为 13 个并逐条列明、UI 层 6 组件挂载槽位与功能表、`.iterate/` 目录布局图、安全模型（路径防护 / 备份回滚 / dry-run / 参数上限）说明。
+
+### 测试 / Tests (iterate-plugin)
+
+- 新增 `allVerdictKeys`、`buildRuntimeStatusGuide`、`iterate_history`、`iterate_prune` 等用例，共 **212 个单元测试全绿**，类型检查通过。
+
 ## [2.3.16] — 2026-08-17
 
 ### 修复 / Fixes (skill CLI + installer)
