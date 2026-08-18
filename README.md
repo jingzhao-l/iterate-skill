@@ -8,6 +8,9 @@
 [![GitHub release](https://img.shields.io/github/v/release/jingzhao-l/iterate-skill)](https://github.com/jingzhao-l/iterate-skill/releases)
 [![ClawHub](https://img.shields.io/badge/-ClawHub.ai-4285F4?logo=cloudflare&logoColor=white)](https://clawhub.ai/jingzhao-l/skills/iterate-skill)
 [![ModelScope](https://img.shields.io/badge/-ModelScope-624aff?logo=alibabacloud&logoColor=white)](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)
+[![GitHub stars](https://img.shields.io/github/stars/jingzhao-l/iterate-skill?style=social&label=Star)](https://github.com/jingzhao-l/iterate-skill)
+
+> ⭐ 如果这个项目对你有帮助，欢迎点亮 GitHub Star，让 iterate 被更多开发者看见。你的支持就是持续开源迭代最大的动力！
 
 ---
 

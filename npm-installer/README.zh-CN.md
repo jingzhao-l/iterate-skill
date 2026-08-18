@@ -7,6 +7,10 @@
 
 针对各种 AI 编程助手的 [iterate-skill](https://github.com/jingzhao-l/iterate-skill) 一键安装器。
 
+[![GitHub stars](https://img.shields.io/github/stars/jingzhao-l/iterate-skill?style=social&label=Star)](https://github.com/jingzhao-l/iterate-skill)
+
+> ⭐ 如果这个项目对你有帮助，欢迎点亮 GitHub Star，这是对开源维护最大的支持！
+
 ## 用法
 
 ```bash
