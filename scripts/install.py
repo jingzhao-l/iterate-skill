@@ -1069,7 +1069,11 @@ def update_command(
                 target=target,
                 dry_run=False,
                 source=update_source,
-                force=force,
+                # `update` semantically means "refresh the installed copy to the
+                # latest version", so it must overwrite existing files rather than
+                # skip them (skipping would download/verify a release and then
+                # report success while changing nothing without --force).
+                force=True,
                 global_install=global_install,
             )
     finally:

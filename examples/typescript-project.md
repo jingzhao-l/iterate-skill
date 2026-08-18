@@ -28,6 +28,7 @@ git:
 
 validation:
   command_whitelist:
+    - "npm"
     - "npm run"
   commands:
     typescript:

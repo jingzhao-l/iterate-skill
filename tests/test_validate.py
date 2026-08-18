@@ -1024,9 +1024,12 @@ class TestUpdateCommand:
             "modified", encoding="utf-8"
         )
         assert install_main(["update", "--target", str(target)], source=source) == 0
+        # `update` means "refresh to latest version", so it must overwrite the
+        # installed copy (source SKILL.md content is "skill") even when the
+        # installed file was locally modified.
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(
             encoding="utf-8"
-        ) == "modified"
+        ) == "skill"
 
     def test_update_with_force_refreshes_files(self, tmp_path: Path, monkeypatch) -> None:
         source = _build_minimal_source(tmp_path)

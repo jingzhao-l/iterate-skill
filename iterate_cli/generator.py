@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import yaml
 
@@ -210,7 +211,9 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     Raises:
         OSError: If the write or the final replace fails.
     """
-    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    # Use a process-unique, collision-resistant temp name so concurrent calls
+    # (even within the same process) never write the same temp file.
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex[:8]}")
     try:
         with open(tmp_path, "w", encoding=encoding) as handle:
             handle.write(content)
@@ -218,9 +221,35 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     except OSError:
         try:
             tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as cleanup_err:
+            _log_tmp_cleanup_failure(tmp_path, cleanup_err)
         raise
+
+
+def _log_tmp_cleanup_failure(tmp_path: Path, exc: OSError) -> None:
+    """Log to stderr when a temp file left over after a failed write cannot be removed."""
+    import sys
+
+    print(
+        f"⚠️  Failed to remove temporary file {tmp_path}: {exc}",
+        file=sys.stderr,
+    )
+
+
+def _log_rollback_failure(path: Path, original_err: OSError) -> None:
+    """Log when rolling back an already-written file during a two-file write fails.
+
+    After ``config_path`` write fails and the ITERATE.md rollback also fails, the
+    two files may be inconsistent. Instead of silently proceeding, surface both
+    errors so the caller/user can investigate.
+    """
+    import sys
+
+    print(
+        f"⚠️  Failed to roll back {path} after write error: {original_err}. "
+        f"The files may be inconsistent.",
+        file=sys.stderr,
+    )
 
 
 def write_onboarding_outputs(
@@ -270,13 +299,13 @@ def write_onboarding_outputs(
     atomic_write(iterate_md_path, iterate_md_content)
     try:
         atomic_write(config_path, config_yaml)
-    except OSError:
+    except OSError as write_err:
         # Roll back the already-written ITERATE.md so the two files stay
         # consistent (best effort; the error is re-raised for the caller).
         try:
             atomic_write(iterate_md_path, existing_md or generate_iterate_md(data))
         except OSError:
-            pass
+            _log_rollback_failure(iterate_md_path, write_err)
         raise
 
     return iterate_md_path, config_path

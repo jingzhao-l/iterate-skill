@@ -255,7 +255,9 @@ def suggest_command_whitelist(scan: ScanResult) -> list[str]:
         if lang == "Python":
             base.extend(["ruff", "mypy", "pytest"])
         elif lang in ("JavaScript/TypeScript", "TypeScript"):
-            base.extend(["npm run", "yarn", "pnpm", "npx"])
+            # ``npm test`` is not a prefix of ``npm run``; include the bare
+            # ``npm`` prefix so both ``npm run X`` and ``npm test`` match.
+            base.extend(["npm", "npm run", "yarn", "pnpm", "npx"])
         elif lang == "Swift":
             base.append("swift")
         elif lang == "Go":

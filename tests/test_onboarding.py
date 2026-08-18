@@ -1629,9 +1629,10 @@ class TestCLIReonboard:
 
 class TestCLIVersion:
     def test_version_flag(self, capsys) -> None:
-        with pytest.raises(SystemExit) as exc_info:
-            cli_main(["--version"])
-        assert exc_info.value.code == 0
+        # --version returns a 0 exit code via return value (not SystemExit),
+        # because __main__.py wraps main() with sys.exit().
+        ret = cli_main(["--version"])
+        assert ret == 0
         captured = capsys.readouterr()
         assert "iterate" in captured.out
 
@@ -3577,10 +3578,15 @@ class TestLoadOnboardingConfigNonDict:
         # Empty file → yaml.safe_load returns None → callers use ``or {}``.
         assert result is None
 
-    def test_incremental_refresh_survives_non_dict_config(
+    def test_incremental_refresh_refuses_corrupt_config(
         self, fake_project: Path, capsys
     ) -> None:
-        """incremental_refresh must not crash when config is a YAML list."""
+        """incremental_refresh must refuse to run when config is a YAML list.
+
+        Previously refresh absorbed a non-dict/corrupt config via ``or {}`` and
+        silently rewrote the file with empty defaults, destroying the user's
+        customised fields. Now it aborts (False) rather than overwriting.
+        """
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
 
@@ -3588,11 +3594,11 @@ class TestLoadOnboardingConfigNonDict:
         config_path = fake_project / "iterate.config.yaml"
         config_path.write_text("- not a dict\n", encoding="utf-8")
 
-        # load_onboarding_config returns None for non-dict YAML; callers
-        # fall back to {} via ``or {}``. Refresh should succeed (True),
-        # not crash with AttributeError.
+        # A corrupt config must NOT be silently overwritten with defaults.
         result = incremental_refresh(fake_project)
-        assert result is True  # refresh still succeeds with empty config
+        assert result is False
+        # The corrupt file is left untouched.
+        assert config_path.read_text(encoding="utf-8") == "- not a dict\n"
 
 
 class TestLoadExistingOnboardingDataNonDict:

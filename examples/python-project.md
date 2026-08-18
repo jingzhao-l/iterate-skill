@@ -15,7 +15,8 @@ dimensions:
   - architecture
   - style-tests
   - tech-debt
-  - spec-compliance
+  # 注：示例为无 specs/ 目录的纯 Python 项目，故不启用 spec-compliance /
+  # ui-ux / frontend-backend。若你的项目含 specs/ 目录，可追加 spec-compliance。
 
 atomic:
   max_lines: 20
