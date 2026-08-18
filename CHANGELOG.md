@@ -5,6 +5,25 @@
 
 ---
 
+## [2.3.19] — 2026-08-18
+
+### 修复 / Fixes (skill CLI + 核心模块)
+
+- **[personalize.py](iterate_cli/personalize.py)**：统一「已知意图 / Known Intentional」段的写入标题，修复该段标题后缀不匹配 `PERSONALIZATION_SECTION_HEADERS` 导致刷新时整段重复累积到 ITERATE.md 的问题。
+- **[refresh.py](iterate_cli/refresh.py)**：新增 `_load_refresh_config` 区分配置不存在与配置已损坏（存在但无法解析）。损坏配置改为中止刷新并明确报错，不再被默认值整体覆盖。
+- **[cli.py](iterate_cli/cli.py)**：`--version` 改为通过返回值返回 `0`（由 `__main__.py` 以 `sys.exit(main())` 承接），不再直接 `raise SystemExit`；刷新前若无法读取现有 ITERATE.md 则提示并中止，避免静默覆盖手动编辑区。
+- **[generator.py](iterate_cli/generator.py)**：原子写入临时文件改为带 uuid 后缀，避免并发冲突；清理/回滚失败不再静默吞错，改为记录日志后抛出。
+- **[scan.py](iterate_cli/scan.py)**：TypeScript 项目建议白名单补充 `npm` 前缀，修复 `suggest_command_whitelist` 建议的 `npm run` 无法匹配 `npm test` 等命令的问题。
+- **[doctor.py](iterate_cli/doctor.py)**：JSON Schema 校验捕获 `Draft202012Validator` 构造可能抛出的 `SchemaError`，避免 schema 异常时崩溃。
+- **[install.py](scripts/install.py)**：`update` 命令语义为「刷新到最新版本」，强制覆盖已安装副本（此前默认跳过已存在文件却仍报成功，产生假成功）。
+- **[validate.py](scripts/validate.py)**：命令白名单额外拒绝命令本体中的 shell 链接元字符（`;`、`|`、`&`、`$`、反引号、`>`、`<`、换行等），防止 `白名单前缀; 恶意命令` 绕过后缀拼接。
+- **示例与依赖**：`examples/typescript-project.md` 白名单补 `npm`；`examples/python-project.md` 移除无 `specs/` 目录却启用的 `spec-compliance` 维度；`scripts/requirements.txt` 的 jsonschema 统一为 `4.26.0`。
+
+### 测试 / Tests
+
+- 更新 `test_version_flag`（`--version` 返回码而非 SystemExit）与 `test_update_detects_installed_assistants`（update 覆盖语义）两处与旧行为耦合的用例。
+- 全套 Python 测试 **536 全绿**。
+
 ## [2.3.18] — 2026-08-17
 
 ### 修复 / Fixes (skill CLI + validate 脚本)

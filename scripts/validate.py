@@ -97,7 +97,7 @@ def validate_config_against_schema(
 def command_is_whitelisted(command: str, whitelist: list[str]) -> bool:
     """检查命令是否以白名单中的某个前缀开头，并且前缀后必须是空白或字符串结尾。
 
-    同时拒绝命令本体中的 shell 链接元字符（``;`` ``|`` ``&`` ``$`` ``\`` 反引号
+    同时拒绝命令本体中的 shell 链接元字符（分号、竖线、与号、美元符、反引号
     换行等），防止 ``pytest tests/; rm -rf /`` 这类以白名单前缀开头、后缀拼接
     恶意命令的方式绕过白名单。
 
