@@ -7,6 +7,10 @@
 
 One-command installer for [iterate-skill](https://github.com/jingzhao-l/iterate-skill) across AI coding assistants.
 
+[![GitHub stars](https://img.shields.io/github/stars/jingzhao-l/iterate-skill?style=social&label=Star)](https://github.com/jingzhao-l/iterate-skill)
+
+> ⭐ If this project helps you, please consider giving a GitHub star — it means a lot to open-source maintenance!
+
 ## Usage
 
 ```bash
