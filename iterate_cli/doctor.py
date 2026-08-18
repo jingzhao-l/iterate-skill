@@ -168,7 +168,14 @@ def _schema_violations(config: dict[str, Any]) -> list[str]:
     except ImportError:
         return []
     violations: list[str] = []
-    for error in Draft202012Validator(schema).iter_errors(config):
+    try:
+        validator = Draft202012Validator(schema)
+    except ValueError:
+        # Schema is structurally invalid (e.g. malformed ``$ref`` / type
+        # constraint). Skipping schema validation is safer than crashing the
+        # whole doctor run on a broken schema file.
+        return []
+    for error in validator.iter_errors(config):
         path = "/".join(str(part) for part in error.path) or "<root>"
         violations.append(f"{path}: {error.message}")
     return violations
@@ -179,11 +186,18 @@ def _command_is_whitelisted(command: Any, whitelist: Any) -> bool:
 
     Mirrors scripts/validate.py::command_is_whitelisted: a command is allowed
     when it equals a whitelisted prefix, or starts with one followed by
-    whitespace (so ``pytest tests/`` is ``pytest`` plus an argument).
+    whitespace (so ``pytest tests/`` is ``pytest`` plus an argument). Also
+    rejects shell-chaining metacharacters anywhere in the command body, so a
+    whitelisted prefix cannot be abused to smuggle ``; rm -rf /`` style
+    side effects past the check.
     """
     if not isinstance(command, str) or not isinstance(whitelist, list):
         return False
+    _COMMAND_METACHARS = set(";|&$`><\r\n")
     stripped = command.strip()
+    for ch in stripped:
+        if ch in _COMMAND_METACHARS:
+            return False
     for prefix in whitelist:
         if not isinstance(prefix, str):
             continue

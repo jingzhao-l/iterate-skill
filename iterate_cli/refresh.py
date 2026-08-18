@@ -90,6 +90,33 @@ def load_onboarding_config(project_root: Path) -> dict[str, Any] | None:
     return config
 
 
+def _load_refresh_config(project_root: Path) -> dict[str, Any] | None:
+    """Load the project config for a refresh, distinguishing "absent" from "corrupt".
+
+    A refresh regenerates the AI-maintained sections of ITERATE.md and updates
+    ``onboarding.fingerprints`` inside ``iterate.config.yaml``. It must preserve
+    every other user-customised field (dimensions, validation, personalization,
+    …). If the config file exists but cannot be parsed (corrupt YAML, non-mapping,
+    unreadable), refresh must **refuse to run** rather than silently rewriting the
+    file with empty defaults — which would destroy the user's configuration.
+
+    Returns:
+        The parsed config dict, or ``{}`` when ``iterate.config.yaml`` does not
+        exist (a legitimate first-refresh case). Returns ``None`` only when the
+        file exists but cannot be parsed or read, signalling that refresh should
+        abort.
+    """
+    config_path = project_root / CONFIG_YAML
+    if not config_path.is_file():
+        return {}
+    config = load_onboarding_config(project_root)
+    if config is None:
+        # File exists, but load_onboarding_config logged the specific reason
+        # (YAMLError / OSError / non-mapping) and returned None.
+        return None
+    return config
+
+
 def get_stored_fingerprints(config: dict[str, Any]) -> list[dict[str, str]]:
     """Extract stored fingerprints from a loaded config dict.
 
@@ -266,7 +293,9 @@ def _build_refresh_outputs(project_root: Path) -> tuple[bool, str, str, str]:
         return False, "", "", f"Failed to read {iterate_md_path}: {exc}"
 
     scan = scan_project(project_root)
-    existing_config = load_onboarding_config(project_root) or {}
+    existing_config = _load_refresh_config(project_root)
+    if existing_config is None:
+        return False, "", "", f"{CONFIG_YAML} exists but could not be parsed; refusing to overwrite with defaults."
     data = _build_refresh_data(project_root, scan, existing_config)
     refreshed_md = generate_refreshed_md(data, existing_md)
     new_config = _build_refreshed_config(existing_config, data.fingerprints)

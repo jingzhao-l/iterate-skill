@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         tui.empty_line()
         tui.hint("Install the skill across AI assistants: npx iterate-skill-installer")
         tui.hint("Initialize a project: iterate onboard")
-        raise SystemExit(0)
+        return 0
 
     project_root = Path(args.project).resolve()
 
@@ -250,8 +250,13 @@ def _cmd_onboard(project_root: Path) -> int:
     if existing_md_path.is_file():
         try:
             existing_md = existing_md_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            existing_md = None
+        except (OSError, UnicodeDecodeError) as exc:
+            # If ITERATE.md exists but cannot be read, regenerating from scratch
+            # would silently drop the user-owned (manual) section. Refuse to
+            # proceed rather than risk losing manual edits.
+            tui.warning(f"未能读取现有 {existing_md_path.name}：{exc}")
+            tui.info("为避免覆盖你的手动编辑区，已中止。请先修复该文件读取问题。")
+            return 1
 
     # Preserve existing personalization when the user did not re-personalize,
     # so a basic-config update does not silently drop structured rules

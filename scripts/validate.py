@@ -52,7 +52,10 @@ def validate_decisions(path: Path) -> list[str]:
         if section not in content:
             errors.append(f"Missing section: {section}")
 
-    round_headers = re.findall(r"^## Round (\d+|\{N\}) — ", content, re.MULTILINE)
+    # Tolerate the em-dash "—", a hyphen, or no separator after the round
+    # header so minor typographic drift in the log template does not cause a
+    # false "no round headers" failure.
+    round_headers = re.findall(r"^## Round (\d+|\{N\})(?:[\s\u2014-]+|$)", content, re.MULTILINE)
     if not round_headers:
         errors.append("No round headers found (expected '## Round N — ...')")
 
@@ -92,8 +95,21 @@ def validate_config_against_schema(
 
 
 def command_is_whitelisted(command: str, whitelist: list[str]) -> bool:
-    """检查命令是否以白名单中的某个前缀开头，并且前缀后必须是空白或字符串结尾。"""
+    """检查命令是否以白名单中的某个前缀开头，并且前缀后必须是空白或字符串结尾。
+
+    同时拒绝命令本体中的 shell 链接元字符（``;`` ``|`` ``&`` ``$`` ``\`` 反引号
+    换行等），防止 ``pytest tests/; rm -rf /`` 这类以白名单前缀开头、后缀拼接
+    恶意命令的方式绕过白名单。
+
+    命令所需的常用字符（字母、数字、下划线、连字符、点、斜杠、空格、``@``/``:``
+    及 flag 常见字符如 ``-`` ``=``）一律放行；仅对真正的元字符强制拒绝。
+    """
+    _COMMAND_METACHARS = set(";|&$`><\r\n")
     stripped = command.strip()
+    # Reject any shell-chaining metacharacter anywhere in the command body.
+    for ch in stripped:
+        if ch in _COMMAND_METACHARS:
+            return False
     for prefix in whitelist:
         if stripped == prefix:
             return True

@@ -344,7 +344,7 @@ PERSONALIZATION_SECTION_HEADERS: tuple[str, ...] = (
     "## 自定义代码约定 / Custom Code Conventions",
     "## 禁区与风险区 / Restricted & Risk Areas",
     "## Iterate 注意点 / Iterate Notes",
-    "## 已知意图 / Known Intentional",
+    "## 已知意图 / Known Intentional (抑制误报 / Suppress false positives)",
     "## 禁止的修复方式 / Forbidden Fixes",
 )
 
