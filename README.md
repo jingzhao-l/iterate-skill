@@ -5,6 +5,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](./LICENSE)
 [![npm](https://img.shields.io/badge/-npm-CB3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/iterate-skill-installer)
+[![Downloads](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fjingzhao-l%2Fiterate-skill%2Fmain%2Fbadges%2Fdownloads.json&query=total&label=Downloads&color=2ea44f&logo=download&logoColor=white)](https://github.com/jingzhao-l/iterate-skill/blob/main/badges/downloads.json)
 [![GitHub release](https://img.shields.io/github/v/release/jingzhao-l/iterate-skill)](https://github.com/jingzhao-l/iterate-skill/releases)
 [![ClawHub](https://img.shields.io/badge/-ClawHub.ai-4285F4?logo=cloudflare&logoColor=white)](https://clawhub.ai/jingzhao-l/skills/iterate-skill)
 [![ModelScope](https://img.shields.io/badge/-ModelScope-624aff?logo=alibabacloud&logoColor=white)](https://www.modelscope.cn/skills/jingzhao0/iterate-skill)
