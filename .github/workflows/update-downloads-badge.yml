@@ -1,0 +1,37 @@
+name: Update downloads badge
+
+on:
+  schedule:
+    # Daily 06:00 UTC (14:00 Beijing) refresh of badges/downloads.json
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-downloads:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch cross-platform download counts
+        run: python scripts/update_downloads_badge.py
+
+      - name: Commit and push badge data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add badges/downloads.json
+          if git diff --cached --quiet; then
+            echo "No change to badges/downloads.json"
+          else
+            git commit -m "chore: refresh downloads badge data"
+            git push
+          fi
