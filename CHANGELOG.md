@@ -5,6 +5,23 @@
 
 ---
 
+## [2.4.0] — 2026-08-19
+
+### 新增 / Features (强制实读到代码的证据审查)
+
+- **强制子代理实际读文件再审查，禁止推测**：reviewer prompt（SKILL.md 审查模板）注入强制 `EVIDENCE RULE`——必须先以 `read_file` 读过待报告的每个文件，才能对其下结论；禁止报告从未读过的代码，编造的文件路径/行号一律视为 poisoned evidence。`line` 对行级问题改为必填（精确读到的行号），整文件/模块级问题用 `0`。
+- **硬证据门禁（meta-review）**：`meta-review` 在既有内部一致性校验之外，新增代码证据校验，逐条核对 finding 的 `file`/`line` 是否真实存在于磁盘代码中；任何伪造路径或越界行号都会作为 critical 的 `EVIDENCE_VIOLATION` 浮出，并把最终裁决强制翻转为 `needs_revision`。
+- **配置开关**：新增 `reviewer.evidence_validation`（默认 `true`）。设 `false` 可关闭硬门禁，用于不需要严格证据校验的场景。
+
+### 文档 / Docs
+
+- **[SKILL.md](SKILL.md)**：dry-run 审查模板注入 EVIDENCE RULE 并把 `line` 明确为必填；meta-review 说明硬证据门禁；审前 checklist 增加「已注入 EVIDENCE RULE」「已确认证据门禁」验收项。
+- **[config.schema.json](config/config.schema.json)** / **[iterate.config.yaml](config/iterate.config.yaml)**：新增 `reviewer.evidence_validation` 字段与默认值、中英释义。
+
+### 测试 / Tests
+
+- 补充证据校验模块测试（文件存在性、行号上下界、read-trace 交叉、整文件/模块级 0 行）与 harness/plugin 两侧对称用例，全套 Python 测试通过。
+
 ## [2.3.20] — 2026-08-19
 
 ### 新增 / Features (onboarding 高级配置 + 数据一致性)
