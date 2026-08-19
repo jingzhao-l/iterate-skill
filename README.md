@@ -39,8 +39,8 @@
 | 组件 | 形态与位置 | 面向场景 |
 |---|---|---|
 | **Core Skill + CLI** | 可移植 AI 技能 `/iterate` + `iterate` 命令行（本仓库根目录） | 在 Trae / Claude Code / Cursor / Copilot / Codex 等 25+ 助手的对话式界面里多轮迭代 |
-| **iterate-harness** | 独立无头引擎，命令 `ih`（`harness/iterate-harness`，npm: `iterate-harness`） | 在终端 / CI / Git 钩子里，脱离对话式助手运行同一套闭环 |
-| **iterate-plugin** | dsh 桌面客户端插件（`harness/iterate-plugin`，npm: `iterate-plugin`） | 使用 dsh 桌面客户端，把 iterate 的收敛仪表盘、review 进度带进界面 |
+| **[iterate-harness](https://github.com/jingzhao-l/iterate-harness)** | 独立无头引擎，命令 `ih`（源码 `harness/iterate-harness`，npm: `iterate-harness`） | 在终端 / CI / Git 钩子里，脱离对话式助手运行同一套闭环 |
+| **[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)** | dsh 桌面客户端插件（源码 `harness/iterate-plugin`，npm: `iterate-plugin`） | 使用 dsh 桌面客户端，把 iterate 的收敛仪表盘、review 进度带进界面 |
 
 三者的关系：**skill**（本仓库核心交付物）面向任意 AI 助手的对话式迭代；**harness** 面向无头 / CI 场景的同一闭环引擎实现；**plugin** 把 harness 的运行时体验接入 dsh。配置（`iterate.config.yaml`）与维度体系在三者间完全一致——理解其一即可举一反三。
 
@@ -58,7 +58,7 @@ ih iterate init && ih iterate review
 dsh plugin --profile web add github:jingzhao-l/iterate-plugin#main
 ```
 
-> 本文档接下来以 **skill（本仓库根目录）** 为核心，讲解最常用的对话式用法。harness 与 plugin 的详细文档见它们各自的 README（`harness/iterate-harness/README.md`、`harness/iterate-plugin/README.md`）。
+> 本文档接下来以 **skill（本仓库根目录）** 为核心，讲解最常用的对话式用法。harness 与 plugin 的详细文档见它们各自的独立仓库：[iterate-harness](https://github.com/jingzhao-l/iterate-harness)（源码 `harness/iterate-harness/README.md`）、[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)（源码 `harness/iterate-plugin/README.md`）。
 
 ---
 
@@ -530,6 +530,21 @@ iterate-skill/
 5. 创建 Pull Request
 
 请保持 `SKILL.md` 的中英双语结构，新增功能需补充配置示例。
+
+---
+
+## 免责声明 / Disclaimer
+
+本项目按「现状」（AS IS）提供，不附带任何明示或暗示的担保，包括但不限于对适销性、特定用途适用性及不侵权性的担保。
+
+**自动化的代码审查与修复存在固有风险。** normal 模式下产生的改动均由 AI 模型生成，可能引入缺陷、回归或非预期行为。在合并改动前，你应当：
+
+- 在应用到主分支或推送前，逐条 review 每一处 diff。
+- 确保项目处于 git 版本控制之下，并可随时回滚（`git restore`、revert 或从备份恢复）。
+- 在每轮修复后运行项目自身的测试与构建检查。
+- 切勿在密钥、凭证、`.env` 或任何不允许修改的文件上运行本项目；请在 `iterate.config.yaml` 的 `protected_paths` 中配置相应的保护路径。
+
+使用者需为本项目使用过程中所产生、修改或提交的代码负全部责任。使用本项目即表示你同意：维护者与贡献者不对因使用本项目而导致的任何损失、损害或法律后果承担责任。
 
 ---
 
