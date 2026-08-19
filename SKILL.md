@@ -409,6 +409,15 @@ speculation about code you never inspected is a disqualifying failure, and
 fabricated line numbers are treated as poisoned evidence. Anchor every finding
 to real, read code.
 
+COVERAGE RULE (mandatory): below is the exact file inventory you are assigned
+to review. You MUST open EVERY file in this inventory with the read_file tool
+before judging it — do not skip, skim-declare, or assume any file without
+reading it. Files you did not actually open are considered un-reviewed and
+will lower your coverage score. Return a `readFiles` array listing every file
+you actually opened.
+
+Assigned file inventory: {assignedFileInventory}
+
 Focus: {focus description}
 
 Project context: {projectContext}
@@ -421,9 +430,10 @@ For each finding, report:
 - is_atomic (boolean): true if fix is ≤{atomic.max_lines} lines within a SINGLE function/file;
   false if cross-file, new files, API changes, or large refactoring.
 
-Return strictly as JSON: { "findings": [...] }
+Return strictly as JSON: { "findings": [...], "readFiles": [...] }
 Each finding object must contain: file, line, severity, dimension, summary, failure_scenario, suggested_fix, is_atomic.
-If no issues are found, return { "findings": [] }.
+`readFiles` must list every file in the assigned inventory you actually opened with read_file.
+If no issues are found, return { "findings": [], "readFiles": [...] }.
 ```
 
 > **个性化维度 focus / Personalization dimension focus**：若 `personalization.dimension_focus` 中存在当前维度的条目，将其 `focus` 文本追加到上述 prompt 的 `Focus:` 段之后，例如：
@@ -948,6 +958,9 @@ iterate/
 | `validation.command_whitelist` | list | 常见命令前缀 | 允许的命令前缀；不在白名单中的命令直接拒绝，不可通过用户确认绕过 |
 | `validation.commands.<module>` | list | 示例命令 | 各模块验证命令 |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
+| `reviewer.evidence_validation` | bool | `true` | 硬证据门禁：meta-review 校验每个 finding 的 file/line 真实性，伪证判 `needs_revision` |
+| `reviewer.coverage_validation` | bool | `true` | 范围覆盖率校验（提示性）：自报 `readFiles` 明显不覆盖分配清单时浮出 `COVERAGE_GAP`，不反转判定 |
+| `reviewer.scope_chunk_size` | int | `25` | `full` 审查每批分配的文件数，按此拆分 reviewer 任务 |
 | `personalization.protected_paths` | list | `[]` | 禁区 glob 模式，iterate 不得修改 |
 | `personalization.risk_areas` | list | `[]` | 风险区（path + reason），改动需用户审批 |
 | `personalization.known_intentional` | list | `[]` | 已知意图（file:line + dimension），Phase 1 过滤误报 |
@@ -1015,7 +1028,9 @@ iterate/
 - [ ] 已要求返回严格 JSON 并列出必填字段。
 - [ ] 已明确 `line` 为必填（行级问题为精确读到的行号，整文件/模块级问题为 0）。
 - [ ] 已注入 EVIDENCE RULE：必须先用 `read_file` 读过，才允许报告该文件/行；禁止推测未读代码，禁止编造行号（视为 poisoned evidence）。
+- [ ] 已注入 COVERAGE RULE：把子代理被分配到的文件清单（`full` 下按 `scope_chunk_size` 分批）逐一列出，要求用 `read_file` 读遍每一份并返回 `readFiles`；未实际读阅的文件视为未审查。
 - [ ] 已确认 meta-review 硬证据门禁（`reviewer.evidence_validation`，默认开）会把伪造路径/越界行号判为 `EVIDENCE_VIOLATION` → `needs_revision`。
+- [ ] 已确认范围覆盖率校验（`reviewer.coverage_validation`，默认开）会在自报 `readFiles` 明显不覆盖分配清单时浮出 medium 的 `COVERAGE_GAP` 提示（不反转判定）。
 - [ ] 已说明禁止读取敏感文件。
 - [ ] 大项目已按目录/模块拆分 reviewer 任务。
 
