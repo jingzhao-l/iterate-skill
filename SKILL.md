@@ -42,7 +42,7 @@ permissions:
 **纯审查模式 / review-only mode**：当调用参数含 `review-only` 或 `dry-run` 时，本 Skill 只做**只读健康检查**，绝不修改任何文件：
 - 反复多轮并行审查，直到某一轮出现 0 个新 findings（收敛）。
 - 生成审查报告（含每轮收敛统计、按严重级别/维度汇总、修复优先级建议）。
-- **再审查这份报告本身**（meta-review：校验报告内部一致性——总数匹配、严重级别汇总、维度汇总、排序、收敛数学），给出带 `approved` / `needs_revision` 判定的**最终审查报告**。
+- **再审查这份报告本身**（meta-review：校验报告内部一致性——总数匹配、严重级别汇总、维度汇总、排序、收敛数学），给出带 `approved` / `needs_revision` 判定的**最终审查报告**。meta-review 同时跑硬证据门禁：逐条校验 finding 的 `file`/`line` 是否真实存在，子代理只允许锚定实际读过的真实代码，伪造路径/行号即以 `EVIDENCE_VIOLATION` 判 `needs_revision`。
 - 适用于发布前体检、代码质量审计、不想让 AI 动代码的场景。
 
 This Skill is appropriate when:
@@ -56,6 +56,9 @@ This Skill is appropriate when:
 it performs a read-only health check that never modifies files — repeated parallel review rounds until a
 round finds 0 new findings (convergence), produces a review report, then meta-reviews that report
 (validating internal consistency) and emits a final report with an `approved` / `needs_revision` verdict.
+The meta-review also runs the hard code-evidence gate: every finding's `file`/`line` is validated against
+real files on disk, so reviewers may only anchor to code they actually read — fabricated paths or invented
+line numbers surface as `EVIDENCE_VIOLATION` and force `needs_revision`.
 Use it for pre-release health checks, audits, or any case where you do not want the AI to touch code.
 
 ## 何时跳过 / When to Skip
@@ -341,6 +344,7 @@ return { rounds, converged, findingsByRound, totalFindings, bySeverity, byDimens
 - **绝不修改文件**：reviewer 只读项目，所有 aggregate / meta-review 均为纯计算。
 - **收敛驱动**：每轮把已知 findings 喂给 reviewer，迫使其只找新问题；某轮 0 新 findings 即收敛停止；否则到 cap。
 - **产出三级**：① 审查报告（findings + 收敛统计 + 修复优先级建议）；② **meta-review**（审查报告内部一致性：`COUNT_MATCH`/`SEVERITY_SUM`/`DIMENSION_SUM`/`SORT_ORDER`/`CONVERGENCE`/`ROUND_SHAPE`）；③ **最终审查报告**（带 `approved` / `needs_revision` 判定）。
+- 硬证据门禁（`reviewer.evidence_validation`，默认开启）：meta-review 会逐条校验 finding 的 `file`/`line` 是否真实存在于磁盘代码中。任何伪造路径或越界行号都会作为 critical 的 `EVIDENCE_VIOLATION` 浮出并把裁决翻转为 `needs_revision` —— 子代理只允许锚定实际读过的真实代码，禁止推测。
 - 本模式不写入 `.iterate_decisions.md`（除一条 `report` 记录外），不产生任何 git 提交。
 
 ### 进度反馈 / Progress Feedback
@@ -399,18 +403,26 @@ Scope: {review.scope}
 - "changed-only" → review ONLY files changed in the current round (git diff against {git.target_branch}).
 - 当 `review.scope` 为 `changed-only` 且本轮相对于 `target_branch` 无改动文件时，自动 fallback 为 `full`。
 
+EVIDENCE RULE (mandatory): read every file you report on with the read_file tool
+BEFORE judging it. You must NEVER report a location you did not actually read —
+speculation about code you never inspected is a disqualifying failure, and
+fabricated line numbers are treated as poisoned evidence. Anchor every finding
+to real, read code.
+
 Focus: {focus description}
 
 Project context: {projectContext}
 
 For each finding, report:
-- file, line (if applicable), severity (critical/high/medium/low)
+- file, line (REQUIRED positive integer for anchored, line-targeted issues —
+  the exact line you READ; use 0 for whole-file/module-level issues),
+  severity (critical/high/medium/low)
 - dimension, summary, failure_scenario, suggested_fix
 - is_atomic (boolean): true if fix is ≤{atomic.max_lines} lines within a SINGLE function/file;
   false if cross-file, new files, API changes, or large refactoring.
 
 Return strictly as JSON: { "findings": [...] }
-Each finding object must contain: file, severity, dimension, summary, failure_scenario, suggested_fix, is_atomic.
+Each finding object must contain: file, line, severity, dimension, summary, failure_scenario, suggested_fix, is_atomic.
 If no issues are found, return { "findings": [] }.
 ```
 
@@ -1001,6 +1013,9 @@ iterate/
 - [ ] 已明确 `review.scope`（`changed-only` 或 `full`）。
 - [ ] 已说明 `atomic.max_lines` 和 `atomic.max_adjacent_methods`。
 - [ ] 已要求返回严格 JSON 并列出必填字段。
+- [ ] 已明确 `line` 为必填（行级问题为精确读到的行号，整文件/模块级问题为 0）。
+- [ ] 已注入 EVIDENCE RULE：必须先用 `read_file` 读过，才允许报告该文件/行；禁止推测未读代码，禁止编造行号（视为 poisoned evidence）。
+- [ ] 已确认 meta-review 硬证据门禁（`reviewer.evidence_validation`，默认开）会把伪造路径/越界行号判为 `EVIDENCE_VIOLATION` → `needs_revision`。
 - [ ] 已说明禁止读取敏感文件。
 - [ ] 大项目已按目录/模块拆分 reviewer 任务。
 
