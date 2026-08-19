@@ -65,6 +65,12 @@ ALL_DIMENSIONS: list[str] = [
 # Beyond this the output is truncated with a "… and N more" hint.
 MAX_DIRS_DISPLAYED = 10
 
+# Bounds enforced by config.schema.json for advanced-configuration inputs.
+# Keep in sync with config/config.schema.json when these change.
+MAX_ROUNDS_MIN = 1
+MAX_ROUNDS_MAX = 50  # hard cap from schema (maximum: 50)
+ATOMIC_THRESHOLD_MIN = 1
+
 # Dimension display names for the selection menu.
 DIMENSION_LABELS: dict[str, str] = {
     "correctness": "正确性 / Correctness (critical)",
@@ -289,6 +295,10 @@ def _run_basic_wizard(
 
     # Update scan languages in case user confirmed differently.
     scan.detected_languages = confirmed_langs
+
+    # Optional advanced tuning step (edit-in-place on ``data`` when the
+    # user opts in; otherwise all fields stay at their defaults above).
+    _optionally_collect_advanced_config(data, input_func)
 
     if not _confirm_summary(data, input_func):
         _print_cancelled()
@@ -609,6 +619,151 @@ def _collect_project_info(input_func: InputFunc) -> tuple[str, str]:
     conventions = "\n".join(conv_lines)
 
     return description, conventions
+
+
+def _optionally_collect_advanced_config(
+    data: OnboardingData,
+    input_func: InputFunc,
+) -> None:
+    """Offer an optional advanced-configuration step (mutates ``data`` in place).
+
+    Most onboarding runs are happy with the defaults. When the user opts in,
+    exposes the tuning knobs that a typical run keeps at defaults: iteration
+    goal, max rounds, output language, atomic thresholds, git isolation
+    (worktree / auto-merge), reviewer output validation, and drift-ignore glob
+    patterns. Every prompt uses the current value as its default, so pressing
+    Enter keeps the existing value.
+
+    Args:
+        data: OnboardingData being assembled; mutated only when the user
+            accepts the advanced step.
+        input_func: Callable used to read user input.
+    """
+    tui.empty_line()
+    if not _ask_yes_no(
+        "是否配置高级选项（轮数/语言/git 隔离/漂移忽略等）? / Configure advanced options?",
+        input_func,
+        default=False,
+    ):
+        return
+
+    tui.section("高级配置 / Advanced Configuration")
+    tui.hint("留空使用当前值 / Leave empty to keep current value.", indent=2)
+    tui.empty_line()
+
+    data.goal = _read_optional_text("迭代目标 / Goal", data.goal, input_func)
+    data.max_rounds = _read_optional_int(
+        f"最大轮数 / Max rounds ({MAX_ROUNDS_MIN}-{MAX_ROUNDS_MAX})",
+        data.max_rounds,
+        MAX_ROUNDS_MIN,
+        MAX_ROUNDS_MAX,
+        input_func,
+    )
+    data.language = _read_language(data.language, input_func)
+    data.atomic_max_lines = _read_optional_int(
+        "原子改动最大行数 / Atomic max lines",
+        data.atomic_max_lines,
+        ATOMIC_THRESHOLD_MIN,
+        None,
+        input_func,
+    )
+    data.atomic_max_adjacent_methods = _read_optional_int(
+        "原子相邻方法数 / Atomic max adjacent methods",
+        data.atomic_max_adjacent_methods,
+        ATOMIC_THRESHOLD_MIN,
+        None,
+        input_func,
+    )
+    data.use_worktree = _ask_yes_no(
+        "使用 git worktree 隔离? / Use git worktree?",
+        input_func,
+        default=data.use_worktree,
+    )
+    data.auto_merge = _ask_yes_no(
+        "每轮自动合并到目标分支? / Auto-merge to target?",
+        input_func,
+        default=data.auto_merge,
+    )
+    data.output_schema_validation = _ask_yes_no(
+        "校验 reviewer 输出 schema? / Validate reviewer output?",
+        input_func,
+        default=data.output_schema_validation,
+    )
+    data.drift_ignore = _read_drift_ignore(data.drift_ignore, input_func)
+
+
+def _read_optional_text(prompt: str, current: str, input_func: InputFunc) -> str:
+    """Read optional free-text, keeping ``current`` on empty input."""
+    raw = input_func(f"  └ {prompt} ({current}): ").strip()
+    return raw or current
+
+
+def _read_optional_int(
+    prompt: str,
+    current: int,
+    min_value: int,
+    max_value: int | None,
+    input_func: InputFunc,
+) -> int:
+    """Read an optional integer within [min_value, max_value], keeping ``current``
+    on empty or invalid input. Bounds mirror config.schema.json constraints.
+    """
+    while True:
+        raw = input_func(f"  └ {prompt} (当前 {current}): ").strip()
+        if not raw or raw == str(current):
+            return current
+        try:
+            value = int(raw)
+        except ValueError:
+            tui.warning(
+                f"无效整数，保持当前值 {current} / Invalid integer, keeping {current}.",
+                indent=2,
+            )
+            return current
+        if value < min_value:
+            tui.warning(
+                f"最小 {min_value}，保持当前值 {current} / Min {min_value}, keeping {current}.",
+                indent=2,
+            )
+            return current
+        if max_value is not None and value > max_value:
+            tui.warning(
+                f"最大 {max_value}，保持当前值 {current} / Max {max_value}, keeping {current}.",
+                indent=2,
+            )
+            return current
+        return value
+
+
+def _read_language(current: str, input_func: InputFunc) -> str:
+    """Read an output language (zh/en), keeping ``current`` on empty input."""
+    while True:
+        raw = input_func(f"  └ 输出语言 / Language (zh/en, 当前 {current}): ").strip().lower()
+        if not raw or raw == current:
+            return current
+        if raw in ("zh", "en"):
+            return raw
+        tui.warning("请输入 zh 或 en / Please enter zh or en.", indent=2)
+
+
+def _read_drift_ignore(current: list[str], input_func: InputFunc) -> list[str]:
+    """Read comma-separated drift-ignore glob patterns, keeping ``current`` on
+    empty input. Values are deduplicated and whitespace-trimmed.
+    """
+    tui.hint(
+        "排除漂移检测的 manifest glob（逗号分隔，如 package-lock.json,yarn.lock）/",
+        indent=2,
+    )
+    tui.hint(
+        "Drift-ignore: manifest globs to exclude from drift detection (comma-separated).",
+        indent=4,
+    )
+    current_text = ",".join(current) if current else "(空/empty)"
+    raw = input_func(f"  └ 当前 {current_text} — 回车保持 / Enter to keep: ").strip()
+    if not raw:
+        return list(current)
+    patterns = [p.strip() for p in raw.split(",") if p.strip()]
+    return list(dict.fromkeys(patterns))
 
 
 def _confirm_summary(data: OnboardingData, input_func: InputFunc) -> bool:

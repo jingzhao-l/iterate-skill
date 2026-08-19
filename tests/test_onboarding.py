@@ -34,6 +34,10 @@ from iterate_cli.fingerprint import (
 from iterate_cli.generator import (
     AI_END_MARKER,
     AI_START_MARKER,
+    DEFAULT_ATOMIC_MAX_ADJACENT_METHODS,
+    DEFAULT_ATOMIC_MAX_LINES,
+    DEFAULT_GOAL,
+    DEFAULT_MAX_ROUNDS,
     USER_END_MARKER,
     USER_START_MARKER,
     OnboardingData,
@@ -55,6 +59,7 @@ from iterate_cli.personalize import (
     load_personalization_from_iterate_md,
     merge_personalization_into_config,
     run_personalize_wizard,
+    save_personalization,
     save_personalization_to_config,
     validate_extra_command,
 )
@@ -81,7 +86,12 @@ from iterate_cli.scan import (
 from iterate_cli.wizard import (
     NO_CHANGES_NEEDED,
     _ask_yes_no,
+    _optionally_collect_advanced_config,
     _parse_dimension_selection,
+    _read_drift_ignore,
+    _read_language,
+    _read_optional_int,
+    _read_optional_text,
     run_wizard,
 )
 
@@ -585,6 +595,7 @@ class TestRunWizard:
             "y",          # push per round: yes
             "Test project",  # project description
             "",           # code conventions: empty line to finish
+            "n",          # advanced config: no
             "y",          # confirm and generate
             "n",          # personalization offer: no
         ])
@@ -618,6 +629,7 @@ class TestRunWizard:
             "n",          # push: no
             "Desc",       # description
             "",           # conventions: empty
+            "n",          # advanced config: no
             "y",          # confirm and generate
             "n",          # personalization offer: no
         ])
@@ -635,6 +647,7 @@ class TestRunWizard:
             "y",          # push: yes
             "Desc",       # description
             "",           # conventions: empty
+            "n",          # advanced config: no
             "n",          # confirm: no
         ])
         data = run_wizard(fake_project, input_func=lambda _: next(responses))
@@ -655,6 +668,7 @@ class TestRunWizard:
             "y",              # push: yes
             "Desc",           # description
             "",               # conventions: empty
+            "n",              # advanced config: no
             "y",              # confirm: yes
             "n",              # personalization offer: no
         ])
@@ -674,6 +688,7 @@ class TestRunWizard:
             "y",          # push: yes
             "Desc",       # description
             "",           # conventions: empty
+            "n",          # advanced config: no
             "y",          # confirm: yes
             "n",          # personalization offer: no
         ])
@@ -1397,6 +1412,7 @@ class TestFullReonboard:
             "y",          # push: yes
             "Redone",     # description
             "",           # conventions: empty
+            "n",          # advanced config: no
             "y",          # confirm: yes
             "n",          # personalization offer: no
         ])
@@ -1423,6 +1439,7 @@ class TestFullReonboard:
             "y",          # push: yes
             "Desc",       # description
             "",           # conventions: empty
+            "n",          # advanced config: no
             "n",          # confirm: no (cancel)
         ])
         result = full_reonboard(fake_project, input_func=lambda _: next(responses))
@@ -1560,6 +1577,7 @@ class TestReturningUserFlow:
             "n",          # push: no
             "Updated",    # description
             "",           # conventions: empty
+            "n",          # advanced config: no
             "y",          # confirm: yes
             "n",          # personalization: no
         ])
@@ -3958,3 +3976,234 @@ class TestOperatorExtraPrefixes:
         is_valid, reason = validate_extra_command("python -m safety check")
         assert is_valid is True
         assert reason == ""
+
+
+# ---------------------------------------------------------------------------
+# Transactional personalization save (G3/G4) tests
+# ---------------------------------------------------------------------------
+
+
+class TestSavePersonalizationTransactional:
+    """Tests for the transactional ``save_personalization`` (both files, rollback).
+
+    Guarantees: config and ITERATE.md are written atomically; if the second
+    write fails, the already-written config is rolled back to its prior content
+    so the two files never diverge; if rollback itself fails that is surfaced
+    (not silently swallowed).
+    """
+
+    def test_writes_both_files(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            iterate_notes=["不要修改迁移文件"],
+        )
+        config_path, iterate_md_path = save_personalization(fake_project, personalization)
+
+        assert config_path == fake_project / "iterate.config.yaml"
+        assert iterate_md_path == fake_project / "ITERATE.md"
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["personalization"]["protected_paths"] == ["legacy/**"]
+        assert "不要修改迁移文件" in iterate_md_path.read_text(encoding="utf-8")
+
+    def test_skips_iterate_md_when_absent(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        (fake_project / "ITERATE.md").unlink()
+
+        personalization = PersonalizationData(protected_paths=["legacy/**"])
+        config_path, iterate_md_path = save_personalization(fake_project, personalization)
+
+        assert config_path.is_file()
+        assert not iterate_md_path.exists()
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["personalization"]["protected_paths"] == ["legacy/**"]
+
+    def test_raises_on_missing_config(self, empty_project: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            save_personalization(empty_project, PersonalizationData(protected_paths=["x"]))
+
+    def test_rolls_back_config_when_iterate_md_write_fails(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        original_config = (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+
+        from iterate_cli.generator import atomic_write as _orig_aw
+
+        def failing_md_write(path, content, encoding="utf-8"):
+            if Path(path).name == "ITERATE.md":
+                raise OSError("md write boom")
+            return _orig_aw(path, content, encoding)
+
+        monkeypatch.setattr("iterate_cli.generator.atomic_write", failing_md_write)
+
+        with pytest.raises(OSError, match="md write boom"):
+            save_personalization(
+                fake_project, PersonalizationData(protected_paths=["legacy/**"])
+            )
+
+        # Config must be rolled back to its exact prior content.
+        assert (fake_project / "iterate.config.yaml").read_text(encoding="utf-8") == original_config
+
+    def test_surfaces_rollback_failure(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        from iterate_cli.generator import atomic_write as _orig_aw
+
+        # First config write succeeds, ITERATE.md fails (triggers rollback),
+        # then the rollback config write also fails.
+        config_writes = {"n": 0}
+
+        def failing_write(path, content, encoding="utf-8"):
+            p = Path(path)
+            if p.name == "ITERATE.md":
+                raise OSError("md write boom")
+            config_writes["n"] += 1
+            if config_writes["n"] > 1:
+                raise OSError("rollback boom")
+            return _orig_aw(path, content, encoding)
+
+        monkeypatch.setattr("iterate_cli.generator.atomic_write", failing_write)
+
+        with pytest.raises(OSError):
+            save_personalization(
+                fake_project, PersonalizationData(protected_paths=["legacy/**"])
+            )
+        captured = capsys.readouterr()
+        assert "roll back" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Advanced configuration wizard (G1) tests
+# ---------------------------------------------------------------------------
+
+
+class TestAdvancedConfigWizard:
+    """Tests for the optional advanced-configuration onboarding step (G1).
+
+    Verifies that opting out leaves defaults untouched, opting in mutates each
+    of the 8 tuning knobs, and the read-helper boundaries enforce the same
+    constraints as config.schema.json.
+    """
+
+    def test_decline_keeps_defaults(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        responses = iter(["n"])  # don't configure advanced options
+        _optionally_collect_advanced_config(data, input_func=lambda _: next(responses))
+        assert data.goal == DEFAULT_GOAL
+        assert data.max_rounds == DEFAULT_MAX_ROUNDS
+        assert data.language == "en"
+        assert data.use_worktree is False
+        assert data.auto_merge is False
+        assert data.output_schema_validation is True
+        assert data.drift_ignore == []
+
+    def test_accept_mutates_all_fields(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        responses = iter([
+            "y",  # configure advanced options
+            "Ship quality",  # goal
+            "10",  # max_rounds
+            "zh",  # language
+            "5",  # atomic_max_lines
+            "2",  # atomic_max_adjacent_methods
+            "y",  # use_worktree
+            "y",  # auto_merge
+            "n",  # output_schema_validation
+            "package-lock.json, yarn.lock",  # drift_ignore
+        ])
+        _optionally_collect_advanced_config(data, input_func=lambda _: next(responses))
+        assert data.goal == "Ship quality"
+        assert data.max_rounds == 10
+        assert data.language == "zh"
+        assert data.atomic_max_lines == 5
+        assert data.atomic_max_adjacent_methods == 2
+        assert data.use_worktree is True
+        assert data.auto_merge is True
+        assert data.output_schema_validation is False
+        assert data.drift_ignore == ["package-lock.json", "yarn.lock"]
+
+    def test_accept_keep_all_empty_inputs(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        responses = iter([
+            "y",  # configure advanced options
+            "",   # goal (keep)
+            "",   # max_rounds (keep)
+            "",   # language (keep)
+            "",   # atomic_max_lines (keep)
+            "",   # atomic_max_adjacent_methods (keep)
+            "n",  # use_worktree
+            "n",  # auto_merge
+            "y",  # output_schema_validation
+            "",   # drift_ignore (keep)
+        ])
+        _optionally_collect_advanced_config(data, input_func=lambda _: next(responses))
+        assert data.goal == DEFAULT_GOAL
+        assert data.max_rounds == DEFAULT_MAX_ROUNDS
+        assert data.language == "en"
+        assert data.atomic_max_lines == DEFAULT_ATOMIC_MAX_LINES
+        assert data.atomic_max_adjacent_methods == DEFAULT_ATOMIC_MAX_ADJACENT_METHODS
+        assert data.use_worktree is False
+        assert data.auto_merge is False
+        assert data.output_schema_validation is True
+        assert data.drift_ignore == []
+
+    # -- _read_optional_int boundaries (mirror config.schema.json constraints) --
+
+    def test_read_optional_int_keeps_current_on_empty(self) -> None:
+        assert _read_optional_int("p", 7, 1, 50, lambda _: "") == 7
+
+    def test_read_optional_int_keeps_current_below_min(self) -> None:
+        assert _read_optional_int("p", 7, 1, 50, lambda _: "0") == 7
+
+    def test_read_optional_int_keeps_current_above_max(self) -> None:
+        assert _read_optional_int("p", 7, 1, 50, lambda _: "51") == 7
+
+    def test_read_optional_int_keeps_current_on_invalid(self) -> None:
+        assert _read_optional_int("p", 7, 1, 50, lambda _: "abc") == 7
+
+    def test_read_optional_int_returns_valid_value(self) -> None:
+        assert _read_optional_int("p", 7, 1, 50, lambda _: "10") == 10
+
+    def test_read_optional_int_no_upper_bound(self) -> None:
+        assert _read_optional_int("p", 7, 1, None, lambda _: "200") == 200
+
+    def test_read_optional_int_rejects_boundary_max(self) -> None:
+        # 50 is the hard cap; 50 is accepted, 51 rejected (tested above).
+        assert _read_optional_int("p", 7, 1, 50, lambda _: "50") == 50
+
+    # -- _read_language --
+
+    def test_read_language_keeps_on_empty(self) -> None:
+        assert _read_language("en", lambda _: "") == "en"
+
+    def test_read_language_valid(self) -> None:
+        assert _read_language("en", lambda _: "zh") == "zh"
+
+    def test_read_language_invalid_then_valid(self) -> None:
+        responses = iter(["fr", "en"])
+        assert _read_language("zh", lambda _: next(responses)) == "en"
+
+    # -- _read_optional_text --
+
+    def test_read_optional_text_keeps_on_empty(self) -> None:
+        assert _read_optional_text("goal", "current", lambda _: "") == "current"
+
+    def test_read_optional_text_replaces(self) -> None:
+        assert _read_optional_text("goal", "current", lambda _: "new") == "new"
+
+    # -- _read_drift_ignore --
+
+    def test_read_drift_ignore_keeps_on_empty(self) -> None:
+        assert _read_drift_ignore(["a"], lambda _: "") == ["a"]
+
+    def test_read_drift_ignore_dedupes_and_trims(self) -> None:
+        assert _read_drift_ignore([], lambda _: " a, a ,b") == ["a", "b"]
