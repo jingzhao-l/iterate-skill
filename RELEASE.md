@@ -98,13 +98,32 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 - [x] **8. 发布 Tencent SkillHub**（skill 只发 skill）：
       - 用 **SkillHub 专用包 `iterate-skill-skillhub.zip`**（重建脚本 `.dist_tmp/rebuild_skillhub.py`
         在剔 harness 的 ms 精简包基础上**再剔除 LICENSE**），skillId `104490`。
+      - **发布命令（skillhub CLI）**：本地工具 `~/.local/bin/skillhub`（源码在
+        `~/.skillhub/skills_store_cli.py`），自动读取登录凭证
+        `~/.skillhub/credentials.json`（个人社区版 `skh_` key）：
+        ```bash
+        ~/.local/bin/skillhub publish <skillhub.zip 或目录> \
+          --version <X.Y.Z> --changelog "<本次变更一句话>" --json
+        ```
+        > CLI 内部调用 `POST https://api.skillhub.cn/api/v1/community/skills/publish`，
+        > multipart 上传（`payload` JSON 含 slug/version/displayName/summary/.../changelog
+        > + 每个 skill 文件一个 `files` part，filename 存相对路径）。
+        > 返回 JSON `{"ok":true,"skillId":104490,"version":"<X.Y.Z>","versionId":...,"tags":{"latest":"<X.Y.Z>"},"reviewStatus":"pending","securityScanStatus":"pending"}`。
+        > `reviewStatus/securityScanStatus=pending` 为平台异步审核，与既往一致，非失败。
+        > 可选 `--dry-run --json` 做本地预检（只校验 metadata+打包，不发 HTTP）。
       > **坑**：必须用去掉 LICENSE 的精简专用包（约 288KB）防止上传 `Broken pipe`；
       > 完整包（含 LICENSE）会因过大上传失败。该专用包源自剔 harness 的 ms 精简包，
-      > 故天然不含 `harness/`；发出前仍复核 `unzip -l <skillhub.zip> | grep harness/` 为空。
+      > 故天然不含 `harness/`；发出前仍复核 `unzip -l <skillhub.zip> | grep harness/` 为空
+      > （0 条）且 `unzip -p <zip> SKILL.md | grep ^version:` 已是 `<X.Y.Z>`。
       >
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
-- [ ] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+- [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **2.3.20 状态（2026-08-19）**：ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）
+      > `latestVersion` 已激活为 2.3.20；ModelScope 已 PATCH 生效（file_id 593dcf19…，
+      > skill_file 指向 2.3.20 精简包）；SkillHub（skillId `104490`）`skillhub publish` 成功
+      > （`ok:true`，versionId 246436，`tags.latest=2.3.20`），公开 `latestVersion` 指标仍有
+      > 平台传播延迟，待复查确认。
       > **2.3.18 状态（2026-08-18）**：ModelScope 已生效（`update_skill_settings` PATCH 成功，
       > skill_file 指向 2.3.18 精简包）；ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）
       > 与 SkillHub（skillId `104490`）均已 HTTP 200 提交 2.3.18，发布响应 `status=pending`，
