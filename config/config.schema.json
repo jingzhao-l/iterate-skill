@@ -141,6 +141,10 @@
         "output_schema_validation": {
           "type": "boolean",
           "description": "Validate reviewer JSON output against the expected schema and retry on mismatch."
+        },
+        "evidence_validation": {
+          "type": "boolean",
+          "description": "Hard code-evidence gate (default on). When enabled, every finding's file/line is validated against real files on disk during meta-review; a fabricated or out-of-range location surfaces as a critical EVIDENCE_VIOLATION and flips the verdict to needs_revision. Set to false to disable."
         }
       }
     },
