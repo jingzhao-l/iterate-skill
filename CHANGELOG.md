@@ -5,6 +5,20 @@
 
 ---
 
+## [2.3.20] — 2026-08-19
+
+### 新增 / Features (onboarding 高级配置 + 数据一致性)
+
+- **[wizard.py](iterate_cli/wizard.py)**：onboard 向导新增**可选高级配置步骤**（默认关闭），暴露 8 个此前隐藏的旋钮：迭代目标、最大轮数（1–50）、输出语言（zh/en）、原子改动阈值（最大行数/相邻方法数）、git 隔离（worktree / 自动合并）、reviewer 输出 schema 校验、漂移忽略 glob。每个提示以当前值为默认，直接回车即保持原值。输入边界与 `config.schema.json` 约束一致，非法输入保持原值而非崩溃。
+- **[generator.py](iterate_cli/generator.py)**：`OnboardingData` 新增 `drift_ignore` 字段并在 `generate_config_yaml` 持久化到 `onboarding.drift_ignore`，保证再次 onboarding/re-onboarding 不再静默丢弃漂移忽略规则。
+- **[refresh.py](iterate_cli/refresh.py)**：`_build_refresh_data` 从既有配置回读 `drift_ignore`，增量刷新时保留用户设置的漂移忽略项。
+- **[personalize.py](iterate_cli/personalize.py)**：新增**事务化保存** `save_personalization` —— config.yaml 与 ITERATE.md 双文件原子写入；若第二文件写入失败则回滚第一文件至原内容，保证两文件状态一致；回滚自身失败时显式暴露错误而非静默吞掉。`cli.py` 的 `_cmd_personalize` 改用该事务化保存，移除旧的分离式 `_update_iterate_md_user_section`。
+
+### 测试 / Tests
+
+- 新增 `TestSavePersonalizationTransactional`（双文件写入、ITERATE.md 缺失跳过、config 缺失抛错、写入失败精确回滚、回滚失败显式暴露）与 `TestAdvancedConfigWizard`（拒绝保持默认、接受全量变更、空输入保持原值、`_read_optional_int`/`_read_language`/`_read_optional_text`/`_read_drift_ignore` 边界与去重）。
+- 全套 Python 测试 **582 全绿**（含既有 drift_ignore 用例，均在本地挂载卷复跑通过）。
+
 ## [2.3.19] — 2026-08-18
 
 ### 修复 / Fixes (skill CLI + 核心模块)
