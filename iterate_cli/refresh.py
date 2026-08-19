@@ -530,5 +530,6 @@ def _build_refresh_data(
         command_whitelist=command_whitelist if command_whitelist else suggest_command_whitelist(scan),
         fingerprints=fingerprints,
         language=language,
+        drift_ignore=get_drift_ignore(existing_config),
         personalization=personalization,
     )

@@ -91,6 +91,7 @@ class OnboardingData:
     use_worktree: bool = False
     auto_merge: bool = False
     output_schema_validation: bool = True
+    drift_ignore: list[str] = field(default_factory=list)
     personalization: PersonalizationData | None = None
 
     def completed_at(self) -> str:
@@ -152,6 +153,23 @@ def generate_config_yaml(data: OnboardingData) -> str:
     Returns:
         Complete iterate.config.yaml file content as a string.
     """
+    onboarding: dict[str, Any] = {
+        "version": FINGERPRINT_VERSION,
+        "completed_at": data.completed_at(),
+        "channel": data.channel,
+        "skill_version": SKILL_VERSION,
+        "drift_check": True,
+        "fingerprints": fingerprints_to_dict(data.fingerprints),
+        # Persist user-entered text so returning users who decline basic
+        # update don't lose their previously entered description/conventions.
+        "project_description": data.project_description,
+        "code_conventions": data.code_conventions,
+    }
+    # Persist drift-ignore patterns so a fresh onboarding/re-onboarding does not
+    # silently drop them (they are honoured by drift detection and fingerprinting).
+    if data.drift_ignore:
+        onboarding["drift_ignore"] = list(data.drift_ignore)
+
     config: dict[str, Any] = {
         "goal": data.goal,
         "max_rounds": data.max_rounds,
@@ -173,18 +191,7 @@ def generate_config_yaml(data: OnboardingData) -> str:
             "commands": data.validation_commands,
         },
         "reviewer": {"output_schema_validation": data.output_schema_validation},
-        "onboarding": {
-            "version": FINGERPRINT_VERSION,
-            "completed_at": data.completed_at(),
-            "channel": data.channel,
-            "skill_version": SKILL_VERSION,
-            "drift_check": True,
-            "fingerprints": fingerprints_to_dict(data.fingerprints),
-            # Persist user-entered text so returning users who decline basic
-            # update don't lose their previously entered description/conventions.
-            "project_description": data.project_description,
-            "code_conventions": data.code_conventions,
-        },
+        "onboarding": onboarding,
     }
 
     # Merge personalization structured fields into config.

@@ -671,8 +671,13 @@ def save_personalization_to_config(
 ) -> Path:
     """Update the personalization section of iterate.config.yaml in-place.
 
-    Reads the existing config, merges personalization, and writes back.
-    Preserves all other config fields.
+    Reads the existing config, merges personalization, and writes back
+    atomically (temp file + ``os.replace``) so a crash mid-write can never
+    leave a truncated config file. Preserves all other config fields.
+
+    Note: this only updates iterate.config.yaml. The companion
+    ``save_personalization`` additionally writes the free-form notes /
+    conventions to ITERATE.md and rolls back config on ITERATE.md failure.
 
     Args:
         project_root: Project root directory containing iterate.config.yaml.
@@ -684,6 +689,8 @@ def save_personalization_to_config(
     Raises:
         FileNotFoundError: If iterate.config.yaml does not exist.
     """
+    from iterate_cli.generator import atomic_write
+
     config_path = project_root / "iterate.config.yaml"
     if not config_path.is_file():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -691,11 +698,119 @@ def save_personalization_to_config(
     existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     updated = merge_personalization_into_config(existing, data)
 
-    config_path.write_text(
+    atomic_write(
+        config_path,
         yaml.safe_dump(updated, default_flow_style=False, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
     )
     return config_path
+
+
+def build_updated_iterate_md(
+    project_root: Path,
+    data: PersonalizationData,
+) -> str | None:
+    """Build updated ITERATE.md content with personalization merged into the
+    user-owned section. Pure (no disk writes).
+
+    Returns ``None`` when no update is possible: ITERATE.md is absent,
+    unreadable, or lacks the user-owned markers. The transactional save treats
+    ``None`` as "skip ITERATE.md" rather than failing.
+
+    Args:
+        project_root: Project root directory containing ITERATE.md.
+        data: PersonalizationData whose notes/conventions should be merged.
+
+    Returns:
+        Updated ITERATE.md content, or None if no update is possible.
+    """
+    from iterate_cli.generator import (
+        USER_END_MARKER,
+        USER_START_MARKER,
+        extract_user_owned_section,
+    )
+
+    iterate_md_path = project_root / "ITERATE.md"
+    if not iterate_md_path.is_file():
+        return None
+    try:
+        content = iterate_md_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        tui.warning(f"Could not read existing ITERATE.md: {exc}")
+        return None
+
+    start_idx = content.find(USER_START_MARKER)
+    end_idx = content.find(USER_END_MARKER)
+    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+        return None
+
+    new_personalization_md = data.to_user_md_sections()
+    existing_user_content = extract_user_owned_section(content)
+    merged = merge_user_sections(existing_user_content, new_personalization_md)
+    before = content[: start_idx + len(USER_START_MARKER)]
+    after = content[end_idx:]
+    return f"{before}\n{merged}\n{after}"
+
+
+def save_personalization(
+    project_root: Path,
+    data: PersonalizationData,
+) -> tuple[Path, Path]:
+    """Persist personalization to both iterate.config.yaml and ITERATE.md.
+
+    This is the transactional save used by ``iterate personalize``. Both files
+    are written atomically (temp file + ``os.replace``); if the second write
+    fails, the first is rolled back to its prior content so the two files never
+    diverge. If a rollback itself fails, the inconsistency is surfaced to stderr
+    instead of being silently swallowed.
+
+    Args:
+        project_root: Project root directory containing both files.
+        data: PersonalizationData to persist.
+
+    Returns:
+        Tuple of ``(config_path, iterate_md_path)``.
+
+    Raises:
+        FileNotFoundError: If iterate.config.yaml does not exist.
+        OSError: If a write (or a rollback) fails.
+    """
+    from iterate_cli.generator import atomic_write
+
+    config_path = project_root / "iterate.config.yaml"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    # Build config content.
+    existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    updated = merge_personalization_into_config(existing, data)
+    config_yaml = yaml.safe_dump(
+        updated, default_flow_style=False, allow_unicode=True, sort_keys=False
+    )
+
+    # Build ITERATE.md content (None means "skip"; e.g. file absent).
+    iterate_md_content = build_updated_iterate_md(project_root, data)
+
+    # Snapshot prior config content for rollback (config is written first, so
+    # a failure while writing ITERATE.md rolls config back to this snapshot).
+    old_config = config_path.read_text(encoding="utf-8")
+    iterate_md_path = project_root / "ITERATE.md"
+
+    atomic_write(config_path, config_yaml)
+    if iterate_md_content is not None:
+        try:
+            atomic_write(iterate_md_path, iterate_md_content)
+        except OSError as exc:
+            # Roll back config so the two files stay consistent.
+            try:
+                atomic_write(config_path, old_config)
+            except OSError as rollback_exc:
+                tui.error(
+                    f"Failed to roll back {config_path} after ITERATE.md write "
+                    f"error: {rollback_exc}. Two files may be inconsistent.",
+                    indent=2,
+                )
+            raise
+    return config_path, iterate_md_path
 
 
 # ---------------------------------------------------------------------------
