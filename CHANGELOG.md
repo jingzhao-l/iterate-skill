@@ -5,6 +5,22 @@
 
 ---
 
+## [2.4.1] — 2026-08-19
+
+### 新增 / Features (强制子代理逐文件读取审查范围 + 覆盖率校验)
+
+- **审查范围强制逐文件读取**：`plan` 在 `full` 范围下预先收集源码清单并按 `reviewer.scope_chunk_size`（默认 25 个）分批；reviewer prompt 注入 `COVERAGE RULE`，要求子代理必须先以 `read_file` 打开负责清单中的**每一个**文件再作判断，不得跳过、臆测或在未读的情况下下结论，并在返回 JSON 中附带 `readFiles` 数组如实罗列实际打开的文件。`changed-only` 范围同样强制逐条读取更动文件清单。
+- **覆盖率提示性校验（meta-review）**：meta-review 把各子代理自报的 `readFiles` 与分配到的审查清单比对，明显缺口以 `medium` 的 `COVERAGE_GAP` 提示浮出，推动子代理逐文件读取自身负责范围；该提示**绝不反转最终判定**，保持裁决稳定性。
+- **配置开关**：新增 `reviewer.coverage_validation`（默认 `true`）与 `reviewer.scope_chunk_size`（默认 `25`）。设 `coverage_validation=false` 可关闭覆盖率提示；调整 `scope_chunk_size` 可控制 full 范围单批文件数。
+
+### 修复 / Bug fixes
+
+- `EVIDENCE_VIOLATION` 报告现在定位到具体产生该问题的 review round，便于追责。校验两个策略下的一致实现。
+- 证据校验双端（Python/TypeScript）对齐：二进制文件（含 NUL 字节）的锚定行号判为无效，行计数正则与 Python `str.splitlines()` 完全一致。
+- 修复非连续轮号时 `findings_by_round` 数组定长与收敛判定逻辑，代理 `aggregateRounds`/`computeConvergence`。
+
+---
+
 ## [2.4.0] — 2026-08-19
 
 ### 新增 / Features (强制实读到代码的证据审查)
