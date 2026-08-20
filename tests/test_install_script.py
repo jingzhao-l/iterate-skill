@@ -160,6 +160,38 @@ class TestCopySkillFiles:
         assert (dst / "config" / "dimensions").is_dir()
         assert not (dst / "config" / "dimensions" / "stale.yaml").exists()
 
+    def test_force_overwrites_symlink_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """--force must unlink a symlinked destination dir, not rmtree it (fix 6).
+
+        shutil.rmtree() on a symlink raises OSError on modern Python; the fix
+        unlinks the symlink first so a --force install over a symlinked
+        directory completes instead of crashing.
+        """
+        source = _make_fake_source(tmp_path, monkeypatch)
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        (dst / "config").mkdir()
+        link_target = tmp_path / "elsewhere"
+        link_target.mkdir()
+        (dst / "config" / "dimensions").symlink_to(link_target, target_is_directory=True)
+        install.copy_skill_files(source, dst, dry_run=False, force=True)
+        assert (dst / "config" / "dimensions").is_dir()
+        assert not (dst / "config" / "dimensions").is_symlink()
+
+    def test_rejects_copy_escaping_destination(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """A file entry resolving outside the destination must be refused (fix 12)."""
+        source = tmp_path / "src"
+        source.mkdir()
+        # The source file exists (so the copy would succeed but for the check):
+        (source / ".." / "SKILL.md").write_text("skill", encoding="utf-8")
+        # ".." relative escapes the destination, which lives inside source.
+        monkeypatch.setattr(install, "REQUIRED_FILES", ["../SKILL.md"])
+        monkeypatch.setattr(install, "OPTIONAL_FILES", [])
+        dst = source / "dst"
+        dst.mkdir()
+        with pytest.raises(ValueError):
+            install.copy_skill_files(source, dst, dry_run=False, force=False)
+
 
 # --------------------------------------------------------------------------- #
 # detect_installed_assistants
@@ -346,6 +378,9 @@ class TestParseChecksum:
     def test_starred(self):
         assert install._parse_checksum(b"def456 *iterate-skill.tar.gz\n", "iterate-skill.tar.gz") == "def456"
 
+    def test_dot_slash_prefix(self):
+        assert install._parse_checksum(b"abc123  ./iterate-skill.tar.gz\n", "iterate-skill.tar.gz") == "abc123"
+
     def test_crlf(self):
         assert install._parse_checksum(b"abc123  iterate-skill.tar.gz\r\n", "iterate-skill.tar.gz") == "abc123"
 
@@ -514,6 +549,15 @@ class TestSafeExtractall:
                 tar.addfile(info, io.BytesIO(b"data"))
         return str(tar_path)
 
+    def _build_link_tar(self, tmp_path: Path, linkname: str) -> str:
+        tar_path = tmp_path / "link.tar"
+        with tarfile.open(tar_path, "w") as tar:
+            info = tarfile.TarInfo("evil-link")
+            info.type = tarfile.SYMTYPE
+            info.linkname = linkname
+            tar.addfile(info)
+        return str(tar_path)
+
     def test_extracts_safe_members(self, tmp_path: Path):
         tar_path = self._build_tar(tmp_path, ["SKILL.md"])
         dest = tmp_path / "out"
@@ -528,6 +572,29 @@ class TestSafeExtractall:
         dest.mkdir()
         with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
             install._safe_extractall(tar, dest)
+
+    def test_rejects_symlink_escaping_dest(self, tmp_path: Path):
+        """A symlink member pointing outside the destination is refused (fix 11)."""
+        tar_path = self._build_link_tar(tmp_path, "../../outside")
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+
+    def test_rejects_absolute_symlink_target(self, tmp_path: Path):
+        tar_path = self._build_link_tar(tmp_path, "/etc/passwd")
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+
+    def test_allows_symlink_inside_dest(self, tmp_path: Path):
+        tar_path = self._build_link_tar(tmp_path, "inside/file.txt")
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+        assert (dest / "evil-link").is_symlink()
 
 
 # --------------------------------------------------------------------------- #
@@ -632,7 +699,7 @@ class TestUpdateCommand:
         target = tmp_path / "proj"
         target.mkdir()
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: None)
-        assert install.update_command("trae", target, source, None, force=False, global_install=False, yes=True) == 0
+        assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
 
     def test_refuses_without_checksum(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -641,7 +708,7 @@ class TestUpdateCommand:
         target.mkdir()
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: {"tag": "v1", "tarball_url": "http://x/tar"})
         # without 'checksum_url', update must refuse download and fall back to local.
-        assert install.update_command("trae", target, source, None, force=False, global_install=False, yes=True) == 0
+        assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
 
     def test_user_declines_download(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
@@ -650,8 +717,9 @@ class TestUpdateCommand:
         target.mkdir()
         info = {"tag": "v1", "tarball_url": "http://x/tar", "checksum_url": "http://x/sha"}
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: info)
-        monkeypatch.setattr("builtins.input", lambda prompt: "n")
-        assert install.update_command("trae", target, source, None, force=False, global_install=False, yes=False) == 0
+        # Confirmation prompt is served through the injected input_func (fix 10).
+        seq = _SeqInput(["n"])
+        assert install.update_command("trae", target, source, None, global_install=False, yes=False, input_func=seq) == 0
         assert not (target / ".trae").exists()
 
     def test_downloads_when_release_available(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -673,7 +741,7 @@ class TestUpdateCommand:
             _seed_real_validation_source(release_path)
             monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: {"tag": "v1", "tarball_url": "x", "checksum_url": "y"})
             monkeypatch.setattr(install, "_download_release_source", lambda a, b, c: release_path)
-            assert install.update_command("trae", target, source, None, force=True, global_install=False, yes=True) == 0
+            assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
             installed = target / ".trae" / "skills" / "iterate" / "SKILL.md"
             # The traversed volume can lag on directory-entry visibility right
             # after a copy; poll briefly for the file before asserting contents.
@@ -692,7 +760,30 @@ class TestUpdateCommand:
         target.mkdir()
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: None)
         monkeypatch.setattr(install, "detect_installed_assistants", lambda t: [])
-        assert install.update_command(None, target, source, None, force=False, global_install=False, yes=True) == 1
+        assert install.update_command(None, target, source, None, global_install=False, yes=True) == 1
+
+    def test_malformed_token_fails_fast(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """A malformed --token must abort the update before any network call."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        called = {"fetch": False}
+
+        def _noop_fetch(token):
+            called["fetch"] = True
+
+        monkeypatch.setattr(install, "_fetch_latest_release_info", _noop_fetch)
+        assert install.update_command("trae", target, source, "not-a-token", global_install=False, yes=True) == 1
+        assert called["fetch"] is False
+
+    def test_empty_token_treated_as_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Whitespace-only tokens are absent (no validation error)."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: None)
+        assert install.update_command("trae", target, source, "   ", global_install=False, yes=True) == 0
+        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
 
 
 # --------------------------------------------------------------------------- #

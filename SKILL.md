@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.4.4
+version: 2.4.5
 permissions:
   file_read: true
   file_write: true
@@ -240,6 +240,7 @@ iterate personalize  # 个性化配置（项目中途追加约束，9 步向导�
 iterate status       # 查看 onboarding 状态和漂移检测
 iterate refresh      # 增量刷新（保留用户手写区）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
+iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查）
 ```
 
 CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适合希望手动控制 onboarding 过程的用户；AI 通道则完全由 AI 自动扫描生成。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。
@@ -910,12 +911,18 @@ iterate/
 ├── iterate_cli/                      # iterate CLI 包（onboarding 命令行工具）
 │   ├── __init__.py
 │   ├── __main__.py                   # python -m iterate_cli 入口
-│   ├── cli.py                        # argparse 子命令（onboard/refresh/reonboard/status）
+│   ├── cli.py                        # argparse 子命令（onboard/refresh/reonboard/status/doctor/…）
+│   ├── tui.py                        # 轻量 TUI 助手（skills.sh 风格输出、banner）
 │   ├── fingerprint.py                # manifest 哈希与漂移检测
 │   ├── scan.py                       # 项目扫描（技术栈/目录/特性检测）
 │   ├── wizard.py                     # CLI 交互式 onboarding 向导
 │   ├── generator.py                  # ITERATE.md + iterate.config.yaml 生成器
-│   └── refresh.py                    # 增量刷新与完整重 onboarding
+│   ├── refresh.py                    # 增量刷新与完整重 onboarding
+│   ├── doctor.py                     # 项目健康诊断（doctor 子命令）
+│   ├── personalize.py                # 个性化约束管理（personalize 子命令）
+│   └── data/
+│       ├── ITERATE.template.md       # 模板副本（随包分发）
+│       └── config.schema.json        # schema 副本（随包分发，与 config/ 保持同步）
 ├── scripts/
 │   ├── install.py                    # CLI：安装、卸载、配置、校验
 │   ├── validate.py                   # 配置、决策日志、维度校验脚本

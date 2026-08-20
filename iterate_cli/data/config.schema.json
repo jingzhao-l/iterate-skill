@@ -141,6 +141,18 @@
         "output_schema_validation": {
           "type": "boolean",
           "description": "Validate reviewer JSON output against the expected schema and retry on mismatch."
+        },
+        "evidence_validation": {
+          "type": "boolean",
+          "description": "Hard code-evidence gate (default on). When enabled, every finding's file/line is validated against real files on disk during meta-review; a fabricated or out-of-range location surfaces as a critical EVIDENCE_VIOLATION and flips the verdict to needs_revision. Set to false to disable."
+        },
+        "coverage_validation": {
+          "type": "boolean",
+          "description": "Prompt-informative scope coverage check (default on). During meta-review, the reviewer's self-reported reads are compared to the file inventory it was assigned; a meaningful gap surfaces as a medium COVERAGE_GAP hint. Never flips the verdict. Set to false to disable."
+        },
+        "scope_chunk_size": {
+          "type": "integer",
+          "description": "Number of files per reviewer batch in a `full` scope review (default 25). Large inventories are split into per-chunk reviewer tasks."
         }
       }
     },

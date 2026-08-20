@@ -297,7 +297,12 @@ def _build_refresh_outputs(project_root: Path) -> tuple[bool, str, str, str]:
     if existing_config is None:
         return False, "", "", f"{CONFIG_YAML} exists but could not be parsed; refusing to overwrite with defaults."
     data = _build_refresh_data(project_root, scan, existing_config)
-    refreshed_md = generate_refreshed_md(data, existing_md)
+    try:
+        refreshed_md = generate_refreshed_md(data, existing_md)
+    except ValueError as exc:
+        # Refusing to overwrite an ITERATE.md without the USER-OWNED markers
+        # (it may be hand-edited); surface the reason instead of destroying it.
+        return False, "", "", str(exc)
     new_config = _build_refreshed_config(existing_config, data.fingerprints)
     config_yaml = yaml.safe_dump(
         new_config,
@@ -380,6 +385,10 @@ def _diff_stats(before: str, after: str) -> dict[str, int]:
     for line in difflib.unified_diff(
         before.splitlines(), after.splitlines(), lineterm=""
     ):
+        # Skip the "--- old"/"+++ new" file header rows; only actual diff
+        # lines count toward the changed-line total.
+        if line.startswith(("--- ", "+++ ")):
+            continue
         if line.startswith("+"):
             added += 1
         elif line.startswith("-"):

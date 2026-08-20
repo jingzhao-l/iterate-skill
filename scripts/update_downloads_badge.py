@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import os
 import ssl
-import sys
 import urllib.request
 from datetime import datetime, timezone
 
@@ -145,7 +144,7 @@ def main() -> int:
     for source, (url, _) in SOURCES.items():
         try:
             fetched[source] = fetch_json(url)
-        except Exception as exc:  # network/decode failures must not break the run
+        except (OSError, ValueError) as exc:  # network/decode failures must not break the run
             print(f"warning: {source} fetch failed: {exc}")
             fetched[source] = None
 

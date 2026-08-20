@@ -29,6 +29,10 @@ npx iterate-skill-installer --force
 
 # 仅安装技能 —— 跳过安装 iterate CLI
 npx iterate-skill-installer --no-cli
+
+# 查看帮助 / 版本
+npx iterate-skill-installer --help
+npx iterate-skill-installer --version
 ```
 
 ## 它做了什么
@@ -59,6 +63,12 @@ Trae、Claude / Claude Code、Cursor、Windsurf、GitHub Copilot、Codex、Gemin
 - Node.js 18+
 - Python 3.10+
 - PATH 上存在 `tar` 命令（macOS、Linux、Windows 10+ 默认可用）
+
+## 发布 tarball 结构
+
+GitHub Release 资产 `iterate-skill.tar.gz` 必须**恰好包含一个顶层目录**（例如
+`iterate-skill/`）。安装器使用 `tar --strip-components=1` 解压，因此包含多个顶层
+目录、或条目在剥离顶层后路径为空的 tarball 会被拒绝，而不是被静默错误地解压。
 
 ## License / 许可证
 

@@ -111,6 +111,14 @@ async function run() {
   assert.strictEqual(combo.force, true, 'force should parse');
   assert.strictEqual(combo.global, false, 'target forces project mode');
 
+  // parseArgs: --version/-v/--help/-h must set the corresponding mode instead
+  // of falling through to the unknown-option error.
+  assert.strictEqual(parseArgs([]).mode, null, 'mode should default to null');
+  assert.strictEqual(parseArgs(['--version']).mode, 'version', '--version should set version mode');
+  assert.strictEqual(parseArgs(['-v']).mode, 'version', '-v should set version mode');
+  assert.strictEqual(parseArgs(['--help']).mode, 'help', '--help should set help mode');
+  assert.strictEqual(parseArgs(['-h']).mode, 'help', '-h should set help mode');
+
   console.log('mode.test.js: all parseArgs tests passed');
 }
 

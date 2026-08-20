@@ -215,16 +215,43 @@ def _command_is_whitelisted(command: Any, whitelist: Any) -> bool:
 def run_doctor(project_root: Path) -> DoctorReport:
     """Run all health checks against ``project_root``.
 
+    Each check is factored into a single-purpose ``_check_*`` function so
+    the orchestration stays readable and each check stays under the
+    function-length / nesting budget. The two fatal checks (onboarding
+    completeness, config parse) short-circuit the run: nothing downstream
+    can be validated without a parsed config.
+
     Args:
         project_root: Project root directory.
 
     Returns:
         A DoctorReport aggregating every finding.
     """
-    canonical_set = set(CANONICAL_DIMENSIONS)
     report = DoctorReport(str(project_root))
 
-    # 1. Onboarding completeness.
+    if not _check_onboarding(report, project_root):
+        return report
+    config = _check_config_parse(report, project_root)
+    if config is None:
+        return report
+
+    _check_config_schema(report, config)
+    _check_dimensions(report, config)
+    _check_max_rounds(report, config)
+    _check_language(report, config)
+    _check_review_scope(report, config)
+    _check_git_branch(report, config)
+    _check_validation_commands(report, config)
+    _check_validation_whitelist(report, config)
+    _check_skill_version(report, config)
+    _check_manifest_drift(report, project_root)
+    _check_personalization(report, config)
+
+    return report
+
+
+def _check_onboarding(report: DoctorReport, project_root: Path) -> bool:
+    """Check onboarding completeness; return False to stop the run."""
     if not is_onboarding_complete(project_root):
         _err(
             report,
@@ -232,10 +259,15 @@ def run_doctor(project_root: Path) -> DoctorReport:
             "Onboarding is not complete: ITERATE.md and/or iterate.config.yaml are missing.",
             "Run `iterate onboard` to initialize the project.",
         )
-        return report
+        return False
     _ok(report, "onboarding", "ITERATE.md and iterate.config.yaml present.")
+    return True
 
-    # 2. Config loads as a mapping.
+
+def _check_config_parse(
+    report: DoctorReport, project_root: Path
+) -> dict[str, Any] | None:
+    """Load the config as a YAML mapping; return None to stop the run."""
     config = load_onboarding_config(project_root)
     if config is None:
         _err(
@@ -243,29 +275,39 @@ def run_doctor(project_root: Path) -> DoctorReport:
             "config.parse",
             "iterate.config.yaml is missing, unreadable, or not a YAML mapping.",
         )
-        return report
+        return None
     _ok(report, "config.parse", "iterate.config.yaml parsed as a valid YAML mapping.")
+    return config
 
-    # 2b. Full config validation against the canonical JSON Schema. Surfaced as
-    #     a warning (not an error) so valid-but-tuned configs that a targeted
-    #     check already flags (e.g. unknown dimension) keep their warn severity.
+
+def _check_config_schema(report: DoctorReport, config: dict[str, Any]) -> None:
+    """Full config validation against the canonical JSON Schema.
+
+    Surfaced as a warning (not an error) so valid-but-tuned configs that a
+    targeted check already flags (e.g. unknown dimension) keep their warn
+    severity.
+    """
     schema_violations = _schema_violations(config)
-    if schema_violations:
-        shown = schema_violations[:SCHEMA_MAX_ERRORS]
-        detail = "\n".join(f"  - {violation}" for violation in shown)
-        if len(schema_violations) > SCHEMA_MAX_ERRORS:
-            detail += f"\n  … and {len(schema_violations) - SCHEMA_MAX_ERRORS} more violation(s)."
-        _warn(
-            report,
-            "config.schema",
-            f"iterate.config.yaml does not fully match the schema ({len(schema_violations)} violation(s)).",
-            detail,
-        )
-    else:
+    if not schema_violations:
         _ok(report, "config.schema", "iterate.config.yaml fully matches the config schema.")
+        return
+    shown = schema_violations[:SCHEMA_MAX_ERRORS]
+    detail = "\n".join(f"  - {violation}" for violation in shown)
+    if len(schema_violations) > SCHEMA_MAX_ERRORS:
+        detail += f"\n  … and {len(schema_violations) - SCHEMA_MAX_ERRORS} more violation(s)."
+    _warn(
+        report,
+        "config.schema",
+        f"iterate.config.yaml does not fully match the schema ({len(schema_violations)} violation(s)).",
+        detail,
+    )
 
-    # 3. Dimensions reference only canonical ids.
+
+def _check_dimensions(report: DoctorReport, config: dict[str, Any]) -> None:
+    """Dimensions must reference canonical ids, be non-empty and unique."""
+    canonical_set = set(CANONICAL_DIMENSIONS)
     dims = _dimension_ids(config)
+
     unknown = [d for d in dims if d not in canonical_set]
     if unknown:
         _warn(
@@ -277,51 +319,60 @@ def run_doctor(project_root: Path) -> DoctorReport:
     else:
         _ok(report, "dimensions", f"All {len(dims)} configured dimension(s) are canonical.")
 
-    # 3b. Dimensions must be non-empty (schema minItems >= 1) and unique.
     if not dims:
         _err(report, "dimensions", "dimensions must not be an empty list.", "Configure at least one dimension.")
-    else:
-        seen: set[str] = set()
-        dups = [d for d in dims if d in seen or seen.add(d)]
-        if dups:
-            _warn(
-                report,
-                "dimensions",
-                f"dimensions contains duplicate(s): {', '.join(sorted(set(dups)))}.",
-                "Remove duplicate entries (schema requires uniqueItems).",
-            )
+        return
 
-    # 3c. max_rounds must be an integer within [1, 50].
+    seen: set[str] = set()
+    dups = [d for d in dims if d in seen or seen.add(d)]
+    if dups:
+        _warn(
+            report,
+            "dimensions",
+            f"dimensions contains duplicate(s): {', '.join(sorted(set(dups)))}.",
+            "Remove duplicate entries (schema requires uniqueItems).",
+        )
+
+
+def _check_max_rounds(report: DoctorReport, config: dict[str, Any]) -> None:
+    """max_rounds must be an integer within [MAX_ROUNDS_MIN, MAX_ROUNDS_MAX]."""
     max_rounds = config.get("max_rounds")
-    if max_rounds is not None:
-        if (
-            not isinstance(max_rounds, int)
-            or isinstance(max_rounds, bool)
-            or not (MAX_ROUNDS_MIN <= max_rounds <= MAX_ROUNDS_MAX)
-        ):
-            _err(
-                report,
-                "max_rounds",
-                f"max_rounds must be an integer in [{MAX_ROUNDS_MIN}, {MAX_ROUNDS_MAX}], got {max_rounds!r}.",
-            )
-        else:
-            _ok(report, "max_rounds", f"max_rounds={max_rounds} is within bounds.")
+    if max_rounds is None:
+        return
+    if (
+        not isinstance(max_rounds, int)
+        or isinstance(max_rounds, bool)
+        or not (MAX_ROUNDS_MIN <= max_rounds <= MAX_ROUNDS_MAX)
+    ):
+        _err(
+            report,
+            "max_rounds",
+            f"max_rounds must be an integer in [{MAX_ROUNDS_MIN}, {MAX_ROUNDS_MAX}], got {max_rounds!r}.",
+        )
+        return
+    _ok(report, "max_rounds", f"max_rounds={max_rounds} is within bounds.")
 
-    # 3d. language must be one of zh/en.
+
+def _check_language(report: DoctorReport, config: dict[str, Any]) -> None:
+    """language must be one of the supported output languages."""
     language = config.get("language")
-    if language is not None:
-        if language not in SUPPORTED_LANGUAGES:
-            _warn(
-                report,
-                "language",
-                f"language {language!r} is not supported.",
-                f"Supported: {', '.join(sorted(SUPPORTED_LANGUAGES))}.",
-            )
-        else:
-            _ok(report, "language", f"language {language!r} is supported.")
+    if language is None:
+        return
+    if language not in SUPPORTED_LANGUAGES:
+        _warn(
+            report,
+            "language",
+            f"language {language!r} is not supported.",
+            f"Supported: {', '.join(sorted(SUPPORTED_LANGUAGES))}.",
+        )
+        return
+    _ok(report, "language", f"language {language!r} is supported.")
 
-    # 4. review.scope is supported.
-    scope = (config.get("review") or {}).get("scope") if isinstance(config.get("review"), dict) else None
+
+def _check_review_scope(report: DoctorReport, config: dict[str, Any]) -> None:
+    """review.scope must be one of the supported values."""
+    review = config.get("review") if isinstance(config.get("review"), dict) else None
+    scope = review.get("scope") if review else None
     if scope is not None and scope not in SUPPORTED_SCOPES:
         _warn(
             report,
@@ -329,90 +380,105 @@ def run_doctor(project_root: Path) -> DoctorReport:
             f"review.scope {scope!r} is not a supported value.",
             f"Supported: {', '.join(sorted(SUPPORTED_SCOPES))}.",
         )
-    else:
-        _ok(report, "review.scope", "review.scope is valid (or defaults to full).")
+        return
+    _ok(report, "review.scope", "review.scope is valid (or defaults to full).")
 
-    # 5. git.target_branch is a non-empty string.
+
+def _check_git_branch(report: DoctorReport, config: dict[str, Any]) -> None:
+    """git.target_branch must be a non-empty string when configured."""
     git_cfg = config.get("git") if isinstance(config.get("git"), dict) else None
     branch = git_cfg.get("target_branch") if git_cfg else None
     if branch is not None and (not isinstance(branch, str) or not branch.strip()):
         _err(report, "git.target_branch", "git.target_branch must be a non-empty string.")
-    else:
-        _ok(report, "git.target_branch", "git.target_branch is valid (or defaults to main).")
+        return
+    _ok(report, "git.target_branch", "git.target_branch is valid (or defaults to main).")
 
-    # 6. validation.commands values are non-empty lists of strings.
+
+def _check_validation_commands(report: DoctorReport, config: dict[str, Any]) -> None:
+    """validation.commands values must be non-empty lists of strings."""
     validation = config.get("validation") if isinstance(config.get("validation"), dict) else None
     commands = validation.get("commands") if validation else None
-    if commands is not None:
-        bad_module = None
-        for module, cmds in commands.items():
-            if not isinstance(cmds, list) or not cmds or not all(isinstance(c, str) and c.strip() for c in cmds):
-                bad_module = module
-                break
-        if bad_module is not None:
-            _err(
-                report,
-                "validation.commands",
-                f"validation.commands[{bad_module!r}] must be a non-empty list of strings.",
-            )
-        else:
-            _ok(report, "validation.commands", "validation.commands module lists are valid.")
-    else:
+    if commands is None:
         _ok(report, "validation.commands", "no validation.commands configured (optional).")
+        return
+    for module, cmds in commands.items():
+        if isinstance(cmds, list) and cmds and all(isinstance(c, str) and c.strip() for c in cmds):
+            continue
+        _err(
+            report,
+            "validation.commands",
+            f"validation.commands[{module!r}] must be a non-empty list of strings.",
+        )
+        return
+    _ok(report, "validation.commands", "validation.commands module lists are valid.")
 
-    # 6b. validation.command_whitelist must be a non-empty list of unique non-empty strings.
+
+def _check_validation_whitelist(report: DoctorReport, config: dict[str, Any]) -> None:
+    """command_whitelist structure (6b) and command compliance (6c)."""
+    validation = config.get("validation") if isinstance(config.get("validation"), dict) else None
     whitelist = validation.get("command_whitelist") if validation else None
-    if whitelist is not None:
-        invalid = not isinstance(whitelist, list) or not whitelist
-        if not invalid:
-            cleaned = [w for w in whitelist if isinstance(w, str) and w.strip()]
-            invalid = len(cleaned) != len(whitelist) or len(set(cleaned)) != len(cleaned)
-        if invalid:
-            _warn(
-                report,
-                "validation.command_whitelist",
-                "command_whitelist must be a non-empty list of unique non-empty strings.",
-            )
-        else:
-            _ok(report, "validation.command_whitelist", "command_whitelist is a valid non-empty list.")
+    if whitelist is None:
+        return
 
-    # 6c. command_whitelist compliance: every configured command must be
-    #     prefixed by a whitelisted entry, and whitelist entries must not
-    #     contain shell metacharacters. Mirrors scripts/validate.py. Only
-    #     runs when a whitelist is configured (doctor keeps it optional).
-    if whitelist is not None and commands is not None:
-        safe_prefix = re.compile(r"^[A-Za-z0-9_. -]+$")
-        bad_entries = [
-            entry
-            for entry in whitelist
-            if not (isinstance(entry, str) and safe_prefix.match(entry))
-        ]
-        if bad_entries:
-            _warn(
-                report,
-                "validation.whitelist",
-                "command_whitelist contains entry(ies) with unsafe shell characters.",
-                "Allowed in a whitelist entry: letters, digits, underscore, dash, dot and space.",
-            )
-        else:
-            non_whitelisted: list[str] = []
-            for module, cmds in commands.items():
-                if not isinstance(cmds, list):
-                    continue
-                for idx, command in enumerate(cmds):
-                    if not _command_is_whitelisted(command, whitelist):
-                        non_whitelisted.append(f"{module}[{idx}] {command!r}")
-            if non_whitelisted:
-                _warn(
-                    report,
-                    "validation.whitelist",
-                    f"{len(non_whitelisted)} configured validation command(s) are not in command_whitelist.",
-                    "; ".join(non_whitelisted[:SCHEMA_MAX_ERRORS]),
-                )
-            else:
-                _ok(report, "validation.whitelist", "All configured validation commands are whitelisted.")
+    # 6b. command_whitelist must be a non-empty list of unique non-empty strings.
+    invalid = not isinstance(whitelist, list) or not whitelist
+    if not invalid:
+        cleaned = [w for w in whitelist if isinstance(w, str) and w.strip()]
+        invalid = len(cleaned) != len(whitelist) or len(set(cleaned)) != len(cleaned)
+    if invalid:
+        _warn(
+            report,
+            "validation.command_whitelist",
+            "command_whitelist must be a non-empty list of unique non-empty strings.",
+        )
+    else:
+        _ok(report, "validation.command_whitelist", "command_whitelist is a valid non-empty list.")
 
-    # 7. Onboarding skill_version vs installed skill version.
+    # 6c. Compliance only applies when commands are also configured.
+    commands = validation.get("commands") if validation else None
+    if commands is not None:
+        _check_whitelist_compliance(report, whitelist, commands)
+
+
+def _check_whitelist_compliance(
+    report: DoctorReport, whitelist: Any, commands: Any
+) -> None:
+    """Every configured command must be prefixed by a whitelisted entry, and
+    whitelist entries must not contain shell metacharacters."""
+    safe_prefix = re.compile(r"^[A-Za-z0-9_. -]+$")
+    bad_entries = [
+        entry
+        for entry in whitelist
+        if not (isinstance(entry, str) and safe_prefix.match(entry))
+    ]
+    if bad_entries:
+        _warn(
+            report,
+            "validation.whitelist",
+            "command_whitelist contains entry(ies) with unsafe shell characters.",
+            "Allowed in a whitelist entry: letters, digits, underscore, dash, dot and space.",
+        )
+        return
+    non_whitelisted: list[str] = []
+    for module, cmds in commands.items():
+        if not isinstance(cmds, list):
+            continue
+        for idx, command in enumerate(cmds):
+            if not _command_is_whitelisted(command, whitelist):
+                non_whitelisted.append(f"{module}[{idx}] {command!r}")
+    if non_whitelisted:
+        _warn(
+            report,
+            "validation.whitelist",
+            f"{len(non_whitelisted)} configured validation command(s) are not in command_whitelist.",
+            "; ".join(non_whitelisted[:SCHEMA_MAX_ERRORS]),
+        )
+        return
+    _ok(report, "validation.whitelist", "All configured validation commands are whitelisted.")
+
+
+def _check_skill_version(report: DoctorReport, config: dict[str, Any]) -> None:
+    """Onboarding skill_version vs the installed skill version."""
     onboarding = config.get("onboarding") if isinstance(config.get("onboarding"), dict) else None
     recorded_version = onboarding.get("skill_version") if onboarding else None
     if recorded_version is not None and recorded_version != SKILL_VERSION:
@@ -422,44 +488,48 @@ def run_doctor(project_root: Path) -> DoctorReport:
             f"Onboarded with skill {recorded_version!r}, but current skill is {SKILL_VERSION!r}.",
             "Run `iterate refresh` to update the recorded skill version.",
         )
-    else:
-        _ok(report, "skill_version", f"Skill version {SKILL_VERSION!r} matches onboarding record.")
+        return
+    _ok(report, "skill_version", f"Skill version {SKILL_VERSION!r} matches onboarding record.")
 
-    # 8. Manifest drift.
+
+def _check_manifest_drift(report: DoctorReport, project_root: Path) -> None:
+    """Manifest drift (tech-stack changed since onboarding)."""
     drift = check_onboarding_drift(project_root)
     if drift is None:
         _ok(report, "drift", "No drift check applicable (no fingerprints configured).")
-    elif drift.has_drift:
+        return
+    if drift.has_drift:
         _warn(report, "drift", f"Manifest drift detected: {drift.summary()}", drift.advice())
-    else:
-        _ok(report, "drift", "No manifest drift detected.")
+        return
+    _ok(report, "drift", "No manifest drift detected.")
 
-    # 8b. personalization consistency: dimension references must point at
-    #     enabled dimensions. Mirrors scripts/validate.py.
+
+def _check_personalization(report: DoctorReport, config: dict[str, Any]) -> None:
+    """Personalization dimension references must point at enabled dimensions."""
+    dims = _dimension_ids(config)
     personalization = config.get("personalization") if isinstance(config.get("personalization"), dict) else None
-    if personalization is not None and dims:
-        enabled = set(dims)
-        broken: list[str] = []
-        for idx, item in enumerate(personalization.get("fix_priority_order") or []):
-            if isinstance(item, str) and item not in enabled:
-                broken.append(f"fix_priority_order[{idx}] {item!r}")
-        for idx, item in enumerate(personalization.get("dimension_focus") or []):
-            if isinstance(item, dict) and item.get("dimension") not in enabled:
-                broken.append(f"dimension_focus[{idx}] {item.get('dimension')!r}")
-        for idx, item in enumerate(personalization.get("known_intentional") or []):
-            if isinstance(item, dict) and item.get("dimension") not in enabled:
-                broken.append(f"known_intentional[{idx}] {item.get('dimension')!r}")
-        if broken:
-            _warn(
-                report,
-                "personalization.consistency",
-                f"{len(broken)} personalization reference(s) point to disabled dimensions.",
-                "; ".join(broken[:SCHEMA_MAX_ERRORS]),
-            )
-        else:
-            _ok(report, "personalization.consistency", "personalization dimension references are consistent.")
-
-    return report
+    if personalization is None or not dims:
+        return
+    enabled = set(dims)
+    broken: list[str] = []
+    for idx, item in enumerate(personalization.get("fix_priority_order") or []):
+        if isinstance(item, str) and item not in enabled:
+            broken.append(f"fix_priority_order[{idx}] {item!r}")
+    for idx, item in enumerate(personalization.get("dimension_focus") or []):
+        if isinstance(item, dict) and item.get("dimension") not in enabled:
+            broken.append(f"dimension_focus[{idx}] {item.get('dimension')!r}")
+    for idx, item in enumerate(personalization.get("known_intentional") or []):
+        if isinstance(item, dict) and item.get("dimension") not in enabled:
+            broken.append(f"known_intentional[{idx}] {item.get('dimension')!r}")
+    if broken:
+        _warn(
+            report,
+            "personalization.consistency",
+            f"{len(broken)} personalization reference(s) point to disabled dimensions.",
+            "; ".join(broken[:SCHEMA_MAX_ERRORS]),
+        )
+        return
+    _ok(report, "personalization.consistency", "personalization dimension references are consistent.")
 
 
 def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:

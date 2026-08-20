@@ -187,7 +187,7 @@ def _terminal_columns() -> int:
 
         size = shutil.get_terminal_size((80, 24))
         return size.columns or 80
-    except Exception:
+    except OSError:
         return 80
 
 
@@ -394,6 +394,14 @@ def copy_skill_files(
     copied: list[str] = []
     all_files = REQUIRED_FILES + OPTIONAL_FILES
 
+    # Resolve the destination once up front so every relative path is checked
+    # against the same base. This prevents entries like ``../SKILL.md`` from
+    # escaping the destination directory (path traversal on copy).
+    # Normalization is purely lexical (normpath/abspath, no symlink following):
+    # a pre-existing symlink at the target must be replaced (see below), not
+    # treated as a reason to reject the copy.
+    destination_base = Path(os.path.abspath(os.path.normpath(destination)))
+
     for relative in all_files:
         src = source / relative
         if not src.exists():
@@ -402,6 +410,12 @@ def copy_skill_files(
             continue
 
         dst = destination / relative
+        normalized_dst = Path(os.path.abspath(os.path.normpath(dst)))
+        if not normalized_dst.is_relative_to(destination_base):
+            raise ValueError(
+                f"Refusing to copy outside destination: {relative!r} resolves to {normalized_dst}"
+            )
+
         if dry_run:
             copied.append(str(dst))
             _hint(f"[dry-run] Would copy: {relative} -> {dst}")
@@ -413,10 +427,17 @@ def copy_skill_files(
 
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
-            if dst.exists() and force:
+            # A symlinked destination must be unlinked, not rmtree'd: on modern
+            # Python shutil.rmtree raises OSError when asked to walk a symlink.
+            if dst.is_symlink():
+                dst.unlink()
+            elif dst.exists() and force:
                 shutil.rmtree(dst)
             shutil.copytree(src, dst, dirs_exist_ok=True)
         else:
+            # Replace a symlinked destination instead of writing through it.
+            if dst.is_symlink():
+                dst.unlink()
             shutil.copy2(src, dst)
         copied.append(str(dst))
 
@@ -1055,11 +1076,6 @@ def _fetch_latest_release_info(token: str | None) -> dict[str, str] | None:
             elif name == CHECKSUMS_ASSET_NAME:
                 checksum_url = asset_url
 
-    if not tarball_url:
-        # Fallback to GitHub auto-generated tarball only if the project hasn't
-        # uploaded a deterministic tarball asset yet (legacy releases).
-        tarball_url = data.get("tarball_url")
-
     if not isinstance(tarball_url, str):
         return None
 
@@ -1083,6 +1099,16 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
         member_path = (path / member.name).resolve()
         if not member_path.is_relative_to(base):
             raise tarfile.TarError(f"Suspicious member path: {member.name}")
+        # Symlinks are the classic escape vector even when their own path is
+        # inside the destination: the link *target* may point outside it.
+        # Absolute targets and relative targets that climb out of the
+        # destination are both rejected here (mirrors data_filter behaviour).
+        if member.issym():
+            link_target = (path / member.name).parent / member.linkname
+            if not link_target.resolve().is_relative_to(base):
+                raise tarfile.TarError(
+                    f"Suspicious symlink target in member {member.name}: {member.linkname}"
+                )
     tar.extractall(path=path)
 
 
@@ -1111,8 +1137,10 @@ def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
         if len(parts) != 2:
             continue
         digest, name = parts
-        # Handle both "HASH  filename" and "HASH *filename" formats.
+        # Handle "HASH  filename", "HASH *filename" and "HASH ./filename"
+        # formats (the ``./`` prefix is common for tarballs stored at repo root).
         name = name.lstrip("*").strip()
+        name = name.removeprefix("./")
         if name == filename:
             return digest.strip()
     return None
@@ -1171,13 +1199,34 @@ def update_command(
     target: Path,
     source: Path,
     token: str | None,
-    force: bool,
     global_install: bool,
     yes: bool = False,
+    input_func: InputFunc = input,
 ) -> int:
-    """Refresh installed skill files from the latest GitHub release or local source."""
+    """Refresh installed skill files from the latest GitHub release or local source.
+
+    Args:
+        ai: Target assistant key, "all", or None for auto-detection.
+        target: Project or home directory.
+        source: Local source directory (fallback when no release is available).
+        token: GitHub Personal Access Token (optional, for rate limits).
+        global_install: Update the home-directory installation instead.
+        yes: Skip the download confirmation prompt.
+        input_func: Callable used to read user input (injectable for tests).
+
+    Returns:
+        Exit code: 0 for success, 1 for error/cancel.
+    """
     effective_target = Path.home() if global_install else target
     mode_label = " (global)" if global_install else ""
+
+    # Fail fast on a malformed --token: GitHub would otherwise reject the
+    # request with a 401 and we would silently fall back to local source,
+    # hiding the typo from the user.
+    token_error = _validate_github_token(token)
+    if token_error:
+        _error(token_error)
+        return 1
 
     release_info = _fetch_latest_release_info(token)
     release_source: Path | None = None
@@ -1190,7 +1239,7 @@ def update_command(
             release_source = None
         else:
             if not yes:
-                answer = input("Continue? [y/N]: ").strip().lower()
+                answer = input_func("Continue? [y/N]: ").strip().lower()
                 if answer not in ("y", "yes"):
                     _hint("Update cancelled.")
                     return 0
@@ -1819,9 +1868,6 @@ def _add_update_parser(subparsers) -> None:
         help="GitHub Personal Access Token for higher API rate limits.",
     )
     parser.add_argument(
-        "--force", action="store_true", help="Overwrite existing skill files."
-    )
-    parser.add_argument(
         "--global",
         dest="global_install",
         action="store_true",
@@ -1958,7 +2004,6 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
             args.target.resolve(),
             source,
             args.token,
-            args.force,
             args.global_install,
             args.yes,
         )

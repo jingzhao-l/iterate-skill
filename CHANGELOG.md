@@ -5,6 +5,33 @@
 
 ---
 
+## [2.4.5] — 2026-08-20
+
+### 修复 / Bug fixes (CLI 一致性、安全与文档)
+
+- **refresh 幂等性**：增量刷新复用上次 `completed_at` 时间戳，未变化时逐字节 no-op；`_diff_stats` 跳过 `--- /+++` 文件头行，改动行数统计不再虚高。
+- **拒绝静默覆盖手写 ITERATE.md**：缺失 `USER-OWNED` 区块标记时 refresh 抛错拒写而非销毁用户内容（`generate_refreshed_md` 两侧都校验）。
+- **personalize 删除同步**：删除个性化验证命令时同步清理 `validation.commands`（按旧归属精准删除、非个性化命令保留），不再残留死命令。
+- **doctor 重构为模块化检查**：单一 `run_doctor` 拆分为 `_check_onboarding`/`_check_config_parse`/`_check_config_schema` 等单职责函数，两个致命检查短路后续。
+- **validate.py 健壮性**：`command_whitelist` 非字符串条目不再崩溃（过滤+报错），schema 缺失/损坏时优雅降级并报告。
+- **CLI schema 同步**：`iterate_cli/data/config.schema.json` 补回 `reviewer.evidence_validation`/`coverage_validation`/`scope_chunk_size`，与主 `config/config.schema.json` 完全一致。
+- **install.py 安全加固**：`copy_skill_files` 增加目标路径穿越防护、符号链接目标先 unlink 再替换；`_safe_extractall` 拒绝 symlink 目标逃逸；`_parse_checksum` 支持 `./` 前缀；`update` 移除死参数 `--force` 并接入 `_validate_github_token` 前置校验，畸形 token 快速失败。
+- **npm-installer**：新增 `--version/-v` 与 `--help/-h`；tar 解压强制单一顶层目录契约；新增 `LICENSE` 随包分发；CI 增加 node 测试 job。
+
+### 文档 / Docs
+
+- `SKILL.md` 项目结构补齐 `doctor.py`/`personalize.py`/`tui.py`/`data/`；CLI 子命令列表补 `iterate doctor`。
+- `README.md` 补充 UX 文档缺口：新增 `iterate doctor` 详述（10 项检查表 + `--json`/`--json-out`/`--fix` 用法与退出码）、常见边界场景（onboarding 中途取消原子写入、无 `USER-OWNED` 标记拒写、非 Git 项目、空项目漂移、配置损坏处理、Early Stop 收敛）、新手推荐路径（安装 → onboarding → doctor → personalize → /iterate）。
+- `tools/SKILL.{trae,claude,cursor}.md` 三份平台适配版同步 2.4.x 特性：reviewer prompt 注入 `EVIDENCE RULE`、meta-review 硬证据门禁（`EVIDENCE_VIOLATION`→`needs_revision`）、覆盖率提示（`COVERAGE_GAP`）、onboarding/personalization 指引。
+
+### 测试 / Tests
+
+- 新增 TUI 渲染与 banner 测试（`_display_width` CJK 双宽、各渲染方法、`--no-banner`/`ITERATE_NO_BANNER` 开关逻辑）。
+- 新增 install.py 畸形 token 快速失败、空 token 视为缺省测试；refresh 缺 USER-OWNED 标记拒写测试。
+- 全量 `tests/` **647 passed**，`ruff check` 干净。
+
+---
+
 ## [2.4.4] — 2026-08-20
 
 ### 修复 / Bug fixes (安装器 TUI 重绘)

@@ -29,6 +29,10 @@ npx iterate-skill-installer --force
 
 # Skill-only install — skip installing the iterate CLI
 npx iterate-skill-installer --no-cli
+
+# Show help / version
+npx iterate-skill-installer --help
+npx iterate-skill-installer --version
 ```
 
 ## What it does
@@ -60,6 +64,14 @@ Trae, Claude / Claude Code, Cursor, Windsurf, GitHub Copilot, Codex, Gemini CLI,
 - Node.js 18+
 - Python 3.10+
 - `tar` command available on PATH (available by default on macOS, Linux, Windows 10+)
+
+## Release tarball structure
+
+The GitHub release asset `iterate-skill.tar.gz` must contain **exactly one
+top-level directory** (e.g. `iterate-skill/`). The installer extracts it with
+`tar --strip-components=1`, so a tarball with multiple top-level directories,
+or with entries whose path disappears after stripping the top level, is
+rejected instead of being silently mis-extracted.
 
 ## License
 
