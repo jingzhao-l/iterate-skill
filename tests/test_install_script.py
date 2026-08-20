@@ -759,3 +759,136 @@ class TestInteractiveConfig:
         assert cfg["dimensions"] == ["correctness", "security"]
         assert cfg["review"]["scope"] == "changed-only"
         assert cfg["git"]["push_per_round"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Arrow-menu terminal redraw integration (against a simulated real terminal)
+# --------------------------------------------------------------------------- #
+
+class _SimTerminal:
+    """A tiny terminal that interprets only the ANSI sequences ``redraw`` emits:
+    ``ESC[nA`` (cursor up), ``\r`` (column 0), ``ESC[0J`` (clear to end of
+    screen) and plain text (with SGR color codes stripped, width-1 glyphs).
+    This reproduces the visible grid the real terminal ends up with after any
+    number of arrow-key redraws, letting us assert the menu stays a single
+    clean frame (the "staircase / spiral" bug would leave stacked rows)."""
+
+    WIDTH = 120
+
+    def __init__(self, width: int = WIDTH) -> None:
+        self.width = width
+        self.grid: list[list[str]] = []  # row -> list of width cells
+        self.row = 0
+        self.col = 0
+
+    def _ensure(self, row: int) -> None:
+        while len(self.grid) <= row:
+            self.grid.append([" "] * self.width)
+
+    def _put(self, ch: str) -> None:
+        self._ensure(self.row)
+        width = install._wcwidth_display_cols(ch)
+        width = max(1, width)
+        if self.col + width > self.width:
+            self.row += 1
+            self.col = 0
+        self._ensure(self.row)
+        self.grid[self.row][self.col : self.col + width] = (
+            list(ch.ljust(width)) if width > 1 else [ch]
+        )
+        self.col += width
+
+    def feed(self, data: str) -> None:
+        i = 0
+        n = len(data)
+        while i < n:
+            ch = data[i]
+            if ch == "\x1b":
+                # Parse ESC [ <parameters> <final byte>. Cursor moves (A) and
+                # erase-to-end (J) are applied; SGR color codes (final 'm')
+                # and other controls are skipped without printing glyphs.
+                if i + 1 < n and data[i + 1] == "[":
+                    j = i + 2
+                    while j < n and data[j] in "0123456789;":
+                        j += 1
+                    params = data[i + 2:j]
+                    final = data[j] if j < n else ""
+                    if final == "A":
+                        param = int(params or "1")
+                        self.row = max(0, self.row - param)
+                    elif final == "J":
+                        # Erase from cursor to end of screen.
+                        self._erase_to_end()
+                    # final 'm' (colors), 'H/D/B', etc. are ignored by design.
+                    i = j + 1
+                else:
+                    i += 2
+            elif ch == "\r":
+                self.col = 0
+                i += 1
+            else:
+                self._put(ch)
+                i += 1
+
+    def _erase_to_end(self) -> None:
+        if self.row < len(self.grid):
+            self.grid[self.row][self.col:] = [" "] * (self.width - self.col)
+        for r in range(self.row + 1, len(self.grid)):
+            self.grid[r] = [" "] * self.width
+
+    def screen(self) -> str:
+        return "\n".join(
+            "".join(row).rstrip()
+            for row in self.grid
+            if "".join(row).strip()
+        )
+
+
+class TestArrowMenuRedrawOnTerminal:
+    def _render(self, cols: int) -> str:
+        """Run the menu through the simulated terminal with N arrow presses."""
+        state = install._ArrowSelectState(
+            ["claude", "codex", "trae", "qoder", "warp", "opencode", "roo"],
+            window_size=6,
+        )
+        term = _SimTerminal(width=cols)
+
+        def emit() -> None:
+            lines = install._arrow_select_lines(
+                state, "选择要安装的 AI 工具 / Select AI assistants to install to"
+            )
+            rows = install._physical_row_count(lines, cols)
+            move_up = rows - 1
+            out = ""
+            if move_up > 0:
+                out += f"\x1b[{move_up}A"
+            out += "\r\x1b[0J" + "\n".join(lines) + "\r"
+            term.feed(out)
+
+        emit()  # first frame
+        for _ in range(3):
+            state.move(1)      # arrow-down
+            state.toggle_current()
+            emit()             # redraw after each key
+        return term.screen()
+
+    def test_redraw_stays_one_clean_frame_wide(self):
+        # On a wide terminal the frame must contain the title/hint/button exactly
+        # once each and no leftover rows — i.e. no stacked "spiral". We assert on
+        # structural markers (hint "↑/↓", button "→ Done / 完 成") instead of the
+        # bare word "Done", which also appears inside the hint line ("· Done 完 成").
+        s = self._render(120)
+        assert s.count("Select AI assistants to install to") == 1, s
+        assert s.count("↑/↓") == 1, s
+        assert s.count("→ Done / 完 成") == 1, s
+
+    def test_redraw_stays_one_clean_frame_narrow(self):
+        # Even in a narrow terminal where the long title wraps, the redraw must
+        # reclaim all physical rows so the frame still appears exactly once. The
+        # wrapped title splits the full English substring across two lines, so we
+        # anchor on the title's leading "◆" plus the hint/button structural rows.
+        s = self._render(50)
+        assert s.count("◆") == 1, s
+        assert s.count("↑/↓") == 1, s
+        assert s.count("→ Done / 完 成") == 1, s
+        assert "Done" in s
