@@ -118,10 +118,77 @@ def _hint(message: str) -> None:
 
 
 def _strip_ansi(text: str) -> str:
-    """Remove ANSI escape sequences for width calculation."""
+    """Remove ANSI escape sequences for width calculation.
+
+    Matches any CSI sequence (``ESC [`` + params + final byte) — not just the
+    SGR color codes ``[0-9;]*m``. Cursor moves (``A/B/C/D/G``), erase
+    operations (``J/K``) and other final bytes are all stripped so the visible
+    width of a line is measured against the actual text the terminal renders.
+    """
     import re
 
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+    return re.sub(r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]", "", text)
+
+
+def _wcwidth_display_cols(text: str) -> int:
+    """Number of terminal display columns a plain string occupies.
+
+    Wide (CJK) characters count as two columns; ANSI/control sequences and
+    zero-width characters contribute nothing. Kept minimal and dependency-free
+    so the arrow-menu redraw can align cursor rewinds with the real line
+    wrapping the terminal performs.
+    """
+    total = 0
+    for char in text:
+        code = ord(char)
+        if code == 0:
+            continue
+        # Narrow: ASCII printable + C0 control width 0.
+        if code < 0x20 or (0x7F <= code < 0xA0):
+            continue
+        # Wide/East-Asian ambiguous handled as wide when fullwidth combining.
+        if code >= 0x1100 and (
+            (0x1100 <= code <= 0x115F)
+            or (0x2E80 <= code <= 0xA4CF)
+            or (0xAC00 <= code <= 0xD7A3)
+            or (0xF900 <= code <= 0xFAFF)
+            or (0xFE30 <= code <= 0xFE4F)
+            or (0xFF00 <= code <= 0xFF60)
+            or (0xFFE0 <= code <= 0xFFE6)
+            or (0x20000 <= code <= 0x3FFFD)
+        ):
+            total += 2
+        else:
+            total += 1
+    return total
+
+
+def _physical_row_count(lines: list[str], terminal_cols: int) -> int:
+    """Total terminal rows the given logical lines occupy after wrapping.
+
+    ``lines`` may still contain ANSI escapes (colors/emphasis); each line is
+    stripped to its visible text and its display width divided by the terminal
+    width, rounded up. Row count never drops below the number of lines.
+    """
+    if terminal_cols <= 0:
+        return max(1, len(lines))
+    rows = 0
+    for line in lines:
+        visible = _strip_markup(_strip_ansi(line))
+        cols = _wcwidth_display_cols(visible)
+        rows += max(1, -(-cols // terminal_cols))
+    return rows
+
+
+def _terminal_columns() -> int:
+    """Current terminal width in columns (falls back to 80 on error)."""
+    try:
+        import shutil
+
+        size = shutil.get_terminal_size((80, 24))
+        return size.columns or 80
+    except Exception:
+        return 80
 
 
 def _strip_markup(text: str) -> str:
@@ -667,17 +734,25 @@ def _prompt_arrow_multi_select(
 
     state = _ArrowSelectState(options, default_all, preselected)
 
+    cols = _terminal_columns()
+    # Hide the block cursor so redraws do not flicker it across the menu.
+    _sys.stdout.write("\x1b[?25l")
+    _sys.stdout.flush()
+
     def redraw() -> None:
         lines = _arrow_select_lines(state, title)
-        move_up = len(lines) - 1
+        rows = _physical_row_count(lines, cols)
+        # Reclaim the previously drawn block: rewind to its first row, back to
+        # column 0, then clear everything below the cursor.
+        move_up = rows - 1
         if move_up > 0:
             _sys.stdout.write(f"\x1b[{move_up}A")
-        _sys.stdout.write("\x1b[0J")
+        _sys.stdout.write("\r\x1b[0J")
         _sys.stdout.write("\n".join(lines))
+        _sys.stdout.write("\r")
         _sys.stdout.flush()
 
-    _sys.stdout.write(_render_arrow_select(state, title))
-    _sys.stdout.flush()
+    redraw()
 
     fd = _sys.stdin.fileno()
     old = termios.tcgetattr(fd)
@@ -700,6 +775,7 @@ def _prompt_arrow_multi_select(
         state.cancel()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _sys.stdout.write("\x1b[?25h")
         _sys.stdout.write("\n")
         _sys.stdout.flush()
 

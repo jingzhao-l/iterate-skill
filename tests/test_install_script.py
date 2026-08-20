@@ -243,6 +243,42 @@ class TestArrowSelectState:
         assert "Done" in rendered
 
 
+class TestTuiRedrawHelpers:
+    def test_strip_ansi_removes_cursor_and_color_sequences(self):
+        # Cursor moves (A/B/G), erase (J/K) and SGR colors must all disappear so
+        # visible width is measured from real text, not escape bytes.
+        s = "\x1b[36m◆ title\x1b[0m\x1b[2A\x1b[0J"
+        assert install._strip_ansi(s) == "◆ title"
+
+    def test_wcwidth_counts_cjk_doubles(self):
+        assert install._wcwidth_display_cols("ab") == 2
+        assert install._wcwidth_display_cols("中文") == 4
+        assert install._wcwidth_display_cols("a中") == 3
+
+    def test_physical_row_count_handles_wrapping(self):
+        # A long title (wider than the terminal) must count as multiple physical
+        # rows so the redraw rewinds enough lines instead of cascading downward.
+        lines = install._arrow_select_lines(
+            install._ArrowSelectState(["claude"], window_size=6),
+            "这是一个很长很长的标题 Select a fairly long title",
+        )
+        cols = 40
+        rows = install._physical_row_count(lines, cols)
+        assert rows >= len(lines), "wrapped lines must not drop physical rows"
+
+    def test_physical_row_count_narrow_terminal_grows(self):
+        lines = ["◆ title here", "  ○ claude", "  \u2192 Done / 完成"]
+        assert install._physical_row_count(lines, 10) >= 4
+
+    def test_physical_row_count_always_at_least_line_count(self):
+        lines = install._arrow_select_lines(
+            install._ArrowSelectState(["claude"], window_size=6),
+            "title",
+        )
+        assert install._physical_row_count(lines, 0) == len(lines)
+        assert install._physical_row_count(lines, 200) == len(lines)
+
+
 class TestReadArrowKey:
     def _stream(self, text: str) -> io.StringIO:
         return io.StringIO(text)
