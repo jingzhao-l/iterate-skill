@@ -5,6 +5,19 @@
 
 ---
 
+## [2.4.3] — 2026-08-20
+
+### 新增 / Features (安装器 --no-cli)
+
+- **新增 `--no-cli` 开关**：只想安装 skill、不想要全局 `iterate` CLI 的用户可用 `npx iterate-skill-installer --no-cli` 跳过 CLI 安装。`parseArgs` 从 `bin/cli.js` 抽取到 `lib/installer.js` 并导出，可独立单测。
+- **自动装 CLI 更透明**：不再静默预装 CLI。安装 skill 后明确提示即将安装 `iterate` CLI（并说明可用 `--no-cli` 跳过）；使用 `--no-cli` 时改打印「稍后如何手动安装 CLI」的指引。
+
+### 测试 / Tests
+
+- `mode.test.js` 新增 `parseArgs` 用例：`--no-cli` 默认关闭、单独开启、与其它 flag 组合保持；并回归 target 强制 project 模式等既有 flag 面。
+
+---
+
 ## [2.4.2] — 2026-08-20
 
 ### 修复 / Bug fixes (安装器交互体验)

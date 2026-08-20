@@ -26,6 +26,9 @@ npx iterate-skill-installer --target ./my-project
 
 # 强制覆盖已有技能文件
 npx iterate-skill-installer --force
+
+# 仅安装技能 —— 跳过安装 iterate CLI
+npx iterate-skill-installer --no-cli
 ```
 
 ## 它做了什么
@@ -42,11 +45,10 @@ npx iterate-skill-installer --force
 7. 把 `iterate` CLI 安装到你的 PATH（优先 `pipx`，否则 `pip install --user`），
    以便你直接运行 `iterate onboard`。
 
-> **注意：** 安装器总是会把你 PATH 上的 `iterate` CLI 装好，所以一条命令就能同时
-> 得到技能和 CLI。如果**不**想自动安装 CLI，请改用手动安装——把
-> `SKILL.md` + `config/` + `scripts/` + `templates/` 复制到你的助手目录，或直接运行
-> `python scripts/install.py install`。如果 CLI 安装失败，你之后仍可从检出目录用
-> `pipx install .` 或 `pip install .` 补装。
+> **注意：** 安装器通常会在你 PATH 上装好 `iterate` CLI，这样一条命令就能同时
+> 得到技能和 CLI。如果**不**想自动安装 CLI，请加 `--no-cli` 只装技能——之后可从
+> 检出目录用 `pipx install .` 或 `pip install .` 补装。如果 CLI 安装失败，你之后
+> 也可用同样的方式补装。
 
 ## 支持的 AI 助手
 

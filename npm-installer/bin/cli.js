@@ -10,87 +10,14 @@
  *   npx iterate-skill-installer --ai trae
  *   npx iterate-skill-installer --target /path/to/project
  *   npx iterate-skill-installer --global
+ *   npx iterate-skill-installer --no-cli
  *
  * The installer downloads the latest GitHub release, verifies its SHA256
  * checksum, then delegates file copying and assistant selection to the
  * Python install script bundled in the release.
  */
 
-const { main } = require('../lib/installer');
-
-function parseArgs(argv) {
-  const options = {
-    global: true,
-    ai: null,
-    target: null,
-    force: false,
-    token: process.env.GITHUB_TOKEN || null,
-    // Track whether the user explicitly chose global/project mode so the
-    // installer can later ask about the current directory's project intent.
-    globalExplicit: false,
-    targetExplicit: false,
-  };
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    const next = argv[i + 1];
-
-    switch (arg) {
-      case '--ai':
-        if (!next) {
-          console.error('Error: --ai requires a value');
-          process.exit(1);
-        }
-        options.ai = next;
-        i++;
-        break;
-      case '--target':
-        if (!next) {
-          console.error('Error: --target requires a value');
-          process.exit(1);
-        }
-        options.target = next;
-        options.global = false;
-        options.targetExplicit = true;
-        i++;
-        break;
-      case '--global':
-        options.global = true;
-        options.target = null;
-        options.globalExplicit = true;
-        break;
-      case '--force':
-        options.force = true;
-        break;
-      case '--token':
-        if (!next) {
-          console.error('Error: --token requires a value');
-          process.exit(1);
-        }
-        options.token = next;
-        i++;
-        break;
-      case '-h':
-      case '--help':
-        printHelp();
-        process.exit(0);
-        break;
-      case '-v':
-      case '--version':
-        console.log(require('../package.json').version);
-        process.exit(0);
-        break;
-      default:
-        if (arg.startsWith('-')) {
-          console.error(`Error: unknown option ${arg}`);
-          process.exit(1);
-        }
-        break;
-    }
-  }
-
-  return options;
-}
+const { main, parseArgs } = require('../lib/installer');
 
 function printHelp() {
   console.log(`
@@ -101,6 +28,7 @@ Options:
   --target <path>     Install into a project directory instead of the global home dir.
   --global            Install into the user's home directory (default).
   --force             Overwrite existing skill files.
+  --no-cli            Skip installing the iterate CLI (skill-only install).
   --token <token>     GitHub token for higher API rate limits.
   -h, --help          Show this help message.
   -v, --version       Show version.
@@ -109,6 +37,7 @@ Examples:
   npx iterate-skill-installer
   npx iterate-skill-installer --ai trae
   npx iterate-skill-installer --target ./my-project
+  npx iterate-skill-installer --no-cli
 `);
 }
 
