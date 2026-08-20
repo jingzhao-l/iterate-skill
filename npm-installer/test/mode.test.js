@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode, parseChecksums } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums, parseArgs } = require('../lib/installer');
 
 const originalCwd = process.cwd();
 const originalHome = os.homedir;
@@ -97,6 +97,21 @@ async function run() {
   assert.strictEqual(multi.get('b.txt'), 'bb');
 
   console.log('mode.test.js: all parseChecksums tests passed');
+
+  // parseArgs: --no-cli must toggle skill-only mode, and default to off.
+  assert.strictEqual(parseArgs([]).noCli, false, 'noCli should default to false');
+  assert.strictEqual(parseArgs(['--no-cli']).noCli, true, '--no-cli should set noCli');
+  assert.strictEqual(parseArgs(['--no-cli', '--force', '--global']).noCli, true, 'noCli persists with other flags');
+  assert.strictEqual(parseArgs(['--global']).noCli, false, 'unrelated flags do not set noCli');
+
+  // parseArgs: unrelated flag surface is preserved (target/global/ai/force).
+  const combo = parseArgs(['--ai', 'trae', '--target', '/proj', '--force']);
+  assert.strictEqual(combo.ai, 'trae', 'ai should parse');
+  assert.strictEqual(combo.target, '/proj', 'target should parse');
+  assert.strictEqual(combo.force, true, 'force should parse');
+  assert.strictEqual(combo.global, false, 'target forces project mode');
+
+  console.log('mode.test.js: all parseArgs tests passed');
 }
 
 run().catch((err) => {

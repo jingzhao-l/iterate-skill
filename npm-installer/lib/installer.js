@@ -364,6 +364,84 @@ async function installRequirements(pythonBin, requirementsPath) {
   await runCommand(pythonBin, ['-m', 'pip', 'install', '--quiet', '--requirement', requirementsPath]);
 }
 
+/**
+ * Parse the installer's command-line arguments.
+ *
+ * Kept as a pure function (exported) so the flag surface — including the
+ * skill-only ``--no-cli`` switch — can be unit-tested without spawning the
+ * full download-and-install pipeline. ``process.exit`` is only reached for
+ * hard argument errors (e.g. a value-consuming flag missing its value).
+ */
+function parseArgs(argv) {
+  const options = {
+    global: true,
+    ai: null,
+    target: null,
+    force: false,
+    noCli: false,
+    token: process.env.GITHUB_TOKEN || null,
+    // Track whether the user explicitly chose global/project mode so the
+    // installer can later ask about the current directory's project intent.
+    globalExplicit: false,
+    targetExplicit: false,
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    const next = argv[i + 1];
+
+    switch (arg) {
+      case '--ai':
+        if (!next) {
+          console.error('Error: --ai requires a value');
+          process.exit(1);
+        }
+        options.ai = next;
+        i++;
+        break;
+      case '--target':
+        if (!next) {
+          console.error('Error: --target requires a value');
+          process.exit(1);
+        }
+        options.target = next;
+        options.global = false;
+        options.targetExplicit = true;
+        i++;
+        break;
+      case '--global':
+        options.global = true;
+        options.target = null;
+        options.globalExplicit = true;
+        break;
+      case '--force':
+        options.force = true;
+        break;
+      case '--no-cli':
+        // Skill-only install: skip the automated `iterate` CLI install so a
+        // user who only wants the skill is not surprised by a global install.
+        options.noCli = true;
+        break;
+      case '--token':
+        if (!next) {
+          console.error('Error: --token requires a value');
+          process.exit(1);
+        }
+        options.token = next;
+        i++;
+        break;
+      default:
+        if (arg.startsWith('-')) {
+          console.error(`Error: unknown option ${arg}`);
+          process.exit(1);
+        }
+        break;
+    }
+  }
+
+  return options;
+}
+
 async function main(options = {}) {
   printBanner();
 
@@ -372,7 +450,14 @@ async function main(options = {}) {
   // whether that directory is the target project.
   options = await resolveInstallMode(options);
 
-  const { global: globalInstall = true, ai = null, token = null, target = null, force = false } = options;
+  const {
+    global: globalInstall = true,
+    ai = null,
+    token = null,
+    target = null,
+    force = false,
+    noCli = false,
+  } = options;
 
   step('Checking environment');
   const pythonBin = await findPython();
@@ -495,8 +580,18 @@ async function main(options = {}) {
     }
     success('iterate-skill installation finished.');
 
-    // Install the iterate CLI so `iterate onboard` works right after install.
-    await installCli(pythonBin, sourceDir);
+    if (noCli) {
+      // Skill-only install: explain how to add the CLI later instead of
+      // silently installing it globally.
+      hint('Skipped installing the iterate CLI (--no-cli).');
+      hint('Install it later for `iterate onboard` with:  pipx install <repo>  (or)  pip install .');
+    } else {
+      // Install the iterate CLI so `iterate onboard` works right after
+      // install. Made explicit up front so skill-only users are not surprised
+      // by a global CLI install (skip with --no-cli).
+      step('Installing the iterate CLI (skip with --no-cli)');
+      await installCli(pythonBin, sourceDir);
+    }
 
     frameSection('Done', [
       `\x1b[32m✓\x1b[0m iterate-skill ${tag} installed`,
@@ -510,6 +605,7 @@ async function main(options = {}) {
 
 module.exports = {
   main,
+  parseArgs,
   ITERATE_BANNER,
   InstallerError,
   resolveInstallMode,
