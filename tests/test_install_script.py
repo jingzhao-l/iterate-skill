@@ -218,6 +218,30 @@ class TestArrowSelectState:
         assert st.finished is True
         assert st.result == []
 
+    def test_window_scroll_follows_cursor(self):
+        opts = [f"o{i}" for i in range(10)]
+        st = install._ArrowSelectState(opts, window_size=4)
+        assert st.visible_options() == ["o0", "o1", "o2", "o3"]
+        for _ in range(4):
+            st.move(1)  # move to index 4
+        assert st.index == 4
+        assert "o4" in st.visible_options()
+
+    def test_done_row_shows_last_page(self):
+        opts = [f"o{i}" for i in range(10)]
+        st = install._ArrowSelectState(opts, window_size=4)
+        st.index = len(st.rows) - 1  # Done row
+        assert st.visible_options() == [f"o{i}" for i in range(6, 10)]
+
+    def test_render_height_is_bounded(self):
+        # Many options must render as a short fixed-height menu (no overflow),
+        # preventing the "staircase / spiral" on terminals shorter than the list.
+        opts = [f"o{i}" for i in range(30)]
+        st = install._ArrowSelectState(opts, window_size=4)
+        rendered = install._render_arrow_select(st, "title")
+        assert len(rendered.split("\n")) == 7  # title + hint + 4 options + Done
+        assert "Done" in rendered
+
 
 class TestReadArrowKey:
     def _stream(self, text: str) -> io.StringIO:
@@ -503,6 +527,33 @@ class TestInstallCommand:
         seq = _SeqInput([""])
         monkeypatch.setattr(install, "interactive_select_assistants", lambda t, i: [])
         assert install.install_command(None, tmp_path, dry_run=False, source=source, force=False, global_install=False, input_func=seq) == 1
+
+    def test_stale_install_asks_to_upgrade(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        dest = target / ".trae" / "skills" / "iterate"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("old stale version", encoding="utf-8")
+        monkeypatch.setattr(install.sys.stdin, "isatty", lambda: True)
+        seq = _SeqInput(["y"])
+        assert install.install_command("trae", target, dry_run=False, source=source, force=False, global_install=False, input_func=seq) == 0
+        # User confirmed the upgrade -> stale files are overwritten.
+        assert (dest / "SKILL.md").read_text(encoding="utf-8") == "# test skill\n"
+        assert any("upgrade" in c or "覆盖升级" in c for c in seq.calls)
+
+    def test_stale_install_decline_keeps_existing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        dest = target / ".trae" / "skills" / "iterate"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("old stale version", encoding="utf-8")
+        monkeypatch.setattr(install.sys.stdin, "isatty", lambda: True)
+        seq = _SeqInput(["n"])
+        assert install.install_command("trae", target, dry_run=False, source=source, force=False, global_install=False, input_func=seq) == 0
+        # User declined the upgrade -> existing install is left untouched.
+        assert (dest / "SKILL.md").read_text(encoding="utf-8") == "old stale version"
 
 
 # --------------------------------------------------------------------------- #

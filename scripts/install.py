@@ -465,15 +465,23 @@ class _ArrowSelectState:
     unit-tested without a TTY.
     """
 
+    MAX_WINDOW = 6  # visible option rows; keeps the menu short enough to fit any terminal
+
     def __init__(
         self,
         options: list[str],
         default_all: bool = True,
         preselected: set[str] | None = None,
+        window_size: int = MAX_WINDOW,
     ) -> None:
         self.options = list(options)
         self.rows: list[str | None] = self.options + [None]
         self.index = 0
+        # Scroll window over the option rows. The "Done" confirmation row is
+        # always rendered as the final line regardless of scrolling, so the
+        # menu height stays bounded (and never overflows short terminals).
+        self.window_size = max(1, int(window_size))
+        self.window_top = 0
         if preselected is not None:
             # Pre-select only the given options (e.g. auto-detected tools).
             # Options not in the preselected set are still shown but start
@@ -486,6 +494,42 @@ class _ArrowSelectState:
     def move(self, delta: int) -> None:
         """Move the highlight by ``delta`` (wrap around)."""
         self.index = (self.index + delta) % len(self.rows)
+        self._ensure_selection_visible()
+
+    def _ensure_selection_visible(self) -> None:
+        """Scroll the window so the highlighted row stays on screen.
+
+        When the "Done" row is selected the last page is shown so the final
+        options remain visible above the confirmation row.
+        """
+        count = len(self.options)
+        if count == 0:
+            self.window_top = 0
+            return
+        size = min(self.window_size, count)
+        max_top = max(0, count - size)
+        if self.index >= count:
+            self.window_top = max_top
+            return
+        top = self.window_top
+        if self.index < top:
+            new_top = max(0, self.index)
+        elif self.index >= top + size:
+            new_top = max(0, min(self.index - size + 1, max_top))
+        else:
+            new_top = top
+        self.window_top = min(new_top, max_top)
+
+    def visible_options(self) -> list[str]:
+        """The currently visible slice of options (scrolled window)."""
+        self._ensure_selection_visible()
+        count = len(self.options)
+        if count == 0:
+            return []
+        size = min(self.window_size, count)
+        max_top = max(0, count - size)
+        self.window_top = min(self.window_top, max_top)
+        return self.options[self.window_top : self.window_top + size]
 
     def toggle_current(self) -> None:
         """Toggle the highlighted option; on the Done row, finish instead."""
@@ -534,24 +578,36 @@ def _read_arrow_key(stdin) -> str | None:
     return None
 
 
-def _render_arrow_select(state: _ArrowSelectState, title: str) -> str:
-    """Render the arrow-select menu as an ANSI string."""
+def _arrow_select_lines(state: _ArrowSelectState, title: str) -> list[str]:
+    """Build the arrow-select menu lines.
+
+    Only the scroll window of options is rendered (bounded number of rows),
+    and ``Done`` is always the final line. This keeps the menu compact so
+    re-draws never overflow short terminals or rely on line-wrapping to stay
+    aligned.
+    """
     lines = [
         f"\x1b[36m◆ {title}\x1b[0m",
-        "\x1b[2m    ↑/↓ 移动 · 空格/回车 勾选 · Done 确认 · q 取消\x1b[0m",
+        "\x1b[2m  ↑/↓ 移动 · 空格 勾选 · Done 完成 · q 取消\x1b[0m",
     ]
-    for i, opt in enumerate(state.rows):
-        if opt is None:
-            marker = "\x1b[36m→\x1b[0m" if i == state.index else "  "
-            lines.append(f"{marker} \x1b[1mDone / 完成\x1b[0m")
+    current = state.options[state.index] if state.index < len(state.options) else None
+    for opt in state.visible_options():
+        display = AI_DISPLAY_NAMES.get(opt, opt)
+        check = "\x1b[32m◉\x1b[0m" if opt in state.selected else "\x1b[90m○\x1b[0m"
+        if opt == current:
+            lines.append(f"\x1b[7m  {check} {display}\x1b[0m")
         else:
-            display = AI_DISPLAY_NAMES.get(opt, opt)
-            check = "\x1b[32m◉\x1b[0m" if opt in state.selected else "\x1b[90m○\x1b[0m"
-            if i == state.index:
-                lines.append(f"\x1b[7m  {check} {display}\x1b[0m")
-            else:
-                lines.append(f"  {check} {display}")
-    return "\n".join(lines)
+            lines.append(f"  {check} {display}")
+    if state.index >= len(state.options):
+        lines.append("\x1b[7m  \u2192 Done / 完成\x1b[0m")
+    else:
+        lines.append("  \u2192 Done / 完成")
+    return lines
+
+
+def _render_arrow_select(state: _ArrowSelectState, title: str) -> str:
+    """Render the arrow-select menu as an ANSI string."""
+    return "\n".join(_arrow_select_lines(state, title))
 
 
 def _arrow_select_available() -> bool:
@@ -612,10 +668,12 @@ def _prompt_arrow_multi_select(
     state = _ArrowSelectState(options, default_all, preselected)
 
     def redraw() -> None:
-        total_lines = len(state.rows) + 2
-        _sys.stdout.write(f"\x1b[{total_lines}A")
+        lines = _arrow_select_lines(state, title)
+        move_up = len(lines) - 1
+        if move_up > 0:
+            _sys.stdout.write(f"\x1b[{move_up}A")
         _sys.stdout.write("\x1b[0J")
-        _sys.stdout.write(_render_arrow_select(state, title))
+        _sys.stdout.write("\n".join(lines))
         _sys.stdout.flush()
 
     _sys.stdout.write(_render_arrow_select(state, title))
@@ -731,21 +789,48 @@ def install_command(
         targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
 
     installed: list[tuple[str, str, Path]] = []
+    seen_destinations: set[Path] = set()
     for assistant in targets:
         relative_dir = SUPPORTED_AI[assistant]
         destination = effective_target / relative_dir
+        display_name = AI_DISPLAY_NAMES.get(assistant, assistant)
+
+        # Some assistants share the identical target directory (e.g. "claude"
+        # and "claude-code" both map to ".claude/skills/iterate"), so a run can
+        # collide on the same destination. Install it once to avoid re-prompting.
+        if destination in seen_destinations:
+            _hint(f"Skipped {assistant}: target {destination} already installed in this run.")
+            continue
 
         if dry_run:
             _hint(f"[dry-run] Would install for {assistant}{mode_label} into {destination}")
         else:
             _tui_print(f"Installing for {assistant}{mode_label} into {destination}", style="iterate.primary")
 
-        copied = copy_skill_files(source, destination, dry_run, force)
+        overwrite = force
+        if not dry_run and not force and _is_iterate_install_dir(destination):
+            # A previous version of the skill is already present. On an
+            # interactive terminal, ask whether to upgrade; otherwise (CI/pipe)
+            # keep the existing copy and warn, rather than silently skipping.
+            if sys.stdin.isatty():
+                _warning(f"{display_name} 已存在 iterate-skill 安装（可能为旧版本）：{destination}")
+                answer = input_func("  是否覆盖升级到最新版？[Y/n]: ").strip().lower()
+                if answer in ("n", "no"):
+                    _hint(f"Skipped {display_name}：保留现有安装。")
+                    continue
+                overwrite = True
+            else:
+                _warning(
+                    f"{display_name} 已存在 iterate-skill 安装；非交互模式保留现有拷贝，"
+                    f"如需覆盖请使用 --force。{destination}"
+                )
+
+        copied = copy_skill_files(source, destination, dry_run, overwrite)
         for item in copied:
             _hint(item)
+        seen_destinations.add(destination)
 
         if copied or dry_run:
-            display_name = AI_DISPLAY_NAMES.get(assistant, assistant)
             installed.append((assistant, display_name, destination))
 
     if dry_run:
