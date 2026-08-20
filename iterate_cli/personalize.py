@@ -609,9 +609,17 @@ def merge_personalization_into_config(
 ) -> dict[str, Any]:
     """Write personalization structured fields into a config dict.
 
-    Also merges ``extra_validation_commands`` into ``validation.commands``
-    and auto-adds new command prefixes to ``validation.command_whitelist``
-    so that schema validation does not fail.
+    Also synchronises ``extra_validation_commands`` into
+    ``validation.commands``: previously personalization-owned commands that
+    the user removed are deleted from ``validation.commands`` (per-command and
+    per-module), new commands are appended (deduplicated, fail-closed
+    validated), and new command prefixes are auto-added to
+    ``validation.command_whitelist`` so that schema validation does not fail.
+
+    Non-personalization commands that were already configured for a module
+    (e.g. base-config defaults or manual edits) are always preserved: only the
+    subset previously owned by ``personalization.extra_validation_commands``
+    is ever removed.
 
     Args:
         config: The existing parsed config dict (will be copied, not mutated).
@@ -623,44 +631,88 @@ def merge_personalization_into_config(
     result = dict(config)
     result["personalization"] = data.to_config_dict()
 
-    # Merge extra validation commands into validation.commands.
-    if data.extra_validation_commands:
-        validation = dict(result.get("validation") or {})
-        commands = dict(validation.get("commands") or {})
-        whitelist = list(validation.get("command_whitelist") or [])
+    # Commands previously owned by personalization, captured from the OLD
+    # config before it is overwritten above. These are the only commands that
+    # may be removed from validation.commands, so base-config commands and
+    # manual edits for the same module survive.
+    old_extra: dict[str, list[str]] = {
+        str(module): list(cmds)
+        for module, cmds in (
+            dict((config.get("personalization") or {}).get("extra_validation_commands") or {})
+        ).items()
+    }
+    new_extra = data.extra_validation_commands
 
-        for module, cmds in data.extra_validation_commands.items():
-            existing = list(commands.get(module) or [])
-            for cmd in cmds:
-                # Skip empty/whitespace-only commands to keep generated
-                # config compliant with schema (minLength: 1).
-                if not cmd or not cmd.strip():
-                    continue
-                # Fail closed: revalidate before merging so a config-sourced or
-                # manually-crafted command cannot expand the executable surface
-                # or auto-extend the whitelist. Only commands that pass the
-                # strict whitelist may be merged and whitelisted.
-                ok, reason = validate_extra_command(cmd)
-                if not ok:
-                    tui.warning(
-                        f"跳过非法验证命令 [{module}] '{cmd}': {reason}",
-                        indent=2,
-                    )
-                    continue
-                if cmd not in existing:
-                    existing.append(cmd)
-                # Auto-add command prefix to whitelist if not present.
-                # Only reached for commands that passed strict validation,
-                # so the prefix is always a known-safe tool.
-                parts = cmd.strip().split(None, 1)
-                prefix = parts[0] if parts else ""
-                if prefix and prefix not in whitelist:
-                    whitelist.append(prefix)
-            commands[module] = existing
+    # No personalization commands before or after → validation section is
+    # untouched (nothing to add, nothing to remove).
+    if not old_extra and not new_extra:
+        return result
 
-        validation["commands"] = commands
-        validation["command_whitelist"] = whitelist
-        result["validation"] = validation
+    validation = dict(result.get("validation") or {})
+    commands = {
+        str(module): list(cmds) if isinstance(cmds, list) else []
+        for module, cmds in (validation.get("commands") or {}).items()
+    }
+    whitelist = list(validation.get("command_whitelist") or [])
+
+    def _owned_strings(module: str) -> set[str]:
+        """Return the previously personalization-owned strings for a module."""
+        return {c for c in old_extra.get(module, []) if isinstance(c, str)}
+
+    # 1) Remove modules personalization no longer owns at all, dropping only the
+    #    commands that were personalization-owned (base commands survive).
+    for module in old_extra:
+        if module in new_extra:
+            continue
+        if module in commands:
+            removed = _owned_strings(module)
+            commands[module] = [c for c in commands[module] if c not in removed]
+            if not commands[module]:
+                # No commands left → drop the empty module so schema validation
+                # (minItems) cannot fail on an empty list.
+                commands.pop(module, None)
+
+    # 2) For modules personalization still owns: drop the old personalization
+    #    owned commands (so deleted ones do not linger), then re-add the
+    #    validated current set.
+    for module, cmds in new_extra.items():
+        base = list(commands.get(module) or [])
+        if module in old_extra:
+            removed = _owned_strings(module)
+            base = [c for c in base if c not in removed]
+        for cmd in cmds:
+            # Skip empty/whitespace-only commands to keep generated
+            # config compliant with schema (minLength: 1).
+            if not cmd or not cmd.strip():
+                continue
+            # Fail closed: revalidate before merging so a config-sourced or
+            # manually-crafted command cannot expand the executable surface
+            # or auto-extend the whitelist. Only commands that pass the
+            # strict whitelist may be merged and whitelisted.
+            ok, reason = validate_extra_command(cmd)
+            if not ok:
+                tui.warning(
+                    f"跳过非法验证命令 [{module}] '{cmd}': {reason}",
+                    indent=2,
+                )
+                continue
+            if cmd not in base:
+                base.append(cmd)
+            # Auto-add command prefix to whitelist if not present.
+            # Only reached for commands that passed strict validation,
+            # so the prefix is always a known-safe tool.
+            parts = cmd.strip().split(None, 1)
+            prefix = parts[0] if parts else ""
+            if prefix and prefix not in whitelist:
+                whitelist.append(prefix)
+        if base:
+            commands[module] = base
+        else:
+            commands.pop(module, None)
+
+    validation["commands"] = commands
+    validation["command_whitelist"] = whitelist
+    result["validation"] = validation
 
     return result
 
@@ -799,7 +851,7 @@ def save_personalization(
     if iterate_md_content is not None:
         try:
             atomic_write(iterate_md_path, iterate_md_content)
-        except OSError as exc:
+        except OSError:
             # Roll back config so the two files stay consistent.
             try:
                 atomic_write(config_path, old_config)

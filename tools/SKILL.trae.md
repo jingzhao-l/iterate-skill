@@ -61,8 +61,25 @@ query: |
   For each finding report: file, line, severity, dimension, summary,
   failure_scenario, suggested_fix, is_atomic.
 
+  EVIDENCE RULE: only report findings anchored in code you actually read.
+  Fabricated paths or invented line numbers are EVIDENCE_VIOLATIONs.
+
   Return strictly as JSON: { "findings": [...] }
 ```
+
+---
+
+## Meta-review 硬证据门禁 / Meta-review Evidence Gate
+
+`reviewer.evidence_validation`（默认开启）要求审查报告本身再被审查：逐条校验每个 finding 的 `file`/`line` 是否真实存在于磁盘代码中。任何伪造路径或越界行号都会以 `EVIDENCE_VIOLATION` 判 `needs_revision`。
+
+`reviewer.coverage_validation`（默认开启）将 reviewer 自报的 `readFiles` 与分配清单比对，明显缺口浮出 medium 的 `COVERAGE_GAP` 提示（不反转判定）。
+
+---
+
+## Onboarding / Personalization
+
+首次调用 `/iterate` 前需先完成 onboarding：生成 `ITERATE.md` 知识库与项目级 `iterate.config.yaml`（含 `onboarding.fingerprints` 漂移指纹）。可在 Trae 终端运行 `iterate onboard` 交互式完成，或由 AI 通道自动扫描。项目专属约束（禁区、风险区、已知意图等）通过 `iterate personalize` 追加。详见主 `SKILL.md`。
 
 ---
 

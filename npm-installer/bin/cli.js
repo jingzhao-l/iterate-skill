@@ -17,7 +17,7 @@
  * Python install script bundled in the release.
  */
 
-const { main, parseArgs } = require('../lib/installer');
+const { main, parseArgs, VERSION } = require('../lib/installer');
 
 function printHelp() {
   console.log(`
@@ -43,6 +43,17 @@ Examples:
 
 async function run() {
   const options = parseArgs(process.argv.slice(2));
+
+  if (options.mode === 'help') {
+    printHelp();
+    process.exit(0);
+  }
+
+  if (options.mode === 'version') {
+    console.log(`iterate-skill-installer ${VERSION}`);
+    process.exit(0);
+  }
+
   try {
     const code = await main(options);
     process.exit(code);

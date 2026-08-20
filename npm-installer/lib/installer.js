@@ -38,6 +38,10 @@ const GITHUB_OWNER = 'jingzhao-l';
 const GITHUB_REPO = 'iterate-skill';
 const RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 
+// Package version read from package.json at runtime so the --version/-v flag
+// and the published npm version always stay in sync.
+const VERSION = require('../package.json').version;
+
 const ITERATE_BANNER = [
   '██╗████████╗███████╗██████╗  █████╗ ████████╗███████╗',
   '██║╚══██╔══╝██╔════╝██╔══██╗██╔══██╗╚══██╔══╝██╔════╝',
@@ -196,18 +200,48 @@ async function extractTarball(tarballPath, destDir) {
   // archive contents and refuse to extract any entry whose resolved path
   // escapes destDir (e.g. a "../" prefix). This keeps the installer
   // dependency-free while closing the theoretical escape vector.
+  //
+  // Extraction uses --strip-components=1, which relies on the archive having
+  // exactly one top-level directory (see README "Release tarball structure").
+  // Archives that violate that contract — multiple top-level directories, or
+  // entries with no path left after stripping — are rejected outright.
   const absoluteDest = path.resolve(destDir);
   fs.mkdirSync(absoluteDest, { recursive: true });
 
   // 1. List archive entries (no extraction yet).
   const listing = await runCommand('tar', ['-tzf', tarballPath]);
-
-  // 2. Validate every entry stays inside destDir after stripping the single
-  //    top-level directory component (--strip-components=1).
   const entries = listing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (entries.length === 0) {
+    throw new InstallerError('Refusing to extract tarball: archive contains no entries.');
+  }
+
+  // 2. Enforce the single-top-level-directory contract required by
+  //    --strip-components=1.
+  const topLevelComponents = new Set(entries.map((entry) => entry.split('/')[0]));
+  if (topLevelComponents.size !== 1) {
+    const tops = [...topLevelComponents].join(', ');
+    throw new InstallerError(
+      `Refusing to extract tarball: expected exactly one top-level directory, found multiple (${tops}).`,
+    );
+  }
+  const topLevel = entries[0].split('/')[0];
+
+  // 3. Validate every entry stays inside destDir after stripping the single
+  //    top-level directory component (--strip-components=1).
   for (const entry of entries) {
     const stripped = entry.split('/').slice(1).join('/');
-    const resolved = path.resolve(absoluteDest, stripped || entry);
+    if (stripped === '') {
+      // The single top-level directory entry itself maps to destDir after
+      // stripping; any other entry that strips to an empty path is malformed.
+      const isTopLevelEntry = entry === topLevel || entry === `${topLevel}/`;
+      if (!isTopLevelEntry) {
+        throw new InstallerError(
+          `Refusing to extract tarball: entry "${entry}" has an empty path after stripping the top-level directory.`,
+        );
+      }
+      continue;
+    }
+    const resolved = path.resolve(absoluteDest, stripped);
     if (resolved !== absoluteDest && !resolved.startsWith(absoluteDest + path.sep)) {
       throw new InstallerError(
         `Refusing to extract tarball: entry "${entry}" escapes destination directory.`,
@@ -215,7 +249,7 @@ async function extractTarball(tarballPath, destDir) {
     }
   }
 
-  // 3. Now extract safely — the content has been validated above.
+  // 4. Now extract safely — the content has been validated above.
   await runCommand('tar', ['-xzf', tarballPath, '-C', absoluteDest, '--strip-components=1']);
 }
 
@@ -380,6 +414,9 @@ function parseArgs(argv) {
     force: false,
     noCli: false,
     token: process.env.GITHUB_TOKEN || null,
+    // Non-install action requested via -h/--help/-v/--version. bin/cli.js
+    // inspects this before running main() and exits 0 without installing.
+    mode: null,
     // Track whether the user explicitly chose global/project mode so the
     // installer can later ask about the current directory's project intent.
     globalExplicit: false,
@@ -421,6 +458,16 @@ function parseArgs(argv) {
         // Skill-only install: skip the automated `iterate` CLI install so a
         // user who only wants the skill is not surprised by a global install.
         options.noCli = true;
+        break;
+      case '--help':
+      case '-h':
+        // Show usage and exit 0 (handled by bin/cli.js).
+        options.mode = 'help';
+        break;
+      case '--version':
+      case '-v':
+        // Print the package version and exit 0 (handled by bin/cli.js).
+        options.mode = 'version';
         break;
       case '--token':
         if (!next) {
@@ -606,6 +653,7 @@ async function main(options = {}) {
 module.exports = {
   main,
   parseArgs,
+  VERSION,
   ITERATE_BANNER,
   InstallerError,
   resolveInstallMode,

@@ -8,6 +8,7 @@ user-owned sections from an existing ITERATE.md.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,26 @@ AI_START_MARKER = "<!-- ITERATE:AI-MAINTAINED:START -->"
 AI_END_MARKER = "<!-- ITERATE:AI-MAINTAINED:END -->"
 USER_START_MARKER = "<!-- ITERATE:USER-OWNED:START -->"
 USER_END_MARKER = "<!-- ITERATE:USER-OWNED:END -->"
+
+# Matches the "完成时间 / Completed" row in the ITERATE.md Meta table.
+_COMPLETED_AT_RE = re.compile(r"\| 完成时间 / Completed \| ([^|\n]+) \|")
+
+
+def _extract_completed_at(existing_md: str) -> str | None:
+    """Extract the previous completion timestamp from an existing ITERATE.md.
+
+    Used by incremental refresh so an unchanged refresh stays a byte-for-byte
+    no-op instead of restamping ``{{COMPLETED_AT}}`` and producing a spurious
+    diff. Returns ``None`` when the value cannot be found or is still the
+    unresolved placeholder.
+    """
+    match = _COMPLETED_AT_RE.search(existing_md)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if not value or value == "{{COMPLETED_AT}}":
+        return None
+    return value
 
 # Default values used when generating a fresh iterate.config.yaml.
 DEFAULT_MAX_ROUNDS = 7
@@ -99,7 +120,7 @@ class OnboardingData:
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def generate_iterate_md(data: OnboardingData) -> str:
+def generate_iterate_md(data: OnboardingData, completed_at: str | None = None) -> str:
     """Render the ITERATE.md content from onboarding data and template.
 
     If ``data.personalization`` is set, the user-owned section is populated
@@ -108,6 +129,9 @@ def generate_iterate_md(data: OnboardingData) -> str:
 
     Args:
         data: OnboardingData with scan results and user inputs.
+        completed_at: Optional explicit completion timestamp to place in the
+            Meta table. When ``None``, a fresh timestamp is generated. Refresh
+            passes the previous value so an unchanged refresh is a no-op.
 
     Returns:
         Complete ITERATE.md file content as a string.
@@ -118,7 +142,7 @@ def generate_iterate_md(data: OnboardingData) -> str:
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
 
     replacements: dict[str, str] = {
-        "{{COMPLETED_AT}}": data.completed_at(),
+        "{{COMPLETED_AT}}": completed_at or data.completed_at(),
         "{{CHANNEL}}": data.channel,
         "{{SKILL_VERSION}}": SKILL_VERSION,
         "{{FINGERPRINT_VERSION}}": FINGERPRINT_VERSION,
@@ -259,6 +283,24 @@ def _log_rollback_failure(path: Path, original_err: OSError) -> None:
     )
 
 
+def _warn_missing_user_markers() -> None:
+    """Warn on stderr when re-onboarding an ITERATE.md without USER-OWNED markers.
+
+    The user-owned section cannot be preserved, so hand-edited content in that
+    file would be replaced by the default template. We refuse to do this
+    silently and advise the user how to proceed.
+    """
+    import sys
+
+    print(
+        "⚠️  Existing ITERATE.md is missing the USER-OWNED section markers; "
+        "hand-edited content will not be preserved. Restore the markers "
+        "<!-- ITERATE:USER-OWNED:START --> / ...END --> and re-run, or back up "
+        "the file first.",
+        file=sys.stderr,
+    )
+
+
 def write_onboarding_outputs(
     data: OnboardingData,
     output_dir: Path,
@@ -294,6 +336,8 @@ def write_onboarding_outputs(
         # keep the user-owned section (manual edits), and merge in any new
         # personalization content so notes/conventions are also updated.
         fresh = generate_iterate_md(data)
+        if not (existing_md.find(USER_START_MARKER) >= 0 and existing_md.find(USER_END_MARKER) > existing_md.find(USER_START_MARKER)):
+            _warn_missing_user_markers()
         user_content = extract_user_owned_section(existing_md)
         if data.personalization is not None:
             from iterate_cli.personalize import merge_user_sections
@@ -369,7 +413,8 @@ def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
 
     This is used for incremental refresh: the AI-maintained sections are
     regenerated from new scan data, while user-owned sections are kept
-    exactly as the user left them.
+    exactly as the user left them. The previous completion timestamp is
+    preserved so an unchanged refresh stays a byte-for-byte no-op.
 
     Personalization content in the user-owned section is NOT regenerated
     during refresh — ``iterate personalize`` already keeps config.yaml
@@ -383,15 +428,26 @@ def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
 
     Returns:
         Complete refreshed ITERATE.md content.
-    """
-    # Generate fresh content with default user section.
-    fresh = generate_iterate_md(data)
 
+    Raises:
+        ValueError: If the existing ITERATE.md (or the generated content) is
+            missing the USER-OWNED markers, so refresh refuses to overwrite
+            possibly hand-edited content instead of silently discarding it.
+    """
     # Locate markers in the existing file.
     e_start = existing_md.find(USER_START_MARKER)
     e_end = existing_md.find(USER_END_MARKER)
     if e_start == -1 or e_end == -1 or e_end <= e_start + len(USER_START_MARKER):
-        return fresh
+        raise ValueError(
+            "ITERATE.md is missing the USER-OWNED section markers; refusing to "
+            "overwrite possibly hand-edited content. Restore the markers "
+            "<!-- ITERATE:USER-OWNED:START --> / ...END --> or run "
+            "`iterate reonboard` to regenerate the file."
+        )
+
+    # Generate fresh content with default user section, reusing the previous
+    # completion timestamp so an unchanged refresh is a byte-for-byte no-op.
+    fresh = generate_iterate_md(data, completed_at=_extract_completed_at(existing_md))
 
     # Preserve the user-owned block verbatim (start marker through end marker,
     # including its original blank-line layout) so an unchanged refresh is a
@@ -402,7 +458,10 @@ def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
     f_start = fresh.find(USER_START_MARKER)
     f_end = fresh.find(USER_END_MARKER)
     if f_start == -1 or f_end == -1 or f_end <= f_start + len(USER_START_MARKER):
-        return fresh
+        raise ValueError(
+            "Generated ITERATE.md is missing the USER-OWNED markers; "
+            "refresh aborted."
+        )
 
     # Splice the verbatim user block into the regenerated AI-maintained parts.
     return fresh[:f_start] + user_block + fresh[f_end + len(USER_END_MARKER):]

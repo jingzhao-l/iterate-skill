@@ -826,13 +826,35 @@ class TestRefreshDryRun:
     def test_preview_detects_stale_md(self, fake_project: Path) -> None:
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
-        # Corrupt the AI-maintained section so a refresh would change ITERATE.md.
+        # Corrupt the AI-maintained section (keeping the USER-OWNED markers
+        # intact) so a refresh would change ITERATE.md.
         iterate_md = fake_project / "ITERATE.md"
-        iterate_md.write_bytes(b"this is not the generated content")
+        original = iterate_md.read_text(encoding="utf-8")
+        start = original.find(AI_START_MARKER)
+        end = original.find(AI_END_MARKER)
+        assert start != -1 and end > start
+        corrupted = (
+            original[: start + len(AI_START_MARKER)]
+            + "\nstale AI-maintained content\n"
+            + original[end:]
+        )
+        iterate_md.write_text(corrupted, encoding="utf-8")
         preview = preview_refresh(fake_project)
         assert preview["ok"] is True
         assert preview["changed"] is True
         assert preview["md_changed_lines"] > 0
+
+    def test_preview_refuses_missing_user_markers(self, fake_project: Path) -> None:
+        """A hand-edited ITERATE.md without USER-OWNED markers cannot be
+        refreshed safely: preview must surface the refusal instead of showing
+        a misleading diff of a refresh that would be blocked."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        iterate_md = fake_project / "ITERATE.md"
+        iterate_md.write_bytes(b"this is not the generated content")
+        preview = preview_refresh(fake_project)
+        assert preview["ok"] is False
+        assert "USER-OWNED" in preview["error"]
 
     def test_preview_detects_stale_config(self, fake_project: Path) -> None:
         data = _build_onboarding_data(fake_project)
@@ -2103,6 +2125,142 @@ class TestMergePersonalizationIntoConfig:
         result = merge_personalization_into_config(config, data)
         assert "validation" in result
         assert result["validation"]["commands"]["python"] == ["bandit -r src/"]
+
+
+class TestMergePersonalizationDeletesCommands:
+    """Tests that merge_personalization_into_config removes deleted commands.
+
+    Regression: previously the merge only appended new commands to
+    ``validation.commands``; commands the user deleted via personalization
+    (individually or as a whole module) lingered in the executable config.
+    """
+
+    def test_removed_individual_command_is_deleted(self) -> None:
+        """A command removed from personalization must vanish from
+        validation.commands while base-config commands survive."""
+        config = {
+            "validation": {
+                "commands": {
+                    "python": ["pytest", "ruff check src/", "mypy src/"],
+                },
+                "command_whitelist": ["pytest", "ruff", "mypy"],
+            },
+            "personalization": {
+                "extra_validation_commands": {
+                    "python": ["ruff check src/", "mypy src/"],
+                },
+            },
+        }
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["mypy src/"]},
+        )
+        result = merge_personalization_into_config(config, data)
+        cmds = result["validation"]["commands"]["python"]
+        assert "ruff check src/" not in cmds
+        assert "mypy src/" in cmds
+        # Base-config command not owned by personalization is preserved.
+        assert "pytest" in cmds
+
+    def test_removed_whole_module_is_deleted(self) -> None:
+        """Removing an entire personalization module must drop its commands,
+        and a now-empty module key must be removed (schema-safe)."""
+        config = {
+            "validation": {
+                "commands": {
+                    "python": ["pytest", "ruff check src/"],
+                    "swift": ["swift build"],
+                },
+                "command_whitelist": ["pytest", "ruff", "swift"],
+            },
+            "personalization": {
+                "extra_validation_commands": {
+                    "python": ["ruff check src/"],
+                    "swift": ["swift build"],
+                },
+            },
+        }
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["ruff check src/"]},
+        )
+        result = merge_personalization_into_config(config, data)
+        commands = result["validation"]["commands"]
+        # swift was entirely personalization-owned → module removed.
+        assert "swift" not in commands
+        assert "ruff check src/" in commands["python"]
+        assert "pytest" in commands["python"]
+
+    def test_empty_personalization_cleans_all_owned_commands(self) -> None:
+        """Clearing all personalization commands removes every
+        personalization-owned command, keeping base-config commands."""
+        config = {
+            "validation": {
+                "commands": {
+                    "python": ["pytest", "ruff check src/"],
+                    "swift": ["swift build"],
+                },
+                "command_whitelist": ["pytest", "ruff", "swift"],
+            },
+            "personalization": {
+                "extra_validation_commands": {
+                    "python": ["ruff check src/"],
+                    "swift": ["swift build"],
+                },
+            },
+        }
+        data = PersonalizationData()
+        result = merge_personalization_into_config(config, data)
+        commands = result["validation"]["commands"]
+        assert commands["python"] == ["pytest"]
+        assert "swift" not in commands
+
+    def test_unchanged_personalization_is_noop(self) -> None:
+        """Re-merging the same personalization must not reorder or duplicate."""
+        config = {
+            "validation": {
+                "commands": {
+                    "python": ["pytest", "ruff check src/"],
+                },
+                "command_whitelist": ["pytest", "ruff"],
+            },
+            "personalization": {
+                "extra_validation_commands": {
+                    "python": ["ruff check src/"],
+                },
+            },
+        }
+        data = PersonalizationData(
+            extra_validation_commands={"python": ["ruff check src/"]},
+        )
+        result = merge_personalization_into_config(config, data)
+        cmds = result["validation"]["commands"]["python"]
+        assert cmds.count("ruff check src/") == 1
+        assert cmds == ["pytest", "ruff check src/"]
+        assert result["validation"]["command_whitelist"].count("ruff") == 1
+
+    def test_deleted_command_prefix_not_removed_from_whitelist(self) -> None:
+        """Whitelist is only ever extended, never shrunk (legacy field, and
+        other commands may still rely on the prefix)."""
+        config = {
+            "validation": {
+                "commands": {
+                    "python": ["pytest", "bandit -r src/"],
+                },
+                "command_whitelist": ["pytest", "bandit"],
+            },
+            "personalization": {
+                "extra_validation_commands": {
+                    "python": ["bandit -r src/"],
+                },
+            },
+        }
+        data = PersonalizationData(
+            extra_validation_commands={"python": []},
+        )
+        result = merge_personalization_into_config(config, data)
+        # bandit command removed, but the whitelist entry stays (harmless,
+        # legacy compatibility).
+        assert "bandit -r src/" not in result["validation"]["commands"]["python"]
+        assert "bandit" in result["validation"]["command_whitelist"]
 
 
 class TestSavePersonalizationToConfig:

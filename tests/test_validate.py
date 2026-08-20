@@ -132,6 +132,17 @@ class TestCommandIsWhitelisted:
         assert validate.command_is_whitelisted("ruffcheck", ["ruff"]) is False
         assert validate.command_is_whitelisted("ruff\tcheck", ["ruff"]) is True
 
+    def test_non_string_whitelist_entry_skipped(self) -> None:
+        """Non-string whitelist entries must be skipped instead of crashing (fix 1)."""
+        assert validate.command_is_whitelisted("ruff check src/", ["ruff", 123, None]) is True
+        assert validate.command_is_whitelisted("rm -rf /", ["ruff", 123, None]) is False
+
+    @pytest.mark.parametrize("metachar", [";", "&", "$", "`", "<", ">", "\n", "\r"])
+    def test_metacharacters_rejected(self, metachar: str) -> None:
+        """Any shell-chaining metacharacter in the command body is rejected (fix 5)."""
+        command = f"ruff check{metachar}rm -rf /"
+        assert validate.command_is_whitelisted(command, ["ruff"]) is False
+
 
 class TestValidateConfig:
     def test_valid_config(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:
@@ -230,6 +241,36 @@ class TestValidateConfig:
         errors = validate.validate_config(path, schema_path)
         assert any("unsafe characters" in e for e in errors)
 
+    def test_whitelist_non_string_entries_no_crash(
+        self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path
+    ) -> None:
+        """Non-string command_whitelist entries must be reported, not crash (fix 1)."""
+        valid_config["validation"]["command_whitelist"] = [123]
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        assert any("unsafe characters" in e and "123" in e for e in errors)
+
+    def test_schema_missing_returns_error(
+        self, tmp_path: Path, valid_config: dict[str, Any]
+    ) -> None:
+        """Missing schema file must yield a clean error, not raise (fix 2)."""
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, tmp_path / "no-such-schema.json")
+        assert any("schema file missing" in e for e in errors)
+
+    def test_schema_corrupt_json_returns_error(
+        self, tmp_path: Path, valid_config: dict[str, Any]
+    ) -> None:
+        """Corrupt schema JSON must yield a clean error, not raise (fix 2)."""
+        schema_path = tmp_path / "corrupt-schema.json"
+        schema_path.write_text("{ not valid json", encoding="utf-8")
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        assert any("invalid schema JSON" in e for e in errors)
+
     def test_load_onboarding_config_handles_corrupt_yaml(self, tmp_path: Path, capsys) -> None:
         """load_onboarding_config should return None and log error for corrupt YAML (S-5)."""
         from iterate_cli.refresh import load_onboarding_config
@@ -303,6 +344,35 @@ class TestValidateDimensions:
         )
         errors = validate.validate_dimensions(dimensions_dir)
         assert any("field priority must be one of" in e for e in errors)
+
+
+class TestDimensionEnumFromSchema:
+    """Cover _dimension_enum_from_schema: inline enum and $ref forms (fix 3)."""
+
+    def test_inline_enum(self) -> None:
+        schema = {
+            "properties": {
+                "dimensions": {"items": {"type": "string", "enum": ["a", "b"]}},
+            },
+        }
+        assert validate._dimension_enum_from_schema(schema) == {"a", "b"}
+
+    def test_ref_enum(self) -> None:
+        schema = {
+            "properties": {
+                "dimensions": {"items": {"$ref": "#/$defs/dimension"}},
+            },
+            "$defs": {"dimension": {"enum": ["x", "y", "z"]}},
+        }
+        assert validate._dimension_enum_from_schema(schema) == {"x", "y", "z"}
+
+    def test_no_enum_returns_none(self) -> None:
+        schema = {"properties": {"dimensions": {"items": {"type": "string"}}}}
+        assert validate._dimension_enum_from_schema(schema) is None
+
+    def test_malformed_schema_returns_none(self) -> None:
+        assert validate._dimension_enum_from_schema({}) is None
+        assert validate._dimension_enum_from_schema(None) is None
 
 
 class TestDimensionConsistency:
@@ -1046,7 +1116,7 @@ class TestUpdateCommand:
             "modified", encoding="utf-8"
         )
         assert (
-            install_main(["update", "--ai", "trae", "--target", str(target), "--force"], source=source)
+            install_main(["update", "--ai", "trae", "--target", str(target)], source=source)
             == 0
         )
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(
@@ -1094,7 +1164,7 @@ class TestUpdateCommand:
         assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(encoding="utf-8") == "skill"
         assert (
-            install_main(["update", "--ai", "trae", "--target", str(target), "--force", "--yes"], source=source)
+            install_main(["update", "--ai", "trae", "--target", str(target), "--yes"], source=source)
             == 0
         )
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(
@@ -1182,6 +1252,25 @@ class TestMain:
 
     def test_unknown_command(self) -> None:
         assert validate.main(["unknown", "foo"]) == 1
+
+    def test_dimensions_subcommand(self, tmp_path: Path) -> None:
+        dimensions_dir = tmp_path / "dimensions"
+        dimensions_dir.mkdir()
+        (dimensions_dir / "correctness.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "正确性",
+                    "name_en": "Correctness",
+                    "priority": "critical",
+                    "focus": "Crash risks.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert validate.main(["dimensions", str(dimensions_dir)]) == 0
+
+    def test_dimensions_subcommand_missing_dir(self, tmp_path: Path) -> None:
+        assert validate.main(["dimensions", str(tmp_path / "nope")]) == 1
 
     def test_missing_arguments(self) -> None:
         assert validate.main([]) == 1

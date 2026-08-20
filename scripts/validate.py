@@ -111,6 +111,10 @@ def command_is_whitelisted(command: str, whitelist: list[str]) -> bool:
         if ch in _COMMAND_METACHARS:
             return False
     for prefix in whitelist:
+        # Guard against non-string entries (e.g. a stray int in a hand-edited
+        # command_whitelist): skip them instead of crashing on len()/startswith.
+        if not isinstance(prefix, str):
+            continue
         if stripped == prefix:
             return True
         if (
@@ -159,8 +163,13 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
     # dot, and space (for multi-word commands like "npm run").
     # This prevents shell metacharacter injection via whitelist entries.
     _WHITELIST_ENTRY_PATTERN = re.compile(r"^[A-Za-z0-9_. -]+$")
+    # Keep only the entries that survive the safety check so commands are only
+    # matched against trustworthy prefixes; bad entries are reported and dropped.
+    safe_whitelist: list[str] = []
     for idx, entry in enumerate(whitelist):
-        if not isinstance(entry, str) or not _WHITELIST_ENTRY_PATTERN.match(entry):
+        if isinstance(entry, str) and _WHITELIST_ENTRY_PATTERN.match(entry):
+            safe_whitelist.append(entry)
+        else:
             errors.append(
                 f"validation.command_whitelist[{idx}] contains unsafe characters: {entry!r}"
             )
@@ -175,7 +184,7 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
                     f"validation.commands.{module}[{idx}] must be a string"
                 )
                 continue
-            if not command_is_whitelisted(command, whitelist):
+            if not command_is_whitelisted(command, safe_whitelist):
                 errors.append(
                     f"validation.commands.{module}[{idx}] is not in command_whitelist: {command!r}"
                 )
@@ -354,19 +363,33 @@ def validate_config(
         errors.append("Configuration must be a YAML mapping")
         return errors
 
-    schema = load_schema(schema_path or DEFAULT_SCHEMA_PATH)
-    errors.extend(validate_config_against_schema(config, schema))
+    # Graceful degradation when the schema file is missing or malformed (mirrors
+    # iterate_cli.doctor._load_config_schema): report the failure instead of
+    # raising, and skip the schema-dependent passes while still running the
+    # independent checks (whitelist / personalization / dimensions).
+    try:
+        schema = load_schema(schema_path or DEFAULT_SCHEMA_PATH)
+    except FileNotFoundError as exc:
+        errors.append(f"schema file missing: {exc}")
+        schema = None
+    except ValueError as exc:
+        errors.append(f"invalid schema JSON: {exc}")
+        schema = None
+
+    if schema is not None:
+        errors.extend(validate_config_against_schema(config, schema))
     errors.extend(validate_command_whitelist(config))
     errors.extend(validate_personalization_consistency(config))
 
     resolved_dimensions_dir = dimensions_dir or (path.parent / "dimensions")
     if resolved_dimensions_dir.exists():
         errors.extend(validate_dimensions(resolved_dimensions_dir))
-        expected_keys = _dimension_enum_from_schema(schema)
-        if expected_keys is not None:
-            errors.extend(
-                validate_dimension_consistency(resolved_dimensions_dir, expected_keys)
-            )
+        if schema is not None:
+            expected_keys = _dimension_enum_from_schema(schema)
+            if expected_keys is not None:
+                errors.extend(
+                    validate_dimension_consistency(resolved_dimensions_dir, expected_keys)
+                )
 
     return errors
 

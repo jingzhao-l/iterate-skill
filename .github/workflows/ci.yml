@@ -42,3 +42,18 @@ jobs:
 
       - name: Validate JSON schema is well-formed
         run: python -c "import json; json.load(open('config/config.schema.json'))"
+
+  npm-installer-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run npm-installer tests
+        working-directory: npm-installer
+        run: npm test

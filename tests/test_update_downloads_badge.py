@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 sys.path.insert(0, str(REPO_ROOT))
 
-import update_downloads_badge as udb  # noqa: I001  (import after sys.path setup for scripts/)
+import update_downloads_badge as udb
 
 
 def _clawhub_payload(downloads: int) -> dict:
