@@ -27,6 +27,9 @@ logs/
 # External upstream sources for reference (e.g. OpenHarness clone for harness fork design)
 .external/
 
+# Local dsh profile patches (dsh-im-gateway 模型切换卡片补丁, 仅本机使用, 不入库)
+scripts/dsh-im-gateway-patch/
+
 # Node/Python artifacts (if examples are executed locally)
 node_modules/
 __pycache__/
