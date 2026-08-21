@@ -29,6 +29,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -809,25 +810,26 @@ def interactive_select_assistants(
 ) -> list[str]:
     """Interactively select AI assistants to install to.
 
-    Auto-detects the AI tools installed on the user's machine (by inspecting
-    the home directory) and pre-selects them. Tools that are not auto-detected
-    are still listed so the user can pick them manually. When no tool is
-    detected, all supported tools are offered for manual selection.
+    Auto-detects the AI tools already present at the install target directory
+    (``effective_target`` — the project root for a project install, the home
+    directory for ``--global``) and pre-selects them. Tools that are not
+    auto-detected are still listed so the user can pick them manually. When no
+    tool is detected, all supported tools are offered for manual selection.
 
     On an interactive TTY an arrow-key / Space multi-select menu is shown;
     otherwise it falls back to the number-based ``_prompt_multi_select`` so
     the behavior stays testable.
 
     Args:
-        effective_target: Unused for detection (kept for call compatibility);
-            detection always inspects the user's home directory.
+        effective_target: Directory where the skill will be installed; tools
+            already installed there are detected and pre-selected.
         input_func: Callable used to read user input (non-TTY fallback).
 
     Returns:
         Sorted list of selected assistant keys. Empty list means the user
         cancelled or selected nothing.
     """
-    installed = detect_installed_assistants(Path.home())
+    installed = detect_installed_assistants(effective_target)
     if installed:
         _tui_print("检测到本机已安装的 AI 工具 / Detected AI assistants:", style="iterate.primary")
         for assistant in installed:
@@ -1113,17 +1115,36 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
 
 
 def _download_bytes(url: str, token: str | None, timeout: int = 30) -> bytes | None:
-    """Download raw bytes from a URL, optionally using a GitHub token."""
+    """Download raw bytes from a URL, optionally using a GitHub token.
+
+    The token is only attached when the URL targets the GitHub API host
+    (``api.github.com``). Release-asset URLs (``release-assets.githubusercontent.com``)
+    are public and must not receive the caller's PAT, keeping credential surface
+    minimal.
+    """
     request = urllib.request.Request(url, method="GET")
     request.add_header("Accept", "application/vnd.github+json")
-    if token:
+    if token and _is_github_api_url(url):
         request.add_header("Authorization", f"Bearer {token}")
 
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read()
-    except (urllib.error.URLError, TimeoutError):
+    except (urllib.error.URLError, TimeoutError, ValueError):
         return None
+
+
+def _is_github_api_url(url: str) -> bool:
+    """True when ``url`` targets the GitHub API host.
+
+    Uses a netloc prefix check (hostname.lower() starts with ``api.github.com``)
+    so a rogue ``https://api.github.com.evil`` cannot match.
+    """
+    try:
+        host = urllib.parse.urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    return host.lower() == "api.github.com" or host.lower().endswith(".api.github.com")
 
 
 def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
@@ -1139,9 +1160,13 @@ def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
         digest, name = parts
         # Handle "HASH  filename", "HASH *filename" and "HASH ./filename"
         # formats (the ``./`` prefix is common for tarballs stored at repo root).
+        # Match on the basename so checksum entries with a subpath prefix or a
+        # vaguely versioned file component (e.g. ``dist/iterate-skill.tar.gz`` or
+        # ``release/iterate-skill-1.2.3.tar.gz``) still resolve to the expected
+        # asset instead of being rejected as "not found".
         name = name.lstrip("*").strip()
         name = name.removeprefix("./")
-        if name == filename:
+        if os.path.basename(name) == filename:
             return digest.strip()
     return None
 

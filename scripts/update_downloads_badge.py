@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -66,11 +67,29 @@ def extract_count(source: str, payload: object) -> int | None:
     return value if value >= 0 else None
 
 
+# Referer header is required only by the Tencent SkillHub API; sending it to
+# other hosts (ClawHub, npm) can trip their anti-abuse checks and bloat the
+# request. It is therefore attached based on the request host, not globally.
+REFERER_HOST = "skillhub.cloud.tencent.com"
+_REFERER_HEADER = "https://skillhub.cloud.tencent.com/"
+
+
+def _is_skillhub_url(url: str) -> bool:
+    """Return True when a URL targets the Tencent SkillHub API."""
+    try:
+        host = urllib.parse.urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    return host == REFERER_HOST or host.endswith("." + REFERER_HOST)
+
+
 def fetch_json(url: str) -> object:
     """GET a JSON endpoint, raising on any network/decode failure."""
     context = ssl.create_default_context()
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    request.add_header("Referer", "https://skillhub.cloud.tencent.com/")
+    headers = {"User-Agent": USER_AGENT}
+    if _is_skillhub_url(url):
+        headers["Referer"] = _REFERER_HEADER
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS, context=context) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -148,7 +167,14 @@ def main() -> int:
             print(f"warning: {source} fetch failed: {exc}")
             fetched[source] = None
 
-    resolved, warnings = resolve_counts(fetched, previous)
+    try:
+        resolved, warnings = resolve_counts(fetched, previous)
+    except ValueError as exc:
+        # A source has neither a fresh value nor a usable previous value, so
+        # writing a partial sum would mislead the badge. Keep the last good
+        # file and signal failure to the caller (e.g. the hourly workflow).
+        print(f"error: {exc}; keeping previously committed {BADGES_FILE}")
+        return 1
     output = build_output(resolved, warnings)
     write_output(BADGES_FILE, output)
     for warning in warnings:

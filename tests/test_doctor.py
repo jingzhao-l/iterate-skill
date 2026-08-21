@@ -20,11 +20,13 @@ from iterate_cli.doctor import (
     CANONICAL_DIMENSIONS,
     SKILL_VERSION,
     DoctorReport,
+    DoctorFinding,
     apply_safe_fixes,
     render_report,
     run_doctor,
     run_doctor_fix,
 )
+from iterate_cli.doctor import _render_summary
 from iterate_cli.refresh import load_onboarding_config
 
 ITERATE_MD = "ITERATE.md"
@@ -530,3 +532,63 @@ class TestDoctorPersonalizationConsistency:
             f.check == "personalization.consistency" and f.severity == "warn"
             for f in report.findings
         )
+
+
+# ---------------------------------------------------------------------------
+# _render_summary — warning-state UX (summary must not contradict findings)
+# ---------------------------------------------------------------------------
+
+
+class _CapturingTui:
+    """Minimal stand-in for `tui` that records the last method + text."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, str]] = []
+
+    def empty_line(self) -> None:
+        self.lines.append(("empty", ""))
+
+    def error(self, text: str) -> None:
+        self.lines.append(("error", text))
+
+    def warning(self, text: str) -> None:
+        self.lines.append(("warning", text))
+
+    def success(self, text: str) -> None:
+        self.lines.append(("success", text))
+
+    def finished_line(self) -> str:
+        return self.lines[-1][1]
+
+
+def _report_with(*severities: str) -> DoctorReport:
+    report = DoctorReport("/fake/project")
+    report.findings.extend(
+        DoctorFinding(severity=s, check="check", message="msg") for s in severities
+    )
+    return report
+
+
+class TestRenderSummary:
+    def test_clean_report_says_healthy(self) -> None:
+        tui = _CapturingTui()
+        _render_summary(tui, _report_with("ok", "ok"))
+        assert tui.finished_line() == "Doctor: healthy (2 checks passed)."
+
+    def test_warnings_only_reported_as_nonblocking(self) -> None:
+        tui = _CapturingTui()
+        _render_summary(tui, _report_with("ok", "warn"))
+        line = tui.finished_line()
+        assert "warning" in line and "healthy" in line
+        assert "non-blocking" in line
+
+    def test_errors_reported_as_failed(self) -> None:
+        tui = _CapturingTui()
+        _render_summary(tui, _report_with("ok", "error"))
+        assert "error" in tui.finished_line()
+
+    def test_mixed_severities_prefer_error_message(self) -> None:
+        tui = _CapturingTui()
+        _render_summary(tui, _report_with("warn", "error", "ok"))
+        assert "error" in tui.finished_line()
+        assert "warning" not in tui.finished_line()

@@ -63,7 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.version:
-        tui.banner()
+        if _should_show_banner(args):
+            tui.banner()
         tui.info(f"iterate {__version__}")
         tui.empty_line()
         tui.hint("Install the skill across AI assistants: npx iterate-skill-installer")
@@ -79,11 +80,41 @@ def main(argv: list[str] | None = None) -> int:
     # Structured (JSON) output must not be polluted by the ASCII banner.
     show_banner = _should_show_banner(args) and not getattr(args, "json", False)
 
+    try:
+        return _dispatch_command(args, parser, project_root, show_banner)
+    except KeyboardInterrupt:
+        # Ctrl+C mid-interaction must not surface a raw traceback.
+        tui.cancel()
+        tui.hint("已中断，本次未写入任何文件 / Interrupted, nothing was written.", indent=2)
+        return 1
+    except EOFError:
+        # Ctrl+D / closed stdin (e.g. piped without data) mid-prompt. Show a
+        # clean cancellation instead of an unhandled-input traceback.
+        tui.cancel()
+        tui.hint(
+            "输入已结束（Ctrl+D / EOF），本次未写入任何文件 / "
+            "Input ended (Ctrl+D / EOF), nothing was written.",
+            indent=2,
+        )
+        return 1
+
+
+def _dispatch_command(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    project_root: Path,
+    show_banner: bool,
+) -> int:
+    """Route a parsed subcommand to its handler.
+
+    Centralized so that interactive handlers (onboard, personalize) can be
+    wrapped once by the caller for graceful Ctrl+C/EOF handling.
+    """
     if args.command == "onboard":
         if show_banner:
             tui.banner()
         return _cmd_onboard(project_root)
-    elif args.command == "personalize":
+    if args.command == "personalize":
         if show_banner:
             tui.banner()
         return _cmd_personalize(
@@ -91,23 +122,23 @@ def main(argv: list[str] | None = None) -> int:
             clear=getattr(args, "clear", False),
             yes=getattr(args, "yes", False),
         )
-    elif args.command == "refresh":
+    if args.command == "refresh":
         if show_banner:
             tui.banner()
         return _cmd_refresh(project_root, dry_run=getattr(args, "dry_run", False))
-    elif args.command == "reonboard":
+    if args.command == "reonboard":
         if show_banner:
             tui.banner()
         return _cmd_reonboard(project_root)
-    elif args.command == "status":
+    if args.command == "status":
         if show_banner:
             tui.banner()
         return _cmd_status(project_root, json_output=getattr(args, "json", False))
-    elif args.command == "show":
+    if args.command == "show":
         if show_banner:
             tui.banner()
         return _cmd_show(project_root, json_output=getattr(args, "json", False))
-    elif args.command == "doctor":
+    if args.command == "doctor":
         if show_banner:
             tui.banner()
         return _cmd_doctor(
@@ -116,9 +147,8 @@ def main(argv: list[str] | None = None) -> int:
             fix=getattr(args, "fix", False),
             json_out=getattr(args, "json_out", None),
         )
-    else:
-        parser.print_help()
-        return 0
+    parser.print_help()
+    return 0
 
 
 def _build_parser() -> argparse.ArgumentParser:

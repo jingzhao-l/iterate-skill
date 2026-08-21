@@ -1676,6 +1676,68 @@ class TestCLIVersion:
         captured = capsys.readouterr()
         assert "iterate" in captured.out
 
+    def test_version_flag_honors_no_banner(self, capsys) -> None:
+        # The ASCII banner is large; --version must honor --no-banner and the
+        # ITERATE_NO_BANNER env var so quick version queries stay compact.
+        capsys.readouterr()
+        ret = cli_main(["--version", "--no-banner"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "iterate" in captured.out
+        assert "██" not in captured.out
+
+    def test_version_flag_honors_env_no_banner(self, capsys, monkeypatch) -> None:
+        monkeypatch.setenv("ITERATE_NO_BANNER", "1")
+        capsys.readouterr()
+        ret = cli_main(["--version"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "iterate" in captured.out
+        assert "██" not in captured.out
+
+    def test_version_flag_shows_banner_by_default(self, capsys) -> None:
+        capsys.readouterr()
+        ret = cli_main(["--version"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "██" in captured.out
+
+
+class TestCLIGracefulInterrupt:
+    """Ctrl+C / Ctrl+D during a command must cancel cleanly, not crash."""
+
+    def test_keyboard_interrupt_returns_1(
+        self, empty_project: Path, capsys, monkeypatch
+    ) -> None:
+        import iterate_cli.cli as cli_mod
+
+        def boom(_root, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli_mod, "_cmd_status", boom)
+        capsys.readouterr()
+        ret = cli_main(["status", "-p", str(empty_project)])
+        assert ret == 1
+        out = capsys.readouterr().out
+        assert "Interrupted" in out or "中断" in out
+        assert "Traceback" not in out
+
+    def test_eoferror_returns_1_no_traceback(
+        self, empty_project: Path, capsys, monkeypatch
+    ) -> None:
+        import iterate_cli.cli as cli_mod
+
+        def boom(_root, **kwargs):
+            raise EOFError
+
+        monkeypatch.setattr(cli_mod, "_cmd_status", boom)
+        capsys.readouterr()
+        ret = cli_main(["status", "-p", str(empty_project)])
+        assert ret == 1
+        out = capsys.readouterr().out
+        assert "Input ended" in out or "输入已结束" in out
+        assert "Traceback" not in out
+
 
 class TestCLINoCommand:
     def test_no_command_prints_help(self, capsys) -> None:
@@ -4417,6 +4479,53 @@ class TestShowCommand:
         report = json.loads(captured.out)
         assert report["onboarded"] is True
         assert "onboarding" in report
+
+    def test_show_surfaces_drift_advice(
+        self, fake_project: Path, capsys, monkeypatch
+    ) -> None:
+        """When drift is detected, show surfaces the actionable advice (parity
+        with ``iterate status``) in both TUI and JSON outputs."""
+        import iterate_cli.show as show_mod
+        from iterate_cli.fingerprint import DriftResult
+        from iterate_cli.show import collect_show_data
+
+        fake_drift = DriftResult(changed=["pyproject.toml"])
+        monkeypatch.setattr(
+            show_mod, "check_onboarding_drift", lambda _root: fake_drift
+        )
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        data = collect_show_data(fake_project)
+        assert data["drift"] == fake_drift.summary()
+        assert data["drift_advice"] == fake_drift.advice()
+
+        ret = cli_main(["show", "-p", str(fake_project)])
+        assert ret == 0
+        captured = capsys.readouterr().out
+        assert "Drift:" in captured
+        assert "iterate refresh" in captured
+
+    def test_show_json_includes_drift_advice(
+        self, fake_project: Path, capsys, monkeypatch
+    ) -> None:
+        import json
+
+        import iterate_cli.show as show_mod
+        from iterate_cli.fingerprint import DriftResult
+
+        fake_drift = DriftResult(added=["pnpm-lock.yaml"])
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(protected_paths=["legacy/**"])
+        write_onboarding_outputs(data, fake_project)
+        monkeypatch.setattr(
+            show_mod, "check_onboarding_drift", lambda _root: fake_drift
+        )
+        ret = cli_main(["show", "-p", str(fake_project), "--json"])
+        assert ret == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["drift_advice"] == fake_drift.advice()
         assert "config" in report
         assert report["personalization"]["protected_paths"] == ["legacy/**"]
 

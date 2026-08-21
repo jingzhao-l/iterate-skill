@@ -596,7 +596,7 @@ if empty AND deferredArchitectural is empty:
    - `swift/`：`swift build -c debug`
    - `typescript/`：`npm run compile`
 
-   执行前检查命令前缀是否在 `validation.command_whitelist` 中；不在白名单中的命令**直接拒绝，不可通过用户确认绕过**（与"个性化硬白名单"保持一致）。
+   执行前遵循统一运行时白名单语义：只执行 `validation.commands.<module>` 中**显式配置的精确命令**（不自行拼装、不基于前缀构造命令）；未配置命令的模块跳过。`validation.command_whitelist` 仅为配置期校验辅助字段（见下方 Security 章节），可缺省、无运行时约束力——即便未配置，运行时仍以 `validation.commands` 为唯一权威白名单，不在其中的命令**直接拒绝，不可通过用户确认绕过**。
 
    若验证失败：
    - 追加 `.iterate_decisions.md`：`Atomic fix validation failed: {details}`
@@ -685,7 +685,7 @@ if empty AND deferredArchitectural is empty:
 
    根据改动模块跑完整验证（同 Phase 2，但覆盖所有改动模块）。
 
-   执行前同样检查 `validation.command_whitelist`。
+   执行前遵循运行时唯一权威白名单（同 Phase 2）：只执行 `validation.commands.<module>` 中的精确命令。
 
    若失败：
    - 追加 `.iterate_decisions.md`：`Full validation failed: {details}`
@@ -964,8 +964,8 @@ iterate/
 | `git.use_worktree` | bool | `false` | 是否默认使用 worktree；**当工作区有未提交改动/未跟踪文件时，无论此值如何，都优先用 worktree 隔离**（见 Step 1.7） |
 | `git.push_per_round` | bool | `false` | 每轮通过后是否立即 push（默认 false，安全） |
 | `git.auto_merge` | bool | `false` | 每轮验证后是否自动 merge 回 target_branch（默认 false，安全） |
-| `validation.command_whitelist` | list | 常见命令前缀 | 允许的命令前缀；不在白名单中的命令直接拒绝，不可通过用户确认绕过 |
-| `validation.commands.<module>` | list | 示例命令 | 各模块验证命令 |
+| `validation.command_whitelist` | list | 常见命令前缀 | 配置期校验辅助字段（可选、可缺省）：`scripts/validate.py` 据此检查 `validation.commands` 各命令以合理工具前缀开头；无运行时约束力，运行时以 `validation.commands` 为唯一权威 |
+| `validation.commands.<module>` | list | 示例命令 | 各模块验证命令；**运行时唯一权威白名单**，AI 只执行其中的精确命令，不自行拼装或基于前缀构造命令 |
 | `reviewer.output_schema_validation` | bool | `true` | 是否校验 reviewer JSON 输出并自动重试 |
 | `reviewer.evidence_validation` | bool | `true` | 硬证据门禁：meta-review 校验每个 finding 的 file/line 真实性，伪证判 `needs_revision` |
 | `reviewer.coverage_validation` | bool | `true` | 范围覆盖率校验（提示性）：自报 `readFiles` 明显不覆盖分配清单时浮出 `COVERAGE_GAP`，不反转判定 |
@@ -997,8 +997,9 @@ iterate/
    - 执行命令时避免将敏感文件作为参数或输出内容。
    - onboarding 扫描仅检查 `package.json`、`pyproject.toml` 等 manifest 文件的存在性，以及 `README.md` / `CLAUDE.md` 等公开上下文文件；不会读取 `.env`、密钥、凭证或其他敏感文件内容。
 
-2. **命令白名单 / Command whitelist — 双层强制执行 / Dual-layer enforcement**
-   - **配置时校验 / Config-time validation**：`scripts/validate.py` 在校验配置时检查 `validation.commands` 中的每条命令是否以 `validation.command_whitelist` 中的前缀开头。不在白名单中的命令会报错，配置校验失败。
+2. **命令白名单 / Command whitelist — 运行时与配置期分离**
+   - **运行时唯一权威 = `validation.commands.<module>` 精确命令 / Runtime authoritative whitelist**：AI 执行验证命令时，只执行 `validation.commands` 中用户显式配置的**精确命令**，不自行拼装、不基于前缀构造命令；未配置命令的模块跳过。不在其中的命令**直接拒绝，不可通过用户确认绕过**。`validation.command_whitelist` 不参与运行时判定。
+   - **配置时校验 / Config-time validation**：`scripts/validate.py` 在校验配置时检查 `validation.commands` 中的每条命令是否以 `validation.command_whitelist` 中的前缀开头（该校验后再决定命令是否合理）。不在白名单中的命令会报错，配置校验失败。`command_whitelist` 为可选字段，仅在此处生效。
    - **个性化硬白名单 / Personalization strict whitelist**：`iterate personalize` 中添加 `extra_validation_commands` 时，使用 `validate_extra_command` 进行硬白名单校验——拒绝 shell 链接元字符（`;`、`|`、`&` 等），且只接受预批准的工具前缀（pytest/ruff/mypy/eslint/swift/cargo 等 30+ 常见 test/lint/build 工具）。不在白名单中的命令**直接拒绝**，不可通过用户确认绕过。
    - 默认白名单：`ruff`, `mypy`, `pytest`, `swift`, `npm run`, `yarn`, `pnpm`, `go test`, `cargo`, `python`, `python3` 等已知前缀。
    - 可用 `python scripts/validate.py config <path>` 提前检查命令合规性。
@@ -1053,4 +1054,4 @@ iterate/
 6. **主模型可补充 findings / Main model can supplement findings**：当 reviewer 遗漏明显问题时。
 7. **Git 隔离强制 / Git isolation is mandatory**：所有工作发生在 `iterate/*` 分支或 worktree；merge/push 为 opt-in（`git.auto_merge` / `git.push_per_round` 默认 `false`），仅在用户显式启用时自动合并并推送，否则保留在迭代分支由人工 review。
 8. **完整审计 / Full audit trail**：`.iterate_decisions.md` 记录所有修复、延迟、回滚和重要决策。
-9. **验证命令安全 / Validation command safety**：`iterate.config.yaml` 中的 `validation.commands` 由 AI 助手读取后执行；执行前检查 `validation.command_whitelist`，**不在白名单的命令直接拒绝，不可通过用户确认绕过**（与上方"个性化硬白名单"保持一致）。
+9. **验证命令安全 / Validation command safety**：`iterate.config.yaml` 中的 `validation.commands` 由 AI 助手读取后执行。运行时只执行其中**精确配置**的命令（不自行拼装、不基于前缀构造命令），未配置命令的模块跳过；不在其中的命令**直接拒绝，不可通过用户确认绕过**。`validation.command_whitelist` 仅为配置期校验辅助字段，无运行时约束力（与上方"命令白名单"章节保持一致）。

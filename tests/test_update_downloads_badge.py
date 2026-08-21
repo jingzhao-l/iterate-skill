@@ -164,6 +164,47 @@ class TestWriteOutput:
             assert json.load(handle) == {"total": 2563, "clawhub": 845}
 
 
+class TestIsSkillhubUrl:
+    @pytest.mark.parametrize(
+        "url, expected",
+        [
+            ("https://api.skillhub.tencent.com/api/v1/foo", False),
+            ("https://skillhub.cloud.tencent.com/x", True),
+            ("https://sub.skillhub.cloud.tencent.com/x", True),
+            ("https://evil-skillhub.cloud.tencent.com.evil.com/x", False),
+            ("not a url", False),
+        ],
+    )
+    def test_is_skillhub_url(self, url: str, expected: bool) -> None:
+        assert udb._is_skillhub_url(url) is expected
+
+    def test_referer_only_added_for_skillhub(self, monkeypatch) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def fake_urlopen(request, timeout, context):  # noqa: ARG001
+            captured["host"] = request.host
+            captured["referer"] = request.get_header("Referer")
+            return FakeResp()
+
+        monkeypatch.setattr(udb.urllib.request, "urlopen", fake_urlopen)
+        udb.fetch_json("https://skillhub.cloud.tencent.com/api")
+        assert captured["referer"] == "https://skillhub.cloud.tencent.com/"
+
+        captured.clear()
+        udb.fetch_json("https://api.npmjs.org/downloads")
+        assert captured["referer"] is None
+
+
 class TestMain:
     @staticmethod
     def _fake_fetch(url: str) -> object:
@@ -215,3 +256,24 @@ class TestMain:
         assert data["npm"] == 1464  # reused from previous
         assert data["total"] == 2664
         assert "warnings" in data
+
+    def test_main_keeps_file_when_counts_unresolvable(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        target = tmp_path / "downloads.json"
+        target.write_text(
+            json.dumps({"clawhub": 845, "skillhub": 254, "npm": 1464, "total": 2563}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(udb, "BADGES_FILE", str(target))
+
+        def all_down(url: str) -> object:
+            raise OSError(f"network down: {url}")
+
+        monkeypatch.setattr(udb, "fetch_json", all_down)
+        # No previous value is available for reuse, so the sum cannot be resolved.
+        monkeypatch.setattr(udb, "read_previous", lambda _path: {})
+        assert udb.main() == 1
+        with open(target, encoding="utf-8") as handle:
+            data = json.load(handle)
+        assert data["total"] == 2563  # previous file untouched

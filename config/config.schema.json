@@ -108,7 +108,7 @@
       "properties": {
         "command_whitelist": {
           "type": "array",
-          "description": "Command prefixes allowed to run without user confirmation.",
+          "description": "Config-time vetting aid (optional): common command prefixes that scripts/validate.py checks each validation.commands entry starts with. Has no effect at runtime; the runtime authoritative whitelist is validation.commands.",
           "items": {
             "type": "string",
             "minLength": 1
@@ -118,7 +118,7 @@
         },
         "commands": {
           "type": "object",
-          "description": "Per-module validation command lists. Keys are module identifiers; values are shell commands.",
+          "description": "Per-module validation command lists. Keys are module identifiers; values are shell commands. This is the runtime authoritative whitelist: the agent executes exactly these commands and no others.",
           "propertyNames": {
             "pattern": "^[A-Za-z0-9_.-]+$",
             "description": "Module identifiers must only contain letters, digits, underscore, dash, or dot (no shell metacharacters)."
