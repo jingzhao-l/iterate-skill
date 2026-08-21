@@ -119,6 +119,18 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **2.6.0 状态（2026-08-21）**：GitHub Release v2.6.0 已发布，CI 已上传
+      > `iterate-skill.tar.gz`（346,530 字节）+ `SHA256SUMS.txt`（github-actions[bot] 上传，
+      > release `published_at` 2026-08-21T14:35:49Z）；npm `iterate-skill-installer@2.6.0`
+      > 已发布；ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本
+      > `.dist_tmp/clawhub_publish.py` 提交 2.6.0，发布响应 `status=pending`（平台异步，
+      > `latestVersion` 需数分钟传播，待复查确认）；ModelScope 已 PATCH 生效（`verify_update.py`
+      > 上传 2.6.0 精简 zip 并 `update_skill_settings` 成功，skill_file 指向 2.6.0 精简包）；
+      > SkillHub（skillId `104490`）`skillhub publish` 成功（`ok:true`，versionId `260224`，
+      > `tags.latest=2.6.0`，`reviewStatus/securityScanStatus=pending` 为平台异步审核）。
+      > **SkillHub 新增坑**：专用包除剔除 LICENSE 外还要剔除 `.gitignore` `.gitmodules`
+      > 等一切点文件/无扩展名文件（服务端 400「不允许的文件类型」），`rebuild_skillhub.py`
+      > 已改为通用黑名单 `_banned()`（basename 小写命中黑名单、以 `.` 开头或无扩展名即剔除）。
       > **2.5.0 状态（2026-08-21）**：ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）
       > 经并发脚本 `.dist_tmp/clawhub_publish.py` 上传并发布 `latestVersion: 2.5.0` 已生效；ModelScope
       > 已 PATCH 生效（`verify_update.py` 上传精简 zip 并 `update_skill_settings` 成功，
