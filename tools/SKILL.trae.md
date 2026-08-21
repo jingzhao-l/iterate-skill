@@ -97,8 +97,9 @@ query: |
 
 ## 验证命令执行前检查 / Pre-validation Check
 
-运行 `RunCommand` 前：
+运行 `RunCommand` 前：只执行 `validation.commands.<module>` 中**显式配置的精确命令**，不自行拼装、不基于前缀构造命令；未配置命令的模块跳过。
 
-1. 读取 `validation.command_whitelist`。
-2. 命令不在白名单时，**直接拒绝，不可通过用户确认绕过**（与个性化硬白名单一致）。
-3. 执行命令并捕获输出。
+1. 确认要执行的命令正好是 `validation.commands` 中某条精确命令（不在其中的命令直接拒绝，不可通过用户确认绕过）。
+2. 执行命令并捕获输出。
+
+`validation.command_whitelist` 仅为配置期校验辅助字段（`scripts/validate.py`），可缺省、无运行时约束力，运行时以 `validation.commands` 为唯一权威白名单。

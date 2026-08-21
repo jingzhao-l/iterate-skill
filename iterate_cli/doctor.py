@@ -154,20 +154,22 @@ def _load_config_schema() -> dict[str, Any] | None:
     return schema if isinstance(schema, dict) else None
 
 
-def _schema_violations(config: dict[str, Any]) -> list[str]:
+def _schema_violations(config: dict[str, Any]) -> list[str] | None:
     """Validate ``config`` against the canonical JSON Schema.
 
     Returns a list of human-readable ``path: message`` violations (empty when
-    the config is valid or schema validation is unavailable). Mirrors the
-    schema pass in scripts/validate.py so the two diagnostic paths agree.
+    the config is valid), or ``None`` when schema validation is **unavailable**
+    (schema file missing/malformed or ``jsonschema`` not installed) so the
+    caller can distinguish "fully matches" from "validation skipped" instead of
+    reporting a false success. Mirrors the schema pass in scripts/validate.py.
     """
     schema = _load_config_schema()
     if schema is None:
-        return []
+        return None
     try:
         from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
     except ImportError:
-        return []
+        return None
     violations: list[str] = []
     try:
         validator = Draft202012Validator(schema)
@@ -175,7 +177,7 @@ def _schema_violations(config: dict[str, Any]) -> list[str]:
         # Schema is structurally invalid (e.g. malformed ``$ref`` / type
         # constraint). Skipping schema validation is safer than crashing the
         # whole doctor run on a broken schema file.
-        return []
+        return None
     for error in validator.iter_errors(config):
         path = "/".join(str(part) for part in error.path) or "<root>"
         violations.append(f"{path}: {error.message}")
@@ -194,7 +196,7 @@ def _command_is_whitelisted(command: Any, whitelist: Any) -> bool:
     """
     if not isinstance(command, str) or not isinstance(whitelist, list):
         return False
-    _COMMAND_METACHARS = set(";|&$`><\r\n")
+    _COMMAND_METACHARS = set(';|&$`><\r\n\\#*?~"\'\u007b\u007d()[]')
     stripped = command.strip()
     for ch in stripped:
         if ch in _COMMAND_METACHARS:
@@ -257,11 +259,11 @@ def _check_onboarding(report: DoctorReport, project_root: Path) -> bool:
         _err(
             report,
             "onboarding",
-            "Onboarding is not complete: ITERATE.md and/or iterate.config.yaml are missing.",
+            "Onboarding is not complete: ITERATE.md is missing.",
             "Run `iterate onboard` to initialize the project.",
         )
         return False
-    _ok(report, "onboarding", "ITERATE.md and iterate.config.yaml present.")
+    _ok(report, "onboarding", "ITERATE.md present.")
     return True
 
 
@@ -289,6 +291,16 @@ def _check_config_schema(report: DoctorReport, config: dict[str, Any]) -> None:
     severity.
     """
     schema_violations = _schema_violations(config)
+    if schema_violations is None:
+        # Validation itself is unavailable (missing schema/jsonschema). Report
+        # a warning instead of a false "fully matches" success so the operator
+        # knows the schema gate did not actually run.
+        _warn(
+            report,
+            "config.schema",
+            "Config schema validation could not run (schema file or jsonschema unavailable).",
+        )
+        return
     if not schema_violations:
         _ok(report, "config.schema", "iterate.config.yaml fully matches the config schema.")
         return
@@ -309,6 +321,13 @@ def _check_dimensions(report: DoctorReport, config: dict[str, Any]) -> None:
     canonical_set = set(CANONICAL_DIMENSIONS)
     dims = _dimension_ids(config)
 
+    # Empty list is a hard error: emit it first and return so we never
+    # also report the verbose "all configured dimensions are canonical"
+    # success line for the same check (which would contradict it).
+    if not dims:
+        _err(report, "dimensions", "dimensions must not be an empty list.", "Configure at least one dimension.")
+        return
+
     unknown = [d for d in dims if d not in canonical_set]
     if unknown:
         _warn(
@@ -319,10 +338,6 @@ def _check_dimensions(report: DoctorReport, config: dict[str, Any]) -> None:
         )
     else:
         _ok(report, "dimensions", f"All {len(dims)} configured dimension(s) are canonical.")
-
-    if not dims:
-        _err(report, "dimensions", "dimensions must not be an empty list.", "Configure at least one dimension.")
-        return
 
     seen: set[str] = set()
     dups: list[str] = []
@@ -530,9 +545,13 @@ def _check_personalization(report: DoctorReport, config: dict[str, Any]) -> None
         return
     enabled = set(dims)
     broken: list[str] = []
-    for idx, item in enumerate(personalization.get("fix_priority_order") or []):
-        if isinstance(item, str) and item not in enabled:
-            broken.append(f"fix_priority_order[{idx}] {item!r}")
+    # Guard against a hand-edited string: iterating it would flag each
+    # character as a broken dimension (matching load_personalization_from_config).
+    fix_priority = personalization.get("fix_priority_order")
+    if isinstance(fix_priority, list):
+        for idx, item in enumerate(fix_priority):
+            if isinstance(item, str) and item not in enabled:
+                broken.append(f"fix_priority_order[{idx}] {item!r}")
     for idx, item in enumerate(personalization.get("dimension_focus") or []):
         if isinstance(item, dict) and item.get("dimension") not in enabled:
             broken.append(f"dimension_focus[{idx}] {item.get('dimension')!r}")
@@ -689,7 +708,9 @@ def render_report(report: DoctorReport, json_output: bool = False) -> int:
         json_output: When True, print a structured JSON blob instead of TUI.
 
     Returns:
-        Exit code: 0 when healthy, 1 when errors are present.
+        Exit code: 0 when healthy (errors absent); 1 when errors are present.
+        Warnings are non-blocking and do not change the exit code, but they
+        are reported in the summary line (see ``_render_summary``).
     """
     if json_output:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
@@ -698,7 +719,6 @@ def render_report(report: DoctorReport, json_output: bool = False) -> int:
     from iterate_cli.tui import tui
 
     tui.intro(f"Iterate Skill — Doctor / {report.project}")
-    has_error = report.has_errors()
 
     for finding in report.findings:
         if finding.severity == "ok":
@@ -714,12 +734,32 @@ def render_report(report: DoctorReport, json_output: bool = False) -> int:
 
     _render_next_actions(tui, report)
 
+    _render_summary(tui, report)
+    return 1 if report.has_errors() else 0
+
+
+def _render_summary(tui: Any, report: DoctorReport) -> None:
+    """Render the doctor end-of-run summary line.
+
+    Distinguishes three outcomes so the summary never contradicts the
+    findings shown above:
+    - errors present → error summary, exit code already set to 1 by caller.
+    - warnings only  → *not* reported as plain "healthy" (the checks
+      surfaced warnings the operator should look at), but still non-blocking.
+    - clean          → "healthy".
+    """
     tui.empty_line()
-    if has_error:
-        tui.error(f"Doctor: {sum(1 for f in report.findings if f.severity == 'error')} error(s) found.")
-        return 1
+    error_count = sum(1 for f in report.findings if f.severity == "error")
+    warn_count = sum(1 for f in report.findings if f.severity == "warn")
+    if error_count:
+        tui.error(f"Doctor: {error_count} error(s) found.")
+        return
+    if warn_count:
+        tui.warning(
+            f"Doctor: healthy but with {warn_count} warning(s) — non-blocking."
+        )
+        return
     tui.success(f"Doctor: healthy ({len(report.findings)} checks passed).")
-    return 0
 
 
 def _render_next_actions(tui: Any, report: DoctorReport) -> None:

@@ -99,7 +99,6 @@ Claude Code 实现 iterate skill 的核心要点：用 `/workflow` 或 `/agent` 
 
 ## 验证命令安全 / Validation Safety
 
-执行 `Bash` 前：
+运行时只执行 `validation.commands.<module>` 中**显式配置的精确命令**，不自行拼装、不基于前缀构造命令。未配置命令的模块跳过。
 
-1. 读取 `validation.command_whitelist`。
-2. 命令不在白名单时，**直接拒绝，不可通过用户确认绕过**（与个性化硬白名单一致）。
+`validation.command_whitelist` 仅为配置期校验辅助字段（`scripts/validate.py`），可缺省、无运行时约束力——即便未配置，运行时仍以 `validation.commands` 为唯一权威白名单。不在其中的命令**直接拒绝，不可通过用户确认绕过**（与个性化硬白名单一致）。

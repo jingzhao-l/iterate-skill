@@ -104,7 +104,7 @@ def command_is_whitelisted(command: str, whitelist: list[str]) -> bool:
     命令所需的常用字符（字母、数字、下划线、连字符、点、斜杠、空格、``@``/``:``
     及 flag 常见字符如 ``-`` ``=``）一律放行；仅对真正的元字符强制拒绝。
     """
-    _COMMAND_METACHARS = set(";|&$`><\r\n")
+    _COMMAND_METACHARS = set(';|&$`><\r\n\\#*?~"\'\u007b\u007d()[]')
     stripped = command.strip()
     # Reject any shell-chaining metacharacter anywhere in the command body.
     for ch in stripped:

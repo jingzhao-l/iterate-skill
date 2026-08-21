@@ -108,7 +108,7 @@ If no findings, return { "findings": [] }.
 
 ## 安全提醒 / Safety Reminder
 
-- 执行任何 `validation.commands` 前，先检查命令是否在 `validation.command_whitelist` 中；不在白名单的命令直接拒绝，不可通过用户确认绕过。
+- 运行时只执行 `validation.commands.<module>` 中显式配置的精确命令，不自行拼装、不基于前缀构造命令；不在其中的命令直接拒绝，不可通过用户确认绕过。未配置命令的模块跳过。`validation.command_whitelist` 仅为配置期校验辅助字段，无运行时约束力。
 - 绝不 force-push。
 - 绝不直接在 main/master 上提交。
 - merge/push 默认关闭（`git.auto_merge` / `git.push_per_round = false`）；如需合并推送，先确认当前仓库与远程，再人工 review 后执行。

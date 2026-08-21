@@ -25,14 +25,30 @@ from iterate_cli.refresh import (
 from iterate_cli.tui import tui
 
 
-def _drift_summary(project_root: Path, drift_enabled: bool) -> str:
-    """Return a human/JSON-safe drift description."""
+def _drift_summary(project_root: Path) -> str:
+    """Return a human/JSON-safe drift description.
+
+    ``check_onboarding_drift`` already honours the ``drift_check`` switch
+    internally, so this helper needs no extra argument.
+    """
     drift = check_onboarding_drift(project_root)
     if drift is None:
         return "unknown"
     if drift.has_drift:
         return drift.summary()
     return "none"
+
+
+def _drift_advice(project_root: Path) -> str | None:
+    """Return actionable drift advice, or None when there is none to give.
+
+    Only meaningful when drift is actually detected (parity with ``iterate
+    status``, which surfaces ``DriftResult.advice()``).
+    """
+    drift = check_onboarding_drift(project_root)
+    if drift is None or not drift.has_drift:
+        return None
+    return drift.advice()
 
 
 def collect_show_data(project_root: Path) -> dict[str, Any]:
@@ -69,20 +85,49 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
             len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
         ),
     }
-    data["drift"] = _drift_summary(project_root, drift_enabled)
+    data["drift"] = _drift_summary(project_root)
+    data["drift_advice"] = _drift_advice(project_root)
 
     # Surface the resolved config sections iterate owns. Validation commands
     # are trusted config (created by onboarding / validate.py), so showing
     # them is the point of the inspection command.
+    #
+    # The effective config lives in nested sections (git/review/atomic/reviewer)
+    # plus a few top-level keys, NOT inside ``onboarding`` (which only holds
+    # onboarding metadata). Read each value from its canonical location so
+    # ``iterate show`` actually reports the effective settings.
+    git = config.get("git") if isinstance(config.get("git"), dict) else {}
+    review = config.get("review") if isinstance(config.get("review"), dict) else {}
+    atomic = config.get("atomic") if isinstance(config.get("atomic"), dict) else {}
+    reviewer = config.get("reviewer") if isinstance(config.get("reviewer"), dict) else {}
     resolved: dict[str, Any] = {}
-    for key in (
-        "language", "goal", "max_rounds", "atomic_max_lines",
-        "atomic_max_adjacent_methods", "use_worktree", "auto_merge",
-        "output_schema_validation", "target_branch", "review_scope",
-        "push_per_round",
-    ):
-        if key in onboarding:
-            resolved[key] = onboarding[key]
+    # Top-level keys.
+    for key in ("language", "goal", "max_rounds"):
+        if key in config and config[key] is not None:
+            resolved[key] = config[key]
+    # Nested sections.
+    nested: dict[str, tuple[str, Any]] = {
+        "atomic_max_lines": ("atomic", "max_lines"),
+        "atomic_max_adjacent_methods": ("atomic", "max_adjacent_methods"),
+        "use_worktree": ("git", "use_worktree"),
+        "auto_merge": ("git", "auto_merge"),
+        "target_branch": ("git", "target_branch"),
+        "push_per_round": ("git", "push_per_round"),
+        "review_scope": ("review", "scope"),
+        "output_schema_validation": ("reviewer", "output_schema_validation"),
+        "coverage_validation": ("reviewer", "coverage_validation"),
+        "scope_chunk_size": ("reviewer", "scope_chunk_size"),
+    }
+    sections = {
+        "atomic": atomic,
+        "git": git,
+        "review": review,
+        "reviewer": reviewer,
+    }
+    for flat_key, (section, nested_key) in nested.items():
+        section_cfg = sections[section]
+        if nested_key in section_cfg and section_cfg[nested_key] is not None:
+            resolved[flat_key] = section_cfg[nested_key]
 
     validation = config.get("validation") or {}
     if isinstance(validation, dict):
@@ -147,8 +192,7 @@ def render_show(data: dict[str, Any], json_output: bool = False) -> int:
         json_output: When True, emit JSON instead of TUI text.
 
     Returns:
-        Exit code: 0 on success (even when not onboarded — inspection is
-        always a valid operation; 1 is reserved for hard failures).
+        Exit code: 0 on success (inspection is always a valid operation).
     """
     if json_output:
         print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
@@ -176,6 +220,9 @@ def render_show(data: dict[str, Any], json_output: bool = False) -> int:
         tui.key_value("Drift", "unknown")
     else:
         tui.warning(f"Drift: {drift}", indent=2)
+        advice = data.get("drift_advice")
+        if advice:
+            tui.hint(f"Suggested: {advice}", indent=4)
 
     _render_config(config=data.get("config") or {})
 
@@ -221,8 +268,8 @@ def _render_config(config: dict[str, Any]) -> None:
             tui.key_value("Command whitelist", ", ".join(str(w) for w in whitelist))
 
     dimensions = config.get("dimensions")
-    if isinstance(dimensions, dict) and dimensions:
-        tui.key_value("Dimensions", ", ".join(sorted(dimensions.keys())))
+    if isinstance(dimensions, list) and dimensions:
+        tui.key_value("Dimensions", ", ".join(str(d) for d in dimensions))
 
 
 def _render_personalization(personalization: dict[str, Any]) -> None:
