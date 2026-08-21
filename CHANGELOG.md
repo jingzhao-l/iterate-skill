@@ -5,6 +5,33 @@
 
 ---
 
+## [2.5.0] — 2026-08-21
+
+### 新增 / Features
+
+- **`iterate show`**：只读查看合并后的生效配置与个性化详情（onboarding 元数据、生效 config、漂移状态、全部 9 类个性化）。TUI 输出面向人，`--json` 输出结构化数据供脚本/CI/快速 diff。不写任何文件。
+- **`iterate personalize --clear [--yes]`**：一次性清空所有个性化——结构化规则从 `iterate.config.yaml` 移除、由个性化所有权新增的验证命令从 `validation.commands` 清理（空模块自动剔除）、`ITERATE.md` 用户区中的个性化段落移除而保留手工内容。原子写入 + 失败回滚，跨文件保持一致；无个性化可清空时友好提示并退出码 0。`--yes` 跳过确认。
+
+### 修复 / Bug fixes (审查收敛)
+
+- **doctor 配置安全与逻辑**：修复浅拷贝共享原配置对象的隐患（改用 `copy.deepcopy`）；修复 `set.add()` 返回值误用（原本 `None` 可能被判为重复）；个性化维度/命令检查改为类型安全（非 list 值不再崩溃）。
+- **wizard 再入一致性**：返回用户更新基础配置时保留已有高级字段（language/goal/max_rounds 等），不静默重置；确认的语言立即生效到验证命令建议/白名单/维度默认；统一确认提示默认值；`drift_ignore` 在再 onboarding 时正确持久化。
+- **fingerprint/scan 健壮性**：清单文件在存在检查后消失、不可读、非 UTF-8 时不再抛未捕获 `OSError`，降到 stderr 警告并跳过；顶层目录列表失败同样容错。
+- **validate.py UX**：未显式指定维度目录且默认回退目录不存在时，明确提示"维度校验被跳过"而非静默跳过；清理无占位符的 `f` 前缀。
+- **show/personalize 边界**：未 onboarding 时 `show` 友好提示；`--clear` 取消确认不做任何变更。
+
+### 文档 / Docs
+
+- `SKILL.md` frontmatter 版本与 CLI 子命令列表补 `iterate show`、`iterate personalize --clear`。
+- `README.md` 新增 `iterate show` 与 `iterate personalize --clear` 小节（含 `--json` / `--yes` 用法与退出码）。
+
+### 测试 / Tests
+
+- 新增 `iterate show` 与 `personalize --clear` 相关测试（含 TUI/JSON 渲染、纯函数移除语义、CLI 端到端清理、取消确认不落地、无个性化可清空）。
+- 全量 `tests/` **657 passed**，`ruff check` 干净。
+
+---
+
 ## [2.4.5] — 2026-08-20
 
 ### 修复 / Bug fixes (CLI 一致性、安全与文档)
