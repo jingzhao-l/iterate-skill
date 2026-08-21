@@ -39,6 +39,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+.check-venv/
 uv.lock
 
 # Python build artifacts
