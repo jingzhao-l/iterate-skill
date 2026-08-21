@@ -5,6 +5,29 @@
 
 ---
 
+## [2.6.0] — 2026-08-21
+
+### 修复 / Bug fixes (审查收敛：UX 与一致性)
+
+- **CLI 优雅中断**：交互命令期间 Ctrl+C / Ctrl+D(EOF) 不再抛裸 traceback，统一转为"已中断/输入已结束，未写入任何文件"提示并退出码 1；命令分发集中到 `_dispatch_command` 统一包裹。
+- **`--version` 横幅一致性**：`--no-banner` / `ITERATE_NO_BANNER` 现在同样抑制 `--version` 的 ASCII 横幅，仅保留版本信息。
+- **doctor 警告态总结**：末尾总结区分三态——存在 error 显示"error(s) found"，仅 warning 显示"healthy but with N warning(s) — non-blocking"，干净显示"healthy (N checks passed)"，避免与上方 findings 自相矛盾。
+- **doctor config.schema 可用性**：schema 文件/jsonschema 不可用时降为 warning 而非假"完全匹配"成功（`_schema_violations` 返回语义从空 list 改为 `None`）。
+- **doctor 命令元字符过滤扩展**：白名单命令校验扩充过滤集，并改为一次性严格拒绝含元字符的命令。
+- **doctor 空维度早退**：空 `dimensions` 报错后提前 return，不再同一次运行再报成功行自相矛盾。
+- **doctor 个性化字符串守卫**：手写的字符串 `fix_priority_order` 不再被逐字符误判为断裂维度。
+- **doctor onboarding 消息精确化**：缺失提示精确反映仅检查 ITERATE.md（config 由 `config.parse` 单独校验）。
+- **`iterate show` 生效配置修正**：此前从 `onboarding` 区段读取生效键导致部分键反映错误值；改为从各自规范位置（顶层 + git/review/atomic/reviewer 嵌套区段）读取。
+- **`iterate show` 漂移建议**：检测到漂移时 TUI 追加 `Suggested: ...` 行动建议，`--json` 新增 `drift_advice` 字段。
+- **`iterate show` 维度渲染**：`dimensions` 按 list 渲染（原先按 dict 分支永不匹配，实际不显示）。
+
+### 测试 / Tests
+
+- 新增 doctor 警告态总结、CLI 优雅中断、`--version` 横幅、show 漂移建议等回归测试。
+- 全量 `tests/` **675 passed**。
+
+---
+
 ## [2.5.0] — 2026-08-21
 
 ### 新增 / Features
