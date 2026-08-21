@@ -4,7 +4,8 @@
 #
 # 背景：dsh-im-gateway 的官方包在更新/重装时会被还原为干净版本，
 # 我们在 lib/*.js 里的自定义实现（/model 发卡片切换模型）会丢失。
-# pnpm 的 patchedDependencies 会在每次 pnpm install 时自动重新打好补丁；
+# profile 的 pnpm-workspace.yaml 中已配置 patchedDependencies，
+# 每次 pnpm install 会自动重新打好补丁；
 # 本脚本是另一道保险：在不想跑完整 pnpm install 时，直接把补丁打到 node_modules。
 #
 # 用法：
