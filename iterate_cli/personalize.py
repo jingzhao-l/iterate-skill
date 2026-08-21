@@ -636,7 +636,7 @@ def merge_personalization_into_config(
     # may be removed from validation.commands, so base-config commands and
     # manual edits for the same module survive.
     old_extra: dict[str, list[str]] = {
-        str(module): list(cmds)
+        str(module): list(cmds) if isinstance(cmds, list) else []
         for module, cmds in (
             dict((config.get("personalization") or {}).get("extra_validation_commands") or {})
         ).items()
@@ -844,6 +844,145 @@ def save_personalization(
 
     # Snapshot prior config content for rollback (config is written first, so
     # a failure while writing ITERATE.md rolls config back to this snapshot).
+    old_config = config_path.read_text(encoding="utf-8")
+    iterate_md_path = project_root / "ITERATE.md"
+
+    atomic_write(config_path, config_yaml)
+    if iterate_md_content is not None:
+        try:
+            atomic_write(iterate_md_path, iterate_md_content)
+        except OSError:
+            # Roll back config so the two files stay consistent.
+            try:
+                atomic_write(config_path, old_config)
+            except OSError as rollback_exc:
+                tui.error(
+                    f"Failed to roll back {config_path} after ITERATE.md write "
+                    f"error: {rollback_exc}. Two files may be inconsistent.",
+                    indent=2,
+                )
+            raise
+    return config_path, iterate_md_path
+
+
+# ---------------------------------------------------------------------------
+# Clear personalization
+# ---------------------------------------------------------------------------
+
+
+def has_personalization(project_root: Path, config: dict[str, Any]) -> bool:
+    """Return True if any personalization content exists.
+
+    Presence is judged by actual personalization content — structured rules in
+    iterate.config.yaml or free-form bullet items in the ITERATE.md user-owned
+    section — rather than section headers alone (a freshly onboarded project's
+    template user-owned section already contains personalization-style headers
+    with no entries).
+
+    Args:
+        project_root: Project root directory containing ITERATE.md.
+        config: Parsed iterate.config.yaml content.
+
+    Returns:
+        True if there is any personalization to clear.
+    """
+    data = load_existing_personalization(project_root, config)
+    return not data.is_empty()
+
+
+def remove_personalization_from_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Strip the ``personalization`` section and its owned validation commands.
+
+    Also removes personalization-owned commands from ``validation.commands``
+    (dropping modules that become empty) so the resulting config stays
+    schema-valid. The ``command_whitelist`` is left untouched: it is a
+    harmless allowlist and its prefixes may be shared with pre-existing
+    (base-config or manually added) validation commands.
+
+    Args:
+        config: Parsed iterate.config.yaml content (not mutated).
+
+    Returns:
+        New config dict without the personalization section and without the
+        validation commands that personalization owned.
+    """
+    result = dict(config)
+
+    personalization = config.get("personalization")
+    old_extra: dict[str, list[str]] = {}
+    if isinstance(personalization, dict):
+        old_extra = {
+            str(module): list(cmds) if isinstance(cmds, list) else []
+            for module, cmds in (
+                personalization.get("extra_validation_commands") or {}
+            ).items()
+        }
+    result.pop("personalization", None)
+
+    if not old_extra:
+        return result
+
+    validation = dict(result.get("validation") or {})
+    commands = {
+        str(module): list(cmds) if isinstance(cmds, list) else []
+        for module, cmds in (validation.get("commands") or {}).items()
+    }
+    for module, owned in old_extra.items():
+        if module not in commands:
+            continue
+        owned_set = {c for c in owned if isinstance(c, str)}
+        commands[module] = [c for c in commands[module] if c not in owned_set]
+        if not commands[module]:
+            # Drop the empty module so schema validation (minItems) does not
+            # fail on an empty list.
+            commands.pop(module, None)
+    validation["commands"] = commands
+    result["validation"] = validation
+
+    return result
+
+
+def clear_personalization(project_root: Path) -> tuple[Path, Path]:
+    """Remove all personalization from iterate.config.yaml and ITERATE.md.
+
+    This is the transactional clear used by ``iterate personalize --clear``.
+    Both files are written atomically (temp file + ``os.replace``); if the
+    second write fails, the first is rolled back to its prior content so the
+    two files never diverge.
+
+    Structured rules are stripped from config.yaml and personalization-owned
+    commands are removed from ``validation.commands``; free-form sections
+    (notes / conventions / restricted areas / known intentional / forbidden
+    fixes) are removed from the ITERATE.md user-owned section while preserving
+    any manually written content.
+
+    Args:
+        project_root: Project root directory containing both files.
+
+    Returns:
+        Tuple of ``(config_path, iterate_md_path)``.
+
+    Raises:
+        FileNotFoundError: If iterate.config.yaml does not exist.
+        OSError: If a write (or a rollback) fails.
+    """
+    from iterate_cli.generator import atomic_write
+
+    config_path = project_root / "iterate.config.yaml"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    updated = remove_personalization_from_config(existing)
+    config_yaml = yaml.safe_dump(
+        updated, default_flow_style=False, allow_unicode=True, sort_keys=False
+    )
+
+    # Build ITERATE.md content with personalization sections removed. An empty
+    # PersonalizationData renders no sections, and merge_user_sections strips
+    # any existing personalization headers while keeping manual content.
+    iterate_md_content = build_updated_iterate_md(project_root, PersonalizationData())
+
     old_config = config_path.read_text(encoding="utf-8")
     iterate_md_path = project_root / "ITERATE.md"
 

@@ -262,8 +262,11 @@ skills.sh 等市场页面仍会保留，用于展示和发现，但不再作为�
 # 交互式 onboarding（首次/非首次会自动分支）
 iterate onboard
 
-# 中途追加个性化约束
-iterate personalize
+# 中途追加/查看/清空个性化约束
+iterate personalize          # 进入 9 步个性化向导
+iterate personalize --clear  # 清空所有个性化（结构化规则 + ITERATE.md 相关段落）
+iterate personalize --clear --yes  # 跳过确认，直接清空
+iterate show                 # 只读查看合并后的配置与个性化详情（--json 输出结构数据）
 
 # 查看 onboarding 状态和漂移检测
 iterate status
@@ -303,6 +306,28 @@ iterate doctor --fix      # 先应用安全、非破坏性修复（自动写时�
 ```
 
 `--fix` 只做可安全自动修复的项，且每次修复前都会为 `iterate.config.yaml` 生成带时间戳的备份（`.doctorfix-<时间戳>` 后缀）；破坏性/有歧义的修复不会自动执行，会在报告中提示你手工处理。目前可自动修复的项包括：`dimensions` 去重/空时恢复默认、`language` 非法值重置为 `en`、`max_rounds` 非整数移除/越界收敛到 `[1, 50]`、`git.target_branch` 空值重置为 `main`、`onboarding.skill_version` 同步为当前安装版本。
+
+#### iterate show（只读查看合并配置与个性化）
+
+`iterate show` 只读展示项目当前生效的合并后状态，适合快速核对配置与约束，**不会写任何文件**：
+
+```bash
+iterate show        # TUI 输出：onboarding 元数据 + 生效配置 + 个性化详情 + 漂移状态
+iterate show --json # 结构化 JSON 输出到 stdout（供脚本 / CI / 快速 diff）
+```
+
+当你只想确认当前个性化里配了什么（禁区、风险区、已知意图、维度定制、修复顺序、注意点、代码约定、额外验证命令），或核对合并后的 `validation.commands` / 白名单时，用 `iterate show` 比直接翻 `iterate.config.yaml` + `ITERATE.md` 更直观。
+
+#### iterate personalize --clear（清空个性化）
+
+需要清掉此前配置的个性化约束时，可在确认后一次性清空（结构化规则从 `iterate.config.yaml` 移除、关联的额外验证命令从 `validation.commands` 清理、`ITERATE.md` 用户区中的个性化段落移除，同时保留你手写的内容）：
+
+```bash
+iterate personalize --clear       # 带确认提示
+iterate personalize --clear --yes # 跳过确认直接清空
+```
+
+若当前没有任何个性化内容，会提示"无个性化可清空"并正常退出（退出码 0）。
 
 ### 常见边界场景 / Edge Cases
 

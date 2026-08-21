@@ -4365,3 +4365,191 @@ class TestAdvancedConfigWizard:
 
     def test_read_drift_ignore_dedupes_and_trims(self) -> None:
         assert _read_drift_ignore([], lambda _: " a, a ,b") == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# iterate show (read-only resolved config + personalization) tests
+# ---------------------------------------------------------------------------
+
+
+class TestShowCommand:
+    """Tests for the ``iterate show`` read-only inspection command."""
+
+    def test_show_not_onboarded(self, empty_project: Path, capsys) -> None:
+        ret = cli_main(["show", "-p", str(empty_project)])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "Not onboarded" in captured.out
+
+    def test_show_onboarded_with_personalization(
+        self, fake_project: Path, capsys
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            risk_areas=[RiskArea(path="src/auth/", reason="auth logic")],
+            code_conventions=["Use snake_case"],
+            iterate_notes=["Handle migration carefully"],
+            extra_validation_commands={"python": ["bandit -r src/"]},
+        )
+        write_onboarding_outputs(data, fake_project)
+
+        ret = cli_main(["show", "-p", str(fake_project)])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "Resolved Config" in captured.out
+        assert "Personalization" in captured.out
+        assert "legacy/**" in captured.out
+        assert "src/auth/" in captured.out
+        assert "Use snake_case" in captured.out
+        assert "bandit -r src/" in captured.out
+
+    def test_show_json(self, fake_project: Path, capsys) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(protected_paths=["legacy/**"])
+        write_onboarding_outputs(data, fake_project)
+
+        ret = cli_main(["show", "-p", str(fake_project), "--json"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        import json
+
+        report = json.loads(captured.out)
+        assert report["onboarded"] is True
+        assert "onboarding" in report
+        assert "config" in report
+        assert report["personalization"]["protected_paths"] == ["legacy/**"]
+
+    def test_show_without_personalization(self, fake_project: Path, capsys) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        ret = cli_main(["show", "-p", str(fake_project)])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "Personalization" in captured.out
+        assert "none set" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# personalize --clear tests
+# ---------------------------------------------------------------------------
+
+
+class TestPersonalizeClear:
+    """Tests for ``iterate personalize --clear``."""
+
+    def test_remove_personalization_from_config_keeps_base_commands(self) -> None:
+        from iterate_cli.personalize import remove_personalization_from_config
+
+        config = {
+            "personalization": {
+                "version": "1.0",
+                "protected_paths": ["legacy/**"],
+                "extra_validation_commands": {"python": ["bandit -r src/"]},
+            },
+            "validation": {
+                "command_whitelist": ["ruff", "bandit"],
+                "commands": {
+                    "python": ["ruff check src/", "bandit -r src/"],
+                },
+            },
+        }
+        result = remove_personalization_from_config(config)
+        assert "personalization" not in result
+        # Base command preserved, personalization-owned command removed.
+        assert result["validation"]["commands"] == {"python": ["ruff check src/"]}
+        # Whitelist untouched (harmless allowlist).
+        assert "bandit" in result["validation"]["command_whitelist"]
+
+    def test_remove_personalization_drops_empty_module(self) -> None:
+        from iterate_cli.personalize import remove_personalization_from_config
+
+        config = {
+            "personalization": {
+                "extra_validation_commands": {"go": ["go vet ./..."]},
+            },
+            "validation": {
+                "command_whitelist": ["go"],
+                "commands": {"go": ["go vet ./..."]},
+            },
+        }
+        result = remove_personalization_from_config(config)
+        assert "personalization" not in result
+        assert "go" not in result["validation"]["commands"]
+
+    def test_clear_personalization_via_cli(self, fake_project: Path) -> None:
+        from iterate_cli.personalize import save_personalization
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        save_personalization(
+            fake_project,
+            PersonalizationData(
+                protected_paths=["legacy/**"],
+                code_conventions=["Use snake_case"],
+                extra_validation_commands={"python": ["bandit -r src/"]},
+            ),
+        )
+
+        # Use --yes to skip the interactive confirmation.
+        ret = cli_main(["personalize", "-p", str(fake_project), "--clear", "--yes"])
+        assert ret == 0
+
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert "personalization" not in config
+
+        iterate_md = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        assert "legacy/**" not in iterate_md
+        assert "Use snake_case" not in iterate_md
+
+    def test_clear_cancel_does_nothing(self, fake_project: Path, monkeypatch, capsys) -> None:
+        from iterate_cli.personalize import save_personalization
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        save_personalization(
+            fake_project, PersonalizationData(protected_paths=["legacy/**"])
+        )
+
+        # Simulate the user declining the confirmation prompt.
+        monkeypatch.setattr(
+            "iterate_cli.wizard._ask_yes_no", lambda *a, **k: False
+        )
+        ret = cli_main(["personalize", "-p", str(fake_project), "--clear"])
+        assert ret == 0
+
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert "personalization" in config  # untouched
+
+    def test_clear_nothing_to_clear(self, fake_project: Path, capsys) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        ret = cli_main(["personalize", "-p", str(fake_project), "--clear", "--yes"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "No personalization to clear" in captured.out
+
+    def test_has_personalization_true_when_sections_exist(
+        self, fake_project: Path
+    ) -> None:
+        from iterate_cli.personalize import has_personalization
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        config = load_onboarding_config(fake_project) or {}
+        assert has_personalization(fake_project, config) is False
+
+        # Free-form notes in ITERATE.md count even with no structured config.
+        from iterate_cli.personalize import save_personalization
+
+        save_personalization(
+            fake_project, PersonalizationData(iterate_notes=["Handle carefully"])
+        )
+        config = load_onboarding_config(fake_project) or {}
+        assert has_personalization(fake_project, config) is True
