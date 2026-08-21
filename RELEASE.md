@@ -119,6 +119,12 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **2.4.5 状态（2026-08-21）**：ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）
+      > `latestVersion: 2.4.5` 已生效（发布响应 `ok:true`，versionId `k97agect6q7q0a38zy4p1hhgkd8cxzm6`，
+      > 初始 `status=pending`，约数分钟后 latestVersion 传播为 2.4.5）；ModelScope 已 PATCH 生效
+      > （file_id `0c4c8bee-57d5-4810-aca4-0597bf5b808b`，`success:True`，skill_file 指向 2.4.5 精简包 325.4KB）；
+      > SkillHub（skillId `104490`）`skillhub publish` 成功（`ok:true`，versionId 254717，`tags.latest=2.4.5`，
+      > `reviewStatus/securityScanStatus=pending` 为平台异步审核）。三平台一致。
       > **2.4.0 状态（2026-08-19）**：ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）
       > `latestVersion: 2.4.0` 已生效；ModelScope 已 PATCH 生效（file_id `5a322066…`，
       > skill_file 指向 2.4.0 精简包 305.8KB）；SkillHub（skillId `104490`）`skillhub publish`
