@@ -19,14 +19,14 @@ from iterate_cli.cli import main as cli_main
 from iterate_cli.doctor import (
     CANONICAL_DIMENSIONS,
     SKILL_VERSION,
-    DoctorReport,
     DoctorFinding,
+    DoctorReport,
+    _render_summary,
     apply_safe_fixes,
     render_report,
     run_doctor,
     run_doctor_fix,
 )
-from iterate_cli.doctor import _render_summary
 from iterate_cli.refresh import load_onboarding_config
 
 ITERATE_MD = "ITERATE.md"

@@ -191,7 +191,7 @@ class TestIsSkillhubUrl:
             def read(self):
                 return b"{}"
 
-        def fake_urlopen(request, timeout, context):  # noqa: ARG001
+        def fake_urlopen(request, timeout, context):
             captured["host"] = request.host
             captured["referer"] = request.get_header("Referer")
             return FakeResp()
