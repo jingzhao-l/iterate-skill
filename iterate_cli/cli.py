@@ -6,6 +6,8 @@ Provides subcommands for onboarding and personalization management:
     iterate refresh     — Incremental refresh of ITERATE.md (preserve user sections)
     iterate reonboard   — Full re-onboarding (backup old files, run wizard)
     iterate status      — Show onboarding status and drift detection
+    iterate show        — Read-only resolved config + personalization detail
+    iterate doctor      — Project health diagnostics (--json / --json-out / --fix)
     iterate --version   — Print version
 
 All user-facing output is routed through the unified TUI layer
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +86,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "personalize":
         if show_banner:
             tui.banner()
-        return _cmd_personalize(project_root)
+        return _cmd_personalize(
+            project_root,
+            clear=getattr(args, "clear", False),
+            yes=getattr(args, "yes", False),
+        )
     elif args.command == "refresh":
         if show_banner:
             tui.banner()
@@ -96,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
         if show_banner:
             tui.banner()
         return _cmd_status(project_root, json_output=getattr(args, "json", False))
+    elif args.command == "show":
+        if show_banner:
+            tui.banner()
+        return _cmd_show(project_root, json_output=getattr(args, "json", False))
     elif args.command == "doctor":
         if show_banner:
             tui.banner()
@@ -158,12 +169,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "basic onboarding + personalization offer; existing projects get "
         "config update + personalization offer.",
     )
-    subparsers.add_parser(
+    personalize_parser = subparsers.add_parser(
         "personalize",
         parents=[parent],
         help="Direct personalization configuration (mid-project).",
         description="Skip basic onboarding and go directly to the 9-step "
-        "personalization wizard. Ideal for adding constraints mid-project.",
+        "personalization wizard. Ideal for adding constraints mid-project. "
+        "Use --clear to remove all personalization.",
+    )
+    personalize_parser.add_argument(
+        "--clear",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Remove all personalization (structured rules + ITERATE.md "
+        "sections) without running the wizard.",
+    )
+    personalize_parser.add_argument(
+        "--yes",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Skip the confirmation prompt (only meaningful with --clear).",
     )
     refresh_parser = subparsers.add_parser(
         "refresh",
@@ -193,6 +218,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "tech stack has drifted since the last onboarding.",
     )
     status_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON report instead of TUI output.",
+    )
+    show_parser = subparsers.add_parser(
+        "show",
+        parents=[parent],
+        help="Show resolved config and personalization (read-only).",
+        description="Read-only inspection of the resolved project state: "
+        "onboarding metadata, effective config, drift status, and the full "
+        "personalization detail. Never writes files.",
+    )
+    show_parser.add_argument(
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -280,9 +319,24 @@ def _cmd_onboard(project_root: Path) -> int:
     return 0
 
 
-def _cmd_personalize(project_root: Path) -> int:
-    """Handle the 'personalize' subcommand — direct personalization configuration."""
+def _cmd_personalize(project_root: Path, clear: bool = False, yes: bool = False) -> int:
+    """Handle the 'personalize' subcommand — direct personalization configuration.
+
+    Without ``clear``, runs the 9-step personalization wizard (with existing
+    content pre-loaded for editing). With ``clear``, removes all
+    personalization (structured rules + ITERATE.md sections) after a
+    confirmation prompt (bypassed with ``yes``).
+
+    Args:
+        project_root: Project root directory.
+        clear: When True, clear personalization instead of running the wizard.
+        yes: When True, skip the clear confirmation prompt.
+
+    Returns:
+        Exit code: 0 on success/cancel, 1 on failure.
+    """
     from iterate_cli.personalize import (
+        has_personalization,
         load_existing_personalization,
         run_personalize_wizard,
         save_personalization,
@@ -297,6 +351,9 @@ def _cmd_personalize(project_root: Path) -> int:
     if not config_path.is_file():
         tui.warning("iterate.config.yaml not found. Run 'iterate onboard' first.")
         return 1
+
+    if clear:
+        return _cmd_personalize_clear(project_root, yes=yes, has=has_personalization)
 
     # Load existing personalization for editing (structured from config +
     # free-form notes/conventions from ITERATE.md) so re-running the wizard
@@ -320,6 +377,73 @@ def _cmd_personalize(project_root: Path) -> int:
     tui.key_value("Updated", str(config_path))
     tui.key_value("Updated", str(iterate_md_path))
     return 0
+
+
+def _cmd_personalize_clear(
+    project_root: Path,
+    yes: bool,
+    has: Callable[[Path, dict[str, Any]], bool],
+) -> int:
+    """Handle ``iterate personalize --clear`` — reset all personalization.
+
+    Args:
+        project_root: Project root directory.
+        yes: When True, skip the confirmation prompt.
+        has: The ``has_personalization`` callable (injected for testability).
+
+    Returns:
+        Exit code: 0 on success/cancel/nothing-to-clear, 1 on failure.
+    """
+    from iterate_cli.refresh import load_onboarding_config
+
+    config = load_onboarding_config(project_root) or {}
+    if not has(project_root, config):
+        tui.info("No personalization to clear.")
+        return 0
+
+    if not yes:
+        import builtins
+
+        from iterate_cli.wizard import _ask_yes_no
+
+        confirmed = _ask_yes_no(
+            "确认清空所有个性化配置? / Confirm clearing all personalization?",
+            builtins.input,
+            default=False,
+        )
+        if not confirmed:
+            tui.info("已取消 / Cancelled.")
+            return 0
+
+    from iterate_cli.personalize import clear_personalization
+
+    try:
+        config_path, iterate_md_path = clear_personalization(project_root)
+    except (OSError, UnicodeDecodeError) as exc:
+        tui.error(f"Failed to clear personalization: {exc}")
+        return 1
+
+    tui.empty_line()
+    tui.success("Personalization cleared!")
+    tui.key_value("Updated", str(config_path))
+    if iterate_md_path.is_file():
+        tui.key_value("Updated", str(iterate_md_path))
+    return 0
+
+
+def _cmd_show(project_root: Path, json_output: bool = False) -> int:
+    """Handle the 'show' subcommand — read-only resolved config inspection.
+
+    Args:
+        project_root: Project root directory.
+        json_output: When True, emit a structured JSON report.
+
+    Returns:
+        Exit code: 0 on success.
+    """
+    from iterate_cli.show import run_show
+
+    return run_show(project_root, json_output=json_output)
 
 
 def _cmd_refresh(project_root: Path, dry_run: bool = False) -> int:

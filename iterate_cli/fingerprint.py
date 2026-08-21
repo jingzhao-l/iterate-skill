@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -161,21 +162,28 @@ def capture_fingerprints(
 ) -> list[FingerprintEntry]:
     """Capture fingerprints for all existing manifest files.
 
+    A manifest may disappear between the existence check and the read (or be
+    unreadable/not UTF-8). Such files are skipped with a warning on stderr
+    instead of aborting the whole scan with an unhandled ``OSError``.
+
     Args:
         project_root: The project root directory to scan.
         ignore_patterns: Optional fnmatch patterns of manifest names to skip.
 
     Returns:
-        List of FingerprintEntry objects, one per manifest file found.
+        List of FingerprintEntry objects, one per readable manifest file.
     """
     entries: list[FingerprintEntry] = []
     for manifest in scan_manifests(project_root, ignore_patterns):
-        entries.append(
-            FingerprintEntry(
-                path=manifest.name,
-                sha256=compute_sha256(manifest),
+        try:
+            digest = compute_sha256(manifest)
+        except (OSError, UnicodeDecodeError) as exc:
+            print(
+                f"fingerprint: warning: cannot fingerprint {manifest.name}: {exc}",
+                file=sys.stderr,
             )
-        )
+            continue
+        entries.append(FingerprintEntry(path=manifest.name, sha256=digest))
     return entries
 
 

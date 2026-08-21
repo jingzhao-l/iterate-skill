@@ -207,7 +207,11 @@ def _returning_user_flow(
     )
 
     if update_basic:
-        data = _run_basic_wizard(project_root, input_func)
+        # Preserve previously configured advanced/derived settings (max rounds,
+        # git isolation, output language, drift-ignore, etc.) so a basic-config
+        # update does not silently reset them back to defaults.
+        existing_data = _load_existing_onboarding_data(project_root)
+        data = _run_basic_wizard(project_root, input_func, existing=existing_data)
         if data is None:
             return None
     else:
@@ -263,13 +267,27 @@ def _returning_user_flow(
 def _run_basic_wizard(
     project_root: Path,
     input_func: InputFunc,
+    existing: OnboardingData | None = None,
 ) -> OnboardingData | None:
-    """Run the basic onboarding wizard (tech stack, dimensions, git, etc.)."""
+    """Run the basic onboarding wizard (tech stack, dimensions, git, etc.).
+
+    When ``existing`` onboarding data is supplied (returning-user basic config
+    update), advanced/derived fields that the wizard does not re-ask about
+    (max rounds, output language, git isolation, atomic thresholds, drift-ignore)
+    are seeded from it so a config update never silently resets them. Basic
+    fields (tech stack, dimensions, git, description/conventions) are always
+    re-collected from the user.
+    """
     with tui.status("正在扫描项目 / Scanning project..."):
         scan = scan_project(project_root)
     _print_scan_results(scan)
 
     confirmed_langs = _confirm_tech_stack(scan, input_func)
+    # Apply the confirmed language immediately: the validation-command
+    # suggestions, command whitelist and dimension defaults below must reflect
+    # what the user confirmed, not the raw auto-detect (which they corrected).
+    scan.detected_languages = confirmed_langs
+
     validation_commands = _collect_validation_commands(scan, input_func)
     command_whitelist = suggest_command_whitelist(scan)
     dimensions = _collect_dimensions(scan, input_func)
@@ -282,8 +300,8 @@ def _run_basic_wizard(
         project_root=project_root,
         channel="cli",
         scan=scan,
-        project_description=description,
-        code_conventions=conventions,
+        project_description=description or (existing.project_description if existing else ""),
+        code_conventions=conventions or (existing.code_conventions if existing else ""),
         dimensions=dimensions,
         target_branch=target_branch,
         review_scope=review_scope,
@@ -291,10 +309,26 @@ def _run_basic_wizard(
         validation_commands=validation_commands,
         command_whitelist=command_whitelist,
         fingerprints=fingerprints,
+        # Preserve advanced/derived settings from a prior onboarding instead of
+        # silently resetting them when a returning user updates basic config.
+        language=existing.language if existing else "en",
+        goal=existing.goal if existing else DEFAULT_GOAL,
+        max_rounds=existing.max_rounds if existing else DEFAULT_MAX_ROUNDS,
+        atomic_max_lines=(
+            existing.atomic_max_lines if existing else DEFAULT_ATOMIC_MAX_LINES
+        ),
+        atomic_max_adjacent_methods=(
+            existing.atomic_max_adjacent_methods
+            if existing
+            else DEFAULT_ATOMIC_MAX_ADJACENT_METHODS
+        ),
+        use_worktree=existing.use_worktree if existing else False,
+        auto_merge=existing.auto_merge if existing else False,
+        output_schema_validation=(
+            existing.output_schema_validation if existing else True
+        ),
+        drift_ignore=list(existing.drift_ignore) if existing else [],
     )
-
-    # Update scan languages in case user confirmed differently.
-    scan.detected_languages = confirmed_langs
 
     # Optional advanced tuning step (edit-in-place on ``data`` when the
     # user opts in; otherwise all fields stay at their defaults above).
@@ -334,12 +368,20 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             return None
         scan = scan_project(project_root)
 
-        onboarding_section = config.get("onboarding") or {}
+        onboarding_section = config.get("onboarding")
+        onboarding_section = onboarding_section if isinstance(onboarding_section, dict) else {}
         channel = onboarding_section.get("channel", "cli")
         # Read persisted user-entered text from config (not from ITERATE.md
         # user-owned section, which is for manual edits and personalization).
         project_description = str(onboarding_section.get("project_description") or "")
         code_conventions = str(onboarding_section.get("code_conventions") or "")
+
+        # Preserve drift-ignore patterns so a returning user who neither edits
+        # them nor opts into the advanced step does not silently lose them.
+        drift_ignore_raw = onboarding_section.get("drift_ignore") or []
+        drift_ignore = (
+            [str(p) for p in drift_ignore_raw] if isinstance(drift_ignore_raw, list) else []
+        )
 
         # Preserve every user-customised field so a returning user who declines
         # the basic-config update does not lose them during regeneration.
@@ -370,6 +412,7 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             use_worktree=git.get("use_worktree", False),
             auto_merge=git.get("auto_merge", False),
             output_schema_validation=reviewer.get("output_schema_validation", True),
+            drift_ignore=drift_ignore,
         )
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         tui.error(f"Failed to load existing config: {exc}")
@@ -788,7 +831,9 @@ def _confirm_summary(data: OnboardingData, input_func: InputFunc) -> bool:
     tui.hint("将写入 / Will write: ITERATE.md + iterate.config.yaml")
     tui.empty_line()
 
-    return _ask_yes_no("确认生成? / Confirm and generate?", input_func)
+    # Enter = confirm: once a user has stepped through the whole wizard, an
+    # accidental Enter should complete, not silently cancel all their input.
+    return _ask_yes_no("确认生成? / Confirm and generate?", input_func, default=True)
 
 
 def _print_scan_results(scan: ScanResult) -> None:

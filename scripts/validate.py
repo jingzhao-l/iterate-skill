@@ -415,6 +415,18 @@ def main(argv: list[str] | None = None) -> int:
     elif command == "config":
         schema_path = Path(args[2]) if len(args) > 2 else None
         dimensions_dir = Path(args[3]) if len(args) > 3 else None
+        if dimensions_dir is None:
+            # When no explicit dimensions dir is given, the dimension
+            # cross-consistency checks silently fall back to
+            # <config-dir>/dimensions (usually absent). Surface that instead
+            # of letting the checks be silently skipped.
+            fallback = target.parent / "dimensions"
+            if not fallback.exists():
+                print(
+                    "note: dimension validation skipped — no dimensions dir found "
+                    f"at {fallback} (pass it as the 4th argument)",
+                    file=sys.stderr,
+                )
         errors = validate_config(target, schema_path, dimensions_dir)
     elif command == "dimensions":
         errors = validate_dimensions(target)

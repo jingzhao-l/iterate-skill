@@ -123,8 +123,9 @@ def _scan_top_level_dirs(project_root: Path, result: ScanResult) -> None:
         for entry in sorted(project_root.iterdir(), key=lambda e: e.name):
             if entry.is_dir() and entry.name not in SKIP_DIRS and not entry.name.startswith("."):
                 result.top_level_dirs.append(entry.name)
-    except PermissionError as exc:
-        # 目录列表失败（如权限不足）不阻断扫描，但记录到 stderr 以便排查。
+    except OSError as exc:
+        # 目录列表失败（如权限不足、目录在扫描过程中被删除、挂载点出错）
+        # 不阻断扫描，但记录到 stderr 以便排查。
         print(f"scan: warning: cannot list directories in {project_root}: {exc}", file=sys.stderr)
 
 

@@ -21,6 +21,7 @@ All checks can be run in a structured (``--json``) or human (TUI) mode.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import shutil
@@ -164,7 +165,7 @@ def _schema_violations(config: dict[str, Any]) -> list[str]:
     if schema is None:
         return []
     try:
-        from jsonschema import Draft202012Validator
+        from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
     except ImportError:
         return []
     violations: list[str] = []
@@ -324,7 +325,12 @@ def _check_dimensions(report: DoctorReport, config: dict[str, Any]) -> None:
         return
 
     seen: set[str] = set()
-    dups = [d for d in dims if d in seen or seen.add(d)]
+    dups: list[str] = []
+    for d in dims:
+        if d in seen:
+            dups.append(d)
+        else:
+            seen.add(d)
     if dups:
         _warn(
             report,
@@ -401,6 +407,13 @@ def _check_validation_commands(report: DoctorReport, config: dict[str, Any]) -> 
     if commands is None:
         _ok(report, "validation.commands", "no validation.commands configured (optional).")
         return
+    if not isinstance(commands, dict):
+        _err(
+            report,
+            "validation.commands",
+            "validation.commands must be a mapping of module -> list of commands.",
+        )
+        return
     for module, cmds in commands.items():
         if isinstance(cmds, list) and cmds and all(isinstance(c, str) and c.strip() for c in cmds):
             continue
@@ -445,6 +458,11 @@ def _check_whitelist_compliance(
 ) -> None:
     """Every configured command must be prefixed by a whitelisted entry, and
     whitelist entries must not contain shell metacharacters."""
+    # Structural problems (whitelist not a list, commands not a dict) are
+    # reported by the caller/schema as a warning/error; skip to avoid a
+    # TypeError/AttributeError crash on malformed-but-non-fatal config.
+    if not isinstance(whitelist, list) or not isinstance(commands, dict):
+        return
     safe_prefix = re.compile(r"^[A-Za-z0-9_. -]+$")
     bad_entries = [
         entry
@@ -546,14 +564,20 @@ def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]
         A tuple of (possibly-updated config, human-readable fix list).
         The fix list is empty when nothing needed fixing.
     """
-    new_config = dict(config)
+    # Deep-copy so nested ``git``/``onboarding`` dicts below are never mutated
+    # in the caller's original config object.
+    new_config = copy.deepcopy(config)
     fixes: list[str] = []
 
     # dimensions: must be non-empty and unique (schema minItems/uniqueItems).
     dims = new_config.get("dimensions")
     if isinstance(dims, list):
         seen: set[str] = set()
-        deduped = [d for d in dims if not (d in seen or seen.add(d))]
+        deduped: list[str] = []
+        for d in dims:
+            if d not in seen:
+                deduped.append(d)
+                seen.add(d)
         if len(deduped) != len(dims):
             fixes.append(f"dimensions: removed {len(dims) - len(deduped)} duplicate(s).")
         if not deduped:
@@ -668,8 +692,6 @@ def render_report(report: DoctorReport, json_output: bool = False) -> int:
         Exit code: 0 when healthy, 1 when errors are present.
     """
     if json_output:
-        import json
-
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         return 1 if report.has_errors() else 0
 
@@ -690,12 +712,45 @@ def render_report(report: DoctorReport, json_output: bool = False) -> int:
             if finding.detail:
                 tui.hint(finding.detail, indent=4)
 
+    _render_next_actions(tui, report)
+
     tui.empty_line()
     if has_error:
         tui.error(f"Doctor: {sum(1 for f in report.findings if f.severity == 'error')} error(s) found.")
         return 1
     tui.success(f"Doctor: healthy ({len(report.findings)} checks passed).")
     return 0
+
+
+def _render_next_actions(tui: Any, report: DoctorReport) -> None:
+    """Aggregate actionable next steps for a doctor run.
+
+    Grep-friendly, forge a single ``Next action(s):`` block mapping the most
+    common problems to the command that fixes them, so users are not left
+    guessing what to do after seeing warnings/errors.
+    """
+    checks = {f.check for f in report.findings if f.severity in ("warn", "error")}
+    if not checks:
+        return
+
+    actions: list[tuple[str, str]] = []
+    if "config.parse" in checks:
+        actions.append(("修复 iterate.config.yaml 的语法错误", "编辑配置后运行 `iterate doctor`"))
+    if "config.schema" in checks or "validation.commands" in checks:
+        actions.append(
+            ("配置字段不符合规范", "运行 `iterate doctor --fix` 应用安全修复；否则编辑所示字段")
+        )
+    if "skill_version" in checks:
+        actions.append(("录制的技能版本过旧", "运行 `iterate refresh` 更新录制版本"))
+    if "dimensions" in checks or "review.scope" in checks:
+        actions.append(("维度/范围配置异常", "在 iterate.config.yaml 中修正或运行 `iterate reonboard`"))
+    if "drift" in checks:
+        actions.append(("技术栈漂移", "运行 `iterate refresh` 同步知识库（非阻塞）"))
+    if actions:
+        tui.empty_line()
+        tui.info("Next action(s): ", indent=2)
+        for label, command in actions:
+            tui.bullet(f"{label} → {command}", indent=4)
 
 
 def main(argv: list[str] | None = None) -> int:
