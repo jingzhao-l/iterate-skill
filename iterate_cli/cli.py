@@ -27,6 +27,7 @@ from iterate_cli.generator import (
     write_onboarding_outputs,
 )
 from iterate_cli.refresh import (
+    REONBOARD_CANCELLED,
     REONBOARD_COMPLETED,
     REONBOARD_NO_CHANGES,
     check_onboarding_drift,
@@ -551,8 +552,14 @@ def _cmd_reonboard(project_root: Path) -> int:
         tui.info("Re-onboarding not needed — no changes to apply.")
         tui.hint("Old files backed up with .bak-<timestamp> suffix.", indent=2)
         return 0
+    elif status == REONBOARD_CANCELLED:
+        # Cancelling is a normal (non-error) user decision; mirror onboarding's
+        # cancel message and exit code so scripts see "not written" clearly.
+        tui.cancel()
+        tui.hint("Re-onboarding cancelled. Old files are intact (a .bak snapshot was taken).", indent=2)
+        return 1
     else:
-        tui.error("Re-onboarding cancelled or failed.")
+        tui.error("Re-onboarding failed. Old files were backed up but not replaced.")
         return 1
 
 
@@ -599,36 +606,38 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     checks continue to work. When ``json_output`` is True, a structured JSON
     blob is emitted instead (useful for scripts and CI).
     """
-    # Structured gathering shared by both render modes.
+    # Structured gathering shared by both render modes. Onboarding state and
+    # config are loaded exactly once so the JSON and TUI branches cannot drift
+    # from each other (and re-reading the file mid-render cannot yield a stale
+    # half-loaded snapshot).
     data: dict[str, Any] = {"project": str(project_root)}
+    onboarded = is_onboarding_complete(project_root)
+    config = load_onboarding_config(project_root) if onboarded else None
+    data["onboarded"] = onboarded
 
-    if not is_onboarding_complete(project_root):
-        data["onboarded"] = False
-    else:
-        data["onboarded"] = True
-        config = load_onboarding_config(project_root)
-        if config:
-            onboarding = config.get("onboarding") or {}
-            data["completed_at"] = onboarding.get("completed_at", "unknown")
-            data["channel"] = onboarding.get("channel", "unknown")
-            data["skill_version"] = onboarding.get("skill_version", "unknown")
-            data["drift_check"] = onboarding.get("drift_check", True)
-            raw_fingerprints = onboarding.get("fingerprints") or []
-            data["fingerprints"] = (
-                len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
-            )
-            personalization = config.get("personalization") or {}
-            data["personalization_rules"] = (
-                _count_personalization_rules(personalization) if personalization else 0
-            )
+    drift = None
+    if config:
+        onboarding = config.get("onboarding") or {}
+        data["completed_at"] = onboarding.get("completed_at", "unknown")
+        data["channel"] = onboarding.get("channel", "unknown")
+        data["skill_version"] = onboarding.get("skill_version", "unknown")
+        data["drift_check"] = onboarding.get("drift_check", True)
+        raw_fingerprints = onboarding.get("fingerprints") or []
+        data["fingerprints"] = (
+            len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
+        )
+        personalization = config.get("personalization") or {}
+        data["personalization_rules"] = (
+            _count_personalization_rules(personalization) if personalization else 0
+        )
 
-            drift = check_onboarding_drift(project_root)
-            if drift is None:
-                data["drift"] = "unknown"
-            elif drift.has_drift:
-                data["drift"] = drift.summary()
-            else:
-                data["drift"] = "none"
+        drift = check_onboarding_drift(project_root)
+        if drift is None:
+            data["drift"] = "unknown"
+        elif drift.has_drift:
+            data["drift"] = drift.summary()
+        else:
+            data["drift"] = "none"
 
     if json_output:
         import json
@@ -640,57 +649,47 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     tui.key_value("Project", str(project_root))
     tui.empty_line()
 
-    if not is_onboarding_complete(project_root):
+    if not onboarded:
         tui.warning("Status: Not onboarded")
         tui.hint("Run 'iterate onboard' to initialize.", indent=2)
         return 0
 
     tui.success("Status: Onboarded")
 
-    config = load_onboarding_config(project_root)
-    if config:
-        onboarding = config.get("onboarding") or {}
-        completed_at = onboarding.get("completed_at", "unknown")
-        channel = onboarding.get("channel", "unknown")
-        skill_version = onboarding.get("skill_version", "unknown")
-        tui.key_value("Completed", completed_at)
-        tui.key_value("Channel", channel)
-        tui.key_value("Skill version", skill_version)
-
-        # Drift configuration summary.
-        drift_enabled = onboarding.get("drift_check", True)
-        raw_fingerprints = onboarding.get("fingerprints") or []
-        fp_count = len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
-        tui.key_value("Fingerprints", f"{fp_count} manifest(s)")
-        tui.key_value("Drift check", "enabled" if drift_enabled else "disabled")
-
-        # Show personalization summary.
-        # Count structured rules, excluding the schema "version" field
-        # (metadata, not a rule) and properly handling
-        # extra_validation_commands (a dict of module -> command list).
-        personalization = config.get("personalization") or {}
-        if personalization:
-            total = _count_personalization_rules(personalization)
-            # Use plain info() to keep 'Personalization: N rule(s)' as a
-            # contiguous substring (tests assert this exact text).
-            tui.info(f"Personalization: {total} rule(s)", indent=2)
-
-        # Check drift and surface actionable advice.
-        drift = check_onboarding_drift(project_root)
-        if drift is None:
-            if not drift_enabled:
-                tui.key_value("Drift", "check disabled")
-            elif fp_count == 0:
-                tui.key_value("Drift", "no fingerprints recorded yet")
-            else:
-                tui.key_value("Drift", "unknown")
-        elif drift.has_drift:
-            tui.warning(f"Drift: {drift.summary()}", indent=2)
-            tui.hint(drift.advice(), indent=4)
-        else:
-            tui.success("Drift: No drift detected", indent=2)
-    else:
+    if not config:
         tui.hint("(iterate.config.yaml not found — only ITERATE.md exists)", indent=2)
+        return 0
+
+    onboarding = config.get("onboarding") or {}
+    tui.key_value("Completed", data["completed_at"])
+    tui.key_value("Channel", data["channel"])
+    tui.key_value("Skill version", data["skill_version"])
+
+    # Drift configuration summary.
+    drift_enabled = onboarding.get("drift_check", True)
+    fp_count = data["fingerprints"]
+    tui.key_value("Fingerprints", f"{fp_count} manifest(s)")
+    tui.key_value("Drift check", "enabled" if drift_enabled else "disabled")
+
+    # Show personalization summary (metadata ``version`` field excluded).
+    if data["personalization_rules"]:
+        # Use plain info() to keep 'Personalization: N rule(s)' as a
+        # contiguous substring (tests assert this exact text).
+        tui.info(f"Personalization: {data['personalization_rules']} rule(s)", indent=2)
+
+    # Surface drift and actionable advice (already computed once above).
+    if drift is None:
+        if not drift_enabled:
+            tui.key_value("Drift", "check disabled")
+        elif fp_count == 0:
+            tui.key_value("Drift", "no fingerprints recorded yet")
+        else:
+            tui.key_value("Drift", "unknown")
+    elif drift.has_drift:
+        tui.warning(f"Drift: {drift.summary()}", indent=2)
+        tui.hint(drift.advice(), indent=4)
+    else:
+        tui.success("Drift: No drift detected", indent=2)
 
     return 0
 

@@ -1714,6 +1714,19 @@ class TestCLIReonboard:
         ret = cli_main(["reonboard", "-p", str(empty_project)])
         assert ret == 1
 
+    def test_reonboard_cancelled_is_distinct_from_failed(self, fake_project: Path, capsys) -> None:
+        # Regression: a user-cancelled re-onboard used to share the vague
+        # "cancelled or failed" message with a real failure. On a non-TTY stdin
+        # the wizard cannot prompt, so full_reonboard returns REONBOARD_CANCELLED
+        # and the CLI must render a distinct cancellation message.
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        ret = cli_main(["reonboard", "-p", str(fake_project)])
+        assert ret == 1
+        captured = capsys.readouterr()
+        assert "cancelled" in captured.out.lower()
+        assert "failed" not in captured.out.lower()
+
 
 class TestCLIVersion:
     def test_version_flag(self, capsys) -> None:
