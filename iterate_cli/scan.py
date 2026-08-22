@@ -238,6 +238,12 @@ def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
         elif lang in ("Java", "Java/Kotlin", "Kotlin"):
             build_tool = "mvn" if "pom.xml" in scan.manifests else "gradle"
             commands["java"] = [f"{build_tool} compile", f"{build_tool} test"]
+        elif lang == "Dart/Flutter":
+            commands["dart"] = ["dart analyze", "dart test"]
+        elif lang == "Elixir":
+            commands["elixir"] = ["mix test", "mix format --check-formatted"]
+        elif lang == "Ruby":
+            commands["ruby"] = ["bundle exec rubocop", "bundle exec rspec"]
 
     return commands
 
@@ -262,11 +268,21 @@ def suggest_command_whitelist(scan: ScanResult) -> list[str]:
         elif lang == "Swift":
             base.append("swift")
         elif lang == "Go":
-            base.append("go test")
+            # "go" (not "go test") so `go vet ./...` is covered as well:
+            # _command_is_whitelisted only matches prefix + space, so the
+            # narrower "go test" would leave "go vet ./..." un-whitelisted
+            # and doctor would flag it.
+            base.append("go")
         elif lang == "Rust":
             base.append("cargo")
         elif lang in ("Java", "Java/Kotlin", "Kotlin"):
             base.extend(["mvn", "gradle"])
+        elif lang == "Dart/Flutter":
+            base.append("dart")
+        elif lang == "Elixir":
+            base.append("mix")
+        elif lang == "Ruby":
+            base.append("bundle")
     # Deduplicate while preserving order.
     seen: set[str] = set()
     result: list[str] = []

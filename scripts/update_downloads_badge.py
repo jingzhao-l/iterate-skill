@@ -70,17 +70,49 @@ def extract_count(source: str, payload: object) -> int | None:
 # Referer header is required only by the Tencent SkillHub API; sending it to
 # other hosts (ClawHub, npm) can trip their anti-abuse checks and bloat the
 # request. It is therefore attached based on the request host, not globally.
-REFERER_HOST = "skillhub.cloud.tencent.com"
+#
+# SkillHub exposes two distinct host families, both under ``*.tencent.com``:
+#   * ``skillhub.tencent.com``          -- the API host (see SOURCES)
+#   * ``skillhub.cloud.tencent.com``    -- the console / asset host
+# Each is matched exactly as a host or as a ``.``-prefixed suffix of a sub-host.
+_REFERER_HOSTS = (
+    "skillhub.tencent.com",
+    "skillhub.cloud.tencent.com",
+)
 _REFERER_HEADER = "https://skillhub.cloud.tencent.com/"
+
+_MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MiB cap on a JSON download-count payload
 
 
 def _is_skillhub_url(url: str) -> bool:
-    """Return True when a URL targets the Tencent SkillHub API."""
+    """Return True when a URL targets the Tencent SkillHub API.
+
+    Matching is suffix-safe: only a bare host or a ``.``-prefixed sub-host of
+    one of the recognised SkillHub hosts qualifies, so
+    ``evilskillhub.tencent.com.evil.com`` (and similar lookalikes) is excluded.
+    """
     try:
         host = urllib.parse.urlsplit(url).hostname or ""
     except ValueError:
         return False
-    return host == REFERER_HOST or host.endswith("." + REFERER_HOST)
+    return any(
+        host == known or host.endswith("." + known) for known in _REFERER_HOSTS
+    )
+
+
+def _read_bounded(resp: object) -> bytes:
+    """Read a bounded-size response body to avoid unbounded memory use.
+
+    ``resp`` must expose a ``read(amt: int) -> bytes``-style interface (any
+    ``urllib``/``http.client`` response object). Raises ``ValueError`` when the
+    payload exceeds the cap.
+    """
+    chunk = resp.read(_MAX_RESPONSE_BYTES + 1)
+    if len(chunk) > _MAX_RESPONSE_BYTES:
+        raise ValueError(
+            f"response body exceeds {_MAX_RESPONSE_BYTES} byte safety cap"
+        )
+    return chunk
 
 
 def fetch_json(url: str) -> object:
@@ -91,7 +123,7 @@ def fetch_json(url: str) -> object:
         headers["Referer"] = _REFERER_HEADER
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS, context=context) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return json.loads(_read_bounded(resp).decode("utf-8"))
 
 
 def resolve_counts(
@@ -151,10 +183,18 @@ def read_previous(path: str) -> dict[str, object]:
 def write_output(path: str, data: dict[str, object]) -> None:
     """Write the JSON atomically so a crash never leaves a truncated file."""
     tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
-    os.replace(tmp_path, path)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(tmp_path, path)
+    except BaseException:
+        # Never leave a partial temp file behind on failure.
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def main() -> int:
