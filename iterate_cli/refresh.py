@@ -33,6 +33,7 @@ from iterate_cli.scan import (
     scan_project,
     suggest_command_whitelist,
     suggest_dimensions,
+    suggest_validation_commands,
 )
 from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
 
@@ -258,8 +259,14 @@ def preview_refresh(project_root: Path) -> dict[str, Any]:
     current_config = ""
     try:
         current_config = (project_root / CONFIG_YAML).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        current_config = ""  # Config may not exist yet; treat as empty.
+    except (OSError, UnicodeDecodeError) as exc:
+        # The config was already parsed by _build_refresh_outputs, so reaching
+        # this point with an unreadable file is a genuine read failure. Treating
+        # it as an empty string would falsely flag config_changed and misguide
+        # the preview (which claims to refuse to overwrite an unparseable
+        # config).
+        empty["error"] = f"Failed to read {CONFIG_YAML}: {exc}"
+        return empty
 
     md_changed = refreshed_md != current_md
     config_changed = config_yaml != current_config
@@ -483,12 +490,70 @@ def full_reonboard(
         return REONBOARD_NO_CHANGES
 
     try:
-        write_onboarding_outputs(data, project_root)
+        # Preserve the user-owned ITERATE.md section (manual edits +
+        # personalization content) across a full re-onboard, keeping behaviour
+        # consistent with ``onboard`` on an existing project. The .bak copy
+        # already saved above remains as a safety net.
+        existing_md: str | None = None
+        if iterate_md_path.is_file():
+            try:
+                existing_md = iterate_md_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                print(
+                    f"⚠️  Failed to read {iterate_md_path} for user-owner preservation: {exc}",
+                    file=sys.stderr,
+                )
+                existing_md = None
+        write_onboarding_outputs(data, project_root, existing_md)
     except OSError as exc:
         print(f"⚠️  Failed to write onboarding outputs: {exc}", file=sys.stderr)
         return REONBOARD_FAILED
 
     return REONBOARD_COMPLETED
+
+
+def _reconcile_validation_suggestions(
+    validation_commands: dict[str, list[str]],
+    effective_whitelist: list[str],
+    scan: ScanResult,
+    reconcile_whitelist: bool = True,
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Additively reconcile validation tooling with a newly-detected stack.
+
+    When a language has been added to the project since the last onboarding,
+    its suggested validation commands and command-whitelist prefixes are
+    appended so the refreshed config actually validates it. Existing
+    (possibly customised) configuration is preserved and never removed —
+    only missing entries for newly-detected languages are added.
+
+    Args:
+        validation_commands: Existing ``validation.commands`` mapping.
+        effective_whitelist: The currently effective command whitelist.
+        scan: Fresh ScanResult used to derive per-language suggestions.
+        reconcile_whitelist: Whether to augment the whitelist. Disable when
+            the operator has deliberately configured an empty whitelist
+            ("run no commands") so their intent is preserved.
+
+    Returns:
+        Updated (validation_commands, effective_whitelist).
+    """
+    suggested_commands = suggest_validation_commands(scan)
+    commands = dict(validation_commands)
+    for module, cmds in suggested_commands.items():
+        if module not in commands:
+            commands[module] = list(cmds)
+
+    if not reconcile_whitelist:
+        return commands, effective_whitelist
+
+    suggested_prefixes = suggest_command_whitelist(scan)
+    seen = set(effective_whitelist)
+    whitelist = list(effective_whitelist)
+    for prefix in suggested_prefixes:
+        if prefix not in seen:
+            seen.add(prefix)
+            whitelist.append(prefix)
+    return commands, whitelist
 
 
 def _build_refresh_data(
@@ -504,8 +569,32 @@ def _build_refresh_data(
     # Secure-by-default: push_per_round must default to False, matching
     # OnboardingData (generator.py) and the documented default.
     push_per_round = (existing_config.get("git") or {}).get("push_per_round", False)
-    validation_commands = (existing_config.get("validation") or {}).get("commands") or {}
-    command_whitelist = (existing_config.get("validation") or {}).get("command_whitelist") or []
+    validation_existing = existing_config.get("validation") or {}
+    validation_commands = validation_existing.get("commands") or {}
+    # Distinguish an explicit empty whitelist (the operator deliberately
+    # configured "run no commands") from an absent key (fall back to a scan
+    # suggestion so a fresh config still gets a usable whitelist).
+    has_whitelist_key = isinstance(validation_existing, dict) and "command_whitelist" in validation_existing
+    command_whitelist = validation_existing.get("command_whitelist")
+    if command_whitelist is None:
+        command_whitelist = [] if has_whitelist_key else None
+    # Resolve the effective whitelist (existing, or scan suggestion when the
+    # key is absent) and additively reconcile validation tooling with the
+    # newly-detected tech stack: a language added since the last onboarding
+    # gets its suggested commands + whitelist prefixes appended, while
+    # existing (possibly customised) configuration is never removed.
+    effective_whitelist = (
+        command_whitelist
+        if command_whitelist is not None
+        else suggest_command_whitelist(scan)
+    )
+    # An operator who deliberately configured an empty whitelist ("run no
+    # commands") should not get tool prefixes re-added on refresh; every other
+    # case is augmented additively so newly-detected languages are validated.
+    reconcile_whitelist = not (has_whitelist_key and command_whitelist == [])
+    validation_commands, effective_whitelist = _reconcile_validation_suggestions(
+        validation_commands, effective_whitelist, scan, reconcile_whitelist
+    )
     language = existing_config.get("language", "en")
 
     # Preserve existing personalization so refresh does not lose it.
@@ -536,7 +625,7 @@ def _build_refresh_data(
         review_scope=review_scope,
         push_per_round=push_per_round,
         validation_commands=validation_commands,
-        command_whitelist=command_whitelist if command_whitelist else suggest_command_whitelist(scan),
+        command_whitelist=effective_whitelist,
         fingerprints=fingerprints,
         language=language,
         drift_ignore=get_drift_ignore(existing_config),
