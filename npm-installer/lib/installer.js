@@ -194,6 +194,31 @@ function runCommand(bin, args, options = {}) {
   });
 }
 
+async function rejectLinkEntries(tarballPath) {
+  // Inspect the verbose listing and reject any symbolic ("l") or hard ("h")
+  // link entry. We deliberately reject *all* links rather than validating
+  // their targets: the release tarball contains none, so any link is a sign
+  // of a tampered archive and refusing it outright is the safest response to
+  // a symlink-escape attempt (see extractTarball above).
+  const verbose = await runCommand('tar', ['-tvzf', tarballPath]);
+  for (const line of verbose.split(/\r?\n/)) {
+    if (!line) {
+      continue;
+    }
+    const type = line[0];
+    if (type === 'l') {
+      throw new InstallerError(
+        'Refusing to extract tarball: archive contains a symbolic link, which the release never ships.',
+      );
+    }
+    if (type === 'h') {
+      throw new InstallerError(
+        'Refusing to extract tarball: archive contains a hard link, which the release never ships.',
+      );
+    }
+  }
+}
+
 async function extractTarball(tarballPath, destDir) {
   // Use the system tar command (available on macOS, Linux, and Windows 10+),
   // but defend against path-traversal tarballs: before extracting we list the
@@ -205,6 +230,13 @@ async function extractTarball(tarballPath, destDir) {
   // exactly one top-level directory (see README "Release tarball structure").
   // Archives that violate that contract — multiple top-level directories, or
   // entries with no path left after stripping — are rejected outright.
+  //
+  // A name-based `../` check alone is not enough: a tarball can smuggle a
+  // symlink whose in-archive name looks safe but whose target points outside
+  // destDir, then place files "through" that symlink (e.g. `link/passwd` where
+  // `link -> /etc`). Because extraction happens with a system `tar`, the write
+  // would follow the link before we could validate — so any symbolic or hard
+  // link is rejected *before* extraction. The release tarball never uses links.
   const absoluteDest = path.resolve(destDir);
   fs.mkdirSync(absoluteDest, { recursive: true });
 
@@ -214,6 +246,13 @@ async function extractTarball(tarballPath, destDir) {
   if (entries.length === 0) {
     throw new InstallerError('Refusing to extract tarball: archive contains no entries.');
   }
+
+  // 1b. Reject any symbolic or hard link entry before touching the tree.
+  // The verbose listing's first character is the entry type for both GNU tar
+  // and bsdtar (macOS): '-' regular, 'd' directory, 'l' symbolic link, 'h'
+  // hard link. We only need to detect links, so a cheap first-char scan is
+  // sufficient and avoids relying on the rest of the format.
+  await rejectLinkEntries(tarballPath);
 
   // 2. Enforce the single-top-level-directory contract required by
   //    --strip-components=1.
@@ -659,4 +698,6 @@ module.exports = {
   resolveInstallMode,
   askYesNo,
   parseChecksums,
+  extractTarball,
+  rejectLinkEntries,
 };

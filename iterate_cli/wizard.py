@@ -479,7 +479,11 @@ def _confirm_tech_stack(scan: ScanResult, input_func: InputFunc) -> list[str]:
     tui.question("请手动输入主要语言（逗号分隔）/ Enter main languages (comma-separated):")
     raw = input_func("  └ ").strip()
     if not raw:
-        return ["Unknown"]
+        # No manifest and no manual input: return an empty list rather than a
+        # fabricated sentinel ("Unknown"), which would be persisted as a real
+        # tech-stack language in config and ITERATE.md. Renderers already show
+        # a "none detected" fallback for an empty list.
+        return []
     return [lang.strip() for lang in raw.split(",") if lang.strip()]
 
 
@@ -570,8 +574,11 @@ def _collect_dimensions(scan: ScanResult, input_func: InputFunc) -> list[str]:
     tui.numbered_list(items, indent=4, markers=markers)
 
     tui.empty_line()
-    tui.question("输入编号选择/取消维度（逗号分隔），直接回车使用推荐项 /")
-    tui.hint("Enter numbers to toggle (comma-separated), or press Enter for suggested:", indent=2)
+    # Input semantics are "enter the exact set of dimensions to enable", NOT
+    # toggle-on/off: every entered number is included, the rest are disabled.
+    # The wording must say "select" (not "toggle") so users are not misled.
+    tui.question("输入要启用的维度编号（逗号分隔），直接回车使用推荐项 /")
+    tui.hint("Enter the numbers of the dimensions to enable (comma-separated), or press Enter for suggested:", indent=2)
     raw = input_func("  └ ").strip()
 
     if not raw:
@@ -623,7 +630,8 @@ def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
     """Collect git-related configuration."""
     tui.section("Git 配置 / Git Configuration")
 
-    target_branch = input_func("  └ 目标分支 / Target branch (默认 main, 留空用 main): ").strip()
+    tui.question("目标分支 / Target branch (默认 main, 留空用 main):")
+    target_branch = input_func("  └ ").strip()
     if not target_branch:
         target_branch = "main"
 
@@ -632,7 +640,8 @@ def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
         "full — 全量审查（默认）/ Full review (default)",
         "changed-only — 增量审查 / Changed files only",
     ], indent=4)
-    scope_choice = input_func("  └ 选择 / Select (1/2, 默认 1): ").strip()
+    tui.question("选择 / Select (1/2, 默认 1):")
+    scope_choice = input_func("  └ ").strip()
     if not scope_choice or scope_choice == "1":
         review_scope = "full"
     elif scope_choice == "2":
