@@ -12,7 +12,7 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 
 | 项目 | 仓库 | 分发渠道 | 版本线 |
 |---|---|---|---|
-| **iterate-skill**（skill 本体 + CLI + 安装器） | `jingzhao-l/iterate-skill`（主仓库，唯一维护点） | GitHub Release / npm / ClawHub / ModelScope / Tencent SkillHub | 2.3.x（与 skill 同步） |
+| **iterate-skill**（skill 本体 + CLI + 安装器） | `jingzhao-l/iterate-skill`（主仓库，唯一维护点） | GitHub Release / npm / ClawHub / ModelScope / Tencent SkillHub | 2.8.x（与 skill 同步） |
 | **iterate-harness**（Python 引擎 + npm 包装器） | `jingzhao-l/iterate-harness`（subtree 独立发布仓） | GitHub tag / npm 包装器 | 1.9.x（独立） |
 | **iterate-plugin**（dsh 插件） | `jingzhao-l/iterate-plugin`（subtree 独立发布仓） | npm | 2.3.x（独立，自 2.3.7 起） |
 
@@ -119,6 +119,18 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **2.8.0 状态（2026-08-22）**：GitHub Release v2.8.0 已发布（tag `v2.8.0`，CI 自动生成
+      > `iterate-skill.tar.gz` + `SHA256SUMS.txt`，`:!harness` 剔除 harness）；npm
+      > `iterate-skill-installer@2.8.0` 已发布（发布时因沙箱 PATH 无 node，npm 走
+      > `/usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js` 调用）；
+      > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本
+      > `.dist_tmp/clawhub_publish.py` 发布 2.8.0（65 文件，响应 `ok:true`、
+      > `status=pending`，versionId `k979c16gb6em97h0vf6p5bff118cy5vt`，`latestVersion`
+      > 需数分钟传播）；ModelScope 已 PATCH 生效（`verify_update_280.py` 上传 2.8.0
+      > 精简 zip 382,483 字节，file_id `f1d44ec0-53b7-4103-9a28-436c58f841fb`，
+      > `update_skill_settings` success）；SkillHub（skillId `104490`）`skillhub publish`
+      > 成功（`ok:true`，versionId `262149`，`tags.latest=2.8.0`，`reviewStatus/
+      > securityScanStatus=pending` 为平台异步审核）。
       > **2.6.0 状态（2026-08-21）**：GitHub Release v2.6.0 已发布，CI 已上传
       > `iterate-skill.tar.gz`（346,530 字节）+ `SHA256SUMS.txt`（github-actions[bot] 上传，
       > release `published_at` 2026-08-21T14:35:49Z）；npm `iterate-skill-installer@2.6.0`
