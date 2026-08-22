@@ -16,6 +16,7 @@ from typing import Any
 
 import yaml
 
+from iterate_cli import __version__ as SKILL_VERSION
 from iterate_cli.fingerprint import (
     DriftResult,
     capture_fingerprints,
@@ -429,6 +430,12 @@ def _build_refreshed_config(
     if onboarding.get("fingerprints") != new_fp:
         onboarding["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     onboarding["fingerprints"] = new_fp
+    # Keep the recorded skill version in sync with the installed version so a
+    # version bump surfaced by ``iterate doctor`` (which advises ``iterate
+    # refresh`` as the fix) is actually resolved here rather than persisting a
+    # stale record that doctor keeps flagging.
+    if onboarding.get("skill_version") != SKILL_VERSION:
+        onboarding["skill_version"] = SKILL_VERSION
     config["onboarding"] = onboarding
     return config
 
