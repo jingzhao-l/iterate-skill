@@ -1,20 +1,33 @@
 name: Release
 
+# This workflow is triggered on every published Release in the monorepo. The
+# repo ships two INDEPENDENT distribution lines that must never cross-contaminate:
+#   * the iterate-skill skill (tags v2.*)  -> skill tarball + SHA256SUMS
+#   * the iterate-harness package (tags v1.*) -> built wheel, uploaded to the
+#     same GitHub release AND pushed to PyPI (best-effort, gated on the
+#     PYPI_PASSWORD secret).
+# Job selection is therefore gated on the tag prefix. `workflow_dispatch` lets
+# an operator re-run the harness wheel job against an existing tag when the
+# `release` event did not fire (e.g. `gh workflow run release.yml --ref v1.14.0`).
+
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   checksums:
+    # Skill distribution line only — runs for skill tags (v2.*).
+    if: startsWith(github.ref, 'refs/tags/v2')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || github.ref_name }}
 
       - name: Create release tarball locally
         run: |
@@ -36,6 +49,74 @@ jobs:
       - name: Upload tarball and checksums to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
           files: |
             iterate-skill.tar.gz
             SHA256SUMS.txt
+
+  harness-wheel:
+    # Harness distribution line only — runs for harness tags (v1.*).
+    if: startsWith(github.ref, 'refs/tags/v1')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged tree
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref_name }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install and build web frontend (baked into the wheel)
+        working-directory: harness/iterate-harness/frontend/web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify web dist produced
+        run: test -n "$(ls -A harness/iterate-harness/frontend/web/dist)" && echo "web dist present"
+
+      - name: Build wheel
+        working-directory: harness/iterate-harness
+        run: uv build --wheel
+
+      - name: Inspect built wheel
+        run: |
+          ls -la harness/iterate-harness/dist
+          python -m zipfile -l harness/iterate-harness/dist/*.whl | { grep -E "_frontend_web/|_frontend/" | head -20 || true; }
+
+      - name: Upload wheel to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          files: harness/iterate-harness/dist/*.whl
+
+      - name: Publish wheel to PyPI (iff token configured)
+        # The npm wrapper installs the harness by pip-resolving
+        # `iterate-harness==X.Y.Z` against the user's mirror (e.g. tuna), so a
+        # PyPI artifact is the primary install channel. Best-effort: if the
+        # PYPI_PASSWORD secret isn't set, skip — the GitHub wheel asset above
+        # remains a working fallback for the wrapper.
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+        working-directory: harness/iterate-harness
+        run: |
+          if [ -z "$TWINE_PASSWORD" ]; then
+            echo "PYPI_PASSWORD secret not configured; skipping PyPI publish"
+            exit 0
+          fi
+          python -m pip install --upgrade twine
+          twine upload --non-interactive --skip-existing dist/*.whl
