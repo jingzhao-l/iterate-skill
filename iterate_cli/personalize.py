@@ -1399,12 +1399,11 @@ def _add_known_intentional(input_func: InputFunc) -> KnownIntentional | None:
         line = int(line_str) if line_str else 0
     except ValueError:
         line = 0
-    if line < 0:
-        # Negative line numbers have no whole-file meaning and would be
-        # mis-rendered (see to_user_md_sections: line > 0 renders a specific
-        # line, else "whole file"). Normalise stray negatives to whole-file
-        # rather than persisting a corrupt entry.
-        line = 0
+    # Negative line numbers have no whole-file meaning and would be
+    # mis-rendered (see to_user_md_sections: line > 0 renders a specific
+    # line, else "whole file"). Normalise stray negatives to whole-file
+    # rather than persisting a corrupt entry.
+    line = max(line, 0)
     tui.info("选择维度 / Select dimension:", indent=2)
     for i, dim in enumerate(ALL_DIMENSIONS, 1):
         tui.info(f"{i}. {dim}", indent=4)
