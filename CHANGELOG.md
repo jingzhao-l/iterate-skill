@@ -5,6 +5,22 @@
 
 ---
 
+## [2.8.0] — 2026-08-22
+
+### 新增 / Features
+
+- **unattended CLI 子命令**：接线 schedule / hook / cron 无头调用路径，方便脱离对话在定时/钩子场景复用同一闭环。
+
+### 修复 / Bug fixes
+
+- **refresh 版本同步**：`iterate refresh` 现在把 `onboarding.skill_version` 同步到已安装版本，消除 `iterate doctor` 反复提示版本更新的告警（此前刷新不更新该记录）。
+- **reonboard 结果区分**：区分「用户取消」与「失败」，不再混用含糊的 "cancelled or failed" 消息。
+- **status 一致快照**：`iterate status` 改为单次读取 onboarding 状态/config/drift，JSON 与 TUI 两条渲染路径共享同一数据源。
+- **类型安全收敛**：personalization 行号钳制、show 可选配置段解析做类型收窄，满足 ruff PLR1730 与 mypy。
+- **webui**：浮出 workspace 删除错误，统一报告尺寸格式化。
+
+---
+
 ## [2.7.0] — 2026-08-22
 
 ### 发布 / Release
