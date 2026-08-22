@@ -37,6 +37,10 @@ MANIFEST_FILES: tuple[str, ...] = (
 # Current fingerprint schema version; bump when the format changes.
 FINGERPRINT_VERSION = "1.0"
 
+# Streaming hash block size when finger-printing a manifest file (keeps memory
+# bounded regardless of manifest size).
+HASH_CHUNK_BYTES = 1024 * 1024
+
 
 @dataclass
 class FingerprintEntry:
@@ -129,7 +133,11 @@ def compute_sha256(path: Path) -> str:
         FileNotFoundError: If the file does not exist.
         OSError: If the file cannot be read.
     """
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    hasher = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(HASH_CHUNK_BYTES), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def scan_manifests(project_root: Path, ignore_patterns: list[str] | None = None) -> list[Path]:
@@ -177,7 +185,7 @@ def capture_fingerprints(
     for manifest in scan_manifests(project_root, ignore_patterns):
         try:
             digest = compute_sha256(manifest)
-        except (OSError, UnicodeDecodeError) as exc:
+        except OSError as exc:
             print(
                 f"fingerprint: warning: cannot fingerprint {manifest.name}: {exc}",
                 file=sys.stderr,

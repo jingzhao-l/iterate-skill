@@ -353,8 +353,13 @@ def write_onboarding_outputs(
     except OSError as write_err:
         # Roll back the already-written ITERATE.md so the two files stay
         # consistent (best effort; the error is re-raised for the caller).
+        # Restore the exact pre-existing content, or remove the artifact when
+        # it did not exist before (fresh onboarding), instead of re-rendering.
         try:
-            atomic_write(iterate_md_path, existing_md or generate_iterate_md(data))
+            if existing_md is not None:
+                atomic_write(iterate_md_path, existing_md)
+            elif iterate_md_path.exists():
+                iterate_md_path.unlink()
         except OSError:
             _log_rollback_failure(iterate_md_path, write_err)
         raise

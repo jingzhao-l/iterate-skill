@@ -385,6 +385,54 @@ class TestSuggestCommandWhitelist:
         wl = suggest_command_whitelist(scan)
         assert len(wl) == len(set(wl))
 
+    def test_go_whitelist_covers_go_vet(self) -> None:
+        """Regression: the Go whitelist must be 'go', not 'go test'.
+
+        ``_command_is_whitelisted`` matches a whitelist entry only when a
+        command equals it or starts with it followed by whitespace, so with a
+        ``go test`` entry the suggested ``go vet ./...`` would fail doctor's
+        whitelist-compliance check. The broad ``go`` prefix covers both.
+        """
+        scan = ScanResult(detected_languages=["Go"])
+        wl = suggest_command_whitelist(scan)
+        assert "go test" not in wl
+        assert "go" in wl
+        # The suggested commands must all be covered by the whitelist under
+        # the same matching rule doctor uses.
+        from iterate_cli.doctor import _command_is_whitelisted
+
+        for cmd in suggest_validation_commands(scan)["go"]:
+            assert _command_is_whitelisted(cmd, wl), f"{cmd!r} not whitelisted"
+
+    @pytest.mark.parametrize(
+        "language, module_name, whitelist_entry",
+        [
+            ("Dart/Flutter", "dart", "dart"),
+            ("Elixir", "elixir", "mix"),
+            ("Ruby", "ruby", "bundle"),
+        ],
+    )
+    def test_new_language_whitelist(
+        self, language: str, module_name: str, whitelist_entry: str
+    ) -> None:
+        """Dart/Elixir/Ruby suggestions must be whitelist-covered commands."""
+        scan = ScanResult(detected_languages=[language])
+        wl = suggest_command_whitelist(scan)
+        cmds = suggest_validation_commands(scan)
+        assert module_name in cmds
+        assert whitelist_entry in wl
+        from iterate_cli.doctor import _command_is_whitelisted
+
+        for cmd in cmds[module_name]:
+            assert _command_is_whitelisted(cmd, wl), f"{cmd!r} not whitelisted"
+        # Whitelist entries must themselves be doctor-safe (no shell chars /
+        # slashes that violate the allow entry regex).
+        from iterate_cli.doctor import DoctorReport, _check_whitelist_compliance
+
+        report = DoctorReport("x")
+        _check_whitelist_compliance(report, wl, cmds)
+        assert not report.has_warnings(), report.to_dict()
+
 
 # ---------------------------------------------------------------------------
 # Generator tests

@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from iterate_cli.fingerprint import DriftResult
 from iterate_cli.personalize import load_existing_personalization
 from iterate_cli.refresh import (
     check_onboarding_drift,
@@ -25,13 +26,12 @@ from iterate_cli.refresh import (
 from iterate_cli.tui import tui
 
 
-def _drift_summary(project_root: Path) -> str:
+def _drift_summary(drift: DriftResult | None) -> str:
     """Return a human/JSON-safe drift description.
 
     ``check_onboarding_drift`` already honours the ``drift_check`` switch
-    internally, so this helper needs no extra argument.
+    internally, so the caller only needs to invoke it once and pass the result.
     """
-    drift = check_onboarding_drift(project_root)
     if drift is None:
         return "unknown"
     if drift.has_drift:
@@ -39,13 +39,12 @@ def _drift_summary(project_root: Path) -> str:
     return "none"
 
 
-def _drift_advice(project_root: Path) -> str | None:
+def _drift_advice(drift: DriftResult | None) -> str | None:
     """Return actionable drift advice, or None when there is none to give.
 
     Only meaningful when drift is actually detected (parity with ``iterate
     status``, which surfaces ``DriftResult.advice()``).
     """
-    drift = check_onboarding_drift(project_root)
     if drift is None or not drift.has_drift:
         return None
     return drift.advice()
@@ -85,8 +84,11 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
             len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
         ),
     }
-    data["drift"] = _drift_summary(project_root)
-    data["drift_advice"] = _drift_advice(project_root)
+    # Compute the drift result exactly once and derive both summary and advice
+    # from it, avoiding a redundant scan + SHA-heavy recomputation.
+    drift = check_onboarding_drift(project_root)
+    data["drift"] = _drift_summary(drift)
+    data["drift_advice"] = _drift_advice(drift)
 
     # Surface the resolved config sections iterate owns. Validation commands
     # are trusted config (created by onboarding / validate.py), so showing
@@ -154,14 +156,14 @@ def _collect_personalization(project_root: Path, config: dict[str, Any]) -> dict
         personalization at all, returns an empty dict.
     """
     result: dict[str, Any] = {}
-    personalization = config.get("personalization")
-    if not isinstance(personalization, dict) or not personalization:
-        # Structured config is absent; check ITERATE.md for free-form content.
-        data = load_existing_personalization(project_root, config)
-        if data.is_empty():
-            return {}
-    else:
-        data = load_existing_personalization(project_root, config)
+    # load_existing_personalization merges structured config (the
+    # ``personalization`` section in iterate.config.yaml) with free-form
+    # notes/conventions read back from ITERATE.md, so a single call covers
+    # both sources. It is safe to pass an empty connection here even when
+    # ``config`` carries no personalization section.
+    data = load_existing_personalization(project_root, config)
+    if data.is_empty():
+        return {}
 
     result["protected_paths"] = list(data.protected_paths)
     result["risk_areas"] = [

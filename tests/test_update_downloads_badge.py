@@ -168,10 +168,12 @@ class TestIsSkillhubUrl:
     @pytest.mark.parametrize(
         "url, expected",
         [
-            ("https://api.skillhub.tencent.com/api/v1/foo", False),
+            ("https://api.skillhub.tencent.com/api/v1/foo", True),
             ("https://skillhub.cloud.tencent.com/x", True),
             ("https://sub.skillhub.cloud.tencent.com/x", True),
             ("https://evil-skillhub.cloud.tencent.com.evil.com/x", False),
+            ("https://evilskillhub.tencent.com.evil.com/x", False),
+            ("https://skillhub.tencent.com/x", True),
             ("not a url", False),
         ],
     )
@@ -188,7 +190,7 @@ class TestIsSkillhubUrl:
             def __exit__(self, *args):
                 return False
 
-            def read(self):
+            def read(self, amt: int = -1) -> bytes:
                 return b"{}"
 
         def fake_urlopen(request, timeout, context):
