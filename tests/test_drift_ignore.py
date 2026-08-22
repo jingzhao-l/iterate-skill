@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from iterate_cli.cli import main as cli_main
+from iterate_cli import __version__ as SKILL_VERSION
 from iterate_cli.fingerprint import (
     capture_fingerprints,
     check_drift,
@@ -207,6 +208,44 @@ class TestRefreshIgnore:
         stored = config["onboarding"]["fingerprints"]
         paths = {fp["path"] for fp in stored}
         assert paths == {"tsconfig.json"}
+
+    def test_refresh_syncs_stale_skill_version(self, js_project: Path) -> None:
+        # Reflects the "Run `iterate refresh` to update the recorded skill
+        # version." advice from `iterate doctor`: a refresh must bring a stale
+        # onboarding.skill_version into sync, not persist the stale record.
+        setup = _write_config_with_drift(js_project)
+        setup["onboarding"]["skill_version"] = "9.9.9"
+        (js_project / "iterate.config.yaml").write_text(
+            yaml.safe_dump(setup, sort_keys=False),
+            encoding="utf-8",
+        )
+        (js_project / "ITERATE.md").write_text(
+            "# ITERATE.md\n\n"
+            "<!-- ITERATE:USER-OWNED:START -->\nuser\n<!-- ITERATE:USER-OWNED:END -->\n",
+            encoding="utf-8",
+        )
+        assert incremental_refresh(js_project) is True
+        config = yaml.safe_load((js_project / "iterate.config.yaml").read_text(encoding="utf-8"))
+        assert config["onboarding"]["skill_version"] == SKILL_VERSION
+
+    def test_refresh_preserves_in_sync_skill_version(self, js_project: Path) -> None:
+        # Idempotency: when fingerprints and skill_version already match, a
+        # refresh must stay a no-op and not restamp completed_at.
+        setup = _write_config_with_drift(js_project)
+        setup["onboarding"]["skill_version"] = SKILL_VERSION
+        setup["onboarding"]["completed_at"] = "2020-01-01T00:00:00Z"
+        (js_project / "iterate.config.yaml").write_text(
+            yaml.safe_dump(setup, sort_keys=False),
+            encoding="utf-8",
+        )
+        (js_project / "ITERATE.md").write_text(
+            "# ITERATE.md\n\n"
+            "<!-- ITERATE:USER-OWNED:START -->\nuser\n<!-- ITERATE:USER-OWNED:END -->\n",
+            encoding="utf-8",
+        )
+        assert incremental_refresh(js_project) is True
+        config = yaml.safe_load((js_project / "iterate.config.yaml").read_text(encoding="utf-8"))
+        assert config["onboarding"]["completed_at"] == "2020-01-01T00:00:00Z"
 
 
 # ---------------------------------------------------------------------------
