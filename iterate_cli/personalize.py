@@ -35,6 +35,44 @@ from iterate_cli.wizard import (
 # data model changes, so future migrations can detect old configs.
 PERSONALIZATION_VERSION = "1.0"
 
+
+class CorruptConfigError(RuntimeError):
+    """Raised when iterate.config.yaml exists but cannot be parsed as YAML.
+
+    Deliberately distinct from a missing file: refusing to act on an unparsable
+    config prevents a save/clear from silently rewriting (and thereby wiping)
+    a damaged user configuration.
+    """
+
+
+def load_config_strict(config_path: Path) -> dict[str, Any]:
+    """Parse iterate.config.yaml, refusing to proceed on corrupted YAML.
+
+    Returns an empty dict only when the file is missing/empty. When the file
+    exists but is not valid YAML, raises :class:`CorruptConfigError` so callers
+    do not merge into — or write over — a damaged configuration.
+
+    Args:
+        config_path: Path to iterate.config.yaml.
+
+    Returns:
+        Parsed config as a dict (``{}`` when the file is absent or empty).
+
+    Raises:
+        CorruptConfigError: If the file exists but is not valid YAML.
+        OSError: If the file cannot be read.
+    """
+    if not config_path.is_file():
+        return {}
+    raw = config_path.read_text(encoding="utf-8")
+    try:
+        parsed = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise CorruptConfigError(
+            f"iterate.config.yaml 不是合法 YAML，已拒绝写入以免覆盖损坏配置：{exc}"
+        ) from exc
+    return parsed if isinstance(parsed, dict) else {}
+
 # Module name pattern for extra_validation_commands keys.
 # Only allow alphanumeric, dash, underscore, dot — prevents shell
 # metacharacter injection via module key.
@@ -747,7 +785,7 @@ def save_personalization_to_config(
     if not config_path.is_file():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    existing = load_config_strict(config_path)
     updated = merge_personalization_into_config(existing, data)
 
     atomic_write(
@@ -833,7 +871,7 @@ def save_personalization(
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
     # Build config content.
-    existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    existing = load_config_strict(config_path)
     updated = merge_personalization_into_config(existing, data)
     config_yaml = yaml.safe_dump(
         updated, default_flow_style=False, allow_unicode=True, sort_keys=False
@@ -972,7 +1010,7 @@ def clear_personalization(project_root: Path) -> tuple[Path, Path]:
     if not config_path.is_file():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    existing = load_config_strict(config_path)
     updated = remove_personalization_from_config(existing)
     config_yaml = yaml.safe_dump(
         updated, default_flow_style=False, allow_unicode=True, sort_keys=False
@@ -1361,6 +1399,12 @@ def _add_known_intentional(input_func: InputFunc) -> KnownIntentional | None:
         line = int(line_str) if line_str else 0
     except ValueError:
         line = 0
+    if line < 0:
+        # Negative line numbers have no whole-file meaning and would be
+        # mis-rendered (see to_user_md_sections: line > 0 renders a specific
+        # line, else "whole file"). Normalise stray negatives to whole-file
+        # rather than persisting a corrupt entry.
+        line = 0
     tui.info("选择维度 / Select dimension:", indent=2)
     for i, dim in enumerate(ALL_DIMENSIONS, 1):
         tui.info(f"{i}. {dim}", indent=4)
@@ -1389,9 +1433,11 @@ def _add_dimension_focus(input_func: InputFunc) -> DimensionFocusOverride | None
     try:
         dim_idx = int(dim_str) - 1
         if not (0 <= dim_idx < len(ALL_DIMENSIONS)):
+            tui.warning("无效维度编号，已取消 / Invalid dimension number, cancelled", indent=2)
             return None
         dimension = ALL_DIMENSIONS[dim_idx]
     except ValueError:
+        tui.warning("无效输入，已取消 / Invalid input, cancelled", indent=2)
         return None
     focus = input_func(f"  └ 追加 focus 内容 / Extra focus text for [{dimension}]: ").strip()
     if not focus:

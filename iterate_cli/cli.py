@@ -337,7 +337,15 @@ def _cmd_onboard(project_root: Path) -> int:
         if not existing_personalization.is_empty():
             data.personalization = existing_personalization
 
-    iterate_md, config_yaml = write_onboarding_outputs(data, project_root, existing_md)
+    try:
+        iterate_md, config_yaml = write_onboarding_outputs(data, project_root, existing_md)
+    except (OSError, UnicodeDecodeError) as exc:
+        # Writing either artifact failed (disk full, permissions, locked file,
+        # or a corrupt template). Surface a clear message instead of a bare
+        # traceback; the writer already rolled back partially-written files.
+        tui.error(f"写入 onboarding 产物失败：{exc}")
+        tui.warning("未写入或已回滚 ITERATE.md / iterate.config.yaml，请检查目录权限后重试。")
+        return 1
     tui.empty_line()
     tui.success("Onboarding complete!")
     tui.key_value("Written", str(iterate_md))
