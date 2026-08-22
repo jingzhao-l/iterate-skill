@@ -26,6 +26,17 @@ from iterate_cli.refresh import (
 from iterate_cli.tui import tui
 
 
+def _as_section(value: Any) -> dict[str, Any]:
+    """Return ``value`` narrowed to a dict of settings, or an empty dict.
+
+    Used to read optional nested config sections (``git`` / ``review`` /
+    ``atomic`` / ``reviewer``) which may be absent or malformed when a config
+    is hand-edited. Keeps the widened ``Any`` type out of the caller's
+    variables so indexing below is type-safe for mypy.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def _drift_summary(drift: DriftResult | None) -> str:
     """Return a human/JSON-safe drift description.
 
@@ -98,10 +109,10 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
     # plus a few top-level keys, NOT inside ``onboarding`` (which only holds
     # onboarding metadata). Read each value from its canonical location so
     # ``iterate show`` actually reports the effective settings.
-    git = config.get("git") if isinstance(config.get("git"), dict) else {}
-    review = config.get("review") if isinstance(config.get("review"), dict) else {}
-    atomic = config.get("atomic") if isinstance(config.get("atomic"), dict) else {}
-    reviewer = config.get("reviewer") if isinstance(config.get("reviewer"), dict) else {}
+    git = _as_section(config.get("git"))
+    review = _as_section(config.get("review"))
+    atomic = _as_section(config.get("atomic"))
+    reviewer = _as_section(config.get("reviewer"))
     resolved: dict[str, Any] = {}
     # Top-level keys.
     for key in ("language", "goal", "max_rounds"):
