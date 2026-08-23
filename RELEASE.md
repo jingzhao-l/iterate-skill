@@ -14,7 +14,7 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 |---|---|---|---|
 | **iterate-skill**（skill 本体 + CLI + 安装器） | `jingzhao-l/iterate-skill`（主仓库，唯一维护点） | GitHub Release / npm / ClawHub / ModelScope / Tencent SkillHub | 2.8.x（与 skill 同步） |
 | **iterate-harness**（Python 引擎 + npm 包装器） | `jingzhao-l/iterate-harness`（subtree 独立发布仓） | GitHub tag / npm 包装器 | 1.9.x（独立） |
-| **iterate-plugin**（dsh 插件） | `jingzhao-l/iterate-plugin`（subtree 独立发布仓） | npm | 2.3.x（独立，自 2.3.7 起） |
+| **iterate-plugin**（dsh 插件） | `jingzhao-l/iterate-plugin`（subtree 独立发布仓） | npm | 2.12.x（独立，自 2.3.7 起） |
 
 三个项目共用同一主仓库 `jingzhao-l/iterate-skill` 作为唯一开发/评审点，
 `harness/` 下的两个子项目通过 `git subtree` 拆分到各自的独立发布仓库，再在
