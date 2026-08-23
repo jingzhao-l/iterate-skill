@@ -255,6 +255,25 @@ stamp 不匹配会自动重装到新 tag。
       git branch -D subtree-plugin
       ```
       > 独立仓 `jingzhao-l/iterate-plugin` 带 `dsh-plugin` topic，作为 dsh 生态发现入口。
+      >
+      > **⚠️ 非快进/无关联历史坑（2026-08-23 · 2.12.1）**：若 `git push plugin-origin subtree-plugin:main`
+      > 被拒（non-fast-forward），且 `git merge-base plugin-origin/main subtree-plugin` 为空
+      > （两者历史不相关），说明公开仓 main 是被早期 `git subtree push`（含 merge commit）建起的
+      > 独立历史，与当前 `git subtree split` 产物无公共祖先。不要 `--force`、不要裸 `git merge`
+      > （会“refusing to merge unrelated histories”）。**可用的替代路径**：直接改在 `.release/iterate-plugin`
+      > 工作区（它与公开仓 main 共享历史）提交并快进推送：
+      > ```bash
+      > cd .release/iterate-plugin && git pull origin main        # 对齐公开仓 main
+      > # 从主仓库把插件目录同步过来（排除 node_modules/.git）：
+      > rsync -a --exclude node_modules --exclude .git --exclude .release \
+      >   /Volumes/Eng-Dev/iterate-skill/harness/iterate-plugin/ ./
+      > git status --short      # 应只出现本次变更文件，再按需 git add 指定文件
+      > git commit && git push origin main
+      > ```
+      > 之后照常 `.release/iterate-plugin` 里 `npm publish`。
+      > **2.12.1 发布记录（2026-08-23）**：分支 `release/plugin-2.12.1`（基于 origin/main，
+      > cherry-pick 两笔 client fix），版本 2.12.0→2.12.1；公开仓 main `649a146..8b2b7d0`；
+      > npm `iterate-plugin@2.12.1` latest 已生效（62 文件 / 241.4 kB）。
 - [ ] **5. 同步发布工作区 + npm publish**：
       ```bash
       cd .release/iterate-plugin
