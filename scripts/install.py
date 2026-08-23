@@ -448,9 +448,12 @@ def copy_skill_files(
 def detect_installed_assistants(effective_target: Path) -> list[str]:
     """Detect which supported AI assistants appear to be installed.
 
-    Heuristic: check whether the assistant's configuration / skill parent
-    directory exists under ``effective_target``. A tool is considered
-    installed if its parent directory (e.g. ``.trae/skills``) exists.
+    A tool is considered installed only when its skill directory under
+    ``effective_target`` is an actual iterate-skill installation (i.e. it
+    contains ``SKILL.md``, the canonical skill marker). This matches the
+    exact criterion used by ``_is_iterate_install_dir`` in the uninstall
+    and install/upgrade paths, so detection, pre-selection in the installer
+    menu, and auto-detected ``update`` all agree.
 
     Args:
         effective_target: Base directory to inspect (home or project).
@@ -460,9 +463,7 @@ def detect_installed_assistants(effective_target: Path) -> list[str]:
     """
     found: list[str] = []
     for assistant, relative_dir in SUPPORTED_AI.items():
-        # Use the skill directory's parent as the marker (e.g. .trae/skills).
-        marker = effective_target / relative_dir
-        if marker.parent.exists():
+        if _is_iterate_install_dir(effective_target / relative_dir):
             found.append(assistant)
     return sorted(set(found))
 

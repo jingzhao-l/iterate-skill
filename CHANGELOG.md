@@ -5,6 +5,19 @@
 
 ---
 
+## [2.8.1] — 2026-08-23
+
+### 修复 / Bug fixes
+
+- **命令校验字符集统一收敛**：`personalize` / `doctor` / `validate` 三处 shell 元字符禁止集收敛为同一权威集合，杜绝「个性化阶段放行、白名单阶段拒绝」的矛盾；新增回归测试强制三方同步。
+- **schema 文档同步**：内置 `iterate_cli/data/config.schema.json` 与根 `config/config.schema.json` 描述一致，新增测试防漂移。
+- **安装检测逻辑统一**：`install.py` 的 `detect_installed_assistants`（菜单预选 / 自动 update）改用与卸载/升级一致的 `SKILL.md` 标记判定，多路径行为一致。
+- **downloads badge 响应限流**：`update_downloads_badge.py` 对上游响应体施加 5 MiB 截断读保护，避免无界内存占用。
+- **平台 SKILL 文档对齐**：claude / cursor 变体补齐 review-only (dry-run) 只读审查模式说明，与根 `SKILL.md` 及 trae 变体一致。
+- **测试覆盖补齐**：scan / fingerprint / refresh 的异常分支与边界场景新增用例。
+
+---
+
 ## [2.8.0] — 2026-08-22
 
 ### 新增 / Features

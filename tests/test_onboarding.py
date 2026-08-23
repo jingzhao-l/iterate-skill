@@ -410,12 +410,15 @@ class TestSuggestCommandWhitelist:
             ("Dart/Flutter", "dart", "dart"),
             ("Elixir", "elixir", "mix"),
             ("Ruby", "ruby", "bundle"),
+            ("Swift", "swift", "swift"),
+            ("Rust", "rust", "cargo"),
+            ("Go", "go", "go"),
         ],
     )
     def test_new_language_whitelist(
         self, language: str, module_name: str, whitelist_entry: str
     ) -> None:
-        """Dart/Elixir/Ruby suggestions must be whitelist-covered commands."""
+        """Dart/Elixir/Ruby/Swift/Rust/Go suggestions must be whitelist-covered."""
         scan = ScanResult(detected_languages=[language])
         wl = suggest_command_whitelist(scan)
         cmds = suggest_validation_commands(scan)
@@ -432,6 +435,49 @@ class TestSuggestCommandWhitelist:
         report = DoctorReport("x")
         _check_whitelist_compliance(report, wl, cmds)
         assert not report.has_warnings(), report.to_dict()
+
+    def test_java_uses_maven_when_pom_present(self) -> None:
+        """Java with pom.xml must suggest mvn commands; gradle otherwise (fix)."""
+        from iterate_cli.scan import ScanResult
+
+        for manifests, expected_tool in ((["pom.xml"], "mvn"), (["build.gradle"], "gradle")):
+            scan = ScanResult(detected_languages=["Java/Kotlin"], manifests=manifests)
+            cmds = suggest_validation_commands(scan)
+            assert cmds["java"][0].startswith(expected_tool), cmds["java"]
+            wl = suggest_command_whitelist(scan)
+            # mvn / gradle must also be whitelisted so the suggested commands
+            # pass doctor's compliance check.
+            assert expected_tool in wl
+
+    def test_top_level_dirs_oseerror_does_not_crash(self, monkeypatch) -> None:
+        """A listing failure during directory scan must not abort the run."""
+        from iterate_cli.scan import _scan_top_level_dirs, ScanResult
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("permission denied")
+
+        class _BrokenDir:
+            def iterdir(self):
+                return _boom()
+
+        result = ScanResult()
+        result.top_level_dirs = []
+        # Must not raise despite iterdir() failing.
+        _scan_top_level_dirs(_BrokenDir(), result)
+        assert result.top_level_dirs == []
+
+    def test_fingerprint_oseerror_does_not_crash(self, fake_project: Path, monkeypatch) -> None:
+        """An unreadable manifest must be skipped, not crash the capture."""
+        # Make every manifest unreadable by forcing compute_sha256 to raise.
+        import iterate_cli.fingerprint as fp
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("cannot open")
+
+        monkeypatch.setattr(fp, "compute_sha256", _boom)
+        entries = fp.capture_fingerprints(fake_project)
+        # Nothing could be fingerprinted, and no exception escaped.
+        assert entries == []
 
 
 # ---------------------------------------------------------------------------
@@ -919,6 +965,26 @@ class TestRefreshDryRun:
         assert preview["ok"] is True
         assert preview["changed"] is True
         assert preview["config_changed"] is True
+
+    def test_preview_reports_unreadable_iterate_md(self, fake_project: Path) -> None:
+        """A valid generated project whose ITERATE.md suddenly becomes unreadable
+        must surface the read error rather than showing a misleading diff."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("I/O error on ITERATE.md")
+
+        import iterate_cli.refresh as refresh_mod
+
+        original_read = refresh_mod.Path.read_text
+        try:
+            refresh_mod.Path.read_text = _boom  # type: ignore[method-assign, assignment]
+            preview = preview_refresh(fake_project)
+        finally:
+            refresh_mod.Path.read_text = original_read  # type: ignore[method-assign, assignment]
+        assert preview["ok"] is False
+        assert "Failed to read" in preview["error"]
 
     def test_cli_dry_run_does_not_write(self, fake_project: Path, capsys) -> None:
         data = _build_onboarding_data(fake_project)

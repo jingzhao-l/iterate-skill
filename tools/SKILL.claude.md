@@ -82,6 +82,16 @@ Claude Code 实现 iterate skill 的核心要点：用 `/workflow` 或 `/agent` 
 
 ---
 
+## 纯审查模式 / review-only (dry-run)
+
+当调用参数含 `review-only` 或 `dry-run`（如 `/iterate 审查代码 review-only`）时，**跳过 git 隔离、跳过所有修复与验证**，只执行只读审查循环并产出最终审查报告。此模式**绝不修改任何文件、绝不创建分支/worktree、绝不调用 fixer**。主模型必须校验参数后确认进入该模式，并在执行中拒绝一切写入动作。
+
+收敛驱动：每轮把已知 findings 喂给 reviewer，迫使其只找新问题；某轮 0 新 findings 即收敛停止。产出三级报告：审查报告 → meta-review（`COUNT_MATCH`/`SEVERITY_SUM`/`DIMENSION_SUM`/`SORT_ORDER`/`CONVERGENCE`/`ROUND_SHAPE`）→ 最终审查报告（`approved` / `needs_revision`）。硬证据门禁（`evaluator.evidence_validation`，默认开启）会逐条校验 finding 的 `file`/`line`，伪造或越界即 `EVIDENCE_VIOLATION` 翻转为 `needs_revision`。详见主 `SKILL.md`。
+
+**Claude Code 实现要点**：全部 reviewer 用 `Agent`/`Workflow` 只读启动；不执行任何 `Edit`/`Write`/`Bash`（验证）；不调用 `git checkout -b`。若脚手架误触发写入，主模型应立即拒绝并以只读方式继续。
+
+---
+
 ## Onboarding / Personalization
 
 首次调用 `/iterate` 前需先完成 onboarding：生成 `ITERATE.md` 知识库与项目级 `iterate.config.yaml`（含 `onboarding.fingerprints` 漂移指纹）。可在终端运行 `iterate onboard` 交互式完成，或由 AI 通道自动扫描。项目专属约束（禁区、风险区、已知意图等）通过 `iterate personalize` 追加。详见主 `SKILL.md`。

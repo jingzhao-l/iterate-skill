@@ -34,12 +34,20 @@ from typing import Any
 import yaml
 
 from iterate_cli import __version__ as SKILL_VERSION
+from iterate_cli.personalize import FORBIDDEN_COMMAND_CHARS
 from iterate_cli.refresh import (
     CONFIG_YAML,
     check_onboarding_drift,
     is_onboarding_complete,
     load_onboarding_config,
 )
+
+# Shell-chaining metacharacters that must never appear in a whitelist entry
+# or a validation command. This is the SAME canonical set as personalize.py's
+# FORBIDDEN_COMMAND_CHARS (kept in sync by tests/test_validate.py) so that a
+# command accepted at personalization time is also accepted by doctor, and
+# vice-versa.
+COMMAND_METACHARS: frozenset[str] = frozenset(FORBIDDEN_COMMAND_CHARS)
 
 # Canonical dimension ids declared in config/dimensions.yaml (the single
 # source of truth for the skill). Kept in sync by tests/test_dimension_lock.py.
@@ -196,10 +204,9 @@ def _command_is_whitelisted(command: Any, whitelist: Any) -> bool:
     """
     if not isinstance(command, str) or not isinstance(whitelist, list):
         return False
-    _COMMAND_METACHARS = set(';|&$`><\r\n\\#*?~"\'\u007b\u007d()[]')
     stripped = command.strip()
     for ch in stripped:
-        if ch in _COMMAND_METACHARS:
+        if ch in COMMAND_METACHARS:
             return False
     for prefix in whitelist:
         if not isinstance(prefix, str):

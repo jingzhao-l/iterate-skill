@@ -164,6 +164,34 @@ class TestWriteOutput:
             assert json.load(handle) == {"total": 2563, "clawhub": 845}
 
 
+class TestReadBounded:
+    """Response bodies must be capped so an oversized JSON cannot exhaust memory."""
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def read(self, amt: int) -> bytes:
+            # Mimic urllib: read() without an argument or with a huge amt returns
+            # the whole body; with a small amt returns up to that many bytes.
+            if amt is None or amt < 0:
+                return self._body
+            return self._body[:amt]
+
+    def test_within_cap_returns_full_body(self) -> None:
+        body = b"x" * (udb._MAX_RESPONSE_BYTES // 2)
+        assert udb._read_bounded(self._FakeResp(body)) == body
+
+    def test_exactly_at_cap_accepted(self) -> None:
+        body = b"y" * udb._MAX_RESPONSE_BYTES
+        assert udb._read_bounded(self._FakeResp(body)) == body
+
+    def test_over_cap_raises(self) -> None:
+        body = b"z" * (udb._MAX_RESPONSE_BYTES + 1)
+        with pytest.raises(ValueError, match="safety cap"):
+            udb._read_bounded(self._FakeResp(body))
+
+
 class TestIsSkillhubUrl:
     @pytest.mark.parametrize(
         "url, expected",

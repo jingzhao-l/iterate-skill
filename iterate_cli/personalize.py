@@ -104,7 +104,17 @@ KNOWN_SAFE_COMMAND_PREFIXES: tuple[str, ...] = (
 # Characters that should not appear in validation commands at all.
 # These are shell metacharacters that allow command chaining, which
 # would let a "validation command" smuggle arbitrary side effects.
-FORBIDDEN_COMMAND_CHARS: tuple[str, ...] = (";", "|", "&", "`", "$", ">", "<", "\n", "\r")
+#
+# This is the canonical set: it MUST stay identical to the metacharacter
+# sets used by iterate_cli/doctor.py and scripts/validate.py so that a
+# command accepted at personalization time is never later rejected as a
+# whitelist violation, and vice-versa. Sync is enforced by
+# tests/test_validate.py (test_metachar_sets_in_sync).
+FORBIDDEN_COMMAND_CHARS: tuple[str, ...] = (
+    ";", "|", "&", "`", "$", ">", "<", "\n", "\r",
+    "\\", "#", "*", "?", "~", '"', "'",
+    "(", ")", "[", "]", "{", "}",
+)
 
 # Environment variable that lets the *operator* (system level) extend the
 # known-safe command-prefix allowlist without editing source. This is
