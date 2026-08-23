@@ -119,6 +119,15 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **2.8.1 状态（2026-08-23）**：GitHub Release v2.8.1 已发布（tag `v2.8.1`，CI 自动生成
+      > `iterate-skill.tar.gz` 358,948 字节 + `SHA256SUMS.txt`，`:!harness` 剔除 harness，release
+      > workflow success 12s）；npm `iterate-skill-installer@2.8.1` 已发布；ClawHub（skillId
+      > `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py` 发布 2.8.1
+      > （65 文件，响应 `ok:true`、`status=pending`，versionId `k973ymjma5q386kq4dhz3kzvg98d0d3c`，
+      > `latestVersion` 数分钟传播，待复查）；ModelScope 已 PATCH 生效（上传 2.8.1 精简 zip
+      > 379 KB，file_id `6eba7c0a-8c26-4d9a-960a-d92b2993d113`，`update_skill_settings` success）；
+      > SkillHub（skillId `104490`）`skillhub publish` 成功（`ok:true`，versionId `263704`，
+      > `tags.latest=2.8.1`，`reviewStatus/securityScanStatus/pending` 为平台异步审核）。
       > **2.8.0 状态（2026-08-22）**：GitHub Release v2.8.0 已发布（tag `v2.8.0`，CI 自动生成
       > `iterate-skill.tar.gz` + `SHA256SUMS.txt`，`:!harness` 剔除 harness）；npm
       > `iterate-skill-installer@2.8.0` 已发布（发布时因沙箱 PATH 无 node，npm 走
