@@ -23,6 +23,7 @@ import ssl
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from typing import Protocol
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BADGES_FILE = os.path.join(REPO_ROOT, "badges", "downloads.json")
@@ -100,7 +101,17 @@ def _is_skillhub_url(url: str) -> bool:
     )
 
 
-def _read_bounded(resp: object) -> bytes:
+class _FileLikeRead(Protocol):
+    """Minimal readable-file protocol for bounded response reading.
+
+    Matches the ``read(amt: int) -> bytes`` interface exposed by ``urllib`` /
+    ``http.client`` response objects, so callers may pass any of them.
+    """
+
+    def read(self, amt: int = ...) -> bytes: ...
+
+
+def _read_bounded(resp: _FileLikeRead) -> bytes:
     """Read a bounded-size response body to avoid unbounded memory use.
 
     ``resp`` must expose a ``read(amt: int) -> bytes``-style interface (any

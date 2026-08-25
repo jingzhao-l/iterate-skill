@@ -137,11 +137,47 @@ class TestCommandIsWhitelisted:
         assert validate.command_is_whitelisted("ruff check src/", ["ruff", 123, None]) is True
         assert validate.command_is_whitelisted("rm -rf /", ["ruff", 123, None]) is False
 
-    @pytest.mark.parametrize("metachar", [";", "&", "$", "`", "<", ">", "\n", "\r"])
+    @pytest.mark.parametrize(
+        "metachar",
+        [";", "&", "$", "`", "<", ">", "\n", "\r", "|", "\\", "#", "*", "?", "~", '"', "'", "(", ")", "[", "]", "{", "}"],
+    )
     def test_metacharacters_rejected(self, metachar: str) -> None:
         """Any shell-chaining metacharacter in the command body is rejected (fix 5)."""
         command = f"ruff check{metachar}rm -rf /"
         assert validate.command_is_whitelisted(command, ["ruff"]) is False
+
+    def test_metachar_sets_in_sync(self) -> None:
+        """The canonical forbidden-char set is shared across the three modules.
+
+        personalize.py (where commands are entered), doctor.py (where a config
+        is health-checked) and scripts/validate.py (where a config is linted)
+        must reject the same shell metacharacters. If they drift, a command
+        accepted at personalization time can later be flagged as a whitelist
+        violation (or vice-versa). This lock prevents that regression.
+        """
+        from iterate_cli.doctor import COMMAND_METACHARS
+        from iterate_cli.personalize import FORBIDDEN_COMMAND_CHARS
+
+        # scripts/validate.py's metacharacter literal — reached by extracting
+        # it from the function's own enforcement rather than hardcoding a
+        # second copy that could itself drift.
+        probe = "ruff check PROBE rm -rf /"
+        validate_ok = validate.command_is_whitelisted(probe.replace("PROBE", "x"), ["ruff"])
+        assert validate_ok is True, "sanity: baseline command without metachars must pass"
+
+        canonical = set(FORBIDDEN_COMMAND_CHARS)
+        # personalize.py and doctor.py share one definition.
+        assert set(FORBIDDEN_COMMAND_CHARS) == COMMAND_METACHARS
+        # Every canonical metachar is individually rejected by scripts/validate.py.
+        for ch in FORBIDDEN_COMMAND_CHARS:
+            assert validate.command_is_whitelisted(
+                probe.replace("PROBE", ch), ["ruff"]
+            ) is False, f"scripts/validate.py must reject {ch!r}"
+        # And every char scripts/validate.py rejects is in the canonical set.
+        for ch in canonical:
+            assert ch in set(';|&$`><\r\n\\#*?~"\'\u007b\u007d()[]'), (
+                f"canonical char {ch!r} missing from scripts/validate.py"
+            )
 
 
 class TestValidateConfig:
@@ -603,6 +639,21 @@ class TestPersonalizationConsistency:
         assert any("fix_priority_order" in e and "security" in e for e in errors)
 
 
+def test_bundled_schema_in_sync() -> None:
+    """The bundled schema (iterate_cli/data) must stay identical to the repo schema.
+
+    doctor.py and the onboarded config validation prefer the bundled copy when it
+    exists (package install), falling back to config/. If the two drift, installed
+    skills can validate against different constraints than CI. This locks them.
+    """
+    root_schema = REPO_ROOT / "config" / "config.schema.json"
+    bundled_schema = REPO_ROOT / "iterate_cli" / "data" / "config.schema.json"
+    assert bundled_schema.exists(), "bundled schema missing; run `cp config/config.schema.json iterate_cli/data/`"
+    assert root_schema.read_text(encoding="utf-8") == bundled_schema.read_text(
+        encoding="utf-8"
+    ), "iterate_cli/data/config.schema.json drifted from config/config.schema.json"
+
+
 def _build_minimal_source(tmp_path: Path) -> Path:
     """Create a minimal skill source tree for install tests."""
     source = tmp_path / "source"
@@ -837,8 +888,12 @@ class TestInteractiveSelectionPreselect:
 
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        (fake_home / ".trae" / "skills").mkdir(parents=True)
-        (fake_home / ".cursor" / "skills").mkdir(parents=True)
+        # Real installations contain SKILL.md (the canonical skill marker);
+        # only these are detected and pre-selected.
+        (fake_home / ".trae" / "skills" / "iterate").mkdir(parents=True)
+        (fake_home / ".trae" / "skills" / "iterate" / "SKILL.md").write_text("s", encoding="utf-8")
+        (fake_home / ".cursor" / "skills" / "iterate").mkdir(parents=True)
+        (fake_home / ".cursor" / "skills" / "iterate" / "SKILL.md").write_text("s", encoding="utf-8")
 
         monkeypatch.setattr(IPath, "home", lambda: fake_home)
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)

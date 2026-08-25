@@ -5,7 +5,7 @@
 
 ---
 
-## [Unreleased]
+## [2.9.0] — 2026-08-26
 
 ### 修复 / Bug fixes
 
@@ -13,6 +13,30 @@
 - **reviewer 配置完整保留**：onboarding 生成的 `iterate.config.yaml` 现在写入完整的 `reviewer` 段（`evidence_validation`、`coverage_validation`、`scope_chunk_size` 与 `output_schema_validation` 一起），`iterate refresh` / re-onboard / 返回用户更新基础配置时均保留用户自定义值，不再静默重置。
 - **show 展示补齐**：`iterate show` 的 TUI 与 `--json` 输出补充 `evidence_validation` 字段渲染。
 - **安装器箭头菜单重绘修复**：`npx iterate-skill-installer` 交互式选择 AI 工具时，raw 终端模式下 `\n` 只换行不回车，导致每次按键后菜单逐行向右错位（"螺旋阶梯式"重复打印）。重绘改用 `\r\n` 分隔，并提取 `_arrow_redraw_output` 纯函数 + 模拟终端回归测试。
+- **配置解析加固**：各配置加载点对嵌套配置段做类型检查，非字典段不再导致崩溃，统一降级为空字典并保持其余字段可用；新增回归测试覆盖。
+- **命令白名单放宽**：`go test` 白名单条目改为 `go`，使 `go vet`、`go build` 等所有以 `go` 开头的命令都能通过命令白名单校验，不再误拒。
+- **npm-installer 参数校验**：`--ai` / `--target` / `--token` 的参数值若以 `-` 开头（疑似误传后续标志）直接报错，防止静默吞掉标志。
+- **workflow_dispatch 支持指定 tag**：`release.yml` 手动触发时可通过 `inputs.tag` 指定构建/发布目标 tag，与 Release published 路径行为一致。
+- **内置 schema 同步**：内置 `iterate_cli/data/config.schema.json` 与根 `config/config.schema.json` 保持一致。
+- **README badge 链接修正**：SkillHub badge 指向正确链接。
+
+### 重构 / Refactor
+
+- **死代码清理**：移除重复 import 与未使用代码，保持 ruff/mypy 干净。
+
+---
+
+## [2.8.1] — 2026-08-23
+
+### 修复 / Bug fixes
+
+- **命令校验字符集统一收敛**：`personalize` / `doctor` / `validate` 三处 shell 元字符禁止集收敛为同一权威集合，杜绝「个性化阶段放行、白名单阶段拒绝」的矛盾；新增回归测试强制三方同步。
+- **schema 文档同步**：内置 `iterate_cli/data/config.schema.json` 与根 `config/config.schema.json` 描述一致，新增测试防漂移。
+- **安装检测逻辑统一**：`install.py` 的 `detect_installed_assistants`（菜单预选 / 自动 update）改用与卸载/升级一致的 `SKILL.md` 标记判定，多路径行为一致。
+- **downloads badge 响应限流**：`update_downloads_badge.py` 对上游响应体施加 5 MiB 截断读保护，避免无界内存占用。
+- **平台 SKILL 文档对齐**：claude / cursor 变体补齐 review-only (dry-run) 只读审查模式说明，与根 `SKILL.md` 及 trae 变体一致。
+- **测试覆盖补齐**：scan / fingerprint / refresh 的异常分支与边界场景新增用例。
+>>>>>>> origin/main
 
 ---
 

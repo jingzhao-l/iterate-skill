@@ -198,14 +198,37 @@ class TestCopySkillFiles:
 # --------------------------------------------------------------------------- #
 
 class TestDetectInstalledAssistants:
-    def test_detects_by_parent_dir_marker(self, tmp_path: Path):
-        # create .trae/skills and .cursor/skills parent markers
+    def test_detects_by_skill_marker(self, tmp_path: Path):
+        # Only the dirs that contain SKILL.md count as installed; bare parent
+        # dirs (e.g. an empty .trae/skills) must NOT match. This is the same
+        # criterion used by uninstall / upgrade (_is_iterate_install_dir).
+        cursor_dir = tmp_path / ".cursor" / "skills" / "iterate"
+        cursor_dir.mkdir(parents=True)
+        (cursor_dir / "SKILL.md").write_text("skill", encoding="utf-8")
+        # .trae/skills exists but contains no iterate/SKILL.md -> not installed.
         (tmp_path / ".trae" / "skills").mkdir(parents=True)
-        (tmp_path / ".cursor" / "skills").mkdir(parents=True)
         found = install.detect_installed_assistants(tmp_path)
-        assert "trae" in found
         assert "cursor" in found
+        assert "trae" not in found
         assert "claude" not in found
+
+    def test_empty_parent_dir_marker_not_enough(self, tmp_path: Path):
+        # A bare skills/ parent dir used to be treated as installed (false
+        # positive). It must not be, so detection stays consistent with
+        # uninstall/update which require SKILL.md.
+        (tmp_path / ".cursor" / "skills").mkdir(parents=True)
+        assert install.detect_installed_assistants(tmp_path) == []
+
+    def test_symlink_marker_not_counted(self, tmp_path: Path):
+        # _is_iterate_install_dir rejects symlinks; detection must too.
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        (real_dir / "SKILL.md").write_text("skill", encoding="utf-8")
+        link_dir = tmp_path / ".cursor" / "skills" / "iterate"
+        link_dir.parent.mkdir(parents=True)
+        link_dir.symlink_to(real_dir)
+        found = install.detect_installed_assistants(tmp_path)
+        assert "cursor" not in found
 
     def test_returns_empty_when_none(self, tmp_path: Path):
         assert install.detect_installed_assistants(tmp_path) == []
