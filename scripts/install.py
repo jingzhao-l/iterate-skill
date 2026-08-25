@@ -699,6 +699,31 @@ def _render_arrow_select(state: _ArrowSelectState, title: str) -> str:
     return "\n".join(_arrow_select_lines(state, title))
 
 
+def _arrow_redraw_output(state: _ArrowSelectState, title: str, cols: int) -> str:
+    """Build the full ANSI redraw sequence for the arrow-select menu.
+
+    The sequence rewinds to the first row of the previously drawn frame,
+    clears everything below the cursor, then writes the new frame. Lines are
+    joined with ``\\r\\n`` (not bare ``\\n``) because the menu runs in raw
+    terminal mode (``tty.setraw``), which disables the ``OPOST/ONLCR``
+    newline translation — a bare ``\\n`` would only move down without
+    returning to column 0, stacking each row diagonally ("staircase /
+    spiral" redraw bug).
+    """
+    lines = _arrow_select_lines(state, title)
+    rows = _physical_row_count(lines, cols)
+    # Reclaim the previously drawn block: rewind to its first row, back to
+    # column 0, then clear everything below the cursor.
+    move_up = rows - 1
+    out = ""
+    if move_up > 0:
+        out += f"\x1b[{move_up}A"
+    out += "\r\x1b[0J"
+    out += "\r\n".join(lines)
+    out += "\r"
+    return out
+
+
 def _arrow_select_available() -> bool:
     """Whether the raw arrow-key selector can run on this platform.
 
@@ -762,16 +787,7 @@ def _prompt_arrow_multi_select(
     _sys.stdout.flush()
 
     def redraw() -> None:
-        lines = _arrow_select_lines(state, title)
-        rows = _physical_row_count(lines, cols)
-        # Reclaim the previously drawn block: rewind to its first row, back to
-        # column 0, then clear everything below the cursor.
-        move_up = rows - 1
-        if move_up > 0:
-            _sys.stdout.write(f"\x1b[{move_up}A")
-        _sys.stdout.write("\r\x1b[0J")
-        _sys.stdout.write("\n".join(lines))
-        _sys.stdout.write("\r")
+        _sys.stdout.write(_arrow_redraw_output(state, title, cols))
         _sys.stdout.flush()
 
     redraw()

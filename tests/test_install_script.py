@@ -310,6 +310,20 @@ class TestTuiRedrawHelpers:
         assert install._physical_row_count(lines, 0) == len(lines)
         assert install._physical_row_count(lines, 200) == len(lines)
 
+    def test_arrow_redraw_output_uses_crlf_between_lines(self):
+        # Raw terminal mode disables ONLCR (LF-only newline), so a redraw that
+        # joins menu rows with bare "\n" stacks them diagonally ("staircase /
+        # spiral" bug). The redraw must use "\r\n" so every row returns to
+        # column 0 before the next one is written.
+        state = install._ArrowSelectState(["claude", "trae"], window_size=6)
+        out = install._arrow_redraw_output(state, "title", 120)
+        assert "\n\n" not in out, "bare LF must not appear between menu rows"
+        assert "\r\n" in out, "rows must be separated by CRLF in raw mode"
+        # The frame still contains the same menu content (only the join changed).
+        assert "title" in out
+        assert "Claude" in out
+        assert "Trae" in out
+
 
 class TestReadArrowKey:
     def _stream(self, text: str) -> io.StringIO:
@@ -917,6 +931,13 @@ class _SimTerminal:
             elif ch == "\r":
                 self.col = 0
                 i += 1
+            elif ch == "\n":
+                # Raw terminal mode: LF moves down only, column is NOT reset
+                # (OPOST/ONLCR is disabled by tty.setraw). A redraw that joins
+                # lines with bare "\n" would therefore stack each row
+                # diagonally — the "staircase / spiral" bug this simulates.
+                self.row += 1
+                i += 1
             else:
                 self._put(ch)
                 i += 1
@@ -945,15 +966,9 @@ class TestArrowMenuRedrawOnTerminal:
         term = _SimTerminal(width=cols)
 
         def emit() -> None:
-            lines = install._arrow_select_lines(
-                state, "选择要安装的 AI 工具 / Select AI assistants to install to"
+            out = install._arrow_redraw_output(
+                state, "选择要安装的 AI 工具 / Select AI assistants to install to", cols
             )
-            rows = install._physical_row_count(lines, cols)
-            move_up = rows - 1
-            out = ""
-            if move_up > 0:
-                out += f"\x1b[{move_up}A"
-            out += "\r\x1b[0J" + "\n".join(lines) + "\r"
             term.feed(out)
 
         emit()  # first frame
