@@ -305,3 +305,20 @@ def test_harness_bundled_yaml_byte_identical_to_skill():
         "harness data/dimensions.yaml must stay byte-identical to skill "
         "config/dimensions.yaml — copy the file after editing the skill one"
     )
+
+
+def test_bundled_schema_byte_identical_to_config():
+    bundled = ROOT / "iterate_cli" / "data" / "config.schema.json"
+    assert bundled.read_bytes() == SCHEMA_JSON.read_bytes(), (
+        "iterate_cli/data/config.schema.json must stay byte-identical to "
+        "config/config.schema.json — copy the file after editing the config one"
+    )
+
+
+def test_bundled_iterate_template_byte_identical_to_templates():
+    bundled = ROOT / "iterate_cli" / "data" / "ITERATE.template.md"
+    repo_template = ROOT / "templates" / "ITERATE.template.md"
+    assert bundled.read_bytes() == repo_template.read_bytes(), (
+        "iterate_cli/data/ITERATE.template.md must stay byte-identical to "
+        "templates/ITERATE.template.md — copy the file after editing the template"
+    )

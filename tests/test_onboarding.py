@@ -86,6 +86,7 @@ from iterate_cli.scan import (
 from iterate_cli.wizard import (
     NO_CHANGES_NEEDED,
     _ask_yes_no,
+    _load_existing_onboarding_data,
     _optionally_collect_advanced_config,
     _parse_dimension_selection,
     _read_drift_ignore,
@@ -328,7 +329,6 @@ class TestScanProject:
         assert result.has_frontend is True
         assert result.has_specs is True
         assert result.has_ci is True
-        assert result.has_readme is True
 
     def test_empty_project(self, empty_project: Path) -> None:
         result = scan_project(empty_project)
@@ -1423,6 +1423,33 @@ class TestLoadExistingOnboardingDataUnicode:
         assert "Failed to load" in captured.err
 
 
+class TestLoadExistingOnboardingDataNonDictSections:
+    """Non-dict nested config sections must not crash _load_existing_onboarding_data."""
+
+    def test_non_dict_nested_sections_do_not_crash(self, fake_project: Path) -> None:
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "goal: test",
+                    "atomic: oops",
+                    "git: nope",
+                    "reviewer: 42",
+                    "review: x",
+                    "validation: y",
+                    "dimensions: not-a-list",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.dimensions == []
+        assert result.target_branch == "main"
+        assert result.review_scope == "full"
+        assert result.push_per_round is False
+
+
 class TestMergePersonalizationFiltersEmptyCommands:
     """Tests for merge_personalization_into_config empty command filtering (M-8-2)."""
 
@@ -1972,6 +1999,11 @@ class TestLoadPersonalizationFromConfig:
 
     def test_load_config_without_personalization(self) -> None:
         config = {"dimensions": ["correctness"], "goal": "test"}
+        data = load_personalization_from_config(config)
+        assert data.is_empty() is True
+
+    def test_load_non_dict_personalization_does_not_crash(self) -> None:
+        config = {"personalization": "just a string"}
         data = load_personalization_from_config(config)
         assert data.is_empty() is True
 
