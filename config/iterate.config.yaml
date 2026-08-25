@@ -68,7 +68,7 @@ validation:
     - "npm run"
     - "yarn"
     - "pnpm"
-    - "go test"
+    - "go"
     - "cargo"
     - "python"
     - "python3"
