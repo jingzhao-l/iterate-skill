@@ -470,6 +470,12 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
         ``load_existing_personalization``).
     """
     raw = config.get("personalization") or {}
+    # A hand-edited config may set ``personalization`` to a non-mapping value
+    # (e.g. a string). Treating it as data would crash on ``raw.get(...)``
+    # below, so degrade to "no personalization" instead of surfacing a bare
+    # traceback from refresh / personalization loading paths.
+    if not isinstance(raw, dict):
+        return PersonalizationData()
 
     protected = [str(p) for p in raw.get("protected_paths") or []]
 
@@ -515,19 +521,22 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     # Guard against a scalar string (which would otherwise be iterated
     # character-by-character) and non-list junk from a hand-edited config.
     raw_fix_order = raw.get("fix_priority_order") or []
-    if isinstance(raw_fix_order, str):
+    if not isinstance(raw_fix_order, list):
         raw_fix_order = []
     fix_order = [str(d) for d in raw_fix_order]
 
     raw_forbidden = raw.get("forbidden_fixes") or []
-    if isinstance(raw_forbidden, str):
+    if not isinstance(raw_forbidden, list):
         raw_forbidden = []
     forbidden = [str(f) for f in raw_forbidden]
 
     # Module name pattern: only allow alphanumeric, dash, underscore, dot.
     # Prevents shell metacharacter injection via module key.
+    raw_extra_cmds = raw.get("extra_validation_commands") or {}
+    if not isinstance(raw_extra_cmds, dict):
+        raw_extra_cmds = {}
     extra_cmds: dict[str, list[str]] = {}
-    for module, cmds in (raw.get("extra_validation_commands") or {}).items():
+    for module, cmds in raw_extra_cmds.items():
         module_str = str(module)
         if not MODULE_NAME_PATTERN.match(module_str):
             # Skip entries with unsafe module names.
@@ -673,11 +682,13 @@ def merge_personalization_into_config(
     # config before it is overwritten above. These are the only commands that
     # may be removed from validation.commands, so base-config commands and
     # manual edits for the same module survive.
+    personalization_old = config.get("personalization")
+    personalization_old = personalization_old if isinstance(personalization_old, dict) else {}
+    raw_extra_old = personalization_old.get("extra_validation_commands") or {}
+    raw_extra_old = raw_extra_old if isinstance(raw_extra_old, dict) else {}
     old_extra: dict[str, list[str]] = {
         str(module): list(cmds) if isinstance(cmds, list) else []
-        for module, cmds in (
-            dict((config.get("personalization") or {}).get("extra_validation_commands") or {})
-        ).items()
+        for module, cmds in raw_extra_old.items()
     }
     new_extra = data.extra_validation_commands
 
@@ -949,11 +960,11 @@ def remove_personalization_from_config(config: dict[str, Any]) -> dict[str, Any]
     personalization = config.get("personalization")
     old_extra: dict[str, list[str]] = {}
     if isinstance(personalization, dict):
+        raw_extra = personalization.get("extra_validation_commands") or {}
+        raw_extra = raw_extra if isinstance(raw_extra, dict) else {}
         old_extra = {
             str(module): list(cmds) if isinstance(cmds, list) else []
-            for module, cmds in (
-                personalization.get("extra_validation_commands") or {}
-            ).items()
+            for module, cmds in raw_extra.items()
         }
     result.pop("personalization", None)
 

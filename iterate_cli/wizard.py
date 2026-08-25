@@ -385,9 +385,16 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
 
         # Preserve every user-customised field so a returning user who declines
         # the basic-config update does not lose them during regeneration.
-        atomic = config.get("atomic") or {}
-        git = config.get("git") or {}
-        reviewer = config.get("reviewer") or {}
+        atomic = config.get("atomic")
+        atomic = atomic if isinstance(atomic, dict) else {}
+        git = config.get("git")
+        git = git if isinstance(git, dict) else {}
+        reviewer = config.get("reviewer")
+        reviewer = reviewer if isinstance(reviewer, dict) else {}
+        review = config.get("review")
+        review = review if isinstance(review, dict) else {}
+        validation = config.get("validation")
+        validation = validation if isinstance(validation, dict) else {}
 
         return OnboardingData(
             project_root=project_root,
@@ -395,12 +402,12 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             scan=scan,
             project_description=project_description,
             code_conventions=code_conventions,
-            dimensions=config.get("dimensions") or [],
+            dimensions=(config.get("dimensions") if isinstance(config.get("dimensions"), list) else []),
             target_branch=git.get("target_branch", "main"),
-            review_scope=(config.get("review") or {}).get("scope", "full"),
+            review_scope=review.get("scope", "full"),
             push_per_round=git.get("push_per_round", False),
-            validation_commands=(config.get("validation") or {}).get("commands") or {},
-            command_whitelist=(config.get("validation") or {}).get("command_whitelist") or [],
+            validation_commands=validation.get("commands") or {},
+            command_whitelist=validation.get("command_whitelist") or [],
             fingerprints=capture_fingerprints(project_root),
             language=config.get("language", "en"),
             goal=config.get("goal", DEFAULT_GOAL),

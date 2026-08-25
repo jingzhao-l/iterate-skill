@@ -571,12 +571,17 @@ def _build_refresh_data(
     """Build OnboardingData for a refresh, preserving existing settings."""
     # Preserve existing dimensions, target_branch, etc.
     dimensions = existing_config.get("dimensions") or suggest_dimensions(scan)
-    target_branch = (existing_config.get("git") or {}).get("target_branch", "main")
-    review_scope = (existing_config.get("review") or {}).get("scope", "full")
+    git_cfg = existing_config.get("git")
+    git_cfg = git_cfg if isinstance(git_cfg, dict) else {}
+    review_cfg = existing_config.get("review")
+    review_cfg = review_cfg if isinstance(review_cfg, dict) else {}
+    validation_existing = existing_config.get("validation")
+    validation_existing = validation_existing if isinstance(validation_existing, dict) else {}
+    target_branch = git_cfg.get("target_branch", "main")
+    review_scope = review_cfg.get("scope", "full")
     # Secure-by-default: push_per_round must default to False, matching
     # OnboardingData (generator.py) and the documented default.
-    push_per_round = (existing_config.get("git") or {}).get("push_per_round", False)
-    validation_existing = existing_config.get("validation") or {}
+    push_per_round = git_cfg.get("push_per_round", False)
     validation_commands = validation_existing.get("commands") or {}
     # Distinguish an explicit empty whitelist (the operator deliberately
     # configured "run no commands") from an absent key (fall back to a scan
@@ -616,7 +621,8 @@ def _build_refresh_data(
     fingerprints = capture_fingerprints(project_root, ignore_patterns)
 
     # Preserve channel and user-entered text from existing config.
-    onboarding_section = existing_config.get("onboarding") or {}
+    onboarding_section = existing_config.get("onboarding")
+    onboarding_section = onboarding_section if isinstance(onboarding_section, dict) else {}
     channel = onboarding_section.get("channel", "cli")
     project_description = str(onboarding_section.get("project_description") or "")
     code_conventions = str(onboarding_section.get("code_conventions") or "")
