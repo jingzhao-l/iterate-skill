@@ -468,16 +468,16 @@ function parseArgs(argv) {
 
     switch (arg) {
       case '--ai':
-        if (!next) {
-          console.error('Error: --ai requires a value');
+        if (!next || next.startsWith('-')) {
+          console.error('Error: --ai requires a value (a flag was found instead)');
           process.exit(1);
         }
         options.ai = next;
         i++;
         break;
       case '--target':
-        if (!next) {
-          console.error('Error: --target requires a value');
+        if (!next || next.startsWith('-')) {
+          console.error('Error: --target requires a value (a flag was found instead)');
           process.exit(1);
         }
         options.target = next;
@@ -509,8 +509,8 @@ function parseArgs(argv) {
         options.mode = 'version';
         break;
       case '--token':
-        if (!next) {
-          console.error('Error: --token requires a value');
+        if (!next || next.startsWith('-')) {
+          console.error('Error: --token requires a value (a flag was found instead)');
           process.exit(1);
         }
         options.token = next;

@@ -119,6 +119,24 @@ async function run() {
   assert.strictEqual(parseArgs(['--help']).mode, 'help', '--help should set help mode');
   assert.strictEqual(parseArgs(['-h']).mode, 'help', '-h should set help mode');
 
+  // parseArgs: value-consuming flags must reject a following flag as their
+  // value instead of silently swallowing it (regression: `--ai --force`
+  // previously set ai='--force' and misled the Python side with an invalid
+  // choice). process.exit is stubbed so the error path is assertable.
+  const origExit = process.exit;
+  process.exit = (code) => {
+    throw new Error(`exit(${code})`);
+  };
+  try {
+    assert.throws(() => parseArgs(['--ai', '--force']), /exit\(1\)/, '--ai must reject a flag as its value');
+    assert.throws(() => parseArgs(['--target', '--global']), /exit\(1\)/, '--target must reject a flag as its value');
+    assert.throws(() => parseArgs(['--token', '--yes']), /exit\(1\)/, '--token must reject a flag as its value');
+    assert.throws(() => parseArgs(['--ai']), /exit\(1\)/, '--ai without a value must error');
+    assert.throws(() => parseArgs(['--token']), /exit\(1\)/, '--token without a value must error');
+  } finally {
+    process.exit = origExit;
+  }
+
   console.log('mode.test.js: all parseArgs tests passed');
 }
 
