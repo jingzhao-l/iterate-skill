@@ -128,6 +128,7 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
         "push_per_round": ("git", "push_per_round"),
         "review_scope": ("review", "scope"),
         "output_schema_validation": ("reviewer", "output_schema_validation"),
+        "evidence_validation": ("reviewer", "evidence_validation"),
         "coverage_validation": ("reviewer", "coverage_validation"),
         "scope_chunk_size": ("reviewer", "scope_chunk_size"),
     }
@@ -256,8 +257,9 @@ def _render_config(config: dict[str, Any]) -> None:
     for key in (
         "language", "goal", "max_rounds", "atomic_max_lines",
         "atomic_max_adjacent_methods", "use_worktree", "auto_merge",
-        "output_schema_validation", "target_branch", "review_scope",
-        "push_per_round",
+        "output_schema_validation", "evidence_validation",
+        "coverage_validation", "scope_chunk_size",
+        "target_branch", "review_scope", "push_per_round",
     ):
         if key in config:
             label = key.replace("_", " ").title()

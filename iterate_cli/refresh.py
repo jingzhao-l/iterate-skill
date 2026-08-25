@@ -627,6 +627,11 @@ def _build_refresh_data(
     project_description = str(onboarding_section.get("project_description") or "")
     code_conventions = str(onboarding_section.get("code_conventions") or "")
 
+    # Preserve reviewer tuning (output schema / evidence gate / coverage /
+    # chunk size) so a refresh never silently resets customised values.
+    reviewer_cfg = existing_config.get("reviewer")
+    reviewer_cfg = reviewer_cfg if isinstance(reviewer_cfg, dict) else {}
+
     return OnboardingData(
         project_root=project_root,
         channel=channel,
@@ -641,6 +646,10 @@ def _build_refresh_data(
         command_whitelist=effective_whitelist,
         fingerprints=fingerprints,
         language=language,
+        output_schema_validation=reviewer_cfg.get("output_schema_validation", True),
+        evidence_validation=reviewer_cfg.get("evidence_validation", True),
+        coverage_validation=reviewer_cfg.get("coverage_validation", True),
+        scope_chunk_size=reviewer_cfg.get("scope_chunk_size", 25),
         drift_ignore=get_drift_ignore(existing_config),
         personalization=personalization,
     )

@@ -5,6 +5,16 @@
 
 ---
 
+## [Unreleased]
+
+### 修复 / Bug fixes
+
+- **CLI 全局标志可放子命令后**：`iterate status --no-banner`、`iterate doctor -p <dir>` 等写法现在与 `iterate --no-banner status` 等价；此前子命令默认值会覆盖全局标志（`-p`/`--no-banner` 放在子命令前会被忽略）。
+- **reviewer 配置完整保留**：onboarding 生成的 `iterate.config.yaml` 现在写入完整的 `reviewer` 段（`evidence_validation`、`coverage_validation`、`scope_chunk_size` 与 `output_schema_validation` 一起），`iterate refresh` / re-onboard / 返回用户更新基础配置时均保留用户自定义值，不再静默重置。
+- **show 展示补齐**：`iterate show` 的 TUI 与 `--json` 输出补充 `evidence_validation` 字段渲染。
+
+---
+
 ## [2.8.0] — 2026-08-22
 
 ### 新增 / Features

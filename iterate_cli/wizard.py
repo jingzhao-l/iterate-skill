@@ -327,6 +327,9 @@ def _run_basic_wizard(
         output_schema_validation=(
             existing.output_schema_validation if existing else True
         ),
+        evidence_validation=existing.evidence_validation if existing else True,
+        coverage_validation=existing.coverage_validation if existing else True,
+        scope_chunk_size=existing.scope_chunk_size if existing else 25,
         drift_ignore=list(existing.drift_ignore) if existing else [],
     )
 
@@ -419,6 +422,9 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             use_worktree=git.get("use_worktree", False),
             auto_merge=git.get("auto_merge", False),
             output_schema_validation=reviewer.get("output_schema_validation", True),
+            evidence_validation=reviewer.get("evidence_validation", True),
+            coverage_validation=reviewer.get("coverage_validation", True),
+            scope_chunk_size=reviewer.get("scope_chunk_size", 25),
             drift_ignore=drift_ignore,
         )
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:

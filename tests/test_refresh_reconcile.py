@@ -8,7 +8,12 @@ removing) existing operator configuration.
 
 from __future__ import annotations
 
-from iterate_cli.refresh import _reconcile_validation_suggestions
+from pathlib import Path
+
+from iterate_cli.refresh import (
+    _build_refresh_data,
+    _reconcile_validation_suggestions,
+)
 from iterate_cli.scan import ScanResult
 
 
@@ -67,3 +72,50 @@ class TestReconcileValidationSuggestions:
         )
         assert "python" in commands
         assert whitelist == []
+
+
+class TestBuildRefreshDataPreservesReviewer:
+    """_build_refresh_data must carry reviewer tuning through a refresh so a
+    customised evidence gate / coverage check / chunk size is never reset."""
+
+    def test_preserves_customised_reviewer_fields(self, tmp_path: Path) -> None:
+        config = {
+            "goal": "g",
+            "dimensions": ["correctness"],
+            "reviewer": {
+                "output_schema_validation": False,
+                "evidence_validation": False,
+                "coverage_validation": False,
+                "scope_chunk_size": 10,
+            },
+            "onboarding": {"channel": "cli", "drift_ignore": []},
+            "validation": {"commands": {}, "command_whitelist": []},
+        }
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.output_schema_validation is False
+        assert data.evidence_validation is False
+        assert data.coverage_validation is False
+        assert data.scope_chunk_size == 10
+
+    def test_defaults_when_reviewer_absent(self, tmp_path: Path) -> None:
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+        }
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.output_schema_validation is True
+        assert data.evidence_validation is True
+        assert data.coverage_validation is True
+        assert data.scope_chunk_size == 25
+
+    def test_survives_non_dict_reviewer(self, tmp_path: Path) -> None:
+        config = {
+            "dimensions": ["correctness"],
+            "reviewer": "oops",
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+        }
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.evidence_validation is True
+        assert data.scope_chunk_size == 25

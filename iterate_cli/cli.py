@@ -184,12 +184,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command")
 
-    # Shared project argument for subcommands (allows -p after subcommand).
+    # Shared arguments for subcommands: allows -p and --no-banner after the
+    # subcommand, matching the global flags so `iterate status --no-banner`
+    # works the same as `iterate --no-banner status`.
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument(
         "-p", "--project",
-        default=".",
+        default=argparse.SUPPRESS,
         help="Project root directory (default: current directory).",
+    )
+    parent.add_argument(
+        "--no-banner",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Disable the ITERATE ASCII art banner at startup.",
     )
 
     subparsers.add_parser(

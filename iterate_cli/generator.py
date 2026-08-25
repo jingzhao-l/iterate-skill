@@ -112,6 +112,9 @@ class OnboardingData:
     use_worktree: bool = False
     auto_merge: bool = False
     output_schema_validation: bool = True
+    evidence_validation: bool = True
+    coverage_validation: bool = True
+    scope_chunk_size: int = 25
     drift_ignore: list[str] = field(default_factory=list)
     personalization: PersonalizationData | None = None
 
@@ -214,7 +217,12 @@ def generate_config_yaml(data: OnboardingData) -> str:
             "command_whitelist": data.command_whitelist,
             "commands": data.validation_commands,
         },
-        "reviewer": {"output_schema_validation": data.output_schema_validation},
+        "reviewer": {
+            "output_schema_validation": data.output_schema_validation,
+            "evidence_validation": data.evidence_validation,
+            "coverage_validation": data.coverage_validation,
+            "scope_chunk_size": data.scope_chunk_size,
+        },
         "onboarding": onboarding,
     }
 

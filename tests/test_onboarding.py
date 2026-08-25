@@ -1791,6 +1791,51 @@ class TestCLIVersion:
         assert "██" in captured.out
 
 
+class TestCLIGlobalFlagsAfterSubcommand:
+    """Global flags (--no-banner, -p/--project) must work before OR after the
+    subcommand, and a flag placed before the subcommand must not be clobbered
+    by the subcommand parser's defaults."""
+
+    def _parse(self, argv: list[str]):
+        from iterate_cli.cli import _build_parser
+
+        return _build_parser().parse_args(argv)
+
+    def test_no_banner_before_subcommand_not_clobbered(self) -> None:
+        args = self._parse(["--no-banner", "status"])
+        assert args.no_banner is True
+
+    def test_no_banner_after_subcommand(self) -> None:
+        args = self._parse(["status", "--no-banner"])
+        assert args.no_banner is True
+
+    def test_no_banner_absent_defaults_false(self) -> None:
+        args = self._parse(["status"])
+        assert args.no_banner is False
+
+    def test_project_before_subcommand_not_clobbered(self) -> None:
+        args = self._parse(["-p", "/tmp/proj", "status"])
+        assert args.project == "/tmp/proj"
+
+    def test_project_after_subcommand(self) -> None:
+        args = self._parse(["status", "-p", "/tmp/proj"])
+        assert args.project == "/tmp/proj"
+
+    def test_project_subcommand_wins_when_both_given(self) -> None:
+        args = self._parse(["-p", "/tmp/global", "status", "-p", "/tmp/sub"])
+        assert args.project == "/tmp/sub"
+
+    def test_combo_global_and_subcommand_flags(self) -> None:
+        args = self._parse(["-p", "/tmp/x", "--no-banner", "doctor", "--json"])
+        assert args.project == "/tmp/x"
+        assert args.no_banner is True
+        assert args.json is True
+
+    def test_project_absent_defaults_dot(self) -> None:
+        args = self._parse(["status"])
+        assert args.project == "."
+
+
 class TestCLIGracefulInterrupt:
     """Ctrl+C / Ctrl+D during a command must cancel cleanly, not crash."""
 
