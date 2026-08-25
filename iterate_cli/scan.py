@@ -60,9 +60,6 @@ CI_PATHS: tuple[str, ...] = (
     "azure-pipelines.yml",
 )
 
-# Context files to check for existence.
-CONTEXT_FILES: tuple[str, ...] = ("README.md", "CLAUDE.md", "PROJECT.md", "CONTRIBUTING.md")
-
 
 @dataclass
 class ScanResult:
@@ -75,8 +72,6 @@ class ScanResult:
     has_specs: bool = False
     has_tests: bool = False
     has_ci: bool = False
-    has_readme: bool = False
-    has_claude_md: bool = False
     has_frontend: bool = False
 
 
@@ -145,13 +140,6 @@ def _scan_features(project_root: Path, result: ScanResult) -> None:
         if (project_root / ci_path).exists():
             result.has_ci = True
             break
-
-    for ctx_file in CONTEXT_FILES:
-        if (project_root / ctx_file).is_file():
-            if ctx_file == "README.md":
-                result.has_readme = True
-            elif ctx_file == "CLAUDE.md":
-                result.has_claude_md = True
 
     for indicator in FRONTEND_DIR_INDICATORS:
         if (project_root / indicator).is_dir():

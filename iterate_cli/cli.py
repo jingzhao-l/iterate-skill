@@ -433,8 +433,6 @@ def _cmd_personalize_clear(
     Returns:
         Exit code: 0 on success/cancel/nothing-to-clear, 1 on failure.
     """
-    from iterate_cli.refresh import load_onboarding_config
-
     config = load_onboarding_config(project_root) or {}
     if not has(project_root, config):
         tui.info("No personalization to clear.")
