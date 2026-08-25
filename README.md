@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://clawhub.ai/jingzhao-l/skills/iterate-skill"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fjingzhao-l%2Fiterate-skill%2Fmain%2Fbadges%2Fdownloads.json&query=clawhub&label=ClawHub&color=4285F4&logo=cloudflare&logoColor=white" alt="ClawHub"></a>
-  <a href="https://www.modelscope.cn/skills/jingzhao0/iterate-skill"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fjingzhao-l%2Fiterate-skill%2Fmain%2Fbadges%2Fdownloads.json&query=skillhub&label=SkillHub&color=624aff&logo=alibabacloud&logoColor=white" alt="SkillHub"></a>
+  <a href="https://skillhub.cloud.tencent.com/"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fjingzhao-l%2Fiterate-skill%2Fmain%2Fbadges%2Fdownloads.json&query=skillhub&label=SkillHub&color=624aff&logo=alibabacloud&logoColor=white" alt="SkillHub"></a>
   <a href="https://www.npmjs.com/package/iterate-skill-installer"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fjingzhao-l%2Fiterate-skill%2Fmain%2Fbadges%2Fdownloads.json&query=npm&label=npm&color=CB3837&logo=npm&logoColor=white" alt="npm"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow" alt="License"></a>
   <a href="https://github.com/jingzhao-l/iterate-skill/releases"><img src="https://img.shields.io/github/v/release/jingzhao-l/iterate-skill" alt="GitHub release"></a>
