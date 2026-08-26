@@ -47,15 +47,11 @@ _ITERATE_THEME = Theme({
 # 符号系统 — 仿 @clack/prompts
 SYM_INTRO = "◆"
 SYM_QUESTION = "◇"
-SYM_CONNECTOR = "│"
 SYM_END = "└"
-SYM_SELECTED = "●"
-SYM_UNSELECTED = "○"
 SYM_BULLET = "●"
 SYM_SUCCESS = "✓"
 SYM_ERROR = "✗"
 SYM_WARNING = "⚠"
-SYM_ARROW = "→"
 SYM_SPINNER = "✻"
 
 # key_value 键名对齐宽度（显示宽度，非字符数）
@@ -73,21 +69,34 @@ def _display_width(text: str) -> int:
     """
     width = 0
     for ch in text:
-        # 东亚全角字符（CJK 统一表意文字、全角符号、全角标点等）
-        if ord(ch) < 0x20:
+        cp = ord(ch)
+        # 控制字符（C0 区、DEL 与 C1 区）不渲染、不占宽度。
+        if cp < 0x20 or 0x7F <= cp <= 0x9F:
             continue
+        # 组合用记号、变体选择符（VS16 等）宽度为 0，跟随前一字符。
         if (
-            0x1100 <= ord(ch) <= 0x115F
-            or 0x2E80 <= ord(ch) <= 0xA4CF
-            or 0xAC00 <= ord(ch) <= 0xD7A3
-            or 0xF900 <= ord(ch) <= 0xFAFF
-            or 0xFE30 <= ord(ch) <= 0xFE4F
-            or 0xFF00 <= ord(ch) <= 0xFF60
-            or 0xFFE0 <= ord(ch) <= 0xFFE6
+            0x0300 <= cp <= 0x036F
+            or 0xFE00 <= cp <= 0xFE0F
+            or 0xE0100 <= cp <= 0xE01EF
+        ):
+            continue
+        # 东亚全角字符（CJK 统一表意文字、全角符号、全角标点等）
+        if (
+            0x1100 <= cp <= 0x115F
+            or 0x2E80 <= cp <= 0xA4CF
+            or 0xAC00 <= cp <= 0xD7A3
+            or 0xF900 <= cp <= 0xFAFF
+            or 0xFE30 <= cp <= 0xFE4F
+            or 0xFF00 <= cp <= 0xFF60
+            or 0xFFE0 <= cp <= 0xFFE6
         ):
             width += 2
-        else:
-            width += 1
+            continue
+        # Emoji（含象形符号与区域指示符）在多数终端按 2 列渲染。
+        if 0x1F000 <= cp <= 0x1FAFF:
+            width += 2
+            continue
+        width += 1
     return width
 
 # ITERATE 立体 ASCII 横幅 — 仿 skills.sh 顶部 Logo
@@ -157,7 +166,8 @@ class TUI:
         """输出 ITERATE 立体 ASCII 横幅 — 仿 skills.sh 顶部 Logo.
 
         横幅左对齐行首，不居中，与后续列表/步骤的缩进保持一致。
-        可通过 ``--no-banner`` 或环境变量 ``ITERATE_NO_BANNER=1`` 禁用。
+        是否展示由调用方（cli._should_show_banner）根据 ``--no-banner``
+        与 ``ITERATE_NO_BANNER`` 环境变量决定，本方法只负责渲染。
         """
         self.console.print()
         for line in _ITERATE_BANNER_LINES:
@@ -243,12 +253,12 @@ class TUI:
             f"{prefix}[iterate.warning]{SYM_WARNING} {message}[/]"
         )
 
-    def error(self, message: str, indent: int = 0) -> None:
+    def error(self, message: str, indent: int = 2) -> None:
         """输出错误信息到 stderr.
 
         Args:
             message: 错误内容
-            indent: 缩进空格数
+            indent: 缩进空格数（与其他语义色方法保持一致，默认 2）
         """
         prefix = " " * indent
         self._stderr_console.print(
@@ -334,12 +344,19 @@ class TUI:
             with tui.status("正在扫描项目..."):
                 result = scan_project()
 
+        非交互式终端（管道/重定向/CI）下返回 no-op 上下文管理器，
+        避免在不可交互的输出中刷出 spinner 控制序列。
+
         Args:
             message: 状态消息
 
         Returns:
-            rich Console.status 上下文管理器
+            rich Console.status 上下文管理器（或非交互时的 no-op）。
         """
+        if not self.is_interactive:
+            from contextlib import nullcontext
+
+            return nullcontext()
         return self.console.status(
             f"[iterate.primary]{SYM_SPINNER}[/] {message}",
             spinner="dots",

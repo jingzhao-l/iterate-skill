@@ -38,6 +38,15 @@ const GITHUB_OWNER = 'jingzhao-l';
 const GITHUB_REPO = 'iterate-skill';
 const RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 
+// Release asset filenames — named constants so the magic strings are not
+// scattered through the download / verify pipeline.
+const TARBALL_ASSET_NAME = 'iterate-skill.tar.gz';
+const CHECKSUMS_ASSET_NAME = 'SHA256SUMS.txt';
+
+// Hard cap on a single curl download: a misbehaving CDN or a corrupt release
+// must never hang the installer forever.
+const CURL_MAX_TIME_SECONDS = '120';
+
 // Package version read from package.json at runtime so the --version/-v flag
 // and the published npm version always stay in sync.
 const VERSION = require('../package.json').version;
@@ -127,7 +136,7 @@ function commandExists(bin) {
 async function fetchJson(url, token) {
   // Prefer curl over Node.js fetch because curl uses the system CA store
   // and avoids Node-specific certificate issues in some environments.
-  const args = ['-sSL', '--fail-with-body', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'User-Agent: iterate-skill-installer'];
+  const args = ['-sSL', '--fail-with-body', '--max-time', CURL_MAX_TIME_SECONDS, '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'User-Agent: iterate-skill-installer'];
   if (token) {
     args.push('-H', `Authorization: Bearer ${token}`);
   }
@@ -140,13 +149,26 @@ async function fetchJson(url, token) {
   }
 }
 
-async function downloadFile(url, destPath, token) {
-  const args = ['-sSL', '--fail-with-body', '-o', destPath, '-H', 'User-Agent: iterate-skill-installer'];
+/**
+ * Download a file with curl.
+ *
+ * When ``progress`` is enabled (used for the tarball), curl's ``--progress-bar``
+ * writes a live percentage bar straight to the terminal (stderr is inherited so
+ * the bar is visible; stdout stays captured for non-progress downloads).
+ */
+async function downloadFile(url, destPath, token, { progress = false } = {}) {
+  const args = ['-sSL', '--fail-with-body', '--max-time', CURL_MAX_TIME_SECONDS, '-o', destPath, '-H', 'User-Agent: iterate-skill-installer'];
+  if (progress) args.push('--progress-bar');
   if (token) {
     args.push('-H', `Authorization: Bearer ${token}`);
   }
   args.push(url);
-  await runCommand('curl', args);
+  if (progress) {
+    // Let curl write its progress bar directly to the terminal.
+    await runCommand('curl', args, { stdio: ['ignore', 'ignore', 'inherit'] });
+  } else {
+    await runCommand('curl', args);
+  }
 }
 
 function sha256File(filePath) {
@@ -166,11 +188,14 @@ function parseChecksums(text) {
     if (!trimmed) continue;
     const parts = trimmed.split(/\s+/);
     if (parts.length >= 2) {
-      // Strip the GNU tar binary-mode marker ('*') so that both
-      // "HASH  filename" and "HASH *filename" formats match the target
-      // filename, consistent with scripts/install.py (name.lstrip('*')).
-      const name = parts[1].replace(/^\*/, '');
-      map.set(name, parts[0]);
+      // Normalize the filename the same way scripts/install.py does
+      // (_parse_checksum): strip the GNU tar binary-mode marker ('*') and the
+      // './' prefix, then match on the basename so entries with a subpath or
+      // versioned component (e.g. "dist/iterate-skill.tar.gz" or
+      // "./iterate-skill.tar.gz") still resolve to the expected asset.
+      const normalized = parts[1].replace(/^\*/, '').replace(/^\.\//, '');
+      const basename = normalized.split('/').pop();
+      map.set(basename, parts[0]);
     }
   }
   return map;
@@ -412,7 +437,7 @@ async function resolveInstallMode(options, ask = askYesNo) {
   const home = os.homedir();
   if (cwd !== home) {
     const answer = await ask(
-      `当前目录 ${cwd} 看起来是项目目录，是否安装到此项目？(选择否则全局安装到用户目录)`,
+      `当前目录 ${cwd} 看起来是项目目录，是否安装到此项目？(输入 n 则全局安装到用户目录)`,
     );
     if (answer) {
       options.target = cwd;
@@ -435,6 +460,25 @@ async function createVenv(pythonBin, venvDir) {
 async function installRequirements(pythonBin, requirementsPath) {
   if (!fs.existsSync(requirementsPath)) return;
   await runCommand(pythonBin, ['-m', 'pip', 'install', '--quiet', '--requirement', requirementsPath]);
+}
+
+/**
+ * Build the argv passed to the Python installer (scripts/install.py install).
+ *
+ * Exported as a pure function so the flag surface — including the relative
+ * ``--target`` resolution — can be unit-tested without running the full
+ * download pipeline. A relative ``--target`` is resolved against the current
+ * working directory here because the Python installer runs with ``cwd`` set
+ * to the extracted release directory; passing the raw relative path would
+ * make it point at the wrong place.
+ */
+function buildPythonInstallArgs(options) {
+  const args = [];
+  if (options.ai) args.push('--ai', options.ai);
+  if (options.target) args.push('--target', path.resolve(options.target));
+  if (options.force) args.push('--force');
+  if (options.globalInstall) args.push('--global');
+  return args;
 }
 
 /**
@@ -480,12 +524,18 @@ function parseArgs(argv) {
           console.error('Error: --target requires a value (a flag was found instead)');
           process.exit(1);
         }
+        if (options.globalExplicit) {
+          warning('--target overrides --global: installing into the project directory instead.');
+        }
         options.target = next;
         options.global = false;
         options.targetExplicit = true;
         i++;
         break;
       case '--global':
+        if (options.targetExplicit) {
+          warning('--global overrides --target: installing into the user home directory instead.');
+        }
         options.global = true;
         options.target = null;
         options.globalExplicit = true;
@@ -521,6 +571,9 @@ function parseArgs(argv) {
           console.error(`Error: unknown option ${arg}`);
           process.exit(1);
         }
+        // A bare positional argument is not a valid installer flag; warn so a
+        // typo like "npx iterate-skill-installer trae" is not silently ignored.
+        warning(`Ignoring unexpected positional argument: ${arg}`);
         break;
     }
   }
@@ -575,34 +628,34 @@ async function main(options = {}) {
   }
   success(`Latest release: ${tag}`);
 
-  const tarballAsset = release.assets?.find((a) => a.name === 'iterate-skill.tar.gz');
-  const checksumAsset = release.assets?.find((a) => a.name === 'SHA256SUMS.txt');
+  const tarballAsset = release.assets?.find((a) => a.name === TARBALL_ASSET_NAME);
+  const checksumAsset = release.assets?.find((a) => a.name === CHECKSUMS_ASSET_NAME);
 
   if (!tarballAsset) {
-    error('Release is missing the iterate-skill.tar.gz asset.');
+    error(`Release is missing the ${TARBALL_ASSET_NAME} asset.`);
     return 1;
   }
   if (!checksumAsset) {
-    error('Release is missing SHA256SUMS.txt asset.');
+    error(`Release is missing ${CHECKSUMS_ASSET_NAME} asset.`);
     return 1;
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iterate-skill-install-'));
-  const tarballPath = path.join(tmpDir, 'iterate-skill.tar.gz');
-  const checksumPath = path.join(tmpDir, 'SHA256SUMS.txt');
+  const tarballPath = path.join(tmpDir, TARBALL_ASSET_NAME);
+  const checksumPath = path.join(tmpDir, CHECKSUMS_ASSET_NAME);
 
   try {
-    info('Downloading release tarball...');
-    await downloadFile(tarballAsset.browser_download_url, tarballPath, token);
+    info(`Downloading release tarball (${TARBALL_ASSET_NAME})...`);
+    await downloadFile(tarballAsset.browser_download_url, tarballPath, token, { progress: true });
 
     info('Downloading checksums...');
     await downloadFile(checksumAsset.browser_download_url, checksumPath, token);
 
     info('Verifying checksum...');
     const checksums = parseChecksums(fs.readFileSync(checksumPath, 'utf8'));
-    const expectedHash = checksums.get('iterate-skill.tar.gz');
+    const expectedHash = checksums.get(TARBALL_ASSET_NAME);
     if (!expectedHash) {
-      error('Checksum file does not contain iterate-skill.tar.gz');
+      error(`Checksum file does not contain ${TARBALL_ASSET_NAME}`);
       return 1;
     }
     const actualHash = await sha256File(tarballPath);
@@ -649,11 +702,7 @@ async function main(options = {}) {
       return 1;
     }
 
-    const installArgs = [];
-    if (ai) installArgs.push('--ai', ai);
-    if (target) installArgs.push('--target', target);
-    if (force) installArgs.push('--force');
-    if (globalInstall) installArgs.push('--global');
+    const installArgs = buildPythonInstallArgs({ ai, target, force, globalInstall });
 
     info('Starting skill installation (Python installer)...');
     const installExit = await runPythonInstall(venvPython, installScript, installArgs, { cwd: sourceDir });
@@ -692,6 +741,7 @@ async function main(options = {}) {
 module.exports = {
   main,
   parseArgs,
+  buildPythonInstallArgs,
   VERSION,
   ITERATE_BANNER,
   InstallerError,

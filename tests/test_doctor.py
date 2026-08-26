@@ -592,3 +592,128 @@ class TestRenderSummary:
         _render_summary(tui, _report_with("warn", "error", "ok"))
         assert "error" in tui.finished_line()
         assert "warning" not in tui.finished_line()
+
+
+# ---------------------------------------------------------------------------
+# Regression: malformed dimensions / shell-metachar safety net (P1 fixes)
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorDimensionGuard:
+    def test_scalar_dimensions_is_error_not_healthy(self, tmp_path) -> None:
+        """`dimensions: "correctness"` (scalar) must NOT be reported healthy.
+
+        Previously _dimension_ids silently fell back to the canonical list, so
+        a malformed config was reported as "All 9 configured dimension(s) are
+        canonical" — contradicting the schema warning.
+        """
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimensions"] = "correctness"
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert report.has_errors()
+        assert any(
+            f.check == "dimensions" and f.severity == "error" for f in report.findings
+        )
+        assert not any(
+            f.check == "dimensions" and f.severity == "ok" for f in report.findings
+        )
+
+    def test_missing_dimensions_falls_back_to_canonical(self, tmp_path) -> None:
+        """dimensions absent → canonical defaults (schema makes it optional)."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config.pop("dimensions", None)
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "dimensions" and f.severity == "ok" for f in report.findings
+        )
+
+
+class TestDoctorCommandMetacharSafetyNet:
+    def test_metachars_rejected_without_whitelist(self, tmp_path) -> None:
+        """`command_whitelist` absent must not let `pytest; rm -rf /` pass."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {"commands": {"python": ["pytest; rm -rf /"]}}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert report.has_errors()
+        assert any(
+            f.check == "validation.whitelist" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_clean_command_without_whitelist_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {"commands": {"python": ["pytest tests/ -q"]}}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(
+            f.check == "validation.command_whitelist" and f.severity == "ok"
+            for f in report.findings
+        )
+
+    def test_metachars_rejected_even_when_whitelisted(self, tmp_path) -> None:
+        """Metacharacters are rejected even if a whitelist prefix matches."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {
+            "commands": {"python": ["pytest; rm -rf /"]},
+            "command_whitelist": ["pytest"],
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert report.has_errors()
+
+
+class TestDoctorPersonalizationTolerance:
+    def test_none_dimension_entries_are_skipped_not_flagged(self, tmp_path) -> None:
+        """Entries missing a dimension must not be reported as broken.
+
+        Matches scripts/validate.py::validate_personalization_consistency,
+        which skips empty/missing dimensions (previously doctor reported a
+        misleading "point to disabled dimension None").
+        """
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["personalization"] = {
+            "version": "1.0",
+            "dimension_focus": [{"focus": "no dimension key"}],
+            "known_intentional": [{"file": "a.py", "line": 1, "reason": "x"}],
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        # A hand-edited entry missing its `dimension` key must NOT be reported
+        # as "points to disabled dimension None". (The generic schema check may
+        # still warn that the config is missing required personalization
+        # fields — that is a separate, legitimate concern and not what this
+        # test guards.)
+        consistency = next(
+            (
+                f
+                for f in report.findings
+                if f.check == "personalization.consistency"
+            ),
+            None,
+        )
+        assert consistency is not None
+        assert consistency.severity == "ok"
+
+    def test_skill_version_missing_is_ok_with_accurate_message(self, tmp_path) -> None:
+        """No recorded skill_version → accurate ok (not a false "matches")."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["onboarding"].pop("skill_version", None)
+        _write_config(project, config)
+        report = run_doctor(project)
+        match = next(
+            (f for f in report.findings if f.check == "skill_version"), None
+        )
+        assert match is not None
+        assert match.severity == "ok"
+        assert "No recorded" in match.message

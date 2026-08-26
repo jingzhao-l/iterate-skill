@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode, parseChecksums, parseArgs } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums, parseArgs, buildPythonInstallArgs } = require('../lib/installer');
 
 const originalCwd = process.cwd();
 const originalHome = os.homedir;
@@ -96,6 +96,17 @@ async function run() {
   assert.strictEqual(multi.get('a.txt'), 'aa');
   assert.strictEqual(multi.get('b.txt'), 'bb');
 
+  // './' prefix and subpath/basename matching must resolve like the Python
+  // side (scripts/install.py _parse_checksum), which matches on basename.
+  const dotSlash = parseChecksums('abc123  ./iterate-skill.tar.gz\n');
+  assert.strictEqual(dotSlash.get('iterate-skill.tar.gz'), 'abc123', './ prefix should parse');
+
+  const subpath = parseChecksums('abc123  dist/iterate-skill.tar.gz\n');
+  assert.strictEqual(subpath.get('iterate-skill.tar.gz'), 'abc123', 'subpath entries should match by basename');
+
+  const starredSubpath = parseChecksums('abc123  *./release/iterate-skill-1.2.3.tar.gz\n');
+  assert.strictEqual(starredSubpath.get('iterate-skill-1.2.3.tar.gz'), 'abc123', '*./ and versioned subpath should match by basename');
+
   console.log('mode.test.js: all parseChecksums tests passed');
 
   // parseArgs: --no-cli must toggle skill-only mode, and default to off.
@@ -137,7 +148,65 @@ async function run() {
     process.exit = origExit;
   }
 
+  // parseArgs: a bare positional argument must produce a warning instead of
+  // being silently ignored (fix: typos like "npx iterate-skill-installer trae").
+  const origLog = console.log;
+  const warnings = [];
+  console.log = (msg) => { warnings.push(msg); };
+  try {
+    const opts = parseArgs(['trae', '--force']);
+    assert.strictEqual(opts.force, true, 'known flags still parse alongside positionals');
+    assert.ok(
+      warnings.some((w) => w.includes('Ignoring unexpected positional argument: trae')),
+      `positional arg should warn, got: ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    console.log = origLog;
+  }
+
+  // parseArgs: --global + --target together must warn that the later flag wins.
+  const conflictLogs = [];
+  console.log = (msg) => { conflictLogs.push(msg); };
+  try {
+    const targetThenGlobal = parseArgs(['--target', '/proj', '--global']);
+    assert.strictEqual(targetThenGlobal.global, true, 'later --global wins');
+    assert.strictEqual(targetThenGlobal.target, null, 'later --global clears the target');
+    assert.ok(
+      conflictLogs.some((w) => w.includes('--global overrides --target')),
+      `conflict should warn, got: ${JSON.stringify(conflictLogs)}`,
+    );
+    const globalThenTarget = parseArgs(['--global', '--target', '/proj']);
+    assert.strictEqual(globalThenTarget.global, false, 'later --target wins');
+    assert.strictEqual(globalThenTarget.target, '/proj', 'later --target is kept');
+    assert.ok(
+      conflictLogs.some((w) => w.includes('--target overrides --global')),
+      `conflict should warn, got: ${JSON.stringify(conflictLogs)}`,
+    );
+  } finally {
+    console.log = origLog;
+  }
+
   console.log('mode.test.js: all parseArgs tests passed');
+
+  // buildPythonInstallArgs: a relative --target must be resolved against the
+  // current working directory (the Python installer runs with a different
+  // cwd, so the raw relative path would point at the wrong place).
+  const resolved = buildPythonInstallArgs({ ai: 'trae', target: 'rel/sub', force: true, globalInstall: false });
+  assert.deepStrictEqual(
+    resolved,
+    ['--ai', 'trae', '--target', path.resolve('rel/sub'), '--force'],
+    'relative --target should be resolved against cwd',
+  );
+  const globalArgs = buildPythonInstallArgs({ ai: null, target: null, force: false, globalInstall: true });
+  assert.deepStrictEqual(globalArgs, ['--global'], 'global flag should be forwarded');
+  assert.deepStrictEqual(
+    buildPythonInstallArgs({ ai: null, target: '/abs/target', force: false, globalInstall: false }),
+    ['--target', '/abs/target'],
+    'absolute --target is passed through unchanged',
+  );
+  assert.deepStrictEqual(buildPythonInstallArgs({ ai: null, target: null, force: false, globalInstall: false }), [], 'no flags -> empty argv');
+
+  console.log('mode.test.js: all buildPythonInstallArgs tests passed');
 }
 
 run().catch((err) => {

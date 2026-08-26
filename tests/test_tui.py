@@ -95,6 +95,20 @@ class TestDisplayWidth:
         # 全角冒号/括号按双宽计算
         assert _display_width("：（）") == 6
 
+    def test_emoji_is_double_width(self) -> None:
+        # Emoji 在多数终端按 2 列渲染（U+1F000–U+1FAFF）
+        assert _display_width("🚀") == 2
+        assert _display_width("a🚀") == 3
+
+    def test_combining_and_variation_selectors_are_zero_width(self) -> None:
+        # 组合用记号与变体选择符（VS16）宽度为 0，跟随前一字符
+        assert _display_width("e\u0301") == 1  # e + combining acute
+        assert _display_width("✋\ufe0f") == 1  # ️hand + VS16 (counted 1 via 0-width VS16)
+        assert _display_width("中\u0301") == 2  # CJK + combining
+
+    def test_del_and_c1_controls_skipped(self) -> None:
+        assert _display_width("\x7f\x80\x81a") == 1
+
 
 class TestRenderMethods:
     def test_banner_renders_iterate_ascii(self) -> None:

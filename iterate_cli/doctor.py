@@ -41,6 +41,7 @@ from iterate_cli.refresh import (
     is_onboarding_complete,
     load_onboarding_config,
 )
+from iterate_cli.tui import tui
 
 # Shell-chaining metacharacters that must never appear in a whitelist entry
 # or a validation command. This is the SAME canonical set as personalize.py's
@@ -141,11 +142,21 @@ def _err(report: DoctorReport, check: str, message: str, detail: str = "") -> No
 
 
 def _dimension_ids(config: dict[str, Any]) -> list[str]:
-    """Return the declared dimensions (default to canonical when unset)."""
+    """Return the declared dimensions.
+
+    - ``dimensions`` absent → canonical defaults (schema makes it optional).
+    - ``dimensions`` a list → its entries as strings.
+    - ``dimensions`` present but NOT a list (e.g. a scalar string from a
+      hand-edited config) → ``[]``, so ``_check_dimensions`` reports the
+      malformed value as an error instead of silently treating it as "all
+      canonical" and declaring the config healthy.
+    """
     dims = config.get("dimensions")
+    if dims is None:
+        return list(CANONICAL_DIMENSIONS)
     if isinstance(dims, list):
         return [str(d) for d in dims]
-    return list(CANONICAL_DIMENSIONS)
+    return []
 
 
 def _load_config_schema() -> dict[str, Any] | None:
@@ -328,6 +339,20 @@ def _check_dimensions(report: DoctorReport, config: dict[str, Any]) -> None:
     canonical_set = set(CANONICAL_DIMENSIONS)
     dims = _dimension_ids(config)
 
+    raw = config.get("dimensions")
+    if raw is not None and not isinstance(raw, list):
+        # A scalar/non-list dimensions value (e.g. `dimensions: "correctness"`)
+        # is malformed: report it as an error and stop — the per-entry checks
+        # below would otherwise be meaningless (and a previous fallback to the
+        # canonical list silently reported such configs as "healthy").
+        _err(
+            report,
+            "dimensions",
+            "dimensions must be a list of canonical dimension ids.",
+            f"Got {type(raw).__name__} instead of a list.",
+        )
+        return
+
     # Empty list is a hard error: emit it first and return so we never
     # also report the verbose "all configured dimensions are canonical"
     # success line for the same check (which would contradict it).
@@ -449,10 +474,28 @@ def _check_validation_commands(report: DoctorReport, config: dict[str, Any]) -> 
 
 
 def _check_validation_whitelist(report: DoctorReport, config: dict[str, Any]) -> None:
-    """command_whitelist structure (6b) and command compliance (6c)."""
+    """command_whitelist structure (6b) and command compliance (6c).
+
+    Even when no ``command_whitelist`` is configured, every validation
+    command is still checked for shell metacharacters (6c safety net): a
+    command like ``pytest; rm -rf /`` must never pass a health gate simply
+    because the optional whitelist key is absent.
+    """
     validation = config.get("validation") if isinstance(config.get("validation"), dict) else None
     whitelist = validation.get("command_whitelist") if validation else None
+    commands = validation.get("commands") if validation else None
+
     if whitelist is None:
+        # No whitelist constraint → structure check is not applicable, but the
+        # command metacharacter check below still applies to every configured
+        # command.
+        if commands is not None:
+            _check_commands_metachars(report, commands)
+        _ok(
+            report,
+            "validation.command_whitelist",
+            "no command_whitelist configured (optional); commands checked for shell metacharacters.",
+        )
         return
 
     # 6b. command_whitelist must be a non-empty list of unique non-empty strings.
@@ -470,9 +513,37 @@ def _check_validation_whitelist(report: DoctorReport, config: dict[str, Any]) ->
         _ok(report, "validation.command_whitelist", "command_whitelist is a valid non-empty list.")
 
     # 6c. Compliance only applies when commands are also configured.
-    commands = validation.get("commands") if validation else None
     if commands is not None:
         _check_whitelist_compliance(report, whitelist, commands)
+
+
+def _check_commands_metachars(report: DoctorReport, commands: Any) -> None:
+    """Every configured validation command must be free of shell metacharacters.
+
+    This is the standalone safety net for configs without a
+    ``command_whitelist``: metacharacters that allow command chaining
+    (``;`` ``|`` ``&`` ``$`` ...) are rejected regardless of any whitelist,
+    so a hand-edited config cannot smuggle side effects into the executable
+    validation commands.
+    """
+    if not isinstance(commands, dict):
+        return
+    unsafe: list[str] = []
+    for module, cmds in commands.items():
+        if not isinstance(cmds, list):
+            continue
+        for idx, command in enumerate(cmds):
+            if isinstance(command, str) and any(
+                ch in COMMAND_METACHARS for ch in command
+            ):
+                unsafe.append(f"{module}[{idx}] {command!r}")
+    if unsafe:
+        _err(
+            report,
+            "validation.whitelist",
+            "validation command(s) contain shell metacharacters (possible command chaining).",
+            "; ".join(unsafe[:SCHEMA_MAX_ERRORS]),
+        )
 
 
 def _check_whitelist_compliance(
@@ -500,12 +571,29 @@ def _check_whitelist_compliance(
         )
         return
     non_whitelisted: list[str] = []
+    unsafe: list[str] = []
     for module, cmds in commands.items():
         if not isinstance(cmds, list):
             continue
         for idx, command in enumerate(cmds):
-            if not _command_is_whitelisted(command, whitelist):
+            if not isinstance(command, str):
+                continue
+            # Shell metacharacters are a hard security error regardless of the
+            # whitelist (matching the standalone safety net for configs without
+            # a command_whitelist). Everything else falls back to prefix
+            # compliance, which is a non-blocking warning.
+            if any(ch in COMMAND_METACHARS for ch in command):
+                unsafe.append(f"{module}[{idx}] {command!r}")
+            elif not _command_is_whitelisted(command, whitelist):
                 non_whitelisted.append(f"{module}[{idx}] {command!r}")
+    if unsafe:
+        _err(
+            report,
+            "validation.whitelist",
+            "validation command(s) contain shell metacharacters (possible command chaining).",
+            "; ".join(unsafe[:SCHEMA_MAX_ERRORS]),
+        )
+        return
     if non_whitelisted:
         _warn(
             report,
@@ -521,7 +609,16 @@ def _check_skill_version(report: DoctorReport, config: dict[str, Any]) -> None:
     """Onboarding skill_version vs the installed skill version."""
     onboarding = config.get("onboarding") if isinstance(config.get("onboarding"), dict) else None
     recorded_version = onboarding.get("skill_version") if onboarding else None
-    if recorded_version is not None and recorded_version != SKILL_VERSION:
+    if recorded_version is None:
+        # No recorded version (e.g. a hand-written config without an onboarding
+        # record): nothing to compare, and claiming "matches" would be false.
+        _ok(
+            report,
+            "skill_version",
+            "No recorded onboarding skill version; nothing to compare.",
+        )
+        return
+    if recorded_version != SKILL_VERSION:
         _warn(
             report,
             "skill_version",
@@ -536,7 +633,11 @@ def _check_manifest_drift(report: DoctorReport, project_root: Path) -> None:
     """Manifest drift (tech-stack changed since onboarding)."""
     drift = check_onboarding_drift(project_root)
     if drift is None:
-        _ok(report, "drift", "No drift check applicable (no fingerprints configured).")
+        _ok(
+            report,
+            "drift",
+            "No drift check applicable (drift check disabled, no fingerprints recorded, or config unreadable).",
+        )
         return
     if drift.has_drift:
         _warn(report, "drift", f"Manifest drift detected: {drift.summary()}", drift.advice())
@@ -560,11 +661,21 @@ def _check_personalization(report: DoctorReport, config: dict[str, Any]) -> None
             if isinstance(item, str) and item not in enabled:
                 broken.append(f"fix_priority_order[{idx}] {item!r}")
     for idx, item in enumerate(personalization.get("dimension_focus") or []):
-        if isinstance(item, dict) and item.get("dimension") not in enabled:
-            broken.append(f"dimension_focus[{idx}] {item.get('dimension')!r}")
+        if not isinstance(item, dict):
+            continue
+        dimension = item.get("dimension")
+        # Missing/empty dimension entries are skipped (matching
+        # scripts/validate.py::validate_personalization_consistency) so a
+        # hand-edited config with an incomplete entry is not misreported as
+        # "points to disabled dimension None".
+        if dimension and dimension not in enabled:
+            broken.append(f"dimension_focus[{idx}] {dimension!r}")
     for idx, item in enumerate(personalization.get("known_intentional") or []):
-        if isinstance(item, dict) and item.get("dimension") not in enabled:
-            broken.append(f"known_intentional[{idx}] {item.get('dimension')!r}")
+        if not isinstance(item, dict):
+            continue
+        dimension = item.get("dimension")
+        if dimension and dimension not in enabled:
+            broken.append(f"known_intentional[{idx}] {dimension!r}")
     if broken:
         _warn(
             report,
@@ -687,7 +798,7 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
             encoding="utf-8",
         )
     except OSError as exc:
-        print(f"⚠️  Doctor --fix: failed to write fixed config: {exc}", file=sys.stderr)
+        tui.error(f"Doctor --fix: failed to write fixed config: {exc}")
         return False, fixes
     return True, fixes
 
@@ -722,8 +833,6 @@ def render_report(report: DoctorReport, json_output: bool = False) -> int:
     if json_output:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         return 1 if report.has_errors() else 0
-
-    from iterate_cli.tui import tui
 
     tui.intro(f"Iterate Skill — Doctor / {report.project}")
 
@@ -783,9 +892,18 @@ def _render_next_actions(tui: Any, report: DoctorReport) -> None:
     actions: list[tuple[str, str]] = []
     if "config.parse" in checks:
         actions.append(("修复 iterate.config.yaml 的语法错误", "编辑配置后运行 `iterate doctor`"))
-    if "config.schema" in checks or "validation.commands" in checks:
+    if "config.schema" in checks:
         actions.append(
-            ("配置字段不符合规范", "运行 `iterate doctor --fix` 应用安全修复；否则编辑所示字段")
+            ("配置字段不符合规范", "编辑 iterate.config.yaml 中所示字段，或运行 `iterate reonboard` 重新生成")
+        )
+    if "validation.commands" in checks:
+        actions.append(("validation.commands 结构异常", "编辑配置使每个模块对应非空命令列表"))
+    if (
+        "validation.command_whitelist" in checks
+        or "validation.whitelist" in checks
+    ):
+        actions.append(
+            ("命令白名单/验证命令含非法字符", "运行 `iterate personalize` 重新配置验证命令，或在配置中修正白名单")
         )
     if "skill_version" in checks:
         actions.append(("录制的技能版本过旧", "运行 `iterate refresh` 更新录制版本"))

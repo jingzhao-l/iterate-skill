@@ -27,6 +27,12 @@ REQUIRED_DECISION_SECTIONS = [
 
 CONFLICT_MARKERS = ["<<<<<<<", "=======", ">>>>>>>"]
 
+# Canonical shell-chaining metacharacters rejected in command bodies and
+# whitelist entries. Shared (via this module) with iterate_cli.doctor and
+# iterate_cli.personalize — the exact character set is locked by tests and
+# must NOT be changed without updating all three modules together.
+_COMMAND_METACHARS = set(';|&$`><\r\n\\#*?~"\'\u007b\u007d()[]')
+
 DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "config" / "config.schema.json"
 
 
@@ -104,7 +110,6 @@ def command_is_whitelisted(command: str, whitelist: list[str]) -> bool:
     命令所需的常用字符（字母、数字、下划线、连字符、点、斜杠、空格、``@``/``:``
     及 flag 常见字符如 ``-`` ``=``）一律放行；仅对真正的元字符强制拒绝。
     """
-    _COMMAND_METACHARS = set(';|&$`><\r\n\\#*?~"\'\u007b\u007d()[]')
     stripped = command.strip()
     # Reject any shell-chaining metacharacter anywhere in the command body.
     for ch in stripped:
@@ -124,6 +129,21 @@ def command_is_whitelisted(command: str, whitelist: list[str]) -> bool:
         ):
             return True
     return False
+
+
+def whitelist_rejection_reason(command: str, whitelist: list[str]) -> str:
+    """解释 ``command`` 被白名单拒绝的原因，用于错误消息。
+
+    只改进诊断信息，不改变 ``command_is_whitelisted`` 的判定（字符集由
+    ``_COMMAND_METACHARS`` 固定，tests 锁定其与 doctor/personalize 三方同步）。
+    """
+    stripped = command.strip()
+    for ch in stripped:
+        if ch in _COMMAND_METACHARS:
+            return "contains shell metacharacters"
+    if not whitelist:
+        return "no whitelist prefixes are configured"
+    return "no whitelist prefix matches"
 
 
 def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
@@ -185,8 +205,10 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
                 )
                 continue
             if not command_is_whitelisted(command, safe_whitelist):
+                reason = whitelist_rejection_reason(command, safe_whitelist)
                 errors.append(
-                    f"validation.commands.{module}[{idx}] is not in command_whitelist: {command!r}"
+                    f"validation.commands.{module}[{idx}] is not in command_whitelist: {command!r} "
+                    f"({reason})"
                 )
 
     return errors

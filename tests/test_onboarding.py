@@ -239,17 +239,14 @@ class TestFingerprintSerialization:
         restored = fingerprints_from_dict(dicts)
         assert restored == entries
 
-    def test_from_dict_invalid_entry(self) -> None:
-        with pytest.raises(TypeError, match="not a dict"):
-            fingerprints_from_dict(["not a dict"])  # type: ignore[list-item]
-
-    def test_from_dict_missing_path(self) -> None:
-        with pytest.raises(ValueError, match="missing 'path'"):
-            fingerprints_from_dict([{"sha256": "a" * 64}])
-
-    def test_from_dict_missing_sha256(self) -> None:
-        with pytest.raises(ValueError, match="missing 'sha256'"):
-            fingerprints_from_dict([{"path": "package.json"}])
+    def test_from_dict_skips_invalid_entries(self) -> None:
+        """Malformed entries are skipped, not raised (aligned with harness)."""
+        assert fingerprints_from_dict(["not a dict"]) == []  # type: ignore[list-item]
+        assert fingerprints_from_dict([{"sha256": "a" * 64}]) == []
+        assert fingerprints_from_dict([{"path": "package.json"}]) == []
+        assert fingerprints_from_dict([42, {"path": "a", "sha256": "b"}]) == [
+            FingerprintEntry(path="a", sha256="b")
+        ]
 
 
 class TestCompareFingerprints:
@@ -1551,8 +1548,10 @@ class TestMergePersonalizationFiltersEmptyCommands:
             extra_validation_commands={"python": ["", "   "]}
         )
         result = merge_personalization_into_config(config, data)
-        # All commands were empty, so whitelist should remain unchanged.
-        assert result["validation"]["command_whitelist"] == []
+        # All commands were empty, so the whitelist must not be polluted with
+        # junk entries; the key is dropped entirely (an explicit empty list
+        # would trip doctor's "must be a non-empty list" check).
+        assert "command_whitelist" not in result["validation"]
 
 
 class TestFullReonboard:
@@ -4866,3 +4865,155 @@ class TestPersonalizeClear:
         )
         config = load_onboarding_config(fake_project) or {}
         assert has_personalization(fake_project, config) is True
+
+
+# ---------------------------------------------------------------------------
+# Regression: data-protection & personalization guards (P1 fixes)
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicWritePreservesPermissions:
+    def test_mode_bits_preserved(self, tmp_path: Path) -> None:
+        from iterate_cli.generator import atomic_write
+
+        target = tmp_path / "iterate.config.yaml"
+        target.write_text("old", encoding="utf-8")
+        # Simulate a config the operator restricted to owner-only.
+        target.chmod(0o600)
+        atomic_write(target, "new content")
+        assert (target.stat().st_mode & 0o777) == 0o600
+
+    def test_new_file_uses_umask_default(self, tmp_path: Path) -> None:
+        from iterate_cli.generator import atomic_write
+
+        target = tmp_path / "fresh.yaml"
+        atomic_write(target, "content")
+        assert target.read_text(encoding="utf-8") == "content"
+
+
+class TestProtectedPathsScalarGuard:
+    def test_scalar_protected_paths_not_split_into_chars(self) -> None:
+        """`protected_paths: "legacy"` must degrade to [] (not ['l','e','g',...])."""
+        data = load_personalization_from_config(
+            {"personalization": {"protected_paths": "legacy"}}
+        )
+        assert data.protected_paths == []
+
+    def test_list_protected_paths_parsed(self) -> None:
+        data = load_personalization_from_config(
+            {"personalization": {"protected_paths": ["legacy/**", "vendor/**"]}}
+        )
+        assert data.protected_paths == ["legacy/**", "vendor/**"]
+
+
+class TestCoerceLineNumber:
+    def test_float_fractional_falls_back_to_zero(self) -> None:
+        from iterate_cli.personalize import _coerce_line_number
+
+        assert _coerce_line_number(1.5) == 0
+
+    def test_float_integral_kept(self) -> None:
+        from iterate_cli.personalize import _coerce_line_number
+
+        assert _coerce_line_number(3.0) == 3
+
+    def test_string_and_negative_clamped(self) -> None:
+        from iterate_cli.personalize import _coerce_line_number
+
+        assert _coerce_line_number("12") == 12
+        assert _coerce_line_number(-4) == 0
+        assert _coerce_line_number("not-a-number") == 0
+        assert _coerce_line_number(True) == 0
+
+
+class TestOnboardRefusesWithoutUserMarkers:
+    def test_onboard_refuses_and_keeps_file(self, fake_project: Path, monkeypatch) -> None:
+        """onboard must refuse to overwrite an ITERATE.md without USER markers."""
+        # Existing ITERATE.md without the USER-OWNED markers (hand-edited).
+        (fake_project / "ITERATE.md").write_text("# Hand edited project\n", encoding="utf-8")
+        data = _build_onboarding_data(fake_project)
+        monkeypatch.setattr("iterate_cli.cli.run_wizard", lambda project_root: data)
+
+        ret = cli_main(["onboard", "-p", str(fake_project)])
+        assert ret == 1
+        # File untouched (manual content survives).
+        assert (fake_project / "ITERATE.md").read_text(encoding="utf-8") == "# Hand edited project\n"
+
+    def test_onboard_refuses_on_unreadable_md(self, fake_project: Path, monkeypatch) -> None:
+        (fake_project / "ITERATE.md").write_bytes(b"\xff\xfe\x00 broken utf8")
+        data = _build_onboarding_data(fake_project)
+        monkeypatch.setattr("iterate_cli.cli.run_wizard", lambda project_root: data)
+
+        ret = cli_main(["onboard", "-p", str(fake_project)])
+        assert ret == 1
+
+
+class TestCorruptConfigPersonalizeCleanError:
+    def test_personalize_save_returns_one_without_traceback(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        """A corrupt config must surface a clean error, not a bare traceback."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        # Corrupt the config.
+        (fake_project / "iterate.config.yaml").write_text("[[[broken", encoding="utf-8")
+        monkeypatch.setattr(
+            "iterate_cli.personalize.run_personalize_wizard",
+            lambda *a, **k: PersonalizationData(),
+        )
+        ret = cli_main(["personalize", "-p", str(fake_project)])
+        assert ret == 1
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+
+    def test_personalize_clear_returns_one_without_traceback(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        (fake_project / "iterate.config.yaml").write_text("[[[broken", encoding="utf-8")
+        ret = cli_main(["personalize", "-p", str(fake_project), "--clear", "--yes"])
+        assert ret == 1
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+
+
+class TestReonboardRefusesUnreadableMd:
+    def test_read_failure_aborts_with_failed_status(
+        self, fake_project: Path, monkeypatch, capsys
+    ) -> None:
+        """full_reonboard must refuse (not degrade) when ITERATE.md is unreadable."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        (fake_project / "ITERATE.md").write_bytes(b"\xff\xfe\x00 not utf8")
+
+        monkeypatch.setattr("iterate_cli.refresh.run_wizard", lambda *a, **k: data)
+        status = full_reonboard(fake_project)
+        assert status == REONBOARD_FAILED
+
+
+class TestDriftSummaryHelpers:
+    def test_none_unknown_and_summary(self) -> None:
+        from iterate_cli.fingerprint import (
+            DriftResult,
+            drift_advice,
+            drift_summary,
+        )
+
+        assert drift_summary(None) == "unknown"
+        assert drift_summary(DriftResult()) == "none"
+        drifting = DriftResult(changed=["package.json"])
+        assert drift_summary(drifting) == "changed: package.json"
+        assert drift_advice(drifting) is not None
+        assert drift_advice(None) is None
+        assert drift_advice(DriftResult()) is None
+
+
+class TestCompareFingerprintsMalformed:
+    def test_malformed_entries_do_not_crash(self) -> None:
+        """Entries missing keys are skipped instead of raising KeyError."""
+        stored = [{"path": "a.json", "sha256": "x"}, {"sha256": "no-path"}]
+        current = [{"path": "a.json", "sha256": "y"}, "junk"]
+        result = compare_fingerprints(stored, current)  # type: ignore[list-item]
+        assert result.changed == ["a.json"]
+        assert result.removed == []

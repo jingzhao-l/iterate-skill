@@ -203,26 +203,28 @@ def fingerprints_to_dict(entries: list[FingerprintEntry]) -> list[dict[str, str]
 def fingerprints_from_dict(data: list[dict[str, Any]]) -> list[FingerprintEntry]:
     """Reconstruct FingerprintEntry list from loaded YAML/JSON data.
 
+    Tolerant by design (matching the harness implementation): malformed
+    entries (non-dicts, missing/empty ``path`` or ``sha256``) are skipped
+    rather than raising, so a hand-edited config can never crash drift
+    detection. Production callers (``refresh.get_stored_fingerprints``)
+    rely on this filter.
+
     Args:
         data: List of dicts with ``path`` and ``sha256`` keys.
 
     Returns:
-        List of FingerprintEntry objects.
-
-    Raises:
-        ValueError: If any entry is missing required keys.
-        TypeError: If any entry is not a dict.
+        List of valid FingerprintEntry objects (malformed entries skipped).
     """
     entries: list[FingerprintEntry] = []
-    for i, item in enumerate(data):
+    for item in data:
         if not isinstance(item, dict):
-            raise TypeError(f"Fingerprint entry {i} is not a dict")
+            continue
         path = item.get("path")
         sha = item.get("sha256")
         if not isinstance(path, str) or not path:
-            raise ValueError(f"Fingerprint entry {i} missing 'path'")
+            continue
         if not isinstance(sha, str) or not sha:
-            raise ValueError(f"Fingerprint entry {i} missing 'sha256'")
+            continue
         entries.append(FingerprintEntry(path=path, sha256=sha))
     return entries
 
@@ -233,6 +235,10 @@ def compare_fingerprints(
 ) -> DriftResult:
     """Compare stored fingerprints against the current state.
 
+    Malformed entries (missing ``path``/``sha256`` keys) are skipped on both
+    sides so a hand-edited config degrades to "no drift" instead of crashing
+    with a ``KeyError``.
+
     Args:
         stored: Fingerprints loaded from ``iterate.config.yaml``.
         current: Fingerprints freshly captured from the project root.
@@ -240,8 +246,16 @@ def compare_fingerprints(
     Returns:
         DriftResult describing what changed.
     """
-    stored_map = {e["path"]: e["sha256"] for e in stored}
-    current_map = {e["path"]: e["sha256"] for e in current}
+    stored_map = {
+        e["path"]: e["sha256"]
+        for e in stored
+        if isinstance(e, dict) and isinstance(e.get("path"), str) and isinstance(e.get("sha256"), str)
+    }
+    current_map = {
+        e["path"]: e["sha256"]
+        for e in current
+        if isinstance(e, dict) and isinstance(e.get("path"), str) and isinstance(e.get("sha256"), str)
+    }
 
     result = DriftResult()
     for path, sha in current_map.items():
@@ -255,6 +269,42 @@ def compare_fingerprints(
         if path not in current_map:
             result.removed.append(path)
     return result
+
+
+def drift_summary(drift: DriftResult | None) -> str:
+    """Return a human/JSON-safe drift description shared by status/show.
+
+    ``check_onboarding_drift`` already honours the ``drift_check`` switch
+    internally, so the caller only needs to invoke it once and pass the result.
+
+    Args:
+        drift: The DriftResult from check_onboarding_drift (may be None).
+
+    Returns:
+        "none" / "unknown" / the drift summary string.
+    """
+    if drift is None:
+        return "unknown"
+    if drift.has_drift:
+        return drift.summary()
+    return "none"
+
+
+def drift_advice(drift: DriftResult | None) -> str | None:
+    """Return actionable drift advice, or None when there is none to give.
+
+    Only meaningful when drift is actually detected (parity with
+    ``DriftResult.advice()`` usage in ``iterate status``).
+
+    Args:
+        drift: The DriftResult from check_onboarding_drift (may be None).
+
+    Returns:
+        Advice string when drift is detected, otherwise None.
+    """
+    if drift is None or not drift.has_drift:
+        return None
+    return drift.advice()
 
 
 def check_drift(

@@ -36,7 +36,6 @@
 - **downloads badge 响应限流**：`update_downloads_badge.py` 对上游响应体施加 5 MiB 截断读保护，避免无界内存占用。
 - **平台 SKILL 文档对齐**：claude / cursor 变体补齐 review-only (dry-run) 只读审查模式说明，与根 `SKILL.md` 及 trae 变体一致。
 - **测试覆盖补齐**：scan / fingerprint / refresh 的异常分支与边界场景新增用例。
->>>>>>> origin/main
 
 ---
 

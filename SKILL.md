@@ -11,7 +11,7 @@ permissions:
   git: true
   network: "github.com only (release tarball + checksum verification)"
   sensitive_files:
-    skip: [".env", ".env.*", "*.key", "*.pem", "*.p12", "*.crt", "*.cer", "credentials.json", ".aws/", ".ssh/"]
+    skip: [".env", ".env.*", "*.key", "secrets/", "*.pem", "*.p12", "*.crt", "*.cer", "credentials.json", ".aws/", ".ssh/"]
 ---
 
 # /iterate `<goal>` `[rounds]` `[no-limit]`
@@ -922,11 +922,13 @@ iterate/
 │   ├── refresh.py                    # 增量刷新与完整重 onboarding
 │   ├── doctor.py                     # 项目健康诊断（doctor 子命令）
 │   ├── personalize.py                # 个性化约束管理（personalize 子命令）
+│   ├── show.py                       # 只读展示生效配置与个性化状态（show 子命令）
 │   └── data/
 │       ├── ITERATE.template.md       # 模板副本（随包分发）
 │       └── config.schema.json        # schema 副本（随包分发，与 config/ 保持同步）
 ├── scripts/
 │   ├── install.py                    # CLI：安装、卸载、配置、校验
+│   ├── update_downloads_badge.py     # 拉取三平台下载量并写 badges/downloads.json
 │   ├── validate.py                   # 配置、决策日志、维度校验脚本
 │   └── requirements.txt              # 校验脚本依赖
 ├── templates/
@@ -938,8 +940,15 @@ iterate/
 │   ├── SKILL.claude.md               # Claude Code 专属 workflow 示例
 │   └── SKILL.cursor.md               # Cursor 专属 prompt 示例
 ├── tests/
-│   ├── test_validate.py              # 校验脚本测试
-│   └── test_onboarding.py            # onboarding 模块测试
+│   ├── test_dimension_lock.py        # 六源维度系统一致性锁定（skill ↔ harness）
+│   ├── test_doctor.py                # doctor 项目健康诊断测试
+│   ├── test_drift_ignore.py          # 漂移忽略与 status 漂移建议测试
+│   ├── test_install_script.py        # install.py 安装脚本测试
+│   ├── test_onboarding.py            # onboarding 模块测试
+│   ├── test_refresh_reconcile.py     # refresh 对账测试
+│   ├── test_tui.py                   # TUI 渲染器接口契约测试
+│   ├── test_update_downloads_badge.py# update_downloads_badge.py 测试
+│   └── test_validate.py              # 校验脚本测试
 └── README.md / CONTRIBUTING.md       # 用户与贡献者文档
 ```
 
@@ -953,7 +962,7 @@ iterate/
 
 | 配置项 / Key | 类型 / Type | 默认值 / Default | 说明 / Description |
 |--------------|-------------|------------------|--------------------|
-| `goal` | string | `"Improve code quality"` | 迭代目标 |
+| `goal` | string | `"Improve code quality and maintainability"` | 迭代目标 |
 | `max_rounds` | int | `7` | 最大轮数 |
 | `language` | string | `"en"` | 输出语言 `zh` / `en` |
 | `dimensions` | list | 全部 9 维度 | 启用的审查维度 |

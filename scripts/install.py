@@ -247,6 +247,18 @@ GITHUB_TOKEN_PREFIXES: tuple[str, ...] = (
     "github_pat_",
 )
 
+# Timeouts (seconds) used across network/subprocess calls, kept as named
+# constants so the magic values are not scattered through the code.
+GITHUB_API_TIMEOUT_SECONDS = 15
+DOWNLOAD_TIMEOUT_SECONDS = 30
+VALIDATE_SUBPROCESS_TIMEOUT_SECONDS = 30
+
+# Upper bound for a single downloaded payload (release tarball / checksum).
+# Streams are read in chunks and truncated when the cap is exceeded, so a
+# misbehaving upstream can never exhaust memory.
+MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB
+_DOWNLOAD_CHUNK_SIZE = 64 * 1024  # 64 KiB read chunks while streaming
+
 
 def _validate_github_token(token: str | None) -> str | None:
     """Return an error message when ``token`` is malformed, else None.
@@ -695,12 +707,9 @@ def _arrow_select_lines(state: _ArrowSelectState, title: str) -> list[str]:
     return lines
 
 
-def _render_arrow_select(state: _ArrowSelectState, title: str) -> str:
-    """Render the arrow-select menu as an ANSI string."""
-    return "\n".join(_arrow_select_lines(state, title))
-
-
-def _arrow_redraw_output(state: _ArrowSelectState, title: str, cols: int) -> str:
+def _arrow_redraw_output(
+    state: _ArrowSelectState, title: str, cols: int, prev_rows: int | None = None
+) -> str:
     """Build the full ANSI redraw sequence for the arrow-select menu.
 
     The sequence rewinds to the first row of the previously drawn frame,
@@ -710,12 +719,18 @@ def _arrow_redraw_output(state: _ArrowSelectState, title: str, cols: int) -> str
     newline translation — a bare ``\\n`` would only move down without
     returning to column 0, stacking each row diagonally ("staircase /
     spiral" redraw bug).
+
+    ``prev_rows`` must be the number of physical rows the *previous* frame
+    occupied (computed with the previous terminal width). Different options
+    can wrap to different row counts as the highlight moves, so rewinding by
+    the previous frame's height — not the new one's — prevents leftover rows
+    from a taller previous frame.
     """
     lines = _arrow_select_lines(state, title)
     rows = _physical_row_count(lines, cols)
     # Reclaim the previously drawn block: rewind to its first row, back to
     # column 0, then clear everything below the cursor.
-    move_up = rows - 1
+    move_up = (prev_rows if prev_rows is not None else rows) - 1
     out = ""
     if move_up > 0:
         out += f"\x1b[{move_up}A"
@@ -782,14 +797,21 @@ def _prompt_arrow_multi_select(
 
     state = _ArrowSelectState(options, default_all, preselected)
 
-    cols = _terminal_columns()
     # Hide the block cursor so redraws do not flicker it across the menu.
     _sys.stdout.write("\x1b[?25l")
     _sys.stdout.flush()
 
+    prev_rows = 0
+
     def redraw() -> None:
-        _sys.stdout.write(_arrow_redraw_output(state, title, cols))
+        nonlocal prev_rows
+        # Re-query the terminal width on every redraw: the window may have
+        # been resized since the menu opened, and the previous frame's height
+        # (used to rewind) must be computed with the width it was drawn at.
+        cols = _terminal_columns()
+        _sys.stdout.write(_arrow_redraw_output(state, title, cols, prev_rows))
         _sys.stdout.flush()
+        prev_rows = _physical_row_count(_arrow_select_lines(state, title), cols)
 
     redraw()
 
@@ -868,6 +890,55 @@ def interactive_select_assistants(
     return _prompt_multi_select(options, input_func, title, preselected=preselected)
 
 
+def _effective_target_and_mode_label(target: Path, global_install: bool) -> tuple[Path, str]:
+    """Resolve the effective install root and a human-readable mode label.
+
+    A global install targets the user's home directory; a project install
+    targets ``target``. The label (" (global)" / "") is used in messages and
+    summary boxes. Shared by install / uninstall / update so the three
+    commands stay consistent about what "global" means.
+    """
+    effective_target = Path.home() if global_install else target
+    mode_label = " (global)" if global_install else ""
+    return effective_target, mode_label
+
+
+def _ask_upgrade_confirmation(
+    assistant: str, destination: Path, display_name: str, input_func: InputFunc
+) -> bool:
+    """Ask whether to overwrite an existing installation (interactive TTY).
+
+    Returns True when the user confirmed the upgrade, False when they declined
+    (the assistant is then skipped). Callers must guard this on
+    ``sys.stdin.isatty()`` before calling.
+    """
+    _warning(f"{display_name} 已存在 iterate-skill 安装（可能为旧版本）：{destination}")
+    answer = input_func("  是否覆盖升级到最新版？[Y/n]: ").strip().lower()
+    if answer in ("n", "no"):
+        _hint(f"Skipped {display_name}：保留现有安装。")
+        return False
+    return True
+
+
+def _print_install_summary(
+    installed: list[tuple[str, str, Path]], mode_label: str
+) -> None:
+    """Print the framed installation summary box."""
+    summary_lines: list[str] = [
+        f"[iterate.success]✓[/] Installed to {len(installed)} assistant(s){mode_label}",
+        "",
+    ]
+    for _assistant, display_name, destination in installed:
+        summary_lines.append(
+            f"  [iterate.label]{display_name}:[/] {destination}"
+        )
+    summary_lines.append("")
+    summary_lines.append(
+        "[iterate.hint]Run `iterate onboard` in your project to initialize.[/]"
+    )
+    _frame_box("Installation Summary", summary_lines)
+
+
 def install_command(
     ai: str | None,
     target: Path,
@@ -891,8 +962,7 @@ def install_command(
     Returns:
         Exit code: 0 for success, 1 for error/cancel.
     """
-    effective_target = Path.home() if global_install else target
-    mode_label = " (global)" if global_install else ""
+    effective_target, mode_label = _effective_target_and_mode_label(target, global_install)
 
     if ai is None:
         selected = interactive_select_assistants(effective_target, input_func)
@@ -929,10 +999,7 @@ def install_command(
             # interactive terminal, ask whether to upgrade; otherwise (CI/pipe)
             # keep the existing copy and warn, rather than silently skipping.
             if sys.stdin.isatty():
-                _warning(f"{display_name} 已存在 iterate-skill 安装（可能为旧版本）：{destination}")
-                answer = input_func("  是否覆盖升级到最新版？[Y/n]: ").strip().lower()
-                if answer in ("n", "no"):
-                    _hint(f"Skipped {display_name}：保留现有安装。")
+                if not _ask_upgrade_confirmation(assistant, destination, display_name, input_func):
                     continue
                 overwrite = True
             else:
@@ -955,19 +1022,7 @@ def install_command(
 
     _success("Installation complete.")
     if installed:
-        summary_lines: list[str] = [
-            f"[iterate.success]✓[/] Installed to {len(installed)} assistant(s){mode_label}",
-            "",
-        ]
-        for _assistant, display_name, destination in installed:
-            summary_lines.append(
-                f"  [iterate.label]{display_name}:[/] {destination}"
-            )
-        summary_lines.append("")
-        summary_lines.append(
-            "[iterate.hint]Run `iterate onboard` in your project to initialize.[/]"
-        )
-        _frame_box("Installation Summary", summary_lines)
+        _print_install_summary(installed, mode_label)
     return 0
 
 
@@ -1006,8 +1061,7 @@ def uninstall_command(
     Returns:
         Exit code: 0 for success, 1 for error/cancel.
     """
-    effective_target = Path.home() if global_install else target
-    mode_label = " (global)" if global_install else ""
+    effective_target, mode_label = _effective_target_and_mode_label(target, global_install)
 
     if ai is None:
         # Auto-detect existing iterate-skill installations.
@@ -1018,7 +1072,9 @@ def uninstall_command(
         ]
         if not existing_keys:
             _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
-            return 0
+            # "Nothing to uninstall" is a failure for the caller (e.g. the npx
+            # wrapper), which must not report success for a no-op.
+            return 1
         targets = existing_keys
     else:
         targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
@@ -1030,7 +1086,7 @@ def uninstall_command(
     ]
     if not existing:
         _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
-        return 0
+        return 1
 
     if not yes:
         _tui_print("The following installations will be removed:", style="iterate.primary")
@@ -1039,7 +1095,9 @@ def uninstall_command(
         answer = input_func("  \u2514 Proceed? [y/N]: ").strip().lower()
         if answer not in ("y", "yes"):
             _hint("Uninstall cancelled.")
-            return 0
+            # User declined the confirmation: report non-zero so callers do not
+            # mistake the cancellation for a completed uninstall.
+            return 1
 
     skipped: list[tuple[str, Path]] = []
     for assistant, destination in existing:
@@ -1059,8 +1117,16 @@ def uninstall_command(
     return 0
 
 
-def _fetch_latest_release_info(token: str | None) -> dict[str, str] | None:
-    """Query GitHub API for the latest release tag, tarball URL and checksum asset URL."""
+def _fetch_latest_release_info(
+    token: str | None,
+) -> tuple[dict[str, str] | None, str | None]:
+    """Query GitHub API for the latest release tag, tarball URL and checksum asset URL.
+
+    Returns ``(info, error_reason)`` — on success ``error_reason`` is None; on
+    failure ``info`` is None and ``error_reason`` carries the concrete cause
+    (HTTP status such as 401 for an invalid token, timeout, DNS failure, ...)
+    so the caller can surface it instead of a generic "could not reach GitHub".
+    """
     request = urllib.request.Request(RELEASE_API_URL, method="GET")
     request.add_header("Accept", "application/vnd.github+json")
     request.add_header("X-GitHub-Api-Version", "2022-11-28")
@@ -1068,16 +1134,30 @@ def _fetch_latest_release_info(token: str | None) -> dict[str, str] | None:
         request.add_header("Authorization", f"Bearer {token}")
 
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(request, timeout=GITHUB_API_TIMEOUT_SECONDS) as response:
             data = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
-        return None
+    except urllib.error.HTTPError as exc:
+        reason = f"GitHub API returned HTTP {exc.code}"
+        if exc.code == 401:
+            reason += " (token may be invalid or expired)"
+        elif exc.code == 403:
+            reason += " (rate limit exceeded; retry with --token)"
+        return None, reason
+    except urllib.error.URLError as exc:
+        return None, f"GitHub API network error: {exc.reason}"
+    except TimeoutError:
+        return None, (
+            f"GitHub API request timed out after {GITHUB_API_TIMEOUT_SECONDS}s"
+        )
+    except json.JSONDecodeError as exc:
+        return None, f"GitHub API returned invalid JSON: {exc}"
 
     if not isinstance(data, dict):
-        return None
+        return None, "GitHub API returned an unexpected payload shape"
+
     tag = data.get("tag_name")
     if not isinstance(tag, str):
-        return None
+        return None, "GitHub API response is missing tag_name"
 
     tarball_url: str | None = None
     checksum_url: str | None = None
@@ -1096,12 +1176,12 @@ def _fetch_latest_release_info(token: str | None) -> dict[str, str] | None:
                 checksum_url = asset_url
 
     if not isinstance(tarball_url, str):
-        return None
+        return None, f"release has no {EXPECTED_TARBALL_FILENAME} asset"
 
     result: dict[str, str] = {"tag": tag, "tarball_url": tarball_url}
     if checksum_url:
         result["checksum_url"] = checksum_url
-    return result
+    return result, None
 
 
 def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
@@ -1128,16 +1208,35 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
                 raise tarfile.TarError(
                     f"Suspicious symlink target in member {member.name}: {member.linkname}"
                 )
+        # Hard links are equally dangerous: extracting a hard link whose
+        # linkname resolves outside the destination would create a hard link
+        # to an arbitrary file on disk. Apply the same containment check.
+        if member.islnk():
+            link_target = (path / member.name).parent / member.linkname
+            if not link_target.resolve().is_relative_to(base):
+                raise tarfile.TarError(
+                    f"Suspicious hard link target in member {member.name}: {member.linkname}"
+                )
     tar.extractall(path=path)
 
 
-def _download_bytes(url: str, token: str | None, timeout: int = 30) -> bytes | None:
+def _download_bytes(
+    url: str, token: str | None, timeout: int = DOWNLOAD_TIMEOUT_SECONDS
+) -> tuple[bytes | None, str | None]:
     """Download raw bytes from a URL, optionally using a GitHub token.
 
     The token is only attached when the URL targets the GitHub API host
     (``api.github.com``). Release-asset URLs (``release-assets.githubusercontent.com``)
     are public and must not receive the caller's PAT, keeping credential surface
     minimal.
+
+    The response is streamed in bounded chunks: when the total exceeds
+    ``MAX_DOWNLOAD_BYTES`` the download is aborted and an error reason is
+    returned, so a misbehaving upstream cannot exhaust memory.
+
+    Returns ``(data, error_reason)`` — on success ``error_reason`` is None; on
+    failure ``data`` is None and ``error_reason`` carries the concrete cause
+    (HTTP status such as 401 for an invalid token, timeout, DNS failure, ...).
     """
     request = urllib.request.Request(url, method="GET")
     request.add_header("Accept", "application/vnd.github+json")
@@ -1146,9 +1245,33 @@ def _download_bytes(url: str, token: str | None, timeout: int = 30) -> bytes | N
 
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
-    except (urllib.error.URLError, TimeoutError, ValueError):
-        return None
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(_DOWNLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    return None, (
+                        f"response body exceeds {MAX_DOWNLOAD_BYTES} byte safety cap "
+                        f"(downloaded {total} bytes)"
+                    )
+                chunks.append(chunk)
+            return b"".join(chunks), None
+    except urllib.error.HTTPError as exc:
+        reason = f"HTTP {exc.code}"
+        if exc.code == 401:
+            reason += " (token may be invalid or expired)"
+        elif exc.code == 403:
+            reason += " (rate limit exceeded or access forbidden)"
+        return None, f"download failed: {reason}"
+    except urllib.error.URLError as exc:
+        return None, f"network error: {exc.reason}"
+    except TimeoutError:
+        return None, f"request timed out after {timeout}s"
+    except ValueError as exc:
+        return None, f"invalid response: {exc}"
 
 
 def _is_github_api_url(url: str) -> bool:
@@ -1201,13 +1324,18 @@ def _download_release_source(
         _error("Refusing to download release: SHA256SUMS.txt URL is required for integrity verification.")
         return None
 
-    data = _download_bytes(tarball_url, token)
+    data, tarball_error = _download_bytes(tarball_url, token)
     if data is None:
+        if tarball_error:
+            _error(f"Could not download release tarball: {tarball_error}")
         return None
 
-    checksum_data = _download_bytes(checksum_url, token)
+    checksum_data, checksum_error = _download_bytes(checksum_url, token)
     if not checksum_data:
-        _error("Refusing to proceed: could not download checksum file.")
+        if checksum_error:
+            _error(f"Refusing to proceed: could not download checksum file: {checksum_error}")
+        else:
+            _error("Refusing to proceed: could not download checksum file.")
         return None
 
     expected_hash = _parse_checksum(checksum_data, EXPECTED_TARBALL_FILENAME)
@@ -1236,6 +1364,29 @@ def _download_release_source(
         return None
 
 
+def _update_one_assistant(
+    assistant: str,
+    target: Path,
+    update_source: Path,
+    global_install: bool,
+    input_func: InputFunc,
+) -> int:
+    """Refresh a single assistant's install; returns ``install_command``'s exit code.
+
+    ``update`` semantically means "refresh the installed copy to the latest
+    version", so it must overwrite existing files rather than skip them.
+    """
+    return install_command(
+        ai=assistant,
+        target=target,
+        dry_run=False,
+        source=update_source,
+        force=True,
+        global_install=global_install,
+        input_func=input_func,
+    )
+
+
 def update_command(
     ai: str | None,
     target: Path,
@@ -1259,8 +1410,7 @@ def update_command(
     Returns:
         Exit code: 0 for success, 1 for error/cancel.
     """
-    effective_target = Path.home() if global_install else target
-    mode_label = " (global)" if global_install else ""
+    effective_target, mode_label = _effective_target_and_mode_label(target, global_install)
 
     # Fail fast on a malformed --token: GitHub would otherwise reject the
     # request with a 401 and we would silently fall back to local source,
@@ -1270,7 +1420,7 @@ def update_command(
         _error(token_error)
         return 1
 
-    release_info = _fetch_latest_release_info(token)
+    release_info, release_error = _fetch_latest_release_info(token)
     release_source: Path | None = None
     if release_info:
         _tui_print(f"Latest GitHub release: {release_info['tag']}", style="iterate.primary")
@@ -1284,7 +1434,7 @@ def update_command(
                 answer = input_func("Continue? [y/N]: ").strip().lower()
                 if answer not in ("y", "yes"):
                     _hint("Update cancelled.")
-                    return 0
+                    return 1
             _hint("Downloading release source...")
             release_source = _download_release_source(
                 release_info["tarball_url"],
@@ -1297,6 +1447,8 @@ def update_command(
                 _warning("Could not download release source; falling back to local source...")
     else:
         _warning("Could not reach GitHub releases; refreshing from local source...")
+        if release_error:
+            _hint(f"Reason: {release_error}")
 
     update_source = release_source if release_source else source
 
@@ -1305,8 +1457,6 @@ def update_command(
         if not assistants:
             _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
             _hint("Run 'install --ai <assistant>' first, or use 'update --ai <assistant>'.")
-            if release_source:
-                shutil.rmtree(release_source.parent, ignore_errors=True)
             return 1
         _tui_print(f"Updating detected installations: {', '.join(assistants)}", style="iterate.primary")
     elif ai == "all":
@@ -1314,25 +1464,41 @@ def update_command(
     else:
         assistants = [ai]
 
+    # Update every target assistant, tracking which succeeded and which failed
+    # so a mid-run failure is reported explicitly instead of silently leaving a
+    # partially-updated state behind (and never printing a false "complete").
+    updated: list[str] = []
+    failed: list[tuple[str, str]] = []
     try:
         for assistant in assistants:
-            install_command(
-                ai=assistant,
-                target=target,
-                dry_run=False,
-                source=update_source,
-                # `update` semantically means "refresh the installed copy to the
-                # latest version", so it must overwrite existing files rather than
-                # skip them (skipping would download/verify a release and then
-                # report success while changing nothing without --force).
-                force=True,
-                global_install=global_install,
-            )
+            try:
+                code = _update_one_assistant(
+                    assistant, target, update_source, global_install, input_func
+                )
+            except (FileNotFoundError, OSError) as exc:
+                failed.append((assistant, str(exc)))
+                continue
+            if code != 0:
+                failed.append((assistant, f"installer exited with code {code}"))
+            else:
+                updated.append(assistant)
     finally:
         if release_source:
             # release_source is always a subdir of a mkdtemp parent; remove the
             # whole temp dir (subdir + parent) so no empty mkdtemp dir leaks.
             shutil.rmtree(release_source.parent, ignore_errors=True)
+
+    if failed:
+        if updated:
+            _error(
+                f"Update incomplete: updated {len(updated)} assistant(s) "
+                f"({', '.join(updated)}), failed {len(failed)} ({', '.join(name for name, _ in failed)})."
+            )
+        else:
+            _error(f"Update failed for: {', '.join(name for name, _ in failed)}")
+        for name, reason in failed:
+            _hint(f"  - {name}: {reason}")
+        return 1
 
     _success("Update complete.")
     return 0
@@ -1363,7 +1529,7 @@ def _run_validate_subprocess(
     ]
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, check=False
+            cmd, capture_output=True, text=True, timeout=VALIDATE_SUBPROCESS_TIMEOUT_SECONDS, check=False
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return [f"Failed to run validate.py: {exc}"]
@@ -1480,12 +1646,25 @@ def load_config(path: Path) -> dict[str, object]:
 
 
 def save_config(path: Path, config: dict[str, object]) -> None:
-    """Save a config mapping to a YAML file with helpful comments."""
+    """Save a config mapping to a YAML file with helpful comments.
+
+    The write is atomic: the content is dumped to a temp file in the same
+    directory and then ``os.replace``d over the target, so a crash or error
+    mid-write can never leave a truncated config behind.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
+        os.replace(tmp_name, path)
+    except BaseException:
+        # Never leave a partial temp file behind on failure.
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def init_config(target: Path, source: Path) -> int:
@@ -1778,11 +1957,20 @@ def prompt_dimensions(current: object, input_func: InputFunc = input) -> list[st
             idx = int(part) - 1
             if 0 <= idx < len(DIMENSION_CHOICES):
                 selected.append(DIMENSION_CHOICES[idx])
+            else:
+                _warning(f"Invalid dimension number: '{part}' (ignored)")
         elif part in DIMENSION_CHOICES:
             selected.append(part)
+        else:
+            _warning(f"Invalid dimension name: '{part}' (ignored)")
 
     unique_selected = list(dict.fromkeys(selected))
-    return _ensure_non_empty_dimensions(unique_selected)
+    if not unique_selected:
+        # Never silently fall back to all dimensions: tell the user their input
+        # was rejected and that every dimension has been enabled instead.
+        _warning("输入无效，已启用全部维度 / Invalid input; enabling all dimensions.")
+        return list(DIMENSION_CHOICES)
+    return unique_selected
 
 
 def _ensure_non_empty_dimensions(dimensions: list[str]) -> list[str]:
@@ -2051,6 +2239,9 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
         )
 
     if args.command == "config":
+        if not args.target.exists():
+            _error(f"Error: target directory does not exist: {args.target}")
+            return 1
         return config_command(
             args.target.resolve(),
             source,

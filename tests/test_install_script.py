@@ -15,11 +15,13 @@ on failed validation) are verified deterministically.
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -293,7 +295,7 @@ class TestArrowSelectState:
         # preventing the "staircase / spiral" on terminals shorter than the list.
         opts = [f"o{i}" for i in range(30)]
         st = install._ArrowSelectState(opts, window_size=4)
-        rendered = install._render_arrow_select(st, "title")
+        rendered = "\n".join(install._arrow_select_lines(st, "title"))
         assert len(rendered.split("\n")) == 7  # title + hint + 4 options + Done
         assert "Done" in rendered
 
@@ -394,9 +396,7 @@ class TestPromptMultiSelect:
     def test_select_all_and_none(self):
         seq = _SeqInput(["a", "n", ""])
         result = install._prompt_multi_select(["trae", "cursor"], seq, preselected={"cursor"})
-        assert result == []
-        # Ensure 'a' then 'n' toggled all on then none.
-        assert result == []
+        assert result == []  # 'a' then 'n' toggled all on then none.
 
     def test_out_of_range_does_not_crash(self):
         seq = _SeqInput(["999", ""])
@@ -427,6 +427,149 @@ class TestParseChecksum:
 
     def test_missing_filename(self):
         assert install._parse_checksum(b"abc  other.txt\n", "iterate-skill.tar.gz") is None
+
+
+# --------------------------------------------------------------------------- #
+# _fetch_latest_release_info / _download_bytes (network error reporting)
+# --------------------------------------------------------------------------- #
+
+class _FakeResp:
+    """Context-manager response whose read(amt) mirrors urllib semantics.
+
+    Stateful: each read advances an internal cursor so repeated reads consume
+    the body and finally return b"" — exactly like a real urllib response.
+    """
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+        self._pos = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, amt: int = -1) -> bytes:
+        if amt is None or amt < 0:
+            amt = len(self._body) - self._pos
+        chunk = self._body[self._pos : self._pos + amt]
+        self._pos += len(chunk)
+        return chunk
+
+
+class TestFetchReleaseInfo:
+    def test_success_returns_info_and_no_error(self, monkeypatch):
+        payload = {
+            "tag_name": "v1.2.3",
+            "assets": [
+                {"name": "iterate-skill.tar.gz", "browser_download_url": "https://x/tar"},
+                {"name": "SHA256SUMS.txt", "browser_download_url": "https://x/sha"},
+            ],
+        }
+        resp = _FakeResp(json.dumps(payload).encode("utf-8"))
+
+        def fake_urlopen(request, timeout=None):
+            return resp
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        info, error = install._fetch_latest_release_info(None)
+        assert error is None
+        assert info is not None
+        assert info["tag"] == "v1.2.3"
+        assert info["checksum_url"] == "https://x/sha"
+
+    def test_http_401_reports_token_error(self, monkeypatch):
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", None, None)
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        info, error = install._fetch_latest_release_info("ghp_badtoken")
+        assert info is None
+        assert error and "401" in error and "token" in error
+
+    def test_http_403_reports_rate_limit(self, monkeypatch):
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        info, error = install._fetch_latest_release_info(None)
+        assert info is None
+        assert error and "403" in error
+
+    def test_dns_failure_reports_reason(self, monkeypatch):
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.URLError("Name or service not known")
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        info, error = install._fetch_latest_release_info(None)
+        assert info is None
+        assert error and "network error" in error
+
+    def test_timeout_reports_reason(self, monkeypatch):
+        def fake_urlopen(request, timeout=None):
+            raise TimeoutError()
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        info, error = install._fetch_latest_release_info(None)
+        assert info is None
+        assert error and "timed out" in error
+
+    def test_missing_tarball_asset_reports_reason(self, monkeypatch):
+        payload = {"tag_name": "v1", "assets": [{"name": "other.tar.gz", "browser_download_url": "x"}]}
+        resp = _FakeResp(json.dumps(payload).encode("utf-8"))
+
+        def fake_urlopen(request, timeout=None):
+            return resp
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        info, error = install._fetch_latest_release_info(None)
+        assert info is None
+        assert error and "iterate-skill.tar.gz" in error
+
+
+class TestDownloadBytes:
+    def test_streams_and_returns_full_body(self, monkeypatch):
+        body = b"data" * 1000
+        resp = _FakeResp(body)
+
+        def fake_urlopen(request, timeout=None):
+            return resp
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        data, error = install._download_bytes("https://example.com/x", None)
+        assert error is None
+        assert data == body
+
+    def test_over_cap_returns_error(self, monkeypatch):
+        """A response larger than MAX_DOWNLOAD_BYTES must be truncated with an error."""
+        resp = _FakeResp(b"x" * (install.MAX_DOWNLOAD_BYTES + 1))
+
+        def fake_urlopen(request, timeout=None):
+            return resp
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        data, error = install._download_bytes("https://example.com/x", None)
+        assert data is None
+        assert error and "safety cap" in error
+
+    def test_http_401_reports_reason(self, monkeypatch):
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", None, None)
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        data, error = install._download_bytes("https://api.github.com/x", "ghp_bad")
+        assert data is None
+        assert error and "401" in error and "token" in error
+
+    def test_timeout_reports_reason(self, monkeypatch):
+        def fake_urlopen(request, timeout=None):
+            raise TimeoutError()
+
+        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        data, error = install._download_bytes("https://example.com/x", None, timeout=5)
+        assert data is None
+        assert error and "timed out" in error
 
 
 # --------------------------------------------------------------------------- #
@@ -493,6 +636,20 @@ class TestLoadSaveConfig:
         path.write_text("- a\n- b\n", encoding="utf-8")
         with pytest.raises(TypeError):
             install.load_config(path)
+
+    def test_save_config_atomic_on_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """A failing write must leave the original file intact and no temp litter."""
+        path = tmp_path / "c.yaml"
+        path.write_text("old", encoding="utf-8")
+
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(install.yaml, "safe_dump", boom)
+        with pytest.raises(OSError):
+            install.save_config(path, {"goal": "x"})
+        assert path.read_text(encoding="utf-8") == "old"
+        assert list(tmp_path.glob(".c.yaml.*.tmp")) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -571,6 +728,20 @@ class TestConfigCommandDispatch:
         assert install.config_command(target, source, True, False, False) == 0
         assert (target / "iterate.config.yaml").exists()
 
+    def test_config_missing_target_fails_cleanly(self, tmp_path: Path):
+        """config --init / --set on a non-existent target must error cleanly.
+
+        Regression: --init used to raise a traceback (write into a missing
+        dir) and --set used to silently create the directory. Both must now
+        return a clear error without creating anything.
+        """
+        from install import main as install_main
+
+        missing = tmp_path / "nope"
+        assert install_main(["config", "--init", "--target", str(missing)], source=tmp_path) == 1
+        assert install_main(["config", "--set", "goal=x", "--target", str(missing)], source=tmp_path) == 1
+        assert not missing.exists()
+
 
 # --------------------------------------------------------------------------- #
 # _safe_extractall (path traversal protection)
@@ -593,6 +764,19 @@ class TestSafeExtractall:
             info.type = tarfile.SYMTYPE
             info.linkname = linkname
             tar.addfile(info)
+        return str(tar_path)
+
+    def _build_hardlink_tar(self, tmp_path: Path, linkname: str) -> str:
+        """A tarball with a regular file plus a hard link pointing at it."""
+        tar_path = tmp_path / "hardlink.tar"
+        with tarfile.open(tar_path, "w") as tar:
+            target = tarfile.TarInfo("target.txt")
+            target.size = 1
+            tar.addfile(target, io.BytesIO(b"a"))
+            link = tarfile.TarInfo("evil-hl")
+            link.type = tarfile.LNKTYPE
+            link.linkname = linkname
+            tar.addfile(link)
         return str(tar_path)
 
     def test_extracts_safe_members(self, tmp_path: Path):
@@ -632,6 +816,30 @@ class TestSafeExtractall:
         with tarfile.open(tar_path) as tar:
             install._safe_extractall(tar, dest)
         assert (dest / "evil-link").is_symlink()
+
+    def test_rejects_hardlink_escaping_dest(self, tmp_path: Path):
+        """A hard link whose linkname climbs out of the destination is refused,
+        mirroring the symlink containment check."""
+        tar_path = self._build_hardlink_tar(tmp_path, "../../outside")
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+
+    def test_rejects_absolute_hardlink_target(self, tmp_path: Path):
+        tar_path = self._build_hardlink_tar(tmp_path, "/etc/passwd")
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+
+    def test_allows_hardlink_inside_dest(self, tmp_path: Path):
+        tar_path = self._build_hardlink_tar(tmp_path, "target.txt")
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+        assert (dest / "evil-hl").exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -716,14 +924,14 @@ class TestUninstallCommand:
         target.mkdir()
         install.install_command("trae", target, dry_run=False, source=source, force=False, global_install=False)
         seq = _SeqInput(["n"])
-        assert install.uninstall_command("trae", target, global_install=False, yes=False, input_func=seq) == 0
+        assert install.uninstall_command("trae", target, global_install=False, yes=False, input_func=seq) == 1
         assert (target / ".trae" / "skills" / "iterate").exists()
 
     def test_none_installed_warns(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         _make_fake_source(tmp_path, monkeypatch)
         target = tmp_path / "proj"
         target.mkdir()
-        assert install.uninstall_command("trae", target, global_install=False, yes=True) == 0
+        assert install.uninstall_command("trae", target, global_install=False, yes=True) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -735,7 +943,7 @@ class TestUpdateCommand:
         source = _make_fake_source(tmp_path, monkeypatch)
         target = tmp_path / "proj"
         target.mkdir()
-        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: None)
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (None, "mock network error"))
         assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
 
@@ -743,7 +951,7 @@ class TestUpdateCommand:
         source = _make_fake_source(tmp_path, monkeypatch)
         target = tmp_path / "proj"
         target.mkdir()
-        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: {"tag": "v1", "tarball_url": "http://x/tar"})
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: ({"tag": "v1", "tarball_url": "http://x/tar"}, None))
         # without 'checksum_url', update must refuse download and fall back to local.
         assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
@@ -753,10 +961,10 @@ class TestUpdateCommand:
         target = tmp_path / "proj"
         target.mkdir()
         info = {"tag": "v1", "tarball_url": "http://x/tar", "checksum_url": "http://x/sha"}
-        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: info)
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (info, None))
         # Confirmation prompt is served through the injected input_func (fix 10).
         seq = _SeqInput(["n"])
-        assert install.update_command("trae", target, source, None, global_install=False, yes=False, input_func=seq) == 0
+        assert install.update_command("trae", target, source, None, global_install=False, yes=False, input_func=seq) == 1
         assert not (target / ".trae").exists()
 
     def test_downloads_when_release_available(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -776,7 +984,7 @@ class TestUpdateCommand:
             # A real release carries all REQUIRED_FILES; complete the source so
             # the subsequent copy in update_command does not raise.
             _seed_real_validation_source(release_path)
-            monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: {"tag": "v1", "tarball_url": "x", "checksum_url": "y"})
+            monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: ({"tag": "v1", "tarball_url": "x", "checksum_url": "y"}, None))
             monkeypatch.setattr(install, "_download_release_source", lambda a, b, c: release_path)
             assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
             installed = target / ".trae" / "skills" / "iterate" / "SKILL.md"
@@ -795,7 +1003,7 @@ class TestUpdateCommand:
         source = _make_fake_source(tmp_path, monkeypatch)
         target = tmp_path / "proj"
         target.mkdir()
-        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: None)
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (None, "mock network error"))
         monkeypatch.setattr(install, "detect_installed_assistants", lambda t: [])
         assert install.update_command(None, target, source, None, global_install=False, yes=True) == 1
 
@@ -808,6 +1016,7 @@ class TestUpdateCommand:
 
         def _noop_fetch(token):
             called["fetch"] = True
+            return None, None
 
         monkeypatch.setattr(install, "_fetch_latest_release_info", _noop_fetch)
         assert install.update_command("trae", target, source, "not-a-token", global_install=False, yes=True) == 1
@@ -818,9 +1027,46 @@ class TestUpdateCommand:
         source = _make_fake_source(tmp_path, monkeypatch)
         target = tmp_path / "proj"
         target.mkdir()
-        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: None)
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (None, "mock network error"))
         assert install.update_command("trae", target, source, "   ", global_install=False, yes=True) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
+
+    def test_update_reports_partial_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+        """A mid-run assistant failure must be reported, not silently swallowed.
+
+        The update must return non-zero, name which assistants updated and
+        which failed, and must not print a false "Update complete."
+        """
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (None, "mock network error"))
+        calls = {"n": 0}
+
+        def _flaky_install(ai=None, **kwargs):
+            calls["n"] += 1
+            # First assistant succeeds, every later one fails -> partial update.
+            return 0 if calls["n"] == 1 else 1
+
+        monkeypatch.setattr(install, "install_command", _flaky_install)
+        assert install.update_command("all", target, source, None, global_install=False, yes=True) == 1
+        captured = capsys.readouterr()
+        assert "Update complete." not in captured.out + captured.err
+        assert "Update incomplete" in captured.err or "Update failed" in captured.err
+
+    def test_update_catches_copy_exception(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """FileNotFoundError raised while copying one assistant must be caught
+        and reported as a failure instead of crashing the whole update."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (None, "mock network error"))
+
+        def _raising_install(ai=None, **kwargs):
+            raise FileNotFoundError("Required skill file missing")
+
+        monkeypatch.setattr(install, "install_command", _raising_install)
+        assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -856,6 +1102,20 @@ class TestPromptHelpers:
 
     def test_prompt_dimensions_by_number(self):
         assert install.prompt_dimensions([], input_func=lambda p: "1,2") == ["correctness", "security"]
+
+    def test_prompt_dimensions_invalid_input_enables_all_with_warning(self, capsys):
+        """Invalid input must not silently fall back: warn and enable all (fix 10)."""
+        result = install.prompt_dimensions([], input_func=lambda p: "abc,999,not-a-dim")
+        assert result == install.DIMENSION_CHOICES
+        captured = capsys.readouterr()
+        assert "输入无效" in captured.out or "enabling all dimensions" in captured.out
+
+    def test_prompt_dimensions_partial_invalid_keeps_valid(self, capsys):
+        """A mix of valid and invalid entries keeps the valid ones."""
+        result = install.prompt_dimensions([], input_func=lambda p: "1,999,security")
+        assert result == ["correctness", "security"]
+        captured = capsys.readouterr()
+        assert "Invalid dimension number" in captured.out
 
 
 class TestInteractiveConfig:

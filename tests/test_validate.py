@@ -179,6 +179,27 @@ class TestCommandIsWhitelisted:
                 f"canonical char {ch!r} missing from scripts/validate.py"
             )
 
+    def test_rejection_reason_metacharacters(self) -> None:
+        """Rejected commands must say *why* they were rejected (fix: diagnostics)."""
+        reason = validate.whitelist_rejection_reason("ruff check; rm -rf /", ["ruff"])
+        assert reason == "contains shell metacharacters"
+
+    def test_rejection_reason_no_match(self) -> None:
+        assert validate.whitelist_rejection_reason("pytest tests/", ["ruff"]) == "no whitelist prefix matches"
+
+    def test_rejection_reason_empty_whitelist(self) -> None:
+        assert validate.whitelist_rejection_reason("ruff check", []) == "no whitelist prefixes are configured"
+
+    def test_whitelist_error_message_includes_reason(
+        self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path
+    ) -> None:
+        """The config-lint error for a rejected command names the rejection cause."""
+        valid_config["validation"]["commands"]["python"].append("ruff check; rm -rf /")
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        assert any("contains shell metacharacters" in e for e in errors)
+
 
 class TestValidateConfig:
     def test_valid_config(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:
@@ -837,15 +858,15 @@ class TestArrowSelectState:
         assert _read_arrow_key(io.StringIO("q")) == "cancel"
         assert _read_arrow_key(io.StringIO("x")) is None
 
-    def test_render_arrow_select_marks_selected(self) -> None:
-        from install import _ArrowSelectState, _render_arrow_select
+    def test_arrow_select_lines_marks_selected(self) -> None:
+        from install import _ArrowSelectState, _arrow_select_lines
 
         state = _ArrowSelectState(["a", "b"], default_all=False)
-        rendered = _render_arrow_select(state, "title")
+        rendered = "\n".join(_arrow_select_lines(state, "title"))
         assert "○" in rendered
         assert "◉" not in rendered
         state.toggle_current()  # select "a"
-        rendered = _render_arrow_select(state, "title")
+        rendered = "\n".join(_arrow_select_lines(state, "title"))
         assert "◉" in rendered
         assert "Done" in rendered
 
@@ -1129,7 +1150,7 @@ class TestUninstallCommand:
 
         assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
         monkeypatch.setattr("builtins.input", lambda _prompt: "n")
-        assert install_main(["uninstall", "--ai", "trae", "--target", str(target)], source=source) == 0
+        assert install_main(["uninstall", "--ai", "trae", "--target", str(target)], source=source) == 1
         assert (target / ".trae" / "skills" / "iterate").exists()
 
 
@@ -1142,7 +1163,7 @@ class TestUpdateCommand:
         import install
         from install import main as install_main
 
-        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: None)
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: (None, "mock network error"))
 
         assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
         (target / ".trae" / "skills" / "iterate" / "SKILL.md").write_text(
@@ -1164,7 +1185,7 @@ class TestUpdateCommand:
         import install
         from install import main as install_main
 
-        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: None)
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: (None, "mock network error"))
 
         assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
         (target / ".trae" / "skills" / "iterate" / "SKILL.md").write_text(
@@ -1186,7 +1207,7 @@ class TestUpdateCommand:
         import install
         from install import main as install_main
 
-        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: None)
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda _token: (None, "mock network error"))
 
         assert install_main(["update", "--target", str(target)], source=source) == 1
 
@@ -1206,11 +1227,14 @@ class TestUpdateCommand:
         monkeypatch.setattr(
             install,
             "_fetch_latest_release_info",
-            lambda _token: {
-                "tag": "v1.2.3",
-                "tarball_url": "https://example.com/release.tar.gz",
-                "checksum_url": "https://example.com/SHA256SUMS.txt",
-            },
+            lambda _token: (
+                {
+                    "tag": "v1.2.3",
+                    "tarball_url": "https://example.com/release.tar.gz",
+                    "checksum_url": "https://example.com/SHA256SUMS.txt",
+                },
+                None,
+            ),
         )
         monkeypatch.setattr(
             install, "_download_release_source", lambda _url, _checksum_url, _token: release_source

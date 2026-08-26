@@ -23,7 +23,10 @@ from pathlib import Path
 from typing import Any
 
 from iterate_cli import __version__
+from iterate_cli.fingerprint import drift_summary
 from iterate_cli.generator import (
+    USER_END_MARKER,
+    USER_START_MARKER,
     write_onboarding_outputs,
 )
 from iterate_cli.refresh import (
@@ -64,7 +67,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.version:
-        if _should_show_banner(args):
+        # Structured (JSON) output must not be polluted by the ASCII banner,
+        # matching the subcommand paths below.
+        if _should_show_banner(args) and not getattr(args, "json", False):
             tui.banner()
         tui.info(f"iterate {__version__}")
         tui.empty_line()
@@ -174,7 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         default=False,
-        help="Emit structured JSON for status/doctor instead of TUI output.",
+        help="Emit structured JSON for status/show/doctor instead of TUI output.",
     )
     parser.add_argument(
         "-p", "--project",
@@ -333,6 +338,23 @@ def _cmd_onboard(project_root: Path) -> int:
             tui.warning(f"未能读取现有 {existing_md_path.name}：{exc}")
             tui.info("为避免覆盖你的手动编辑区，已中止。请先修复该文件读取问题。")
             return 1
+        # An ITERATE.md without the USER-OWNED markers cannot preserve manual
+        # edits — regenerating would silently replace them with the template.
+        # Refuse and point the user at `iterate reonboard` (which backs the
+        # file up first) instead of overwriting possibly hand-edited content.
+        start_idx = existing_md.find(USER_START_MARKER)
+        end_idx = existing_md.find(USER_END_MARKER)
+        if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+            tui.error(
+                "Existing ITERATE.md is missing the USER-OWNED section markers; "
+                "refusing to overwrite possibly hand-edited content."
+            )
+            tui.hint(
+                "Restore the markers <!-- ITERATE:USER-OWNED:START --> / ...END -->, "
+                "or run `iterate reonboard` which backs up the file first.",
+                indent=2,
+            )
+            return 1
 
     # Preserve existing personalization when the user did not re-personalize,
     # so a basic-config update does not silently drop structured rules
@@ -380,9 +402,10 @@ def _cmd_personalize(project_root: Path, clear: bool = False, yes: bool = False)
         yes: When True, skip the clear confirmation prompt.
 
     Returns:
-        Exit code: 0 on success/cancel, 1 on failure.
+        Exit code: 0 on success/nothing-to-clear, 1 on failure/cancel.
     """
     from iterate_cli.personalize import (
+        CorruptConfigError,
         has_personalization,
         load_existing_personalization,
         run_personalize_wizard,
@@ -416,8 +439,14 @@ def _cmd_personalize(project_root: Path, clear: bool = False, yes: bool = False)
         return 1
 
     # Save structured fields to config.yaml and free-form notes/conventions
-    # to ITERATE.md atomically (with rollback on failure).
-    config_path, iterate_md_path = save_personalization(project_root, personalization)
+    # to ITERATE.md atomically (with rollback on failure). A corrupt config
+    # must not be rewritten over, so the strict loader's error is surfaced
+    # cleanly instead of a bare traceback.
+    try:
+        config_path, iterate_md_path = save_personalization(project_root, personalization)
+    except CorruptConfigError as exc:
+        tui.error(str(exc))
+        return 1
 
     tui.empty_line()
     tui.success("Personalization saved!")
@@ -441,7 +470,23 @@ def _cmd_personalize_clear(
     Returns:
         Exit code: 0 on success/cancel/nothing-to-clear, 1 on failure.
     """
-    config = load_onboarding_config(project_root) or {}
+    from iterate_cli.personalize import (
+        CorruptConfigError,
+        clear_personalization,
+        load_config_strict,
+    )
+
+    # A corrupt config is not "nothing to clear": silently treating it as such
+    # would hide the damage. Surface it as a clean error (return 1) instead.
+    try:
+        config = load_config_strict(project_root / "iterate.config.yaml")
+    except CorruptConfigError as exc:
+        tui.error(str(exc))
+        return 1
+    except (OSError, UnicodeDecodeError) as exc:
+        tui.error(f"Failed to read iterate.config.yaml: {exc}")
+        return 1
+
     if not has(project_root, config):
         tui.info("No personalization to clear.")
         return 0
@@ -460,10 +505,11 @@ def _cmd_personalize_clear(
             tui.info("已取消 / Cancelled.")
             return 0
 
-    from iterate_cli.personalize import clear_personalization
-
     try:
         config_path, iterate_md_path = clear_personalization(project_root)
+    except CorruptConfigError as exc:
+        tui.error(str(exc))
+        return 1
     except (OSError, UnicodeDecodeError) as exc:
         tui.error(f"Failed to clear personalization: {exc}")
         return 1
@@ -565,7 +611,12 @@ def _cmd_reonboard(project_root: Path) -> int:
         tui.hint("Re-onboarding cancelled. Old files are intact (a .bak snapshot was taken).", indent=2)
         return 1
     else:
-        tui.error("Re-onboarding failed. Old files were backed up but not replaced.")
+        # REONBOARD_FAILED may be a backup failure (nothing was backed up) or
+        # a write failure after a successful backup; say so accurately.
+        tui.error(
+            "Re-onboarding failed (see stderr). Old files are backed up "
+            "only when the backup step succeeded."
+        )
         return 1
 
 
@@ -638,12 +689,7 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
         )
 
         drift = check_onboarding_drift(project_root)
-        if drift is None:
-            data["drift"] = "unknown"
-        elif drift.has_drift:
-            data["drift"] = drift.summary()
-        else:
-            data["drift"] = "none"
+        data["drift"] = drift_summary(drift)
 
     if json_output:
         import json
@@ -651,11 +697,21 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
         print(json.dumps(data, ensure_ascii=False, indent=2))
         return 0
 
+    return _render_status_tui(project_root, data, config, drift)
+
+
+def _render_status_tui(
+    project_root: Path,
+    data: dict[str, Any],
+    config: dict[str, Any] | None,
+    drift: Any,
+) -> int:
+    """Render the TUI view of ``_cmd_status`` data."""
     tui.intro("Iterate Skill — Status")
     tui.key_value("Project", str(project_root))
     tui.empty_line()
 
-    if not onboarded:
+    if not data["onboarded"]:
         tui.warning("Status: Not onboarded")
         tui.hint("Run 'iterate onboard' to initialize.", indent=2)
         return 0
@@ -666,13 +722,12 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
         tui.hint("(iterate.config.yaml not found — only ITERATE.md exists)", indent=2)
         return 0
 
-    onboarding = config.get("onboarding") or {}
     tui.key_value("Completed", data["completed_at"])
     tui.key_value("Channel", data["channel"])
     tui.key_value("Skill version", data["skill_version"])
 
     # Drift configuration summary.
-    drift_enabled = onboarding.get("drift_check", True)
+    drift_enabled = data["drift_check"]
     fp_count = data["fingerprints"]
     tui.key_value("Fingerprints", f"{fp_count} manifest(s)")
     tui.key_value("Drift check", "enabled" if drift_enabled else "disabled")

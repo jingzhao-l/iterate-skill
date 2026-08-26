@@ -345,13 +345,13 @@ class PersonalizationData:
         sections: list[str] = []
 
         if self.code_conventions:
-            sections.append("## 自定义代码约定 / Custom Code Conventions\n")
+            sections.append(f"{CONVENTIONS_SECTION_HEADER}\n")
             for conv in self.code_conventions:
                 sections.append(f"- {conv}")
             sections.append("")
 
         if self.protected_paths or self.risk_areas:
-            sections.append("## 禁区与风险区 / Restricted & Risk Areas\n")
+            sections.append(f"{RESTRICTED_SECTION_HEADER}\n")
             if self.protected_paths:
                 sections.append("### 禁区 / Protected (不可修改 / Do not modify)\n")
                 for p in self.protected_paths:
@@ -364,20 +364,20 @@ class PersonalizationData:
                 sections.append("")
 
         if self.iterate_notes:
-            sections.append("## Iterate 注意点 / Iterate Notes\n")
+            sections.append(f"{NOTES_SECTION_HEADER}\n")
             for note in self.iterate_notes:
                 sections.append(f"- {note}")
             sections.append("")
 
         if self.known_intentional:
-            sections.append("## 已知意图 / Known Intentional (抑制误报 / Suppress false positives)\n")
+            sections.append(f"{KNOWN_INTENTIONAL_SECTION_HEADER}\n")
             for k in self.known_intentional:
                 loc = f"{k.file}:{k.line}" if k.line > 0 else k.file
                 sections.append(f"- `{loc}` [{k.dimension}] — {k.reason}")
             sections.append("")
 
         if self.forbidden_fixes:
-            sections.append("## 禁止的修复方式 / Forbidden Fixes\n")
+            sections.append(f"{FORBIDDEN_FIXES_SECTION_HEADER}\n")
             for f in self.forbidden_fixes:
                 sections.append(f"- {f}")
             sections.append("")
@@ -388,12 +388,24 @@ class PersonalizationData:
 # Headers that mark personalization-generated sections in ITERATE.md.
 # Used by merge_user_sections to replace old personalization content
 # while preserving user's manually written sections.
+#
+# The two free-form sections (notes / conventions) are additionally read back
+# by load_personalization_from_iterate_md, which compares section titles
+# against the SAME header constants — keep every literal in sync here.
+CONVENTIONS_SECTION_HEADER = "## 自定义代码约定 / Custom Code Conventions"
+RESTRICTED_SECTION_HEADER = "## 禁区与风险区 / Restricted & Risk Areas"
+NOTES_SECTION_HEADER = "## Iterate 注意点 / Iterate Notes"
+KNOWN_INTENTIONAL_SECTION_HEADER = (
+    "## 已知意图 / Known Intentional (抑制误报 / Suppress false positives)"
+)
+FORBIDDEN_FIXES_SECTION_HEADER = "## 禁止的修复方式 / Forbidden Fixes"
+
 PERSONALIZATION_SECTION_HEADERS: tuple[str, ...] = (
-    "## 自定义代码约定 / Custom Code Conventions",
-    "## 禁区与风险区 / Restricted & Risk Areas",
-    "## Iterate 注意点 / Iterate Notes",
-    "## 已知意图 / Known Intentional (抑制误报 / Suppress false positives)",
-    "## 禁止的修复方式 / Forbidden Fixes",
+    CONVENTIONS_SECTION_HEADER,
+    RESTRICTED_SECTION_HEADER,
+    NOTES_SECTION_HEADER,
+    KNOWN_INTENTIONAL_SECTION_HEADER,
+    FORBIDDEN_FIXES_SECTION_HEADER,
 )
 
 
@@ -466,6 +478,37 @@ def merge_user_sections(existing_content: str, new_personalization_md: str) -> s
 # ---------------------------------------------------------------------------
 
 
+def _coerce_line_number(value: Any) -> int:
+    """Parse a config-sourced line number defensively.
+
+    Accepts integers and integer-like strings; anything else (including a
+    float with a fractional part, which ``int()`` would silently truncate)
+    falls back to 0 = whole-file suppression. Negative values are clamped to 0.
+
+    Args:
+        value: The raw ``line`` value from a hand-edited config.
+
+    Returns:
+        A non-negative integer line number (0 means whole file).
+    """
+    if isinstance(value, float):
+        # int(1.5) silently truncates to 1; treat fractional values as
+        # malformed rather than guessing a line.
+        if not value.is_integer():
+            return 0
+        line = int(value)
+    elif isinstance(value, bool):
+        return 0
+    elif isinstance(value, int):
+        line = value
+    else:
+        try:
+            line = int(str(value))
+        except (TypeError, ValueError):
+            return 0
+    return max(line, 0)
+
+
 def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationData:
     """Parse the ``personalization`` section of a config dict.
 
@@ -487,7 +530,14 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     if not isinstance(raw, dict):
         return PersonalizationData()
 
-    protected = [str(p) for p in raw.get("protected_paths") or []]
+    # protected_paths must be a list of strings. A hand-edited config may hold
+    # a scalar string (which would otherwise be iterated character-by-character
+    # and persisted as a corrupt per-char list), so guard like every other list
+    # field below.
+    raw_protected = raw.get("protected_paths") or []
+    if not isinstance(raw_protected, list):
+        raw_protected = []
+    protected = [str(p) for p in raw_protected]
 
     risk_areas: list[RiskArea] = []
     for item in raw.get("risk_areas") or []:
@@ -504,10 +554,7 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
         if isinstance(item, dict) and "file" in item:
             # Defensive parse of line: YAML may contain non-integer strings
             # if manually edited. Fall back to 0 (whole-file suppression).
-            try:
-                line = int(item.get("line", 0))
-            except (TypeError, ValueError):
-                line = 0
+            line = _coerce_line_number(item.get("line"))
             known.append(
                 KnownIntentional(
                     file=str(item["file"]),
@@ -626,9 +673,9 @@ def load_personalization_from_iterate_md(
             continue
         if stripped.startswith("- ") and len(stripped) > 2:
             item = stripped[2:].strip()
-            if current_section == "## Iterate 注意点 / Iterate Notes":
+            if current_section == NOTES_SECTION_HEADER:
                 notes.append(item)
-            elif current_section == "## 自定义代码约定 / Custom Code Conventions":
+            elif current_section == CONVENTIONS_SECTION_HEADER:
                 conventions.append(item)
 
     return notes, conventions
@@ -770,7 +817,14 @@ def merge_personalization_into_config(
             commands.pop(module, None)
 
     validation["commands"] = commands
-    validation["command_whitelist"] = whitelist
+    # Only persist command_whitelist when it is non-empty: an explicit empty
+    # list would trip doctor's "must be a non-empty list" check, while an
+    # absent key means "no whitelist constraint" (doctor skips it). When the
+    # user cleared every command, dropping the key keeps the config clean.
+    if whitelist:
+        validation["command_whitelist"] = whitelist
+    else:
+        validation.pop("command_whitelist", None)
     result["validation"] = validation
 
     return result
@@ -1406,6 +1460,34 @@ def _add_risk_area(input_func: InputFunc) -> RiskArea | None:
     return RiskArea(path=path, reason=reason)
 
 
+def _read_dimension_number(input_func: InputFunc, prompt: str) -> str | None:
+    """Read a 1-based dimension selection, returning the dimension key.
+
+    Returns None if the input is invalid/out of range or the user cancels,
+    in which case the caller aborts the current add step.
+
+    Args:
+        input_func: Input callable.
+        prompt: Input prompt text.
+
+    Returns:
+        The selected dimension key, or None on invalid/cancelled input.
+    """
+    tui.info("选择维度 / Select dimension:", indent=2)
+    for i, dim in enumerate(ALL_DIMENSIONS, 1):
+        tui.info(f"{i}. {DIMENSION_LABELS[dim]}", indent=4)
+    dim_str = input_func(f"  └ {prompt}: ").strip()
+    try:
+        dim_idx = int(dim_str) - 1
+        if not (0 <= dim_idx < len(ALL_DIMENSIONS)):
+            tui.warning("无效维度编号，已取消 / Invalid dimension number, cancelled", indent=2)
+            return None
+        return ALL_DIMENSIONS[dim_idx]
+    except ValueError:
+        tui.warning("无效输入，已取消 / Invalid input, cancelled", indent=2)
+        return None
+
+
 def _add_known_intentional(input_func: InputFunc) -> KnownIntentional | None:
     """Collect a single KnownIntentional entry from the user.
 
@@ -1425,18 +1507,8 @@ def _add_known_intentional(input_func: InputFunc) -> KnownIntentional | None:
     # line, else "whole file"). Normalise stray negatives to whole-file
     # rather than persisting a corrupt entry.
     line = max(line, 0)
-    tui.info("选择维度 / Select dimension:", indent=2)
-    for i, dim in enumerate(ALL_DIMENSIONS, 1):
-        tui.info(f"{i}. {dim}", indent=4)
-    dim_str = input_func("  └ 维度编号 / Dimension number: ").strip()
-    try:
-        dim_idx = int(dim_str) - 1
-        if not (0 <= dim_idx < len(ALL_DIMENSIONS)):
-            tui.warning("无效维度编号，已取消 / Invalid dimension number, cancelled", indent=2)
-            return None
-        dimension = ALL_DIMENSIONS[dim_idx]
-    except ValueError:
-        tui.warning("无效输入，已取消 / Invalid input, cancelled", indent=2)
+    dimension = _read_dimension_number(input_func, "维度编号 / Dimension number")
+    if dimension is None:
         return None
     reason = input_func("  └ 原因 / Reason: ").strip()
     if not reason:
@@ -1446,18 +1518,8 @@ def _add_known_intentional(input_func: InputFunc) -> KnownIntentional | None:
 
 def _add_dimension_focus(input_func: InputFunc) -> DimensionFocusOverride | None:
     """Collect a single DimensionFocusOverride from the user."""
-    tui.info("选择维度 / Select dimension:", indent=2)
-    for i, dim in enumerate(ALL_DIMENSIONS, 1):
-        tui.info(f"{i}. {DIMENSION_LABELS[dim]}", indent=4)
-    dim_str = input_func("  └ 维度编号 / Dimension number: ").strip()
-    try:
-        dim_idx = int(dim_str) - 1
-        if not (0 <= dim_idx < len(ALL_DIMENSIONS)):
-            tui.warning("无效维度编号，已取消 / Invalid dimension number, cancelled", indent=2)
-            return None
-        dimension = ALL_DIMENSIONS[dim_idx]
-    except ValueError:
-        tui.warning("无效输入，已取消 / Invalid input, cancelled", indent=2)
+    dimension = _read_dimension_number(input_func, "维度编号 / Dimension number")
+    if dimension is None:
         return None
     focus = input_func(f"  └ 追加 focus 内容 / Extra focus text for [{dimension}]: ").strip()
     if not focus:
@@ -1516,10 +1578,10 @@ def _read_index(
         idx = int(raw) - 1
         if 0 <= idx < len(items):
             return idx
-        tui.error(f"超出范围 / Out of range (1-{len(items)})", indent=2)
+        tui.warning(f"超出范围 / Out of range (1-{len(items)})", indent=2)
         return None
     except ValueError:
-        tui.error("无效输入 / Invalid input", indent=2)
+        tui.warning("无效输入 / Invalid input", indent=2)
         return None
 
 

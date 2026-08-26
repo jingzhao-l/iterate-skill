@@ -60,6 +60,11 @@ CI_PATHS: tuple[str, ...] = (
     "azure-pipelines.yml",
 )
 
+# Directory names that indicate an API layer (used by suggest_dimensions).
+API_LAYER_INDICATORS: frozenset[str] = frozenset({
+    "api", "routes", "controllers", "handlers", "endpoints", "server",
+})
+
 
 @dataclass
 class ScanResult:
@@ -185,8 +190,7 @@ def _has_api_layer(scan: ScanResult) -> bool:
 
     Looks for common API-related directory names in the top-level listing.
     """
-    api_indicators = {"api", "routes", "controllers", "handlers", "endpoints", "server"}
-    return any(d in api_indicators for d in scan.top_level_dirs)
+    return any(d in API_LAYER_INDICATORS for d in scan.top_level_dirs)
 
 
 def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
@@ -204,6 +208,11 @@ def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
     """
     commands: dict[str, list[str]] = {}
 
+    # Java tooling spans up to three detected-language entries ("Java",
+    # "Java/Kotlin", "Kotlin") that all map to the same "java" module; process
+    # it once so a project with both pom.xml and build.gradle(.kts) does not
+    # execute the branch twice and overwrite the build-tool choice.
+    java_handled = False
     for lang in scan.detected_languages:
         if lang == "Python":
             commands["python"] = [
@@ -224,6 +233,13 @@ def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
         elif lang == "Rust":
             commands["rust"] = ["cargo clippy", "cargo test"]
         elif lang in ("Java", "Java/Kotlin", "Kotlin"):
+            if java_handled:
+                continue
+            java_handled = True
+            # Prefer Maven when pom.xml exists; otherwise Gradle (from either
+            # build.gradle or build.gradle.kts). Decided once, so a project
+            # with both manifests never has the Gradle suggestion overwritten
+            # by the Maven one (or vice-versa).
             build_tool = "mvn" if "pom.xml" in scan.manifests else "gradle"
             commands["java"] = [f"{build_tool} compile", f"{build_tool} test"]
         elif lang == "Dart/Flutter":

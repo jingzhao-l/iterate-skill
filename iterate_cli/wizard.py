@@ -26,7 +26,11 @@ from iterate_cli.generator import (
     DEFAULT_ATOMIC_MAX_ADJACENT_METHODS,
     DEFAULT_ATOMIC_MAX_LINES,
     DEFAULT_GOAL,
+    DEFAULT_LANGUAGE,
     DEFAULT_MAX_ROUNDS,
+    DEFAULT_REVIEW_SCOPE,
+    DEFAULT_SCOPE_CHUNK_SIZE,
+    DEFAULT_TARGET_BRANCH,
     OnboardingData,
 )
 from iterate_cli.scan import (
@@ -46,6 +50,10 @@ InputFunc = Callable[[str], str]
 # which means the user *cancelled* mid-flow (e.g. started the basic wizard
 # then aborted). Callers use this to pick the right exit code: 0 for
 # "no changes needed", 1 for "cancelled".
+#
+# Typed as ``Any`` so identity comparisons against the functions' declared
+# ``OnboardingData | None`` return type stay valid for mypy (the sentinel is
+# intentionally not an OnboardingData instance).
 NO_CHANGES_NEEDED: Any = object()
 
 # All selectable dimensions in display order.
@@ -81,7 +89,7 @@ DIMENSION_LABELS: dict[str, str] = {
     "tech-debt": "技术债 / Tech Debt (medium)",
     "spec-compliance": "规范一致性 / Spec Compliance (high)",
     "frontend-backend": "前后端一致性 / Frontend-Backend (high)",
-    "ui-ux": "UI/UX (medium)",
+    "ui-ux": "界面与体验 / UI/UX (medium)",
 }
 
 
@@ -113,13 +121,12 @@ def _ensure_interactive(input_func: InputFunc) -> bool:
         return True
     if _stdin_is_interactive():
         return True
-    print(
-        "\n⚠️  Interactive wizard requires a terminal.\n"
+    tui.error(
+        "Interactive wizard requires a terminal.\n"
         "  Detected non-interactive stdin (piped/redirected/CI), so the wizard "
         "cannot prompt.\n"
         "  Use the AI channel (run `/iterate` in your coding tool) to onboard, "
-        "or run this command in an interactive terminal.\n",
-        file=sys.stderr,
+        "or run this command in an interactive terminal."
     )
     return False
 
@@ -218,7 +225,28 @@ def _returning_user_flow(
         # Load existing config to preserve settings.
         data = _load_existing_onboarding_data(project_root)
         if data is None:
-            tui.warning("无法加载现有配置，转为基础 onboarding / Could not load existing config, falling back to basic.")
+            # The user explicitly declined a basic-config update, but the
+            # existing config cannot be loaded (missing/corrupt/unreadable).
+            # Falling straight into a full wizard would override that
+            # decision, so ask for explicit re-confirmation first.
+            tui.warning(
+                "无法加载现有配置 / Could not load existing config."
+            )
+            tui.hint(
+                "重新运行基础配置向导会重新生成 ITERATE.md 的 AI 维护区。"
+                "是否仍要继续? / Re-running the basic wizard regenerates the "
+                "AI-maintained section of ITERATE.md. Continue?",
+                indent=4,
+            )
+            if not _ask_yes_no(
+                "重新运行基础配置向导? / Re-run the basic wizard anyway?",
+                input_func,
+                default=False,
+            ):
+                tui.empty_line()
+                tui.info("已保留现有文件，无变更。")
+                tui.hint("Files kept as-is. No changes.", indent=2)
+                return NO_CHANGES_NEEDED
             data = _run_basic_wizard(project_root, input_func)
             if data is None:
                 return None
@@ -329,7 +357,9 @@ def _run_basic_wizard(
         ),
         evidence_validation=existing.evidence_validation if existing else True,
         coverage_validation=existing.coverage_validation if existing else True,
-        scope_chunk_size=existing.scope_chunk_size if existing else 25,
+        scope_chunk_size=(
+            existing.scope_chunk_size if existing else DEFAULT_SCOPE_CHUNK_SIZE
+        ),
         drift_ignore=list(existing.drift_ignore) if existing else [],
     )
 
@@ -374,6 +404,10 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         onboarding_section = config.get("onboarding")
         onboarding_section = onboarding_section if isinstance(onboarding_section, dict) else {}
         channel = onboarding_section.get("channel", "cli")
+        if not isinstance(channel, str):
+            # A hand-edited config may hold a non-string channel; normalise so
+            # the regenerated config never persists an invalid value.
+            channel = "cli"
         # Read persisted user-entered text from config (not from ITERATE.md
         # user-owned section, which is for manual edits and personalization).
         project_description = str(onboarding_section.get("project_description") or "")
@@ -399,20 +433,24 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         validation = config.get("validation")
         validation = validation if isinstance(validation, dict) else {}
 
+        raw_dimensions = config.get("dimensions")
+        dimensions = (
+            [str(d) for d in raw_dimensions] if isinstance(raw_dimensions, list) else []
+        )
         return OnboardingData(
             project_root=project_root,
             channel=channel,
             scan=scan,
             project_description=project_description,
             code_conventions=code_conventions,
-            dimensions=(config.get("dimensions") if isinstance(config.get("dimensions"), list) else []),
-            target_branch=git.get("target_branch", "main"),
-            review_scope=review.get("scope", "full"),
+            dimensions=dimensions,
+            target_branch=git.get("target_branch", DEFAULT_TARGET_BRANCH),
+            review_scope=review.get("scope", DEFAULT_REVIEW_SCOPE),
             push_per_round=git.get("push_per_round", False),
             validation_commands=validation.get("commands") or {},
             command_whitelist=validation.get("command_whitelist") or [],
             fingerprints=capture_fingerprints(project_root),
-            language=config.get("language", "en"),
+            language=config.get("language", DEFAULT_LANGUAGE),
             goal=config.get("goal", DEFAULT_GOAL),
             max_rounds=config.get("max_rounds", DEFAULT_MAX_ROUNDS),
             atomic_max_lines=atomic.get("max_lines", DEFAULT_ATOMIC_MAX_LINES),
@@ -424,7 +462,7 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             output_schema_validation=reviewer.get("output_schema_validation", True),
             evidence_validation=reviewer.get("evidence_validation", True),
             coverage_validation=reviewer.get("coverage_validation", True),
-            scope_chunk_size=reviewer.get("scope_chunk_size", 25),
+            scope_chunk_size=reviewer.get("scope_chunk_size", DEFAULT_SCOPE_CHUNK_SIZE),
             drift_ignore=drift_ignore,
         )
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
@@ -643,10 +681,10 @@ def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
     """Collect git-related configuration."""
     tui.section("Git 配置 / Git Configuration")
 
-    tui.question("目标分支 / Target branch (默认 main, 留空用 main):")
+    tui.question(f"目标分支 / Target branch (默认 {DEFAULT_TARGET_BRANCH}, 留空用 {DEFAULT_TARGET_BRANCH}):")
     target_branch = input_func("  └ ").strip()
     if not target_branch:
-        target_branch = "main"
+        target_branch = DEFAULT_TARGET_BRANCH
 
     tui.info("审查范围 / Review scope:")
     tui.numbered_list([
@@ -656,12 +694,12 @@ def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
     tui.question("选择 / Select (1/2, 默认 1):")
     scope_choice = input_func("  └ ").strip()
     if not scope_choice or scope_choice == "1":
-        review_scope = "full"
+        review_scope = DEFAULT_REVIEW_SCOPE
     elif scope_choice == "2":
         review_scope = "changed-only"
     else:
         tui.warning(f"无效输入 / Invalid input: {scope_choice!r}，使用默认 full。")
-        review_scope = "full"
+        review_scope = DEFAULT_REVIEW_SCOPE
 
     push = _ask_yes_no("每轮通过后立即 push? / Push after each round?", input_func, default=False)
 
@@ -861,18 +899,18 @@ def _confirm_summary(data: OnboardingData, input_func: InputFunc) -> bool:
 def _print_scan_results(scan: ScanResult) -> None:
     """Print a summary of scan results."""
     tui.section("扫描结果 / Scan Results")
-    tui.key_value("Manifest", ", ".join(scan.manifests) if scan.manifests else "(无 / none)")
+    tui.key_value("Manifest 文件 / Manifests", ", ".join(scan.manifests) if scan.manifests else "(无 / none)")
     if scan.detected_languages:
-        tui.key_value("Languages", ", ".join(scan.detected_languages))
+        tui.key_value("语言 / Languages", ", ".join(scan.detected_languages))
     if scan.top_level_dirs:
         dirs = scan.top_level_dirs[:MAX_DIRS_DISPLAYED]
-        tui.key_value("Directories", ", ".join(dirs))
+        tui.key_value("目录 / Directories", ", ".join(dirs))
         if len(scan.top_level_dirs) > MAX_DIRS_DISPLAYED:
-            tui.hint(f"... and {len(scan.top_level_dirs) - MAX_DIRS_DISPLAYED} more", indent=4)
-    tui.key_value("Specs", "yes" if scan.has_specs else "no")
-    tui.key_value("Tests", "yes" if scan.has_tests else "no")
-    tui.key_value("CI", "yes" if scan.has_ci else "no")
-    tui.key_value("Frontend", "yes" if scan.has_frontend else "no")
+            tui.hint(f"... 等 {len(scan.top_level_dirs) - MAX_DIRS_DISPLAYED} 个 / and {len(scan.top_level_dirs) - MAX_DIRS_DISPLAYED} more", indent=4)
+    tui.key_value("规范目录 / Specs", "yes / 有" if scan.has_specs else "no / 无")
+    tui.key_value("测试目录 / Tests", "yes / 有" if scan.has_tests else "no / 无")
+    tui.key_value("CI 配置 / CI", "yes / 有" if scan.has_ci else "no / 无")
+    tui.key_value("前端 / Frontend", "yes / 有" if scan.has_frontend else "no / 无")
     tui.empty_line()
 
 

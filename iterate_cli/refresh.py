@@ -9,7 +9,6 @@ Handles two refresh modes:
 from __future__ import annotations
 
 import shutil
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,9 +20,14 @@ from iterate_cli.fingerprint import (
     DriftResult,
     capture_fingerprints,
     check_drift,
+    fingerprints_from_dict,
     fingerprints_to_dict,
 )
 from iterate_cli.generator import (
+    DEFAULT_LANGUAGE,
+    DEFAULT_REVIEW_SCOPE,
+    DEFAULT_SCOPE_CHUNK_SIZE,
+    DEFAULT_TARGET_BRANCH,
     OnboardingData,
     atomic_write,
     generate_refreshed_md,
@@ -36,6 +40,7 @@ from iterate_cli.scan import (
     suggest_dimensions,
     suggest_validation_commands,
 )
+from iterate_cli.tui import tui
 from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
 
 # Files managed by onboarding.
@@ -68,7 +73,7 @@ def load_onboarding_config(project_root: Path) -> dict[str, Any] | None:
     try:
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        print(f"⚠️  Failed to parse {config_path}: {exc}", file=sys.stderr)
+        tui.error(f"Failed to parse {config_path}: {exc}")
         return None
     except (OSError, UnicodeDecodeError) as exc:
         # OSError: permission denied, file removed between is_file() and
@@ -76,7 +81,7 @@ def load_onboarding_config(project_root: Path) -> dict[str, Any] | None:
         # UnicodeDecodeError: file contains non-UTF-8 bytes (inherits
         #   ValueError, not OSError, so listed explicitly).
         # Either way: log and return None so callers fall back to defaults.
-        print(f"⚠️  Failed to read {config_path}: {exc}", file=sys.stderr)
+        tui.error(f"Failed to read {config_path}: {exc}")
         return None
 
     # yaml.safe_load returns None for an empty file (handled by ``or {}``
@@ -84,9 +89,8 @@ def load_onboarding_config(project_root: Path) -> dict[str, Any] | None:
     # or ``just a string``. Such non-dict results would crash callers
     # that call ``.get()``, so reject them here.
     if config is not None and not isinstance(config, dict):
-        print(
-            f"⚠️  {config_path} is not a YAML mapping (got {type(config).__name__})",
-            file=sys.stderr,
+        tui.error(
+            f"{config_path} is not a YAML mapping (got {type(config).__name__})"
         )
         return None
     return config
@@ -122,6 +126,10 @@ def _load_refresh_config(project_root: Path) -> dict[str, Any] | None:
 def get_stored_fingerprints(config: dict[str, Any]) -> list[dict[str, str]]:
     """Extract stored fingerprints from a loaded config dict.
 
+    Malformed entries (non-dicts, missing ``path``/``sha256`` keys) are
+    skipped via ``fingerprints_from_dict`` so a hand-edited config degrades
+    to "no stored fingerprints" instead of crashing drift detection.
+
     Args:
         config: Parsed iterate.config.yaml content.
 
@@ -132,11 +140,7 @@ def get_stored_fingerprints(config: dict[str, Any]) -> list[dict[str, str]]:
     raw = onboarding.get("fingerprints") or []
     if not isinstance(raw, list):
         return []
-    result: list[dict[str, str]] = []
-    for item in raw:
-        if isinstance(item, dict) and "path" in item and "sha256" in item:
-            result.append({"path": str(item["path"]), "sha256": str(item["sha256"])})
-    return result
+    return [entry.to_dict() for entry in fingerprints_from_dict(raw)]
 
 
 def get_drift_ignore(config: dict[str, Any]) -> list[str]:
@@ -215,7 +219,7 @@ def incremental_refresh(project_root: Path) -> bool:
     """
     ok, refreshed_md, config_yaml, error = _build_refresh_outputs(project_root)
     if not ok:
-        print(f"⚠️  {error}", file=sys.stderr)
+        tui.error(error)
         return False
     return _write_refresh_outputs(project_root, refreshed_md, config_yaml)
 
@@ -344,33 +348,32 @@ def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: s
     try:
         try:
             backup_md = iterate_md_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            # A failed backup read means rollback for this file is impossible;
+            # surface it so the user knows a mid-refresh failure cannot be
+            # fully reverted (instead of silently losing rollback capability).
+            tui.error(f"Failed to back up {iterate_md_path} for rollback: {exc}")
             backup_md = None
         try:
             backup_config = config_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            tui.error(f"Failed to back up {config_path} for rollback: {exc}")
             backup_config = None
 
         atomic_write(iterate_md_path, refreshed_md)
         atomic_write(config_path, config_yaml)
     except OSError as exc:
-        print(f"⚠️  Failed to write refresh outputs: {exc}", file=sys.stderr)
+        tui.error(f"Failed to write refresh outputs: {exc}")
         if backup_md is not None:
             try:
                 atomic_write(iterate_md_path, backup_md)
             except OSError as rollback_exc:
-                print(
-                    f"⚠️  Rollback failed for {iterate_md_path}: {rollback_exc}",
-                    file=sys.stderr,
-                )
+                tui.error(f"Rollback failed for {iterate_md_path}: {rollback_exc}")
         if backup_config is not None:
             try:
                 atomic_write(config_path, backup_config)
             except OSError as rollback_exc:
-                print(
-                    f"⚠️  Rollback failed for {config_path}: {rollback_exc}",
-                    file=sys.stderr,
-                )
+                tui.error(f"Rollback failed for {config_path}: {rollback_exc}")
         return False
     return True
 
@@ -480,7 +483,7 @@ def full_reonboard(
                 config_path, project_root / f"{CONFIG_YAML}.bak-{timestamp}"
             )
     except OSError as exc:
-        print(f"⚠️  Backup failed, aborting re-onboarding: {exc}", file=sys.stderr)
+        tui.error(f"Backup failed, aborting re-onboarding: {exc}")
         return REONBOARD_FAILED
 
     # Run the full wizard.
@@ -506,14 +509,20 @@ def full_reonboard(
             try:
                 existing_md = iterate_md_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
-                print(
-                    f"⚠️  Failed to read {iterate_md_path} for user-owner preservation: {exc}",
-                    file=sys.stderr,
+                # Refuse to continue: regenerating from scratch would silently
+                # drop the user-owned (manual) section. The .bak snapshot taken
+                # above keeps the original intact for manual recovery.
+                tui.error(
+                    f"Failed to read {iterate_md_path} for user-owner preservation: {exc}"
                 )
-                existing_md = None
+                tui.info(
+                    "为避免覆盖你的手动编辑区，已中止 re-onboarding。"
+                    "原文件保留在 .bak 备份中，请先修复读取问题后重试。"
+                )
+                return REONBOARD_FAILED
         write_onboarding_outputs(data, project_root, existing_md)
     except OSError as exc:
-        print(f"⚠️  Failed to write onboarding outputs: {exc}", file=sys.stderr)
+        tui.error(f"Failed to write onboarding outputs: {exc}")
         return REONBOARD_FAILED
 
     return REONBOARD_COMPLETED
@@ -563,6 +572,75 @@ def _reconcile_validation_suggestions(
     return commands, whitelist
 
 
+def _resolve_validation_config(
+    existing_config: dict[str, Any],
+    scan: ScanResult,
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Resolve validation.commands + effective command_whitelist for a refresh.
+
+    Preserves existing (possibly customised) validation configuration and
+    additively reconciles tooling with the newly-detected tech stack (a
+    language added since the last onboarding gets its suggested commands +
+    whitelist prefixes appended). An operator who deliberately configured an
+    empty whitelist ("run no commands") keeps that intent.
+
+    Returns:
+        (validation_commands, effective_whitelist).
+    """
+    validation_existing = existing_config.get("validation")
+    validation_existing = validation_existing if isinstance(validation_existing, dict) else {}
+    validation_commands = validation_existing.get("commands") or {}
+    # Distinguish an explicit empty whitelist (the operator deliberately
+    # configured "run no commands") from an absent key (fall back to a scan
+    # suggestion so a fresh config still gets a usable whitelist).
+    has_whitelist_key = "command_whitelist" in validation_existing
+    command_whitelist = validation_existing.get("command_whitelist")
+    if command_whitelist is None:
+        command_whitelist = [] if has_whitelist_key else None
+    effective_whitelist = (
+        command_whitelist
+        if command_whitelist is not None
+        else suggest_command_whitelist(scan)
+    )
+    # An operator who deliberately configured an empty whitelist ("run no
+    # commands") should not get tool prefixes re-added on refresh; every other
+    # case is augmented additively so newly-detected languages are validated.
+    reconcile_whitelist = not (has_whitelist_key and command_whitelist == [])
+    return _reconcile_validation_suggestions(
+        validation_commands, effective_whitelist, scan, reconcile_whitelist
+    )
+
+
+def _preserve_onboarding_meta(existing_config: dict[str, Any]) -> tuple[str, str, str]:
+    """Extract channel + user-entered text from the existing onboarding section.
+
+    Returns:
+        (channel, project_description, code_conventions).
+    """
+    onboarding_section = existing_config.get("onboarding")
+    onboarding_section = onboarding_section if isinstance(onboarding_section, dict) else {}
+    channel = onboarding_section.get("channel", "cli")
+    if not isinstance(channel, str):
+        # A hand-edited config may hold a non-string channel; normalise so the
+        # regenerated config never persists an invalid value.
+        channel = "cli"
+    project_description = str(onboarding_section.get("project_description") or "")
+    code_conventions = str(onboarding_section.get("code_conventions") or "")
+    return channel, project_description, code_conventions
+
+
+def _preserve_reviewer_tuning(existing_config: dict[str, Any]) -> dict[str, Any]:
+    """Extract reviewer tuning keys, preserving them across a refresh."""
+    reviewer_cfg = existing_config.get("reviewer")
+    reviewer_cfg = reviewer_cfg if isinstance(reviewer_cfg, dict) else {}
+    return {
+        "output_schema_validation": reviewer_cfg.get("output_schema_validation", True),
+        "evidence_validation": reviewer_cfg.get("evidence_validation", True),
+        "coverage_validation": reviewer_cfg.get("coverage_validation", True),
+        "scope_chunk_size": reviewer_cfg.get("scope_chunk_size", DEFAULT_SCOPE_CHUNK_SIZE),
+    }
+
+
 def _build_refresh_data(
     project_root: Path,
     scan: ScanResult,
@@ -575,39 +653,15 @@ def _build_refresh_data(
     git_cfg = git_cfg if isinstance(git_cfg, dict) else {}
     review_cfg = existing_config.get("review")
     review_cfg = review_cfg if isinstance(review_cfg, dict) else {}
-    validation_existing = existing_config.get("validation")
-    validation_existing = validation_existing if isinstance(validation_existing, dict) else {}
-    target_branch = git_cfg.get("target_branch", "main")
-    review_scope = review_cfg.get("scope", "full")
+    target_branch = git_cfg.get("target_branch", DEFAULT_TARGET_BRANCH)
+    review_scope = review_cfg.get("scope", DEFAULT_REVIEW_SCOPE)
     # Secure-by-default: push_per_round must default to False, matching
     # OnboardingData (generator.py) and the documented default.
     push_per_round = git_cfg.get("push_per_round", False)
-    validation_commands = validation_existing.get("commands") or {}
-    # Distinguish an explicit empty whitelist (the operator deliberately
-    # configured "run no commands") from an absent key (fall back to a scan
-    # suggestion so a fresh config still gets a usable whitelist).
-    has_whitelist_key = isinstance(validation_existing, dict) and "command_whitelist" in validation_existing
-    command_whitelist = validation_existing.get("command_whitelist")
-    if command_whitelist is None:
-        command_whitelist = [] if has_whitelist_key else None
-    # Resolve the effective whitelist (existing, or scan suggestion when the
-    # key is absent) and additively reconcile validation tooling with the
-    # newly-detected tech stack: a language added since the last onboarding
-    # gets its suggested commands + whitelist prefixes appended, while
-    # existing (possibly customised) configuration is never removed.
-    effective_whitelist = (
-        command_whitelist
-        if command_whitelist is not None
-        else suggest_command_whitelist(scan)
+    validation_commands, effective_whitelist = _resolve_validation_config(
+        existing_config, scan
     )
-    # An operator who deliberately configured an empty whitelist ("run no
-    # commands") should not get tool prefixes re-added on refresh; every other
-    # case is augmented additively so newly-detected languages are validated.
-    reconcile_whitelist = not (has_whitelist_key and command_whitelist == [])
-    validation_commands, effective_whitelist = _reconcile_validation_suggestions(
-        validation_commands, effective_whitelist, scan, reconcile_whitelist
-    )
-    language = existing_config.get("language", "en")
+    language = existing_config.get("language", DEFAULT_LANGUAGE)
 
     # Preserve existing personalization so refresh does not lose it.
     personalization = None
@@ -620,17 +674,10 @@ def _build_refresh_data(
     ignore_patterns = get_drift_ignore(existing_config)
     fingerprints = capture_fingerprints(project_root, ignore_patterns)
 
-    # Preserve channel and user-entered text from existing config.
-    onboarding_section = existing_config.get("onboarding")
-    onboarding_section = onboarding_section if isinstance(onboarding_section, dict) else {}
-    channel = onboarding_section.get("channel", "cli")
-    project_description = str(onboarding_section.get("project_description") or "")
-    code_conventions = str(onboarding_section.get("code_conventions") or "")
-
-    # Preserve reviewer tuning (output schema / evidence gate / coverage /
-    # chunk size) so a refresh never silently resets customised values.
-    reviewer_cfg = existing_config.get("reviewer")
-    reviewer_cfg = reviewer_cfg if isinstance(reviewer_cfg, dict) else {}
+    channel, project_description, code_conventions = _preserve_onboarding_meta(
+        existing_config
+    )
+    reviewer = _preserve_reviewer_tuning(existing_config)
 
     return OnboardingData(
         project_root=project_root,
@@ -646,10 +693,10 @@ def _build_refresh_data(
         command_whitelist=effective_whitelist,
         fingerprints=fingerprints,
         language=language,
-        output_schema_validation=reviewer_cfg.get("output_schema_validation", True),
-        evidence_validation=reviewer_cfg.get("evidence_validation", True),
-        coverage_validation=reviewer_cfg.get("coverage_validation", True),
-        scope_chunk_size=reviewer_cfg.get("scope_chunk_size", 25),
-        drift_ignore=get_drift_ignore(existing_config),
+        output_schema_validation=reviewer["output_schema_validation"],
+        evidence_validation=reviewer["evidence_validation"],
+        coverage_validation=reviewer["coverage_validation"],
+        scope_chunk_size=reviewer["scope_chunk_size"],
+        drift_ignore=ignore_patterns,
         personalization=personalization,
     )

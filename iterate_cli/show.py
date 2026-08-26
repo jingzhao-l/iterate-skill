@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from iterate_cli.fingerprint import DriftResult
+from iterate_cli.fingerprint import drift_advice, drift_summary
 from iterate_cli.personalize import load_existing_personalization
 from iterate_cli.refresh import (
     check_onboarding_drift,
@@ -37,88 +37,30 @@ def _as_section(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _drift_summary(drift: DriftResult | None) -> str:
-    """Return a human/JSON-safe drift description.
+def _collect_resolved_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Extract the effective config keys iterate owns.
 
-    ``check_onboarding_drift`` already honours the ``drift_check`` switch
-    internally, so the caller only needs to invoke it once and pass the result.
-    """
-    if drift is None:
-        return "unknown"
-    if drift.has_drift:
-        return drift.summary()
-    return "none"
-
-
-def _drift_advice(drift: DriftResult | None) -> str | None:
-    """Return actionable drift advice, or None when there is none to give.
-
-    Only meaningful when drift is actually detected (parity with ``iterate
-    status``, which surfaces ``DriftResult.advice()``).
-    """
-    if drift is None or not drift.has_drift:
-        return None
-    return drift.advice()
-
-
-def collect_show_data(project_root: Path) -> dict[str, Any]:
-    """Gather the full resolved project state as a structured dict.
+    The effective config lives in nested sections (git/review/atomic/reviewer)
+    plus a few top-level keys, NOT inside ``onboarding`` (which only holds
+    onboarding metadata). Read each value from its canonical location so
+    ``iterate show`` actually reports the effective settings.
 
     Args:
-        project_root: Project root directory.
+        config: Parsed iterate.config.yaml content.
 
     Returns:
-        A dict with ``project``, ``onboarded``, and (when onboarded)
-        ``onboarding`` metadata, ``config``, ``drift`` and ``personalization``
-        details. Sensitive-looking values are NOT extracted from the config:
-        only the keys iterate knows about are surfaced.
+        Flat dict of resolved settings.
     """
-    data: dict[str, Any] = {"project": str(project_root)}
-
-    if not is_onboarding_complete(project_root):
-        data["onboarded"] = False
-        return data
-
-    data["onboarded"] = True
-
-    config = load_onboarding_config(project_root) or {}
-
-    onboarding = config.get("onboarding") or {}
-    drift_enabled = onboarding.get("drift_check", True)
-    raw_fingerprints = onboarding.get("fingerprints") or []
-    data["onboarding"] = {
-        "completed_at": onboarding.get("completed_at", "unknown"),
-        "channel": onboarding.get("channel", "unknown"),
-        "skill_version": onboarding.get("skill_version", "unknown"),
-        "drift_check": drift_enabled,
-        "fingerprint_count": (
-            len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
-        ),
-    }
-    # Compute the drift result exactly once and derive both summary and advice
-    # from it, avoiding a redundant scan + SHA-heavy recomputation.
-    drift = check_onboarding_drift(project_root)
-    data["drift"] = _drift_summary(drift)
-    data["drift_advice"] = _drift_advice(drift)
-
-    # Surface the resolved config sections iterate owns. Validation commands
-    # are trusted config (created by onboarding / validate.py), so showing
-    # them is the point of the inspection command.
-    #
-    # The effective config lives in nested sections (git/review/atomic/reviewer)
-    # plus a few top-level keys, NOT inside ``onboarding`` (which only holds
-    # onboarding metadata). Read each value from its canonical location so
-    # ``iterate show`` actually reports the effective settings.
-    git = _as_section(config.get("git"))
-    review = _as_section(config.get("review"))
-    atomic = _as_section(config.get("atomic"))
-    reviewer = _as_section(config.get("reviewer"))
     resolved: dict[str, Any] = {}
     # Top-level keys.
     for key in ("language", "goal", "max_rounds"):
         if key in config and config[key] is not None:
             resolved[key] = config[key]
     # Nested sections.
+    git = _as_section(config.get("git"))
+    review = _as_section(config.get("review"))
+    atomic = _as_section(config.get("atomic"))
+    reviewer = _as_section(config.get("reviewer"))
     nested: dict[str, tuple[str, Any]] = {
         "atomic_max_lines": ("atomic", "max_lines"),
         "atomic_max_adjacent_methods": ("atomic", "max_adjacent_methods"),
@@ -150,8 +92,69 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
     dimensions_conf = config.get("dimensions")
     if dimensions_conf is not None:
         resolved["dimensions"] = dimensions_conf
+    return resolved
 
-    data["config"] = resolved
+
+def collect_show_data(project_root: Path) -> dict[str, Any]:
+    """Gather the full resolved project state as a structured dict.
+
+    Args:
+        project_root: Project root directory.
+
+    Returns:
+        A dict with ``project``, ``onboarded``, and (when onboarded)
+        ``onboarding`` metadata, ``config``, ``drift`` and ``personalization``
+        details. Sensitive-looking values are NOT extracted from the config:
+        only the keys iterate knows about are surfaced.
+    """
+    data: dict[str, Any] = {"project": str(project_root)}
+
+    if not is_onboarding_complete(project_root):
+        data["onboarded"] = False
+        return data
+
+    data["onboarded"] = True
+
+    raw_config = load_onboarding_config(project_root)
+    if raw_config is None:
+        # ITERATE.md exists but the config is missing/unreadable/corrupt.
+        # Flag it so the renderer can hint instead of showing a silent empty
+        # config (doctor is the authoritative diagnostic for the details).
+        data["config_error"] = True
+        data["config"] = {}
+        data["onboarding"] = {
+            "completed_at": "unknown",
+            "channel": "unknown",
+            "skill_version": "unknown",
+            "drift_check": True,
+            "fingerprint_count": 0,
+        }
+        data["drift"] = "unknown"
+        data["drift_advice"] = None
+        data["personalization"] = {}
+        return data
+
+    config = raw_config
+
+    onboarding = config.get("onboarding") or {}
+    drift_enabled = onboarding.get("drift_check", True)
+    raw_fingerprints = onboarding.get("fingerprints") or []
+    data["onboarding"] = {
+        "completed_at": onboarding.get("completed_at", "unknown"),
+        "channel": onboarding.get("channel", "unknown"),
+        "skill_version": onboarding.get("skill_version", "unknown"),
+        "drift_check": drift_enabled,
+        "fingerprint_count": (
+            len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
+        ),
+    }
+    # Compute the drift result exactly once and derive both summary and advice
+    # from it, avoiding a redundant scan + SHA-heavy recomputation.
+    drift = check_onboarding_drift(project_root)
+    data["drift"] = drift_summary(drift)
+    data["drift_advice"] = drift_advice(drift)
+
+    data["config"] = _collect_resolved_config(config)
     data["personalization"] = _collect_personalization(project_root, config)
     return data
 
@@ -218,6 +221,14 @@ def render_show(data: dict[str, Any], json_output: bool = False) -> int:
         tui.warning("Status: Not onboarded")
         tui.hint("Run 'iterate onboard' to initialize.", indent=2)
         return 0
+
+    if data.get("config_error"):
+        # ITERATE.md exists but the config is unreadable/corrupt; surface it
+        # instead of showing a silently empty config.
+        tui.warning(
+            "iterate.config.yaml is missing or unreadable — showing an empty "
+            "config. Run `iterate doctor` for details."
+        )
 
     onboarding = data["onboarding"]
     tui.key_value("Completed", onboarding["completed_at"])

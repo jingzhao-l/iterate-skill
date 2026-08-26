@@ -59,6 +59,11 @@ DEFAULT_MAX_ROUNDS = 7
 DEFAULT_ATOMIC_MAX_LINES = 20
 DEFAULT_ATOMIC_MAX_ADJACENT_METHODS = 3
 DEFAULT_GOAL = "Improve code quality and maintainability"
+DEFAULT_LANGUAGE = "en"
+DEFAULT_TARGET_BRANCH = "main"
+DEFAULT_REVIEW_SCOPE = "full"
+# Default chunk size for splitting the review scope into per-round batches.
+DEFAULT_SCOPE_CHUNK_SIZE = 25
 
 # Default user-owned section content when generating a fresh ITERATE.md.
 DEFAULT_USER_OWNED_SECTION = """
@@ -97,14 +102,14 @@ class OnboardingData:
     project_description: str = ""
     code_conventions: str = ""
     dimensions: list[str] = field(default_factory=list)
-    target_branch: str = "main"
-    review_scope: str = "full"
+    target_branch: str = DEFAULT_TARGET_BRANCH
+    review_scope: str = DEFAULT_REVIEW_SCOPE
     push_per_round: bool = False
     validation_commands: dict[str, list[str]] = field(default_factory=dict)
     command_whitelist: list[str] = field(default_factory=list)
     fingerprints: list[FingerprintEntry] = field(default_factory=list)
     iterate_notes: str = ""
-    language: str = "en"
+    language: str = DEFAULT_LANGUAGE
     goal: str = DEFAULT_GOAL
     max_rounds: int = DEFAULT_MAX_ROUNDS
     atomic_max_lines: int = DEFAULT_ATOMIC_MAX_LINES
@@ -114,7 +119,7 @@ class OnboardingData:
     output_schema_validation: bool = True
     evidence_validation: bool = True
     coverage_validation: bool = True
-    scope_chunk_size: int = 25
+    scope_chunk_size: int = DEFAULT_SCOPE_CHUNK_SIZE
     drift_ignore: list[str] = field(default_factory=list)
     personalization: PersonalizationData | None = None
 
@@ -253,9 +258,18 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     # Use a process-unique, collision-resistant temp name so concurrent calls
     # (even within the same process) never write the same temp file.
     tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex[:8]}")
+    # Preserve the original file's permission bits (e.g. 0600 for a config
+    # that was manually restricted): os.replace swaps in the temp file whose
+    # mode defaults to the umask, silently loosening permissions otherwise.
+    try:
+        original_mode = path.stat().st_mode & 0o777
+    except OSError:
+        original_mode = None
     try:
         with open(tmp_path, "w", encoding=encoding) as handle:
             handle.write(content)
+        if original_mode is not None:
+            os.chmod(tmp_path, original_mode)
         os.replace(tmp_path, path)
     except OSError:
         try:
@@ -270,7 +284,7 @@ def _log_tmp_cleanup_failure(tmp_path: Path, exc: OSError) -> None:
     import sys
 
     print(
-        f"⚠️  Failed to remove temporary file {tmp_path}: {exc}",
+        f"Failed to remove temporary file {tmp_path}: {exc}",
         file=sys.stderr,
     )
 
@@ -285,7 +299,7 @@ def _log_rollback_failure(path: Path, original_err: OSError) -> None:
     import sys
 
     print(
-        f"⚠️  Failed to roll back {path} after write error: {original_err}. "
+        f"Failed to roll back {path} after write error: {original_err}. "
         f"The files may be inconsistent.",
         file=sys.stderr,
     )
@@ -298,14 +312,13 @@ def _warn_missing_user_markers() -> None:
     file would be replaced by the default template. We refuse to do this
     silently and advise the user how to proceed.
     """
-    import sys
+    from iterate_cli.tui import tui
 
-    print(
-        "⚠️  Existing ITERATE.md is missing the USER-OWNED section markers; "
+    tui.error(
+        "Existing ITERATE.md is missing the USER-OWNED section markers; "
         "hand-edited content will not be preserved. Restore the markers "
         "<!-- ITERATE:USER-OWNED:START --> / ...END --> and re-run, or back up "
-        "the file first.",
-        file=sys.stderr,
+        "the file first."
     )
 
 
