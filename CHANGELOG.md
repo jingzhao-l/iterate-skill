@@ -5,6 +5,33 @@
 
 ---
 
+## [2.9.1] — 2026-08-27
+
+### 修复 / Bug fixes
+
+- **onboard 不再覆盖手动编辑区**：重新引导时若现有 `ITERATE.md` 缺少 USER-OWNED 区标记，拒绝继续并提示改用 `iterate reonboard`（会先备份），避免静默替换用户手写内容。
+- **损坏配置干净报错**：`iterate personalize`（保存与 `--clear` 两条路径）遇到无法解析的 `iterate.config.yaml` 时以清晰错误返回非零码，不再把损坏配置当作「无可清除内容」（返回 0）或抛出裸 traceback。
+- **配置写入权限保留**：`atomic_write` 保留原文件权限位（如 0600 的受限配置），不再因临时文件按 umask 生成而悄悄放宽权限。
+- **命令校验安全网**：`doctor` 对未配置 `command_whitelist` 的 `validation.commands` 也检查 shell 元字符；已配置白名单时，含元字符的命令同样以错误（而非警告）拦截，防止 `pytest; rm -rf /` 这类命令链通过健康检查。
+- **维度校验加固**：`dimensions` 为非列表（如手写标量字符串）时 `doctor` 报错而非静默回退为全部规范维度。
+- **个性化一致性校验修正**：缺失/空 `dimension` 的条目不再误报「指向禁用维度 None」（与 `scripts/validate.py` 行为一致）。
+- **skill_version 缺失提示修正**：未记录版本时 `doctor` 输出「nothing to compare」，不再误报「匹配」。
+- **re-onboard 读取失败中止**：ITERATE.md 无法读取时中止 re-onboarding 并保留 `.bak` 备份，不静默重建丢手动内容。
+- **fingerprint 宽容解析**：畸形条目（非字典、缺 path/sha256）被跳过而非抛异常，手写配置降级为「无漂移」而非崩溃。
+- **show 损坏配置标记**：`iterate show` 在配置缺失/损坏时标记 `config_error` 并提示运行 `iterate doctor`。
+- **status 拆分与 drift 复用**：抽取 `_render_status_tui`，drift 摘要/建议经 `drift_summary`/`drift_advice` 单次计算复用。
+- **refresh 保留 reviewer 调优**：`_build_refresh_data` 拆分，channel 非字符串规范化，保留 reviewer 的 output/evidence/coverage/scope_chunk_size 自定义值。
+- **scan 建议去重**：Java/Kotlin 多语言条目只生成一次构建工具建议；API 层指示目录提取为具名常量。
+- **TUI 渲染改进**：`_display_width` 处理组合记号/变体选择符/Emoji 宽度；`status` 非交互终端返回 no-op；`error` 默认缩进统一为 2；删除未用符号常量。
+- **installer 交互与安全加固**：`scripts/install.py` 原子写配置、下载响应大小上限、解压硬链接越界拒绝、`install/uninstall/update` 退出码语义统一、删除死代码 `_render_arrow_select`、网络错误原因透传；`npm-installer` 下载超时（`--max-time 120`）、tarball 下载进度、`--target` 相对路径解析、checksum 解析与 Python 侧一致、魔法字符串提取为常量。
+- **wizard 细节修正**：非交互 stdin 明确报错、扫描结果双语标签、默认常量引用（target_branch/review_scope/language/scope_chunk_size）。
+
+### 测试 / Tests
+
+- 新增 doctor 元字符安全网、维度类型、个性化一致性、onboard USER-OWNED 保护、personalize 损坏配置、atomic_write 权限、TUI 宽度（emoji/组合字符）、installer 退出码等用例；Python 测试 778 个全部通过，npm-installer 测试通过。
+
+---
+
 ## [2.9.0] — 2026-08-26
 
 ### 修复 / Bug fixes
