@@ -58,6 +58,8 @@ ih iterate init && ih iterate review
 dsh plugin --profile web add github:jingzhao-l/iterate-plugin#main
 ```
 
+> harness 内置 OrcaRouter 网关 provider（含免费模型档），通过 [推广链接注册](https://www.orcarouter.ai/ref/ref_5eca75a9c809c95ab152) 即完成项目支持，配置引导见 [iterate-harness README](https://github.com/jingzhao-l/iterate-harness)。
+
 > 本文档接下来以 **skill（本仓库根目录）** 为核心，讲解最常用的对话式用法。harness 与 plugin 的详细文档见它们各自的独立仓库：[iterate-harness](https://github.com/jingzhao-l/iterate-harness)（源码 `harness/iterate-harness/README.md`）、[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)（源码 `harness/iterate-plugin/README.md`）。
 
 ---
