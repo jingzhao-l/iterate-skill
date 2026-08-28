@@ -239,6 +239,15 @@ stamp 不匹配会自动重装到新 tag。
       ```
       验证：`npm install -g iterate-harness && ih --version` 输出新版本。
       > npm `repository` 元数据指向独立仓 `jingzhao-l/iterate-harness`。
+      >
+      > **1.16.2 发布记录（2026-08-28）**：版本号在 `__init__.py` / `npm/package.json` / `CHANGELOG.md`
+      > 同步至 1.16.2；校验 1995 pytest + 39 npm 包装器测试全过。**subtree split push 被拒
+      > （non-fast-forward）**：独立仓 main 因官方 dependabot merge 提交（`a136035` 等）与
+      > `git subtree split` 产物历史产生分歧，改用替代路径在 `.release/iterate-harness` 工作区
+      > （与公开 main 共享历史）提交并快进推送（`90ff6bb..140ae27`）。GitHub Release v1.16.2 已建，
+      > release.yml 构建 `iterate_harness-1.16.2-py3-none-any.whl` 上传 release 并自动发布 PyPI 1.16.2
+      >（已验证 PyPI latest=1.16.2）；npm `iterate-harness@1.16.2` 已发布（registry 传播约 60s）。
+      > 纯自动后台升级 + `reasoning_effort` + 图片/视觉附件透传三项特性随本版上线。
 
 ---
 
