@@ -66,6 +66,18 @@ DEFAULT_EXCLUDES = (".trae-html-share-packages",)
 # Recognised SKILL.md frontmatter keys: Qoder interprets three of them.
 QODER_FRONTMATTER_KEYS = ("name", "description", "version")
 
+# Qoder third-person description with natural-language trigger keywords. Used
+# when building a Qoder package without an explicit --description override.
+QODER_DESCRIPTION = (
+    "Automatically review and fix code across an entire codebase over multiple "
+    "rounds. Runs many parallel reviewers, each focused on a dimension such as "
+    "correctness, security, performance, and architecture; fixes atomic issues "
+    "directly and executes architecture-level changes only after the user "
+    "approves, validating after each round until no findings remain. Use for "
+    "pre-release code review, bug hunting, security hardening, and refactoring. "
+    "Supports a read-only review mode."
+)
+
 _FRONTMATTER_KEY_RE = re.compile(r"^[ \t]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]*(.*)$")
 
 
@@ -97,23 +109,30 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], int]:
     raise ValueError("frontmatter block is missing its closing '---' delimiter")
 
 
-def rewrite_frontmatter(text: str) -> tuple[str, list[str]]:
+def rewrite_frontmatter(
+    text: str, description: str | None = None
+) -> tuple[str, list[str]]:
     """Rewrite SKILL.md so only Qoder's ``name/description/version`` remain.
 
-    The Markdown body is preserved verbatim. Returns ``(new_text, changes)``
-    with a log of every key that was dropped so nothing is discarded silently.
+    The Markdown body is preserved verbatim. ``description`` (optional)
+    replaces the source description with a Qoder third-person/trigger version.
+    Returns ``(new_text, changes)`` with a log of every key that was dropped so
+    nothing is discarded silently.
     """
     fields, body_start = parse_frontmatter(text)
     changes: list[str] = []
     for key in fields:
         if key not in QODER_FRONTMATTER_KEYS:
             changes.append(f"dropped frontmatter key {key!r} (Qoder ignores it)")
-    if not any(key in fields for key in ("name", "description")):
-        raise ValueError("SKILL.md frontmatter must keep at least name/description")
+    if description is not None:
+        changes.append("replaced description with Qoder third-person/trigger version")
+    if not any(key in fields for key in ("name",)):
+        raise ValueError("SKILL.md frontmatter must keep at least a 'name'")
     header = ["---"]
-    for key in QODER_FRONTMATTER_KEYS:
-        if key in fields:
-            header.append(f"{key}: {fields[key]}")
+    header.append(f"name: {fields['name']}")
+    header.append(f"description: {description or fields.get('description', '')}")
+    if "version" in fields:
+        header.append(f"version: {fields['version']}")
     header.append("---")
     new_text = "\n".join(header) + "\n" + text[body_start:]
     return new_text, changes
@@ -183,10 +202,13 @@ def build_package(
     source: str | None,
     exclude: Iterable[str] = (),
     frontmatter: str = "keep",
+    description: str | None = None,
 ) -> tuple[str, list[str], dict[str, object]]:
     """Build the Qoder zip under an ``iterate/`` top directory.
 
-    Returns ``(zip_path, warnings, meta)``.
+    Returns ``(zip_path, warnings, meta)``. ``frontmatter='minimal'`` applies
+    the full Qoder adaptation (clean frontmatter, third-person description,
+    references/ index, self-containment note) to the staged copy only.
     """
     excludes = tuple(exclude)
     all_excludes = (*MANDATORY_EXCLUDES, *DEFAULT_EXCLUDES, *excludes)
@@ -226,13 +248,20 @@ def build_package(
             stage = alt
 
         if frontmatter == "minimal":
-            if any(key not in QODER_FRONTMATTER_KEYS for key in detect_frontmatter_keys(skill_text)):
-                rewritten, changes = rewrite_frontmatter(skill_text)
+            qoder_description = description if description is not None else QODER_DESCRIPTION
+            if any(
+                key not in QODER_FRONTMATTER_KEYS for key in detect_frontmatter_keys(skill_text)
+            ) or description is not None:
+                rewritten, changes = rewrite_frontmatter(
+                    skill_text, description=qoder_description
+                )
                 with open(skill_path, "w", encoding="utf-8") as handle:
                     handle.write(rewritten)
                 warnings.extend(changes)
             else:
-                warnings.append("--frontmatter minimal: nothing to strip")
+                warnings.append("--frontmatter minimal: frontmatter already Qoder-compatible")
+            warnings.extend(_append_dependencies_section(skill_path))
+            warnings.extend(_gen_references_index(stage))
         else:
             warnings.extend(detect_extra_frontmatter(skill_text))
 
@@ -255,6 +284,69 @@ def build_package(
 def detect_frontmatter_keys(text: str) -> list[str]:
     fields, _ = parse_frontmatter(text)
     return list(fields.keys())
+
+
+_DEP_MARKER = "<!-- QODER:DEPENDENCIES -->"
+
+
+def _append_dependencies_section(skill_path: str) -> list[str]:
+    """Append a self-containment/deployment note to the Qoder SKILL.md copy."""
+    with open(skill_path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+    if _DEP_MARKER in text:  # already annotated on a previous build
+        return []
+    section = (
+        "## 依赖说明 / Dependencies & Self-Containment\n\n"
+        "This is a fully self-contained package. Every file the skill loads at "
+        "runtime — `config/`, `scripts/`, `templates/`, `iterate_cli/`, "
+        "`pyproject.toml`, `npm-installer/` — ships inside this directory, so "
+        "running the skill needs no pre-installed `npx`/`pip`/CLI. The CLI is "
+        "optional: `npx iterate-skill-installer` downloads the release tarball "
+        "from GitHub and verifies it against `SHA256SUMS.txt` (mandatory checksum "
+        "check) before installing. The auxiliary files resolved at runtime are "
+        "indexed in `references/INDEX.md`.\n\n"
+        "<!-- " + _DEP_MARKER.replace("-->", "").replace("<!-- ", "") + " -->\n"
+    )
+    with open(skill_path, "a", encoding="utf-8") as handle:
+        handle.write("\n" + section)
+    return ["appended Qoder dependencies/self-containment section to SKILL.md"]
+
+
+_INDEX_ROWS = (
+    ("config/iterate.config.yaml", "Step 1.4", "Master default configuration (deep-merged with project overrides)"),
+    ("config/dimensions/", "Phase 1 + Step 1.4", "Reviewer dimension definitions (focus prompts, priorities)"),
+    ("scripts/validate.py", "config validation", "Validates iterate.config.yaml / decision log / dimensions"),
+    ("scripts/install.py", "installer", "Installs the skill into supported assistants' directories"),
+    ("templates/onboarding-playbook.md", "Step 0", "AI onboarding scan checklist + tech-stack mapping"),
+    ("iterate_cli/", "`iterate` CLI", "CLI onboarding / personalize / status / doctor / show"),
+    ("pyproject.toml", "CLI entry point", "Python package definition (`iterate` console entry point)"),
+    ("npm-installer/", "bootstrap installer", "`npx iterate-skill-installer` bootstrap (pull release + verify SHA256)"),
+)
+
+
+def _gen_references_index(stage: str) -> list[str]:
+    """Write ``references/INDEX.md`` listing the shipped runtime dependencies."""
+    rows = [
+        "| Path | Invoked by | Purpose |",
+        "|---|---|---|",
+    ]
+    for path, where, purpose in _INDEX_ROWS:
+        if os.path.exists(os.path.join(stage, path)):
+            rows.append(f"| `{path}` | {where} | {purpose} |")
+    index = (
+        "# Iterate — Qoder auxiliary dependency index\n\n"
+        "This skill package is self-contained: every file the skill references "
+        "at runtime ships in this `iterate/` directory. The paths below are "
+        "resolved relative to `SKILL.md` (i.e. this directory). None require "
+        "network access to run the skill standalone.\n\n"
+        + "\n".join(rows)
+        + "\n"
+    )
+    refs = os.path.join(stage, "references")
+    os.makedirs(refs, exist_ok=True)
+    with open(os.path.join(refs, "INDEX.md"), "w", encoding="utf-8") as handle:
+        handle.write(index)
+    return ["wrote references/INDEX.md dependency manifest"]
 
 
 def _zip_dir(directory: str, zip_path: str) -> None:
@@ -512,10 +604,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="version to embed in the default zip name (default: SKILL.md frontmatter version)",
     )
     build_p.add_argument(
+        "--description",
+        help="Qoder third-person description; default is a built-in keyword-rich description",
+    )
+    build_p.add_argument(
         "--frontmatter",
         choices=("keep", "minimal"),
-        default="keep",
-        help="'keep' leaves SKILL.md as-is (non-standard keys warned); 'minimal' rewrites frontmatter to name/description/version",
+        default="minimal",
+        help="'minimal' (default) rewrites to name/description/version + adds references/ and a self-containment note; 'keep' leaves SKILL.md as-is (non-standard keys warned)",
     )
     build_p.add_argument(
         "--exclude",
@@ -559,6 +655,7 @@ def main(argv: list[str] | None = None) -> int:
             source=args.source,
             exclude=args.exclude or (),
             frontmatter=args.frontmatter,
+            description=args.description,
         )
         for warning in warnings:
             print("warning: " + warning)
