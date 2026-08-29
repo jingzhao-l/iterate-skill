@@ -1,0 +1,592 @@
+#!/usr/bin/env python3
+"""Dedicated Qoder distribution/upload script for the iterate skill.
+
+Mirrors how SkillHub / ModelScope / ClawHub each get their own distribution
+machinery (see RELEASE.md): the only canonical "skill body" is the ``git archive
+':!harness'`` extraction, so this script rebuilds a Qoder-specific package from
+that same body, validates it against Qoder's package rules, then uploads it via
+the official Qoder Cloud Agents Skills API.
+
+Qoder package + API model (https://docs.qoder.com/zh/cloud-agents/api/skills/create):
+  * POST   /api/v1/cloud/skills               -> create skill + first immutable version
+  * POST   /api/v1/cloud/skills/{id}/versions -> append a new immutable version
+  * GET    /api/v1/cloud/skills[/{id}]        -> list / fetch
+  * DELETE /api/v1/cloud/skills/{id}          -> delete
+  * Auth:  ``Authorization: Bearer <PAT or SAT>``
+
+Qoder package rules enforced here:
+  * a single top-level directory whose name equals the ``name`` in ``SKILL.md``
+    frontmatter (this skill -> ``iterate/``)
+  * ``SKILL.md`` must start with YAML frontmatter (``name``/``description``/``version``)
+  * ``name`` must stay identical across all versions
+  * unpacked size < 50 MB and zip size < 50 MB
+  * ``harness/*`` must be absent (project-wide "skill only, not the harness" rule)
+
+Usage:
+  python scripts/publish_qoder.py check [-p PATH]            # preflight a built dir/zip
+  python scripts/publish_qoder.py build [--out PATH] ...     # rebuild the Qoder zip locally
+  python scripts/publish_qoder.py publish ZIP [--skill-id ID] [--token TOKEN] ...
+                                                            # upload (create or new version)
+  # dry-run upload (local checks + print the would-be request, no HTTP):
+  python scripts/publish_qoder.py publish ZIP --dry-run --json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import ssl
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from typing import Callable, Iterable
+
+DEFAULT_API_HOST = "https://api.qoder.com"
+SKILLS_PATH = "/api/v1/cloud/skills"
+TOKEN_ENV = "QODER_ACCESS_TOKEN"
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+USER_AGENT = "iterate-skill-qoder-publisher/1.0 (+https://github.com/jingzhao-l/iterate-skill)"
+TIMEOUT_SECONDS = 60
+MAX_PACKAGE_BYTES = 50 * 1024 * 1024  # 50 MB (Qoder upper limit)
+
+# The canonical skill-body extraction mirrors the release manual: exclude the
+# independent harness/plugin sub-projects. Everything else is user-extendable.
+MANDATORY_EXCLUDES = ("harness",)
+
+# Dev/share artifacts that are git-tracked but never part of the skill body.
+DEFAULT_EXCLUDES = (".trae-html-share-packages",)
+
+# Recognised SKILL.md frontmatter keys: Qoder interprets three of them.
+QODER_FRONTMATTER_KEYS = ("name", "description", "version")
+
+_FRONTMATTER_KEY_RE = re.compile(r"^[ \t]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]*(.*)$")
+
+
+# --------------------------------------------------------------------------- #
+# Small frontmatter helper (stdlib only; this project avoids third-party deps).#
+# --------------------------------------------------------------------------- #
+def parse_frontmatter(text: str) -> tuple[dict[str, str], int]:
+    """Parse the leading YAML frontmatter of ``text``.
+
+    Returns ``(fields, body_start)`` where ``fields`` maps each ``key: value``
+    line to its raw right-hand side (kept verbatim), and ``body_start`` is the
+    index in ``text`` at which the Markdown body begins (just past the closing
+    ``---`` delimiter). Raises ``ValueError`` when there is no valid block.
+    """
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("SKILL.md does not start with a YAML frontmatter block")
+    fields: dict[str, str] = {}
+    body_start = len(text)
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            # body begins at the start of the line after the closing delimiter
+            consumed = sum(len(line) + 1 for line in lines[: idx + 1])
+            body_start = min(consumed, len(text))
+            return fields, body_start
+        match = _FRONTMATTER_KEY_RE.match(lines[idx])
+        if match:
+            fields[match.group(1)] = match.group(2)
+    raise ValueError("frontmatter block is missing its closing '---' delimiter")
+
+
+def rewrite_frontmatter(text: str) -> tuple[str, list[str]]:
+    """Rewrite SKILL.md so only Qoder's ``name/description/version`` remain.
+
+    The Markdown body is preserved verbatim. Returns ``(new_text, changes)``
+    with a log of every key that was dropped so nothing is discarded silently.
+    """
+    fields, body_start = parse_frontmatter(text)
+    changes: list[str] = []
+    for key in fields:
+        if key not in QODER_FRONTMATTER_KEYS:
+            changes.append(f"dropped frontmatter key {key!r} (Qoder ignores it)")
+    if not any(key in fields for key in ("name", "description")):
+        raise ValueError("SKILL.md frontmatter must keep at least name/description")
+    header = ["---"]
+    for key in QODER_FRONTMATTER_KEYS:
+        if key in fields:
+            header.append(f"{key}: {fields[key]}")
+    header.append("---")
+    new_text = "\n".join(header) + "\n" + text[body_start:]
+    return new_text, changes
+
+
+def detect_extra_frontmatter(text: str) -> list[str]:
+    """Return warnings for frontmatter keys Qoder does not understand."""
+    fields, _ = parse_frontmatter(text)
+    return [
+        f"frontmatter key {key!r} is non-standard for Qoder (ignored there)"
+        for key in fields
+        if key not in QODER_FRONTMATTER_KEYS
+    ]
+
+
+def frontmatter_name(text: str) -> str:
+    fields, _ = parse_frontmatter(text)
+    name = fields.get("name")
+    if not name:
+        raise ValueError("SKILL.md frontmatter is missing its 'name' field")
+    return name.strip()
+
+
+def frontmatter_version(text: str) -> str | None:
+    fields, _ = parse_frontmatter(text)
+    version = fields.get("version")
+    return version.strip() if version else None
+
+
+# --------------------------------------------------------------------------- #
+# Package building                                                             #
+# --------------------------------------------------------------------------- #
+def _copy_tree(src: str, dst: str, excludes: Iterable[str]) -> None:
+    """Recursively copy ``src`` into ``dst``, skipping excluded top fields."""
+    for entry in os.listdir(src):
+        if entry in excludes or entry.startswith("."):
+            continue
+        shutil.copytree(
+            os.path.join(src, entry),
+            os.path.join(dst, entry),
+        )
+
+
+def _git_archive_extract(dst: str, excludes: Iterable[str]) -> list[str]:
+    """Extract the canonical skill body (git archive ':!harness') under dst.
+
+    Returns warnings; raises RuntimeError when ``git`` is missing or fails.
+    """
+    specs = [f":!{pat}" for pat in (*MANDATORY_EXCLUDES, *excludes)]
+    warnings: list[str] = []
+    tmp_zip = os.path.join(dst, ".archive-src.zip")
+    cmd = ["git", "archive", "--format=zip", "-o", tmp_zip, "HEAD", *specs]
+    result = os.system(" ".join(cmd))  # noqa: S605  (project uses subprocess-less git here)
+    if result != 0:
+        raise RuntimeError("git archive failed; are you in the repo root?")
+    with zipfile.ZipFile(tmp_zip) as archive:
+        for member in archive.namelist():
+            archive.extract(member, dst)  # noqa: S202 (trusted repo-tag content)
+    os.remove(tmp_zip)
+    return warnings
+
+
+def build_package(
+    version: str | None,
+    *,
+    out: str | None,
+    source: str | None,
+    exclude: Iterable[str] = (),
+    frontmatter: str = "keep",
+) -> tuple[str, list[str], dict[str, object]]:
+    """Build the Qoder zip under an ``iterate/`` top directory.
+
+    Returns ``(zip_path, warnings, meta)``.
+    """
+    excludes = tuple(exclude)
+    all_excludes = (*MANDATORY_EXCLUDES, *DEFAULT_EXCLUDES, *excludes)
+    warnings: list[str] = []
+    meta: dict[str, object] = {}
+
+    with tempfile.TemporaryDirectory(prefix="qoder-pkg-") as tmp:
+        stage = os.path.join(tmp, "iterate")
+        os.makedirs(stage, exist_ok=True)
+
+        if source is not None:
+            _copy_tree(source, stage, all_excludes)
+            warnings.append(f"copied from --source {source!r} (copy path, not git archive)")
+        else:
+            try:
+                warnings.extend(_git_archive_extract(stage, all_excludes))
+            except (RuntimeError, OSError) as exc:
+                warnings.append(f"git archive unavailable ({exc}); falling back to copy")
+                _copy_tree(REPO_ROOT, stage, all_excludes)
+
+        skill_path = os.path.join(stage, "SKILL.md")
+        if not os.path.isfile(skill_path):
+            raise ValueError("packaged tree has no SKILL.md at its root")
+
+        with open(skill_path, "r", encoding="utf-8") as handle:
+            skill_text = handle.read()
+        detected_name = frontmatter_name(skill_text)
+        meta["name"] = detected_name
+        meta["version"] = frontmatter_version(skill_text)
+
+        if detected_name == "iterate" and os.path.basename(stage) != detected_name:
+            warnings.append(
+                f"top-level dir is {os.path.basename(stage)!r}, renamed to {detected_name!r}"
+            )
+            alt = os.path.join(tmp, detected_name)
+            shutil.move(stage, alt)
+            stage = alt
+
+        if frontmatter == "minimal":
+            if any(key not in QODER_FRONTMATTER_KEYS for key in detect_frontmatter_keys(skill_text)):
+                rewritten, changes = rewrite_frontmatter(skill_text)
+                with open(skill_path, "w", encoding="utf-8") as handle:
+                    handle.write(rewritten)
+                warnings.extend(changes)
+            else:
+                warnings.append("--frontmatter minimal: nothing to strip")
+        else:
+            warnings.extend(detect_extra_frontmatter(skill_text))
+
+        errors, check_warnings = validate_tree(stage)
+        if errors:
+            raise ValueError("package failed Qoder checks:\n- " + "\n- ".join(errors))
+        warnings.extend(check_warnings)
+
+        if not version:
+            version = meta["version"] or "local"
+        zip_path = out or os.path.join(tmp, f"iterate-{version}-qoder.zip")
+        _zip_dir(stage, zip_path)
+        meta["size"] = os.path.getsize(zip_path)
+        meta["zip"] = zip_path
+        meta["top_level"] = os.path.basename(stage)
+        shutil.move(zip_path, os.path.abspath(zip_path))
+        return os.path.abspath(zip_path), warnings, meta
+
+
+def detect_frontmatter_keys(text: str) -> list[str]:
+    fields, _ = parse_frontmatter(text)
+    return list(fields.keys())
+
+
+def _zip_dir(directory: str, zip_path: str) -> None:
+    """Zip ``directory`` so its basename is the single top-level entry."""
+    base = os.path.basename(directory.rstrip(os.sep))
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for root, dirs, files in os.walk(directory):
+            dirs.sort()
+            for name in files:
+                full = os.path.join(root, name)
+                rel = os.path.relpath(full, directory)
+                archive.write(full, os.path.join(base, rel))
+
+
+# --------------------------------------------------------------------------- #
+# Validation                                                                    #
+# --------------------------------------------------------------------------- #
+def validate_tree(tree_root: str) -> tuple[list[str], list[str]]:
+    """Run Qoder package checks on an unpacked package tree.
+
+    Returns ``(errors, warnings)``; ``errors`` means the package must not ship.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    top_dir = os.path.basename(tree_root.rstrip(os.sep))
+    if top_dir != "iterate":
+        errors.append(f"top-level directory is {top_dir!r}; must be 'iterate'")
+
+    skill_path = os.path.join(tree_root, "SKILL.md")
+    if not os.path.isfile(skill_path):
+        errors.append("SKILL.md missing at package root")
+        return errors, warnings
+    with open(skill_path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+    try:
+        name = frontmatter_name(text)
+        if name != top_dir:
+            errors.append(
+                f"frontmatter name {name!r} != top-level directory {top_dir!r}"
+            )
+    except ValueError as exc:
+        errors.append(str(exc))
+
+    # Skill-only rule: zero harness/ anywhere under the package.
+    harness_hits = _find_harness(tree_root)
+    if harness_hits:
+        errors.append("harness/ must be absent (skill-only distribution): " + ", ".join(harness_hits))
+
+    total_bytes = _tree_size(tree_root)
+    if total_bytes > MAX_PACKAGE_BYTES:
+        errors.append(
+            f"unpacked size {total_bytes} bytes > 50 MB limit"
+        )
+    return errors, warnings
+
+
+def _find_harness(tree_root: str) -> list[str]:
+    hits: list[str] = []
+    for root, dirs, _files in os.walk(tree_root):
+        for name in dirs:
+            if name == "harness":
+                hits.append(os.path.relpath(os.path.join(root, name), tree_root))
+    return hits
+
+
+def _tree_size(tree_root: str) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(tree_root):
+        for name in files:
+            total += os.path.getsize(os.path.join(root, name))
+    return total
+
+
+def validate_zip(zip_path: str) -> tuple[list[str], list[str], int]:
+    """Validate a Qoder package zip; returns (errors, warnings, zip_size)."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    zip_size = os.path.getsize(zip_path)
+    if zip_size > MAX_PACKAGE_BYTES:
+        errors.append(f"zip size {zip_size} bytes > 50 MB")
+    if not zipfile.is_zipfile(zip_path):
+        errors.append("not a valid zip")
+        return errors, warnings, zip_size
+    names: list[str] = []
+    with zipfile.ZipFile(zip_path) as archive:
+        names = archive.namelist()
+        for entry in names:
+            info = archive.getinfo(entry)
+            if info.is_dir():
+                continue
+            if "harness" in entry.split("/"):
+                errors.append(f"harness/ present in package: {entry}")
+    if not names:
+        errors.append("empty zip")
+        return errors, warnings, zip_size
+    top = names[0].split("/")[0]
+    if top != "iterate":
+        errors.append(f"top-level entry {top!r}; must be 'iterate'")
+    return errors, warnings, zip_size
+
+
+def check_package(path: str) -> int:
+    """CLI for the ``check`` subcommand."""
+    if os.path.isdir(path):
+        errors, warnings = validate_tree(path)
+    else:
+        errors, warnings, _size = validate_zip(path)
+    for warning in warnings:
+        print("warning: " + warning)
+    if errors:
+        for error in errors:
+            print("error: " + error)
+        return 1
+    print(f"ok: {path} passes Qoder package checks")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Upload                                                                        #
+# --------------------------------------------------------------------------- #
+def _multipart_request(
+    url: str,
+    token: str,
+    *,
+    zip_path: str | None,
+    fields: dict[str, str],
+) -> object:
+    """POST a multipart/form-data request; returns the parsed JSON response."""
+    boundary = "----iterate" + ("%032x" % datetime.now().timestamp()).upper()
+    parts: list[bytes] = []
+
+    for name, value in fields.items():
+        parts.extend(
+            (
+                ("--%s\r\n" % boundary).encode(),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+                value.encode("utf-8"),
+                b"\r\n",
+            )
+        )
+
+    if zip_path is not None:
+        filename = os.path.basename(zip_path)
+        with open(zip_path, "rb") as handle:
+            data = handle.read()
+        parts.extend(
+            (
+                ("--%s\r\n" % boundary).encode(),
+                (
+                    f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'
+                ).encode(),
+                b"Content-Type: application/zip\r\n\r\n",
+                data,
+                b"\r\n",
+            )
+        )
+    parts.append(("--%s--\r\n" % boundary).encode())
+    body = b"".join(parts)
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "User-Agent": USER_AGENT,
+    }
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    context = ssl.create_default_context()
+    try:
+        with urllib.request.urlopen(
+            request, timeout=TIMEOUT_SECONDS, context=context
+        ) as resp:
+            raw = resp.read()
+            return json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8")
+        except Exception:  # noqa: BLE001 - best-effort body read
+            pass
+        raise RuntimeError(f"HTTP {exc.code} {exc.reason}: {detail}") from exc
+
+
+def publish(
+    zip_path: str,
+    *,
+    token: str,
+    skill_id: str | None,
+    display_title: str | None,
+    metadata: str | None,
+    host: str,
+    dry_run: bool,
+) -> dict[str, object]:
+    """Upload the Qoder package; create a skill or append a version."""
+    errors, warnings, zip_size = validate_zip(zip_path)
+    if errors:
+        raise ValueError("package failed Qoder checks:\n- " + "\n- ".join(errors))
+    for warning in warnings:
+        print("warning: " + warning)
+    if zip_size > MAX_PACKAGE_BYTES:
+        raise ValueError("zip exceeds 50 MB upload limit")
+
+    # `name` must be consistent; confirm it for the request log.
+    name: str | None = None
+    with zipfile.ZipFile(zip_path) as archive:
+        member = next((m for m in archive.namelist() if m.endswith("/SKILL.md")), None)
+        if member:
+            name = frontmatter_name(archive.read(member).decode("utf-8"))
+
+    endpoint = SKILLS_PATH if not skill_id else f"{SKILLS_PATH}/{skill_id}/versions"
+    url = host.rstrip("/") + endpoint
+    action = "create skill + first version" if not skill_id else "append new version"
+
+    fields: dict[str, str] = {}
+    if not skill_id and display_title:
+        fields["display_title"] = display_title
+    if not skill_id and metadata:
+        fields["metadata"] = metadata
+
+    if dry_run:
+        print(json.dumps({
+            "action": action,
+            "method": "POST",
+            "url": url,
+            "skill_id": skill_id,
+            "name": name,
+            "zip": zip_path,
+            "zip_bytes": zip_size,
+            "fields": fields,
+        }, ensure_ascii=False, indent=2))
+        return {"dry_run": True, "url": url, "action": action}
+
+    response = _multipart_request(url, token, zip_path=zip_path, fields=fields)
+    print("response: " + json.dumps(response, ensure_ascii=False))
+    return response
+
+
+# --------------------------------------------------------------------------- #
+# CLI                                                                          #
+# --------------------------------------------------------------------------- #
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="publish_qoder",
+        description="Rebuild and upload the iterate skill to Qoder.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    check_p = sub.add_parser("check", help="preflight a built package (dir or zip)")
+    check_p.add_argument("path", help="path to an iterate/ dir or a built zip")
+
+    build_p = sub.add_parser("build", help="rebuild the Qoder-compatible zip locally")
+    build_p.add_argument("--source", help="use this dir instead of git archive of repo root")
+    build_p.add_argument("--out", help="output zip path")
+    build_p.add_argument(
+        "--version",
+        help="version to embed in the default zip name (default: SKILL.md frontmatter version)",
+    )
+    build_p.add_argument(
+        "--frontmatter",
+        choices=("keep", "minimal"),
+        default="keep",
+        help="'keep' leaves SKILL.md as-is (non-standard keys warned); 'minimal' rewrites frontmatter to name/description/version",
+    )
+    build_p.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="additional top-level paths to exclude (repeatable)",
+    )
+
+    pub_p = sub.add_parser("publish", help="upload a built zip to Qoder")
+    pub_p.add_argument("zip", help="built Qoder package zip")
+    pub_p.add_argument("--token", help="PAT/SAT; falls back to $QODER_ACCESS_TOKEN")
+    pub_p.add_argument(
+        "--skill-id",
+        help="existing skill id -> append a new version; omit to create a new skill",
+    )
+    pub_p.add_argument("--display-title", help="display title (new skill only; immutable)")
+    pub_p.add_argument("--metadata", help="JSON metadata string (new skill only)")
+    pub_p.add_argument("--host", default=DEFAULT_API_HOST, help="API base URL")
+    pub_p.add_argument("--dry-run", action="store_true", help="run local checks and print the request, do not send")
+    pub_p.add_argument("--json", action="store_true", help="print the result as JSON")
+    return parser
+
+
+def _resolve_token(args: argparse.Namespace) -> str:
+    token = args.token or os.environ.get(TOKEN_ENV)
+    if not token:
+        raise SystemExit(f"error: no token; pass --token or set ${TOKEN_ENV}")
+    return token
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+
+    if args.command == "check":
+        return check_package(args.path)
+
+    if args.command == "build":
+        zip_path, warnings, meta = build_package(
+            args.version,
+            out=args.out,
+            source=args.source,
+            exclude=args.exclude or (),
+            frontmatter=args.frontmatter,
+        )
+        for warning in warnings:
+            print("warning: " + warning)
+        print(json.dumps(meta, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "publish":
+        if not args.dry_run:
+            args.token = _resolve_token(args)
+        try:
+            result = publish(
+                args.zip,
+                token=getattr(args, "token", None),
+                skill_id=args.skill_id,
+                display_title=args.display_title,
+                metadata=args.metadata,
+                host=args.host,
+                dry_run=args.dry_run,
+            )
+        except (ValueError, RuntimeError, OSError) as exc:
+            print("error: " + str(exc))
+            return 1
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
