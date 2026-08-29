@@ -59,13 +59,12 @@ jobs:
             iterate-skill.tar.gz
             SHA256SUMS.txt
 
-  qoder:
+  qoder-package:
     # Qoder distribution line only — runs for skill tags (v2.*).
-    # Rebuilds the Qoder-compatible skill package and uploads it via the Cloud
-    # Agents Skills API. Like the PyPI step, it is best-effort and gated on the
-    # QODER_ACCESS_TOKEN secret. First release creates the skill (id saved back
-    # to the QODER_SKILL_ID repo variable); later releases append a new
-    # immutable version to that id.
+    # Rebuilds the Qoder-compatible skill package (single top-level directory +
+    # SKILL.md + references/) and uploads it to the release as a downloadable
+    # asset. No Cloud Agents API upload: publication to the Qoder AppHub is
+    # done manually by the operator via the packaged zip.
     if: startsWith(github.event.release.tag_name || github.event.inputs.tag, 'v2')
     runs-on: ubuntu-latest
     steps:
@@ -82,29 +81,11 @@ jobs:
       - name: Rebuild Qoder package
         run: python3 scripts/publish_qoder.py build --out iterate-qoder.zip
 
-      - name: Publish to Qoder (iff token configured)
-        env:
-          QODER_ACCESS_TOKEN: ${{ secrets.QODER_ACCESS_TOKEN }}
-          QODER_SKILL_ID: ${{ vars.QODER_SKILL_ID }}
-        run: |
-          if [ -z "$QODER_ACCESS_TOKEN" ]; then
-            echo "QODER_ACCESS_TOKEN secret not configured; skipping Qoder publish"
-            exit 0
-          fi
-          ARGS=()
-          if [ -n "$QODER_SKILL_ID" ]; then
-            ARGS+=(--skill-id "$QODER_SKILL_ID")
-          fi
-          OUT="$(python3 scripts/publish_qoder.py publish iterate-qoder.zip "${ARGS[@]}" --display-title "Iterate")"
-          echo "$OUT"
-          if [ -z "$QODER_SKILL_ID" ]; then
-            RESP="$(printf '%s' "$OUT" | sed -n 's/^response: //p')"
-            ID="$(printf '%s' "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); c=d.get('id') or d.get('skill_id') or (d.get('result') or {}).get('id'); print(c or '')")"
-          fi
-          if [ -n "${ID:-}" ]; then
-            gh variable set QODER_SKILL_ID --body "$ID"
-            echo "Saved QODER_SKILL_ID=$ID"
-          fi
+      - name: Upload Qoder package to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+          files: iterate-qoder.zip
 
   harness-wheel:
     # Harness distribution line only — runs for harness tags (v1.*).
