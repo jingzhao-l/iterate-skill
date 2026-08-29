@@ -291,7 +291,7 @@ def _keyring_available() -> bool:
         return _keyring_usable
     _keyring_checked = True
     try:
-        import keyring
+        import keyring  # type: ignore[import-not-found]  # keyring not installed in this env
 
         # Probe the backend — merely importing keyring is not enough because
         # the package may be installed without a functioning backend (e.g. on
@@ -325,7 +325,7 @@ def store_credential(provider: str, key: str, value: str, *, use_keyring: bool |
 
     if use_keyring:
         try:
-            import keyring
+            import keyring  # type: ignore[import-not-found]  # keyring not installed in this env
 
             keyring.set_password(_KEYRING_SERVICE, _keyring_key(provider, key), value)
             log.debug("Stored %s/%s in keyring", provider, key)
@@ -347,7 +347,7 @@ def load_credential(provider: str, key: str, *, use_keyring: bool | None = None)
 
     if use_keyring:
         try:
-            import keyring
+            import keyring  # type: ignore[import-not-found]  # keyring not installed in this env
 
             value = keyring.get_password(_KEYRING_SERVICE, _keyring_key(provider, key))
             if value is not None:
@@ -372,8 +372,8 @@ def clear_provider_credentials(provider: str, *, use_keyring: bool | None = None
 
     if use_keyring:
         try:
-            import keyring
-            from keyring.errors import PasswordDeleteError
+            import keyring  # type: ignore[import-not-found]  # keyring not installed in this env
+            from keyring.errors import PasswordDeleteError  # type: ignore[import-not-found]
 
             # Try common keys; silently ignore missing ones.
             for key in ("api_key", "token", "github_token"):

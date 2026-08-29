@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from croniter import croniter
+from croniter import croniter  # type: ignore[import-untyped]  # croniter ships no stubs in this env
 
 from iterate_harness.config.paths import get_cron_registry_path
 from iterate_harness.utils.file_lock import exclusive_file_lock

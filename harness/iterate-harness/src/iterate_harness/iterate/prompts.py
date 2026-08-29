@@ -190,31 +190,36 @@ def personalization_constraints(cwd: str | None) -> str:
         return ""
 
     lines: list[str] = []
-    protected = [str(p) for p in personalization.get("protected_paths") or []]
+    protected_raw = personalization.get("protected_paths")
+    protected = [str(p) for p in (protected_raw if isinstance(protected_raw, list) else [])]
     if protected:
         lines.append(
             "Protected paths (NEVER modify, enforced by permissions too): "
             + ", ".join(f"`{p}`" for p in protected)
         )
+    risks_raw = personalization.get("risk_areas")
     risks = [
         (str(item.get("path", "")), str(item.get("reason", "")))
-        for item in personalization.get("risk_areas") or []
+        for item in (risks_raw if isinstance(risks_raw, list) else [])
         if isinstance(item, dict)
     ]
     if risks:
         rendered = ", ".join(f"`{path}` ({reason or 'no reason given'})" for path, reason in risks)
         lines.append(f"Risk areas (changes require explicit user approval): {rendered}")
-    forbidden = [str(f) for f in personalization.get("forbidden_fixes") or []]
+    forbidden_raw = personalization.get("forbidden_fixes")
+    forbidden = [str(f) for f in (forbidden_raw if isinstance(forbidden_raw, list) else [])]
     if forbidden:
         lines.append(
             "Forbidden fix approaches (never use): " + ", ".join(f"`{f}`" for f in forbidden)
         )
-    priority = [str(d) for d in personalization.get("fix_priority_order") or []]
+    priority_raw = personalization.get("fix_priority_order")
+    priority = [str(d) for d in (priority_raw if isinstance(priority_raw, list) else [])]
     if priority:
         lines.append("Fix priority order (high to low): " + " > ".join(priority))
+    focus_raw = personalization.get("dimension_focus")
     focus = [
         (str(item.get("dimension", "")), str(item.get("focus", "")))
-        for item in personalization.get("dimension_focus") or []
+        for item in (focus_raw if isinstance(focus_raw, list) else [])
         if isinstance(item, dict)
     ]
     for dimension, focus_text in focus:
@@ -358,7 +363,7 @@ def normal_kickoff(
 def resume_kickoff(
     goal: str,
     max_rounds: int,
-    last_summary: dict,
+    last_summary: dict[str, object],
     template: str = DEFAULT_TEMPLATE,
 ) -> str:
     """First-turn prompt that resumes the last iterate run (breakpoint resume).
@@ -371,7 +376,8 @@ def resume_kickoff(
     total = int(last_summary.get("totalFindings") or 0)
     interrupted = last_summary.get("interrupted", False)
     preview_lines: list[str] = []
-    for finding in last_summary.get("preview") or []:
+    preview_raw = last_summary.get("preview")
+    for finding in (preview_raw if isinstance(preview_raw, list) else []):
         if not isinstance(finding, dict):
             continue
         preview_lines.append(
