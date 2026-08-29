@@ -59,6 +59,34 @@ jobs:
             iterate-skill.tar.gz
             SHA256SUMS.txt
 
+  qoder-package:
+    # Qoder distribution line only — runs for skill tags (v2.*).
+    # Rebuilds the Qoder-compatible skill package (single top-level directory +
+    # SKILL.md + references/) and uploads it to the release as a downloadable
+    # asset. No Cloud Agents API upload: publication to the Qoder AppHub is
+    # done manually by the operator via the packaged zip.
+    if: startsWith(github.event.release.tag_name || github.event.inputs.tag, 'v2')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged tree
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Rebuild Qoder package
+        run: python3 scripts/publish_qoder.py build --out iterate-qoder.zip
+
+      - name: Upload Qoder package to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+          files: iterate-qoder.zip
+
   harness-wheel:
     # Harness distribution line only — runs for harness tags (v1.*).
     if: startsWith(github.event.release.tag_name || github.event.inputs.tag, 'v1')
