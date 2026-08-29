@@ -52,10 +52,16 @@ def _collect_resolved_config(config: dict[str, Any]) -> dict[str, Any]:
         Flat dict of resolved settings.
     """
     resolved: dict[str, Any] = {}
-    # Top-level keys.
-    for key in ("language", "goal", "max_rounds"):
+    # Top-level keys. ``reasoning_effort`` is always surfaced (even when null,
+    # i.e. provider default) so the knob is visible to users; other top-level
+    # keys are only shown when set.
+    for key in ("language", "goal"):
         if key in config and config[key] is not None:
             resolved[key] = config[key]
+    if "max_rounds" in config and config["max_rounds"] is not None:
+        resolved["max_rounds"] = config["max_rounds"]
+    if "reasoning_effort" in config:
+        resolved["reasoning_effort"] = config["reasoning_effort"]
     # Nested sections.
     git = _as_section(config.get("git"))
     review = _as_section(config.get("review"))
@@ -266,7 +272,7 @@ def _render_config(config: dict[str, Any]) -> None:
     tui.empty_line()
     tui.section("Resolved Config")
     for key in (
-        "language", "goal", "max_rounds", "atomic_max_lines",
+        "language", "goal", "max_rounds", "reasoning_effort", "atomic_max_lines",
         "atomic_max_adjacent_methods", "use_worktree", "auto_merge",
         "output_schema_validation", "evidence_validation",
         "coverage_validation", "scope_chunk_size",
@@ -277,6 +283,10 @@ def _render_config(config: dict[str, Any]) -> None:
             value = config[key]
             if isinstance(value, bool):
                 value = "yes" if value else "no"
+            elif value is None:
+                # reasoning_effort may be null (= provider default); label it
+                # explicitly instead of printing "None".
+                value = "default"
             tui.key_value(label, str(value))
 
     validation = config.get("validation")

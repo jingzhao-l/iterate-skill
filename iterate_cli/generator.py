@@ -65,6 +65,11 @@ DEFAULT_REVIEW_SCOPE = "full"
 # Default chunk size for splitting the review scope into per-round batches.
 DEFAULT_SCOPE_CHUNK_SIZE = 25
 
+# Accepted LLM reasoning-effort levels (mirrors config.stream's enum). ``None``
+# means "follow the provider default". Kept in sync by tests.
+REASONING_EFFORT_VALUES: frozenset[str] = frozenset({"low", "medium", "high"})
+DEFAULT_REASONING_EFFORT: str | None = None
+
 # Default user-owned section content when generating a fresh ITERATE.md.
 DEFAULT_USER_OWNED_SECTION = """
 ## 自定义代码约定 / Custom Code Conventions
@@ -112,6 +117,7 @@ class OnboardingData:
     language: str = DEFAULT_LANGUAGE
     goal: str = DEFAULT_GOAL
     max_rounds: int = DEFAULT_MAX_ROUNDS
+    reasoning_effort: str | None = DEFAULT_REASONING_EFFORT
     atomic_max_lines: int = DEFAULT_ATOMIC_MAX_LINES
     atomic_max_adjacent_methods: int = DEFAULT_ATOMIC_MAX_ADJACENT_METHODS
     use_worktree: bool = False
@@ -126,6 +132,16 @@ class OnboardingData:
     def completed_at(self) -> str:
         """ISO 8601 timestamp of onboarding completion."""
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def normalize_reasoning_effort(value: object) -> str | None:
+    """Coerce an arbitrary value to an accepted reasoning-effort level.
+
+    Hand-edited configs may hold anything; return ``None`` (the provider
+    default) for values outside the accepted set so a bad value never
+    persists as a typo in the regenerated config.
+    """
+    return value if value in REASONING_EFFORT_VALUES else None
 
 
 def generate_iterate_md(data: OnboardingData, completed_at: str | None = None) -> str:
@@ -205,6 +221,7 @@ def generate_config_yaml(data: OnboardingData) -> str:
     config: dict[str, Any] = {
         "goal": data.goal,
         "max_rounds": data.max_rounds,
+        "reasoning_effort": data.reasoning_effort,
         "language": data.language,
         "dimensions": data.dimensions,
         "review": {"scope": data.review_scope},

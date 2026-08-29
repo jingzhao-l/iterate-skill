@@ -28,10 +28,12 @@ from iterate_cli.generator import (
     DEFAULT_GOAL,
     DEFAULT_LANGUAGE,
     DEFAULT_MAX_ROUNDS,
+    DEFAULT_REASONING_EFFORT,
     DEFAULT_REVIEW_SCOPE,
     DEFAULT_SCOPE_CHUNK_SIZE,
     DEFAULT_TARGET_BRANCH,
     OnboardingData,
+    normalize_reasoning_effort,
 )
 from iterate_cli.scan import (
     ScanResult,
@@ -78,6 +80,9 @@ MAX_DIRS_DISPLAYED = 10
 MAX_ROUNDS_MIN = 1
 MAX_ROUNDS_MAX = 50  # hard cap from schema (maximum: 50)
 ATOMIC_THRESHOLD_MIN = 1
+
+# Accepted reasoning-effort levels (mirrors generator.REASONING_EFFORT_VALUES).
+REASONING_EFFORT_LABELS: frozenset[str] = frozenset({"low", "medium", "high"})
 
 # Dimension display names for the selection menu.
 DIMENSION_LABELS: dict[str, str] = {
@@ -453,6 +458,9 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             language=config.get("language", DEFAULT_LANGUAGE),
             goal=config.get("goal", DEFAULT_GOAL),
             max_rounds=config.get("max_rounds", DEFAULT_MAX_ROUNDS),
+            reasoning_effort=normalize_reasoning_effort(
+                config.get("reasoning_effort", DEFAULT_REASONING_EFFORT)
+            ),
             atomic_max_lines=atomic.get("max_lines", DEFAULT_ATOMIC_MAX_LINES),
             atomic_max_adjacent_methods=atomic.get(
                 "max_adjacent_methods", DEFAULT_ATOMIC_MAX_ADJACENT_METHODS
@@ -732,10 +740,10 @@ def _optionally_collect_advanced_config(
 
     Most onboarding runs are happy with the defaults. When the user opts in,
     exposes the tuning knobs that a typical run keeps at defaults: iteration
-    goal, max rounds, output language, atomic thresholds, git isolation
-    (worktree / auto-merge), reviewer output validation, and drift-ignore glob
-    patterns. Every prompt uses the current value as its default, so pressing
-    Enter keeps the existing value.
+    goal, max rounds, reasoning effort, output language, atomic thresholds,
+    git isolation (worktree / auto-merge), reviewer output validation, and
+    drift-ignore glob patterns. Every prompt uses the current value as its
+    default, so pressing Enter keeps the existing value.
 
     Args:
         data: OnboardingData being assembled; mutated only when the user
@@ -762,6 +770,7 @@ def _optionally_collect_advanced_config(
         MAX_ROUNDS_MAX,
         input_func,
     )
+    data.reasoning_effort = _read_reasoning_effort(data.reasoning_effort, input_func)
     data.language = _read_language(data.language, input_func)
     data.atomic_max_lines = _read_optional_int(
         "原子改动最大行数 / Atomic max lines",
@@ -847,6 +856,33 @@ def _read_language(current: str, input_func: InputFunc) -> str:
         if raw in ("zh", "en"):
             return raw
         tui.warning("请输入 zh 或 en / Please enter zh or en.", indent=2)
+
+
+def _read_reasoning_effort(
+    current: str | None,
+    input_func: InputFunc,
+) -> str | None:
+    """Read an LLM reasoning-effort level (low/medium/high), keeping ``current``.
+
+    Accepts an empty input (keep current/None) or one of the three accepted
+    values. Any other input is rejected with a hint rather than silently
+    falling back, so a typo is surfaced instead of being silently dropped.
+    """
+    current_label = current if current is not None else "default"
+    prompt = (
+        f"  └ 推理努力度 / Reasoning effort (low/medium/high, 当前 {current_label}):"
+    )
+    while True:
+        raw = input_func(prompt).strip().lower()
+        if not raw:
+            return current
+        if raw in REASONING_EFFORT_LABELS:
+            return raw
+        tui.warning(
+            "请输入 low、medium 或 high（留空保持默认）/ "
+            "Enter low, medium or high (empty keeps current).",
+            indent=2,
+        )
 
 
 def _read_drift_ignore(current: list[str], input_func: InputFunc) -> list[str]:

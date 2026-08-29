@@ -243,6 +243,9 @@ iterate show         # 只读查看合并后的配置与个性化详情（支持
 iterate refresh      # 增量刷新（保留用户手写区）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
 iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查）
+iterate config       # 非交互式查看全部可设配置值
+iterate config get <key>   # 读取单个配置项的解析值
+iterate config set <key> <value>  # 校验并写回单个配置项（自动备份）
 ```
 
 CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适合希望手动控制 onboarding 过程的用户；AI 通道则完全由 AI 自动扫描生成。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。

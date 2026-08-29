@@ -33,6 +33,12 @@
       "maximum": 50,
       "description": "Maximum number of iteration rounds (hard cap 50)."
     },
+    "reasoning_effort": {
+      "type": ["string", "null"],
+      "enum": [null, "low", "medium", "high"],
+      "default": null,
+      "description": "LLM reasoning effort for review passes. 'low' saves tokens on quick rounds, 'high' for critical deep review; null = follow the provider default."
+    },
     "language": {
       "type": "string",
       "enum": ["zh", "en"],

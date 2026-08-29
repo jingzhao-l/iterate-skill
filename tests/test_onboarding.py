@@ -45,6 +45,7 @@ from iterate_cli.generator import (
     generate_config_yaml,
     generate_iterate_md,
     generate_refreshed_md,
+    normalize_reasoning_effort,
     write_onboarding_outputs,
 )
 from iterate_cli.personalize import (
@@ -93,6 +94,7 @@ from iterate_cli.wizard import (
     _read_language,
     _read_optional_int,
     _read_optional_text,
+    _read_reasoning_effort,
     run_wizard,
 )
 
@@ -562,6 +564,31 @@ class TestGenerateConfigYaml:
         errors = validate.validate_config(config_path, schema_path)
         assert errors == [], f"Schema validation errors: {errors}"
 
+    def test_reasoning_effort_default_is_null(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        yaml_text = generate_config_yaml(data)
+        config = yaml.safe_load(yaml_text)
+        assert config["reasoning_effort"] is None
+
+    def test_reasoning_effort_emitted_when_set(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.reasoning_effort = "high"
+        yaml_text = generate_config_yaml(data)
+        config = yaml.safe_load(yaml_text)
+        assert config["reasoning_effort"] == "high"
+
+
+class TestNormalizeReasoningEffort:
+    def test_accepts_valid_levels(self) -> None:
+        for level in ("low", "medium", "high"):
+            assert normalize_reasoning_effort(level) == level
+
+    def test_rejects_invalid_value(self) -> None:
+        assert normalize_reasoning_effort("turbo") is None
+
+    def test_none_stays_none(self) -> None:
+        assert normalize_reasoning_effort(None) is None
+
 
 class TestWriteOutputs:
     def test_writes_both_files(self, fake_project: Path) -> None:
@@ -900,6 +927,30 @@ class TestIncrementalRefresh:
         existing_config = load_onboarding_config(fake_project) or {}
         refreshed = _build_refresh_data(fake_project, scan, existing_config)
         assert refreshed.push_per_round is False
+
+    def test_refresh_preserves_reasoning_effort(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.reasoning_effort = "low"
+        write_onboarding_outputs(data, fake_project)
+        assert incremental_refresh(fake_project) is True
+        config = load_onboarding_config(fake_project) or {}
+        assert config.get("reasoning_effort") == "low"
+
+    def test_refresh_normalizes_invalid_reasoning_effort(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        config_path = fake_project / "iterate.config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        config["reasoning_effort"] = "turbo"
+        config_path.write_text(
+            yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+
+        scan = scan_project(fake_project)
+        existing_config = load_onboarding_config(fake_project) or {}
+        refreshed = _build_refresh_data(fake_project, scan, existing_config)
+        assert refreshed.reasoning_effort is None
 
 
 class TestRefreshDryRun:
@@ -4535,6 +4586,7 @@ class TestAdvancedConfigWizard:
             "y",  # configure advanced options
             "Ship quality",  # goal
             "10",  # max_rounds
+            "high",  # reasoning_effort
             "zh",  # language
             "5",  # atomic_max_lines
             "2",  # atomic_max_adjacent_methods
@@ -4546,6 +4598,7 @@ class TestAdvancedConfigWizard:
         _optionally_collect_advanced_config(data, input_func=lambda _: next(responses))
         assert data.goal == "Ship quality"
         assert data.max_rounds == 10
+        assert data.reasoning_effort == "high"
         assert data.language == "zh"
         assert data.atomic_max_lines == 5
         assert data.atomic_max_adjacent_methods == 2
@@ -4560,6 +4613,7 @@ class TestAdvancedConfigWizard:
             "y",  # configure advanced options
             "",   # goal (keep)
             "",   # max_rounds (keep)
+            "",   # reasoning_effort (keep)
             "",   # language (keep)
             "",   # atomic_max_lines (keep)
             "",   # atomic_max_adjacent_methods (keep)
@@ -4571,6 +4625,7 @@ class TestAdvancedConfigWizard:
         _optionally_collect_advanced_config(data, input_func=lambda _: next(responses))
         assert data.goal == DEFAULT_GOAL
         assert data.max_rounds == DEFAULT_MAX_ROUNDS
+        assert data.reasoning_effort is None
         assert data.language == "en"
         assert data.atomic_max_lines == DEFAULT_ATOMIC_MAX_LINES
         assert data.atomic_max_adjacent_methods == DEFAULT_ATOMIC_MAX_ADJACENT_METHODS
@@ -4614,6 +4669,23 @@ class TestAdvancedConfigWizard:
     def test_read_language_invalid_then_valid(self) -> None:
         responses = iter(["fr", "en"])
         assert _read_language("zh", lambda _: next(responses)) == "en"
+
+    # -- _read_reasoning_effort --
+
+    def test_read_reasoning_effort_keeps_on_empty(self) -> None:
+        assert _read_reasoning_effort("low", lambda _: "") == "low"
+        assert _read_reasoning_effort(None, lambda _: "") is None
+
+    def test_read_reasoning_effort_valid(self) -> None:
+        assert _read_reasoning_effort(None, lambda _: "high") == "high"
+        assert _read_reasoning_effort("low", lambda _: "medium") == "medium"
+
+    def test_read_reasoning_effort_is_case_insensitive(self) -> None:
+        assert _read_reasoning_effort(None, lambda _: "HIGH") == "high"
+
+    def test_read_reasoning_effort_invalid_then_valid(self) -> None:
+        responses = iter(["turbo", "low"])
+        assert _read_reasoning_effort(None, lambda _: next(responses)) == "low"
 
     # -- _read_optional_text --
 
@@ -4668,6 +4740,27 @@ class TestShowCommand:
         assert "src/auth/" in captured.out
         assert "Use snake_case" in captured.out
         assert "bandit -r src/" in captured.out
+
+    def test_show_surfaces_reasoning_effort(self, fake_project: Path, capsys) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.reasoning_effort = "high"
+        write_onboarding_outputs(data, fake_project)
+
+        ret = cli_main(["show", "-p", str(fake_project)])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "Reasoning Effort" in captured.out
+        assert "high" in captured.out
+
+    def test_show_json_reasoning_effort(self, fake_project: Path, capsys) -> None:
+        from iterate_cli.show import collect_show_data
+
+        data = _build_onboarding_data(fake_project)
+        data.reasoning_effort = "medium"
+        write_onboarding_outputs(data, fake_project)
+
+        report = collect_show_data(fake_project)
+        assert report["config"]["reasoning_effort"] == "medium"
 
     def test_show_json(self, fake_project: Path, capsys) -> None:
         data = _build_onboarding_data(fake_project)

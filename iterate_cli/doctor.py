@@ -34,6 +34,7 @@ from typing import Any
 import yaml
 
 from iterate_cli import __version__ as SKILL_VERSION
+from iterate_cli.generator import REASONING_EFFORT_VALUES
 from iterate_cli.personalize import FORBIDDEN_COMMAND_CHARS
 from iterate_cli.refresh import (
     CONFIG_YAML,
@@ -259,6 +260,7 @@ def run_doctor(project_root: Path) -> DoctorReport:
     _check_config_schema(report, config)
     _check_dimensions(report, config)
     _check_max_rounds(report, config)
+    _check_reasoning_effort(report, config)
     _check_language(report, config)
     _check_review_scope(report, config)
     _check_git_branch(report, config)
@@ -404,6 +406,27 @@ def _check_max_rounds(report: DoctorReport, config: dict[str, Any]) -> None:
         )
         return
     _ok(report, "max_rounds", f"max_rounds={max_rounds} is within bounds.")
+
+
+def _check_reasoning_effort(report: DoctorReport, config: dict[str, Any]) -> None:
+    """reasoning_effort must be one of the supported levels (or unset)."""
+    reasoning_effort = config.get("reasoning_effort")
+    if reasoning_effort is None:
+        _ok(report, "reasoning_effort", "reasoning_effort not set (provider default).")
+        return
+    if reasoning_effort not in REASONING_EFFORT_VALUES:
+        _err(
+            report,
+            "reasoning_effort",
+            f"reasoning_effort {reasoning_effort!r} is not a supported level.",
+            f"Supported: {', '.join(sorted(REASONING_EFFORT_VALUES))}.",
+        )
+        return
+    _ok(
+        report,
+        "reasoning_effort",
+        f"reasoning_effort={reasoning_effort!r} is a supported level.",
+    )
 
 
 def _check_language(report: DoctorReport, config: dict[str, Any]) -> None:
@@ -727,6 +750,14 @@ def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]
     if language is not None and language not in SUPPORTED_LANGUAGES:
         new_config["language"] = "en"
         fixes.append(f"language: {language!r} invalid, reset to 'en'.")
+
+    # reasoning_effort: must be one of low/medium/high (None = provider default).
+    reasoning_effort = new_config.get("reasoning_effort")
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORT_VALUES:
+        new_config["reasoning_effort"] = None
+        fixes.append(
+            f"reasoning_effort: {reasoning_effort!r} invalid, reset to provider default (null)."
+        )
 
     # max_rounds: must be an integer in [1, 50].
     max_rounds = new_config.get("max_rounds")

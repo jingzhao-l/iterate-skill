@@ -153,6 +153,15 @@ def _dispatch_command(
             fix=getattr(args, "fix", False),
             json_out=getattr(args, "json_out", None),
         )
+    if args.command == "config":
+        if show_banner:
+            tui.banner()
+        return _cmd_config(
+            project_root,
+            action=getattr(args, "config_action", None),
+            key=getattr(args, "key", None),
+            value=getattr(args, "value", None),
+        )
     parser.print_help()
     return 0
 
@@ -307,6 +316,34 @@ def _build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Apply safe, non-destructive fixes to iterate.config.yaml "
         "(backup written first) before running diagnostics.",
+    )
+    config_parser = subparsers.add_parser(
+        "config",
+        parents=[parent],
+        help="Inspect or modify config values without the interactive wizard.",
+        description="Non-interactive config inspection and editing. With no "
+        "action, prints every settable value; 'get KEY' prints one resolved "
+        "value; 'set KEY VALUE' validates and writes one value with a "
+        "timestamped backup.",
+    )
+    config_parser.add_argument(
+        "config_action",
+        nargs="?",
+        choices=["get", "set"],
+        default=None,
+        help="Action to perform: 'get' (default when omitted) or 'set'.",
+    )
+    config_parser.add_argument(
+        "key",
+        nargs="?",
+        default=None,
+        help="Flat config key to read or write (omit to list all keys).",
+    )
+    config_parser.add_argument(
+        "value",
+        nargs="?",
+        default=None,
+        help="Value to set (only used with 'set').",
     )
 
     return parser
@@ -828,4 +865,41 @@ def _cmd_doctor(
             return 1
 
     return code
+
+
+def _cmd_config(
+    project_root: Path,
+    action: str | None,
+    key: str | None,
+    value: str | None,
+) -> int:
+    """Handle the 'config' subcommand — non-interactive config inspection/edit.
+
+    ``iterate config`` prints every settable value, ``iterate config get [k]``
+    prints one (or all) resolved value(s), and ``iterate config set k v``
+    validates and writes a single value with a timestamped backup.
+
+    Args:
+        project_root: Project root directory.
+        action: The config action ("get", "set", or None to list all).
+        key: Flat config key to read or write (None to list all keys).
+        value: Raw CLI value to write (only used with "set").
+
+    Returns:
+        Exit code: 0 on success, 1 on unknown key / invalid value / write
+        failure.
+    """
+    from iterate_cli.configcmd import run_config_get, run_config_set
+
+    if action == "set":
+        if key is None:
+            tui.error("Usage: iterate config set KEY VALUE")
+            return 1
+        if value is None:
+            tui.error("Usage: iterate config set KEY VALUE")
+            return 1
+        return run_config_set(project_root, key, value)
+
+    # 'get' (explicit or implicit) lists all values when no key is given.
+    return run_config_get(project_root, key)
 

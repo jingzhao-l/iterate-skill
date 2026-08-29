@@ -5,6 +5,19 @@
 
 ---
 
+## [Unreleased] — 2026-08-30
+
+### 新增 / Features
+
+- **`reasoning_effort` 端到端 CLI 支持**：onboarding 向导新增「推理努力度」配置项（`low`/`medium`/`high`，默认留空跟随 provider），生成的 `iterate.config.yaml` 输出该字段；`iterate show` 展示、`iterate doctor` 校验并自动修复非法值、`iterate refresh` / re-onboard 保留用户自定义值。schema（`config/config.schema.json` 与 `iterate_cli/data/config.schema.json`）已同步。
+- **新增 `iterate config` 非交互式配置子命令**：`iterate config` 列出全部可设值，`iterate config get [KEY]` 读取单个（或全部）解析值，`iterate config set KEY VALUE` 校验并写回单个配置项（写入前自动生成时间戳备份）。支持扁平键（`goal`/`max_rounds`/`reasoning_effort`/`language`/`dimensions`）与嵌套段（`atomic.*`/`git.*`/`review.scope`/`reviewer.*`），损坏配置拒绝覆写。修复了 flat 键读取返回整份配置的 bug。
+
+### 测试 / Tests
+
+- 新增 `tests/test_config.py`（24 例）覆盖值解析器、`get`/`set` 正常与异常路径、嵌套写入、备份生成、损坏配置保护与 CLI 退出码；全量 Python 测试 820 个全部通过。
+
+---
+
 ## [2.9.1] — 2026-08-27
 
 ### 修复 / Bug fixes

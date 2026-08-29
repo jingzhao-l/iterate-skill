@@ -31,6 +31,7 @@ from iterate_cli.generator import (
     OnboardingData,
     atomic_write,
     generate_refreshed_md,
+    normalize_reasoning_effort,
     write_onboarding_outputs,
 )
 from iterate_cli.scan import (
@@ -678,6 +679,9 @@ def _build_refresh_data(
         existing_config
     )
     reviewer = _preserve_reviewer_tuning(existing_config)
+    reasoning_effort = normalize_reasoning_effort(
+        existing_config.get("reasoning_effort")
+    )
 
     return OnboardingData(
         project_root=project_root,
@@ -693,6 +697,7 @@ def _build_refresh_data(
         command_whitelist=effective_whitelist,
         fingerprints=fingerprints,
         language=language,
+        reasoning_effort=reasoning_effort,
         output_schema_validation=reviewer["output_schema_validation"],
         evidence_validation=reviewer["evidence_validation"],
         coverage_validation=reviewer["coverage_validation"],

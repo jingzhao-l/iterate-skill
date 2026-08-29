@@ -188,6 +188,40 @@ class TestDoctorConfig:
         assert not report.has_errors()
         assert any(f.check == "max_rounds" and f.severity == "ok" for f in report.findings)
 
+    def test_reasoning_effort_invalid_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["reasoning_effort"] = "turbo"
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert report.has_errors()
+        assert any(
+            f.check == "reasoning_effort" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_reasoning_effort_valid_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["reasoning_effort"] = "low"
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(
+            f.check == "reasoning_effort" and f.severity == "ok"
+            for f in report.findings
+        )
+
+    def test_reasoning_effort_unset_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(
+            f.check == "reasoning_effort" and f.severity == "ok"
+            for f in report.findings
+        )
+
     def test_invalid_language_is_warning(self, tmp_path) -> None:
         project = _make_project(tmp_path)
         config = _base_config()
@@ -330,6 +364,20 @@ class TestApplySafeFixes:
         new_config, fixes = apply_safe_fixes(config)
         assert new_config["language"] == "en"
         assert any("language" in f for f in fixes)
+
+    def test_invalid_reasoning_effort_reset_to_default(self) -> None:
+        config = _base_config()
+        config["reasoning_effort"] = "turbo"
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["reasoning_effort"] is None
+        assert any("reasoning_effort" in f for f in fixes)
+
+    def test_valid_reasoning_effort_unchanged(self) -> None:
+        config = _base_config()
+        config["reasoning_effort"] = "high"
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["reasoning_effort"] == "high"
+        assert fixes == []
 
     def test_max_rounds_clamped(self) -> None:
         config = _base_config()
