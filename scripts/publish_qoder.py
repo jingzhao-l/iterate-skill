@@ -476,7 +476,7 @@ def _multipart_request(
     fields: dict[str, str],
 ) -> object:
     """POST a multipart/form-data request; returns the parsed JSON response."""
-    boundary = "----iterate" + ("%032x" % datetime.now().timestamp()).upper()
+    boundary = "----iterate" + ("%032x" % int(datetime.now().timestamp() * 1e6)).upper()
     parts: list[bytes] = []
 
     for name, value in fields.items():
