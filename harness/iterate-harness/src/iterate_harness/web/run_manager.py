@@ -31,7 +31,7 @@ from typing import Any
 from uuid import uuid4
 
 from .hub import hub
-from .schemas import ChatRunStatus, RunState, WaitingKind
+from .schemas import ChatRunStatus, RunState, SelectOption, WaitingKind
 
 #: Python 3.10 compatibility — ``datetime.UTC`` is only available in 3.11+.
 UTC = timezone.utc
@@ -108,7 +108,7 @@ class RunManager:
         self.converged: bool = False
         self.waiting_for: WaitingKind = "none"
         self.question: str | None = None
-        self.options: list[dict[str, Any]] | None = None
+        self.options: list[SelectOption] | None = None
         self.permission_tool: str | None = None
         self.permission_reason: str | None = None
         self.error: str | None = None
@@ -493,7 +493,7 @@ class RunManager:
             self._request_registry[request_id] = future
             self.waiting_for = "user_select"
             self.question = title
-            self.options = list(options)
+            self.options = [SelectOption(**option) for option in options]
             self.state = "paused"
         await self._publish_chat("assistant", title, kind="select")
         await hub.publish(
