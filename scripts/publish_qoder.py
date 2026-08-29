@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
-"""Dedicated Qoder distribution/upload script for the iterate skill.
+"""Dedicated Qoder packaging script for the iterate skill.
 
 Mirrors how SkillHub / ModelScope / ClawHub each get their own distribution
 machinery (see RELEASE.md): the only canonical "skill body" is the ``git archive
 ':!harness'`` extraction, so this script rebuilds a Qoder-specific package from
-that same body, validates it against Qoder's package rules, then uploads it via
-the official Qoder Cloud Agents Skills API.
-
-Qoder package + API model (https://docs.qoder.com/zh/cloud-agents/api/skills/create):
-  * POST   /api/v1/cloud/skills               -> create skill + first immutable version
-  * POST   /api/v1/cloud/skills/{id}/versions -> append a new immutable version
-  * GET    /api/v1/cloud/skills[/{id}]        -> list / fetch
-  * DELETE /api/v1/cloud/skills/{id}          -> delete
-  * Auth:  ``Authorization: Bearer <PAT or SAT>``
+that same body and validates it against Qoder's package rules. Publication to
+the Qoder AppHub is done manually by the operator (it is a logged-in web UI,
+not a public CLI/API), so this script stops at producing a ready-to-upload zip.
 
 Qoder package rules enforced here:
   * a single top-level directory whose name equals the ``name`` in ``SKILL.md``
@@ -23,12 +17,8 @@ Qoder package rules enforced here:
   * ``harness/*`` must be absent (project-wide "skill only, not the harness" rule)
 
 Usage:
-  python scripts/publish_qoder.py check [-p PATH]            # preflight a built dir/zip
-  python scripts/publish_qoder.py build [--out PATH] ...     # rebuild the Qoder zip locally
-  python scripts/publish_qoder.py publish ZIP [--skill-id ID] [--token TOKEN] ...
-                                                            # upload (create or new version)
-  # dry-run upload (local checks + print the would-be request, no HTTP):
-  python scripts/publish_qoder.py publish ZIP --dry-run --json
+  python scripts/publish_qoder.py check [-p PATH]        # preflight a built dir/zip
+  python scripts/publish_qoder.py build [--out PATH] ... # rebuild the Qoder zip locally
 """
 
 from __future__ import annotations
@@ -38,22 +28,12 @@ import json
 import os
 import re
 import shutil
-import ssl
-import sys
 import tempfile
-import urllib.error
-import urllib.request
 import zipfile
-from datetime import datetime, timezone
 from typing import Callable, Iterable
 
-DEFAULT_API_HOST = "https://api.qoder.com"
-SKILLS_PATH = "/api/v1/cloud/skills"
-TOKEN_ENV = "QODER_ACCESS_TOKEN"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-USER_AGENT = "iterate-skill-qoder-publisher/1.0 (+https://github.com/jingzhao-l/iterate-skill)"
-TIMEOUT_SECONDS = 60
 MAX_PACKAGE_BYTES = 50 * 1024 * 1024  # 50 MB (Qoder upper limit)
 
 # The canonical skill-body extraction mirrors the release manual: exclude the
@@ -466,130 +446,12 @@ def check_package(path: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Upload                                                                        #
-# --------------------------------------------------------------------------- #
-def _multipart_request(
-    url: str,
-    token: str,
-    *,
-    zip_path: str | None,
-    fields: dict[str, str],
-) -> object:
-    """POST a multipart/form-data request; returns the parsed JSON response."""
-    boundary = "----iterate" + ("%032x" % int(datetime.now().timestamp() * 1e6)).upper()
-    parts: list[bytes] = []
-
-    for name, value in fields.items():
-        parts.extend(
-            (
-                ("--%s\r\n" % boundary).encode(),
-                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
-                value.encode("utf-8"),
-                b"\r\n",
-            )
-        )
-
-    if zip_path is not None:
-        filename = os.path.basename(zip_path)
-        with open(zip_path, "rb") as handle:
-            data = handle.read()
-        parts.extend(
-            (
-                ("--%s\r\n" % boundary).encode(),
-                (
-                    f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'
-                ).encode(),
-                b"Content-Type: application/zip\r\n\r\n",
-                data,
-                b"\r\n",
-            )
-        )
-    parts.append(("--%s--\r\n" % boundary).encode())
-    body = b"".join(parts)
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-        "User-Agent": USER_AGENT,
-    }
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    context = ssl.create_default_context()
-    try:
-        with urllib.request.urlopen(
-            request, timeout=TIMEOUT_SECONDS, context=context
-        ) as resp:
-            raw = resp.read()
-            return json.loads(raw.decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8")
-        except Exception:  # noqa: BLE001 - best-effort body read
-            pass
-        raise RuntimeError(f"HTTP {exc.code} {exc.reason}: {detail}") from exc
-
-
-def publish(
-    zip_path: str,
-    *,
-    token: str,
-    skill_id: str | None,
-    display_title: str | None,
-    metadata: str | None,
-    host: str,
-    dry_run: bool,
-) -> dict[str, object]:
-    """Upload the Qoder package; create a skill or append a version."""
-    errors, warnings, zip_size = validate_zip(zip_path)
-    if errors:
-        raise ValueError("package failed Qoder checks:\n- " + "\n- ".join(errors))
-    for warning in warnings:
-        print("warning: " + warning)
-    if zip_size > MAX_PACKAGE_BYTES:
-        raise ValueError("zip exceeds 50 MB upload limit")
-
-    # `name` must be consistent; confirm it for the request log.
-    name: str | None = None
-    with zipfile.ZipFile(zip_path) as archive:
-        member = next((m for m in archive.namelist() if m.endswith("/SKILL.md")), None)
-        if member:
-            name = frontmatter_name(archive.read(member).decode("utf-8"))
-
-    endpoint = SKILLS_PATH if not skill_id else f"{SKILLS_PATH}/{skill_id}/versions"
-    url = host.rstrip("/") + endpoint
-    action = "create skill + first version" if not skill_id else "append new version"
-
-    fields: dict[str, str] = {}
-    if not skill_id and display_title:
-        fields["display_title"] = display_title
-    if not skill_id and metadata:
-        fields["metadata"] = metadata
-
-    if dry_run:
-        print(json.dumps({
-            "action": action,
-            "method": "POST",
-            "url": url,
-            "skill_id": skill_id,
-            "name": name,
-            "zip": zip_path,
-            "zip_bytes": zip_size,
-            "fields": fields,
-        }, ensure_ascii=False, indent=2))
-        return {"dry_run": True, "url": url, "action": action}
-
-    response = _multipart_request(url, token, zip_path=zip_path, fields=fields)
-    print("response: " + json.dumps(response, ensure_ascii=False))
-    return response
-
-
-# --------------------------------------------------------------------------- #
 # CLI                                                                          #
 # --------------------------------------------------------------------------- #
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="publish_qoder",
-        description="Rebuild and upload the iterate skill to Qoder.",
+        description="Rebuild and validate the Qoder skill package for iterate.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -619,27 +481,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help="additional top-level paths to exclude (repeatable)",
     )
-
-    pub_p = sub.add_parser("publish", help="upload a built zip to Qoder")
-    pub_p.add_argument("zip", help="built Qoder package zip")
-    pub_p.add_argument("--token", help="PAT/SAT; falls back to $QODER_ACCESS_TOKEN")
-    pub_p.add_argument(
-        "--skill-id",
-        help="existing skill id -> append a new version; omit to create a new skill",
-    )
-    pub_p.add_argument("--display-title", help="display title (new skill only; immutable)")
-    pub_p.add_argument("--metadata", help="JSON metadata string (new skill only)")
-    pub_p.add_argument("--host", default=DEFAULT_API_HOST, help="API base URL")
-    pub_p.add_argument("--dry-run", action="store_true", help="run local checks and print the request, do not send")
-    pub_p.add_argument("--json", action="store_true", help="print the result as JSON")
     return parser
-
-
-def _resolve_token(args: argparse.Namespace) -> str:
-    token = args.token or os.environ.get(TOKEN_ENV)
-    if not token:
-        raise SystemExit(f"error: no token; pass --token or set ${TOKEN_ENV}")
-    return token
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -660,26 +502,6 @@ def main(argv: list[str] | None = None) -> int:
         for warning in warnings:
             print("warning: " + warning)
         print(json.dumps(meta, ensure_ascii=False, indent=2))
-        return 0
-
-    if args.command == "publish":
-        if not args.dry_run:
-            args.token = _resolve_token(args)
-        try:
-            result = publish(
-                args.zip,
-                token=getattr(args, "token", None),
-                skill_id=args.skill_id,
-                display_title=args.display_title,
-                metadata=args.metadata,
-                host=args.host,
-                dry_run=args.dry_run,
-            )
-        except (ValueError, RuntimeError, OSError) as exc:
-            print("error: " + str(exc))
-            return 1
-        if args.json:
-            print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
     return 2
