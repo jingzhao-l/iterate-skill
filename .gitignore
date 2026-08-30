@@ -52,3 +52,6 @@ dist/
 # Test coverage
 coverage/
 htmlcov/
+
+# local TRAE html-share tooling artifact (never commit)
+.trae-html-share-packages/
