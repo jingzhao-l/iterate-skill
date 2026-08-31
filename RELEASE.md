@@ -260,6 +260,14 @@ stamp 不匹配会自动重装到新 tag。
       > release.yml 构建 `iterate_harness-1.16.2-py3-none-any.whl` 上传 release 并自动发布 PyPI 1.16.2
       >（已验证 PyPI latest=1.16.2）；npm `iterate-harness@1.16.2` 已发布（registry 传播约 60s）。
       > 纯自动后台升级 + `reasoning_effort` + 图片/视觉附件透传三项特性随本版上线。
+      >
+      > **1.16.3 发布记录（2026-08-31）**：mypy strict 全量归零（修复 40+ 模块严格类型错误）+
+      > CI 新增 `mypy src` 门禁 + WebUI 路径环逃逸防护（`os.path.realpath(strict=True)`）+
+      > WebUI 选择菜单契约修正。继续走 `.release/iterate-harness` 替代路径（与公开 main 共享
+      > 历史）提交并快进推送（`a9251d9..597a436`）。GitHub Release v1.16.3 已建，release.yml
+      > 构建 `iterate_harness-1.16.3-py3-none-any.whl` 上传 release + 自动发布 PyPI 1.16.3
+      >（已验证 PyPI latest=1.16.3）；npm `iterate-harness@1.16.3` 已发布（registry 传播约 60s），
+      > npm 包装器 `ih --version` 验证 =1.16.3。
 
 ---
 
