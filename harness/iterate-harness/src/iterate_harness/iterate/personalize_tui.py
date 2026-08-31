@@ -35,7 +35,7 @@ from .types import KnownIntentional
 _LOG = logging.getLogger(__name__)
 
 #: Interactive channel signatures (mirror engine.query AskUserSelect/Prompt).
-AskSelect = Callable[[str, list[dict[str, object]]], Awaitable[str]]
+AskSelect = Callable[[str, list[dict[str, str]]], Awaitable[str]]
 AskPrompt = Callable[[str], Awaitable[str]]
 
 # Menu sentinel values (never collide with user text or dimension keys).
@@ -121,7 +121,7 @@ def _preview(text: str) -> str:
 
 
 async def _select(
-    ask_select: AskSelect, title: str, options: list[dict[str, object]]
+    ask_select: AskSelect, title: str, options: list[dict[str, str]]
 ) -> str | None:
     """Await the select modal; None on cancel/exception."""
     try:
@@ -410,7 +410,7 @@ async def _collect_extra_command(data: PersonalizationData, ask_prompt: AskPromp
 
 
 async def _main_menu(data: PersonalizationData, ask_select: AskSelect) -> str | None:
-    options: list[dict[str, object]] = []
+    options: list[dict[str, str]] = []
     for value, label, description in _CATEGORIES:
         field = _CATEGORY_FIELDS[value]
         entries = getattr(data, field)

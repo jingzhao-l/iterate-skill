@@ -449,10 +449,12 @@ def config_from_dict(data: dict[str, object] | None) -> IterateConfig:
 
     language_raw = data.get("language", defaults.language)
     language = language_raw if language_raw in ("zh", "en") else defaults.language
+    max_rounds_raw = data.get("max_rounds", defaults.max_rounds)
+    max_rounds = max_rounds_raw if isinstance(max_rounds_raw, int) else defaults.max_rounds
 
     return IterateConfig(
         goal=str(data.get("goal", defaults.goal)),
-        max_rounds=int(data.get("max_rounds", defaults.max_rounds)),
+        max_rounds=max_rounds,
         language=language,
         dimensions=list(dimensions) if isinstance(dimensions, list) else list(defaults.dimensions),
         review=review,

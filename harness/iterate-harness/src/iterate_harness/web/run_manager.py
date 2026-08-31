@@ -108,7 +108,7 @@ class RunManager:
         self.converged: bool = False
         self.waiting_for: WaitingKind = "none"
         self.question: str | None = None
-        self.options: list[SelectOption] | None = None
+        self.options: list[dict[str, Any]] | None = None
         self.permission_tool: str | None = None
         self.permission_reason: str | None = None
         self.error: str | None = None
@@ -214,6 +214,11 @@ class RunManager:
                 "tool": self.permission_tool,
                 "reason": self.permission_reason,
             }
+        select_options = (
+            [SelectOption(**option) for option in self.options]
+            if waiting_for == "user_select" and self.options is not None
+            else None
+        )
         return ChatRunStatus(
             state=state,
             run_id=self.run_id,
@@ -226,7 +231,7 @@ class RunManager:
             converged=self.converged,
             waiting_for=waiting_for,
             question=self.question,
-            options=self.options if waiting_for == "user_select" else None,
+            options=select_options,
             permission=permission,
             error=self.error,
             message=self.last_message,
@@ -493,7 +498,7 @@ class RunManager:
             self._request_registry[request_id] = future
             self.waiting_for = "user_select"
             self.question = title
-            self.options = [SelectOption(**option) for option in options]
+            self.options = options
             self.state = "paused"
         await self._publish_chat("assistant", title, kind="select")
         await hub.publish(

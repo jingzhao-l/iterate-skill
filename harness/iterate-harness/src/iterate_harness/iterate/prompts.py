@@ -372,8 +372,10 @@ def resume_kickoff(
     :func:`iterate_harness.iterate.last_state.summarize_last_run`.
     """
     verdict = str(last_summary.get("verdict") or "unknown")
-    last_rounds = int(last_summary.get("rounds") or 0)
-    total = int(last_summary.get("totalFindings") or 0)
+    rounds_raw = last_summary.get("rounds")
+    last_rounds = int(rounds_raw) if isinstance(rounds_raw, (int, str)) else 0
+    total_raw = last_summary.get("totalFindings")
+    total = int(total_raw) if isinstance(total_raw, (int, str)) else 0
     interrupted = last_summary.get("interrupted", False)
     preview_lines: list[str] = []
     preview_raw = last_summary.get("preview")
@@ -405,13 +407,15 @@ def resume_kickoff(
             + "\n".join(lines)
             + "\n"
         )
+    per_dim_raw = last_summary.get("perDimension")
+    per_dim = per_dim_raw if isinstance(per_dim_raw, dict) else {}
     if interrupted:
         return (
             f"Resume the interrupted iterate run on this project. Goal: {goal}. "
             f"The previous run was interrupted after round {last_rounds} (last "
             f"convergence checkpoint: {total} finding(s)). The checkpoint "
             f"per-dimension breakdown is: "
-            f"{dict(last_summary.get('perDimension') or {})}. "
+            f"{dict(per_dim)}. "
             "Re-read the decision log (.iterate/decision-log.jsonl) via "
             "iterate_log first, re-verify which of the previously reported "
             "findings still reproduce on the current state, then continue "

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import cast
 
 from iterate_harness.api.client import SupportsStreamingMessages
 from iterate_harness.api.usage import UsageSnapshot
@@ -21,14 +21,12 @@ from iterate_harness.engine.query import (
 )
 from iterate_harness.engine.stream_events import AssistantTurnComplete, StreamEvent
 from iterate_harness.hooks import HookEvent, HookExecutor
+from iterate_harness.iterate.loop_policy import IterateLoopPolicy
 from iterate_harness.permissions.checker import PermissionChecker
 from iterate_harness.tools.base import ToolRegistry
 
-if TYPE_CHECKING:
-    from iterate_harness.iterate.loop_policy import IterateLoopPolicy
 
-
-def _default_iterate_policy(cwd: Path) -> "IterateLoopPolicy | None":
+def _default_iterate_policy(cwd: Path) -> IterateLoopPolicy | None:
     """Build the default iterate loop policy from kernel + project settings.
 
     Returns ``None`` (upstream behavior preserved) when iterate is disabled
@@ -122,7 +120,9 @@ class QueryEngine:
         # Iterate enforcement: auto-enable from kernel settings unless the
         # caller supplies an explicit policy. Passing ``False`` disables.
         self._iterate_policy: IterateLoopPolicy | None = (
-            iterate_policy if iterate_policy is not None else _default_iterate_policy(self._cwd)
+            cast("IterateLoopPolicy | None", iterate_policy)
+            if iterate_policy is not None
+            else _default_iterate_policy(self._cwd)
         )
         # Reasoning effort: explicit argument wins, else the project config
         # (`iterate.config.yaml` `reasoning_effort`), else provider default.
@@ -161,7 +161,7 @@ class QueryEngine:
         return self._tool_metadata
 
     @property
-    def iterate_policy(self) -> "IterateLoopPolicy | None":
+    def iterate_policy(self) -> IterateLoopPolicy | None:
         """Return the attached iterate loop policy (``None`` when disabled)."""
         return self._iterate_policy
 

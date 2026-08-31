@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Literal
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal, cast
 from uuid import uuid4
 
 from iterate_harness.api.client import (
@@ -861,7 +861,7 @@ async def run_query(
 
         tool_calls = final_message.tool_uses
 
-        tool_results: list[ContentBlock]
+        tool_results: list[ToolResultBlock]
         if len(tool_calls) == 1:
             # Single tool: sequential (stream events immediately)
             tc = tool_calls[0]
@@ -904,14 +904,16 @@ async def run_query(
                     )
                 tool_results.append(loop_result)
 
-            for tc, loop_result in zip(tool_calls, tool_results):
+            for tc, block_result in zip(tool_calls, tool_results):
                 yield ToolExecutionCompleted(
                     tool_name=tc.name,
-                    output=loop_result.content,
-                    is_error=loop_result.is_error,
+                    output=block_result.content,
+                    is_error=block_result.is_error,
                 ), None
 
-        messages.append(ConversationMessage(role="user", content=tool_results))
+        messages.append(
+            ConversationMessage(role="user", content=cast(list[ContentBlock], tool_results))
+        )
 
         # --- iterate loop-policy control (deterministic convergence) ----
         if context.iterate_policy is not None:
