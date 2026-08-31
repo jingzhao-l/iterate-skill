@@ -119,6 +119,18 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **2.10.0 状态（2026-08-30）**：GitHub Release v2.10.0 已发布（tag `v2.10.0`，CI 自动生成
+      > `iterate-skill.tar.gz` + `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness）；
+      > npm `iterate-skill-installer@2.10.0` 已发布（`npm view` 确认 latest=2.10.0）；ClawHub
+      > （skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
+      > + `clawhub-stage-2.10.0` 发布 2.10.0（69 文件，响应 `ok:true`、`status=pending`，
+      > versionId `k970tndrg02jpb4320bym5hgns8df38h`，`latestVersion` 数分钟传播）；ModelScope
+      > 已 PATCH 生效（`rebuild_ms_2100.py` 重建 2.10.0 精简 zip 411,499 字节，
+      > `update_skill_settings` success，file_id `dd25d77d-20b4-4c88-9be8-77a12fef3c76`）；
+      > SkillHub（skillId `104490`）`skillhub publish` 成功（`ok:true`，63 文件，
+      > versionId `277355`，`tags.latest=2.10.0`，`reviewStatus/securityScanStatus/pending`
+      > 为平台异步审核）。发版时清理了被误提交的本地 `.trae-html-share-packages` 工具残留
+      > （已 git rm + 加入 `.gitignore`，修正常涉及发布包的 stage/zip 均复核为 0）。
       > **2.9.1 状态（2026-08-27）**：GitHub Release v2.9.1 已发布（tag `v2.9.1`，CI 自动生成
       > `iterate-skill.tar.gz` 379,201 字节 + `SHA256SUMS.txt`，`:!harness` 剔除 harness，release
       > workflow 自动上传）；npm `iterate-skill-installer@2.9.1` 已发布（`npm view` 确认
