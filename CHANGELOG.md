@@ -5,6 +5,25 @@
 
 ---
 
+## [2.11.0] — 2026-08-31
+
+### 新增 / Features
+
+- **范围审查蓝图 `dimension_sets`**：新增「按审查范围预设的维度集」能力。用户在 onboarding 时可按 `frontend` / `api` / `security` / `performance` / `style-tests` 等命名集预设维度组合（扫描器按项目实际技术栈筛除不存在 UI/API 层的集）；`iterate.refresh` 保留用户自定义集并增量补入新检测出的层集；校验与健康检查（`scripts/validate.py`、`iterate doctor`）校验集名字符集、维度合法性及 `focus` 一致性。schema（`config/config.schema.json` 与 `iterate_cli/data/config.schema.json`）已同步 `dimensionSet` 定义。
+- **`ITERATE.md` 新增「推荐审查蓝图（按范围）」段**：渲染命名维度集供整仓与分范围审查使用；全局 `dimensions` 列表仍是整仓审查默认，指定范围命中蓝图时按该集路由。
+- **范围路由运行时支持（SKILL.md Phase 0）**：指定目标的审查优先匹配对应命名维度集；未命中任一律时按该范围动态重定义维度并写入 `.iterate_decisions.md`（带边界记录）。
+
+### 内部 / Internal
+
+- `iterate_cli/dimension_sets.py`：命名集建议/规范化/合并逻辑（新增模块）。
+- `mypy strict` 全量归零、`ruff` 全部通过；新增 `tests/test_dimension_sets.py`（19 例覆盖键名/规格规范化、扫描剪枝、refresh 合并）。
+
+### 测试 / Tests
+
+- 新增 `tests/test_dimension_sets.py`（19 例）与 `tests/test_doctor.py`、`tests/test_validate.py` 的 `dimension_sets` 一致性用例；全量 Python 测试 854 个全部通过。
+
+---
+
 ## [2.10.0] — 2026-08-30
 
 ### 新增 / Features
