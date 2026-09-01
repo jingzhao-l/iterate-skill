@@ -316,7 +316,7 @@ def _build_refresh_outputs(project_root: Path) -> tuple[bool, str, str, str]:
         # Refusing to overwrite an ITERATE.md without the USER-OWNED markers
         # (it may be hand-edited); surface the reason instead of destroying it.
         return False, "", "", str(exc)
-    new_config = _build_refreshed_config(existing_config, data.fingerprints)
+    new_config = _build_refreshed_config(existing_config, data)
     config_yaml = yaml.safe_dump(
         new_config,
         default_flow_style=False,
@@ -410,27 +410,62 @@ def _diff_stats(before: str, after: str) -> dict[str, int]:
 
 def _build_refreshed_config(
     existing_config: dict[str, Any],
-    new_fingerprints: list,
+    data: OnboardingData,
 ) -> dict[str, Any]:
-    """Build a refreshed config dict with updated fingerprints.
+    """Build a refreshed config dict, persisting reconciled refresh results.
 
-    Does not write to disk; the caller is responsible for writing
-    (typically as part of an atomic refresh).
+    In addition to updating the onboarding fingerprints, this writes back the
+    additively-reconciled values computed by ``_build_refresh_data`` so an
+    incremental refresh actually persists tooling/whitelist/dimension-sets
+    reconciliation for newly-detected languages (previously these were
+    computed, used to render ITERATE.md, then dropped — the config drifted
+    from what was advertised).
+
+    Does not write to disk; the caller is responsible for writing (typically
+    as part of an atomic refresh).
 
     Args:
         existing_config: The existing parsed config dict.
-        new_fingerprints: Fresh FingerprintEntry list.
+        data: Fresh OnboardingData carrying reconciled refresh results.
 
     Returns:
-        New config dict with fingerprints and completed_at updated.
+        New config dict with reconciled fields, fingerprints and
+        completed_at/skill_version updated.
     """
+
+    def _as_dict_list(value: object) -> dict[str, Any]:
+        return value if isinstance(value, dict) else {}
+
+    def _as_list(value: object) -> list[str]:
+        return list(value) if isinstance(value, list) else []
+
     config = dict(existing_config)
     onboarding = dict(config.get("onboarding") or {})
-    new_fp = fingerprints_to_dict(new_fingerprints)
-    # Idempotent refresh: only restamp ``completed_at`` when the manifest
-    # fingerprints actually changed. This keeps ``iterate refresh`` a no-op
-    # when nothing drifted, so ``--dry-run`` reports "no changes needed"
-    # instead of always showing a diff due to a fresh timestamp.
+
+    # Persist the reconciled fields from _build_refresh_data. These preserve
+    # existing (possibly customised) values and additively append suggestions
+    # for newly-detected languages.
+    config["dimensions"] = _as_list(data.dimensions)
+    config["dimension_sets"] = _as_dict_list(data.dimension_sets)
+    config["reasoning_effort"] = data.reasoning_effort
+    config["language"] = data.language
+    review = _as_dict_list(existing_config.get("review"))
+    review["scope"] = data.review_scope
+    config["review"] = review
+    git_cfg = _as_dict_list(existing_config.get("git"))
+    git_cfg["target_branch"] = data.target_branch
+    git_cfg["push_per_round"] = data.push_per_round
+    config["git"] = git_cfg
+    validation = _as_dict_list(existing_config.get("validation"))
+    validation["command_whitelist"] = _as_list(data.command_whitelist)
+    validation["commands"] = _as_dict_list(data.validation_commands)
+    config["validation"] = validation
+
+    # Idempotent fingerprint refresh: only restamp ``completed_at`` when the
+    # manifest fingerprints actually changed (keeps ``iterate refresh`` a no-op
+    # when nothing drifted; ``--dry-run`` reports "no changes needed" instead of
+    # always showing a diff due to a fresh timestamp).
+    new_fp = fingerprints_to_dict(data.fingerprints)
     if onboarding.get("fingerprints") != new_fp:
         onboarding["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     onboarding["fingerprints"] = new_fp

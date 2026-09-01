@@ -10,11 +10,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from iterate_cli.refresh import (
     _build_refresh_data,
+    _build_refreshed_config,
     _reconcile_validation_suggestions,
+    incremental_refresh,
+    load_onboarding_config,
 )
 from iterate_cli.scan import ScanResult
+
+CONFIG_YAML = "iterate.config.yaml"
+ITERATE_MD = "ITERATE.md"
 
 
 def _python_scan() -> ScanResult:
@@ -119,3 +127,92 @@ class TestBuildRefreshDataPreservesReviewer:
         data = _build_refresh_data(tmp_path, _python_scan(), config)
         assert data.evidence_validation is True
         assert data.scope_chunk_size == 25
+
+
+def _write_project(tmp_path: Path, config: dict) -> Path:
+    """Create an onboarded project under tmp_path with ITERATE.md + config."""
+    project = tmp_path / "proj"
+    project.mkdir(parents=True)
+    (project / ITERATE_MD).write_text(
+        "# Project\n\n<!-- ITERATE:USER-OWNED:START -->\nmanual\n<!-- ITERATE:USER-OWNED:END -->\n",
+        encoding="utf-8",
+    )
+    (project / CONFIG_YAML).write_text(
+        yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+    # A real manifest so the scan detects the stack.
+    (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    return project
+
+
+class TestIncrementalRefreshPersistsReconciledData:
+    """Regression: reconciled validation/dimension-set data must be persisted.
+
+    ``_build_refresh_data`` additively reconciles validation commands,
+    command-whitelist and dimension-sets with a freshly-detected stack, but
+    ``_build_refreshed_config`` previously only wrote back fingerprints — so
+    ``incremental_refresh`` regenerated ITERATE.md advertising the reconciled
+    tooling while leaving the config stale, driving config and docs apart.
+    """
+
+    def _base_config(self) -> dict:
+        return {
+            "dimensions": ["correctness"],
+            "onboarding": {
+                "channel": "cli",
+                "drift_check": False,
+                "completed_at": "2026-08-01T00:00:00Z",
+            },
+        }
+
+    def test_persists_reconciled_whitelist_and_commands(self, tmp_path: Path) -> None:
+        project = _write_project(tmp_path, self._base_config())
+        assert incremental_refresh(project) is True
+
+        config = load_onboarding_config(project)
+        assert config is not None
+        validation = config.get("validation")
+        assert isinstance(validation, dict)
+        # Newly-detected Python stack's suggested commands + prefixes are now
+        # actually written into the config (previously dropped).
+        assert "python" in validation["commands"]
+        assert isinstance(validation["command_whitelist"], list)
+        assert "ruff" in validation["command_whitelist"]
+
+    def test_persists_reconciled_dimension_sets(self, tmp_path: Path) -> None:
+        project = _write_project(tmp_path, self._base_config())
+        assert incremental_refresh(project) is True
+
+        config = load_onboarding_config(project)
+        assert config is not None
+        # dimension_sets reflect the merged suggestion, not an empty drop.
+        assert isinstance(config.get("dimension_sets"), dict)
+        assert config["dimension_sets"]  # non-empty merged presets
+
+    def test_refreshed_config_syncs_reconciled_fields(self, tmp_path: Path) -> None:
+        """Directly verify _build_refreshed_config carries the reconciled data."""
+        config = self._base_config()
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        new_config = _build_refreshed_config(config, data)
+        assert new_config["validation"]["commands"].get("python")
+        assert "ruff" in new_config["validation"]["command_whitelist"]
+        assert new_config["dimension_sets"]
+        assert new_config["reasoning_effort"] == data.reasoning_effort
+        # Preserved user fields are untouched.
+        assert new_config["dimensions"] == ["correctness"]
+
+    def test_preserves_existing_customised_commands_on_refresh(
+        self, tmp_path: Path
+    ) -> None:
+        config = self._base_config()
+        config["validation"] = {
+            "commands": {"python": ["pytest --custom"]},
+            "command_whitelist": ["python"],
+        }
+        project = _write_project(tmp_path, config)
+        assert incremental_refresh(project) is True
+
+        new_config = load_onboarding_config(project)
+        assert new_config is not None
+        # Customised command is preserved verbatim, not overwritten.
+        assert new_config["validation"]["commands"]["python"] == ["pytest --custom"]
