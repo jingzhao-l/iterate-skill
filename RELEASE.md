@@ -367,6 +367,13 @@ stamp 不匹配会自动重装到新 tag。
       > **2.12.1 发布记录（2026-08-23）**：分支 `release/plugin-2.12.1`（基于 origin/main，
       > cherry-pick 两笔 client fix），版本 2.12.0→2.12.1；公开仓 main `649a146..8b2b7d0`；
       > npm `iterate-plugin@2.12.1` latest 已生效（62 文件 / 241.4 kB）。
+      > **2.12.3 发布记录（2026-09-01）**：走 `.release/iterate-plugin` 替代路径（与公开仓
+      > main 共享历史）发布 2.12.3。变更：适配 dsh `0.1.2-alpha.3`（JsonValue 迁至
+      > `@deepseek-ai/dsh-util-values`）、修复 git-scope 非 ASCII 文件名 UTF-8/octal 解码、
+      > 观测台 UX（live/timeline 筛选、线程全部展开/收起、JSON 导出、运行阶段 chip）并补齐
+      > 426 个单元测试；独立仓 main `3377f91..0e745f9`（含重建 dist/jobs.js 与 client bundle，
+      > 修复 git-clone 安装 dist 与 src 不一致问题）；npm `iterate-plugin@2.12.3` latest
+      > 已生效（64 文件 / 254.0 kB）。
 - [ ] **5. 同步发布工作区 + npm publish**：
       ```bash
       cd .release/iterate-plugin
