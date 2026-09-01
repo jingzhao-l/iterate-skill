@@ -533,8 +533,16 @@ def _check_validation_whitelist(report: DoctorReport, config: dict[str, Any]) ->
             "validation.command_whitelist",
             "command_whitelist must be a non-empty list of unique non-empty strings.",
         )
-    else:
-        _ok(report, "validation.command_whitelist", "command_whitelist is a valid non-empty list.")
+        # A malformed whitelist (e.g. a bare string like "make") cannot be used
+        # for compliance checking, so fall back to the standalone metacharacter
+        # safety net. Otherwise a command like "make; rm -rf /" could pass the
+        # health gate merely because a (broken) whitelist key is present —
+        # the docstring below promises metacharacters are rejected regardless
+        # of any whitelist.
+        if commands is not None:
+            _check_commands_metachars(report, commands)
+        return
+    _ok(report, "validation.command_whitelist", "command_whitelist is a valid non-empty list.")
 
     # 6c. Compliance only applies when commands are also configured.
     if commands is not None:

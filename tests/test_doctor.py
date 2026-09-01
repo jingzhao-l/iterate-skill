@@ -792,6 +792,42 @@ class TestDoctorCommandMetacharSafetyNet:
         report = run_doctor(project)
         assert report.has_errors()
 
+    def test_metachars_rejected_when_whitelist_malformed(self, tmp_path) -> None:
+        """A malformed ``command_whitelist`` (e.g. a bare string) must NOT turn
+        off the shell-metacharacter safety net. Before the fix, a string
+        whitelist short-circuited both the standalone metachar check and the
+        compliance check, letting ``pytest; rm -rf /`` pass a health gate."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {
+            "commands": {"python": ["pytest; rm -rf /"]},
+            # Bare string instead of a list.
+            "command_whitelist": "pytest",
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert report.has_errors()
+        assert any(
+            f.check == "validation.whitelist" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_malformed_whitelist_still_warns_structure(self, tmp_path) -> None:
+        """The structure warning for a non-list whitelist is still emitted even
+        when the metachar safety net also fires."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {
+            "commands": {"python": ["pytest -q"]},
+            "command_whitelist": {"not": "a list"},
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "validation.command_whitelist" and f.severity == "warn"
+            for f in report.findings
+        )
+
 
 class TestDoctorPersonalizationTolerance:
     def test_none_dimension_entries_are_skipped_not_flagged(self, tmp_path) -> None:
