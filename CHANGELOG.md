@@ -5,6 +5,29 @@
 
 ---
 
+## [2.11.2] — 2026-09-01
+
+### 修复 / Fixes
+
+- **refresh 调和结果真正落盘**：`iterate refresh` 原本计算出的新增 `validation.commands`、`command_whitelist` 前缀与 `dimension_sets` 调和结果只用于重渲染 `ITERATE.md`，未写回 `iterate.config.yaml`，导致配置与文档跑偏。现将 `_build_refreshed_config` 改为接收完整 `OnboardingData`，把调和后的 dimension_sets / validation.commands / command_whitelist / reasoning_effort 等一并持久化，同时保留用户既有自定义字段（如自定义命令逐字保留、显式空白名单意图不覆写）。
+- **doctor 畸形白名单不再绕过元字符安全网**：`command_whitelist` 为非法形态（如裸字符串 `make`）时，原先跳过了白名单合规校验，且独立的 shell 元字符安全网仅在白名单为 `None` 时运行，导致 `make; rm -rf /` 这种命令可能通过健康门禁。现检测到非法白名单时仍调用元字符检查，安全网不再被绕过。
+- **wizard 重跑基础配置不再丢弃数据**：返回用户拒绝更新基础配置、但现有配置无法加载时，重新运行完整基础向导并确认的新数据，若随后未再个性化，会被「全部拒绝/无变更」守卫丢弃导致白做。现在重跑基础向导即视为"更新基础配置"，新采集的数据会正常写入。
+- **validate.py 重定义区块切分双重偏移**：`_sections_for_redefinition` 用 `content[match.start():][start:]` 切分，第二次切片偏移作用在已裁剪子串上造成偏移叠加，长前置文本会跳过区块内部终止标题、让其越界吞并后续内容。改为 `content[start:]`（`start == match.end()`）直接切分，块边界正确停在下个 `## `/`### ` 标题前。
+- **publish_qoder 幂等标记字符不一致**：依赖自包含说明段的幂等守卫检测单空格 `<!-- QODER:DEPENDENCIES -->`，而写入时经两次 `replace()` 得到双空格版本，导致复用已标注 `SKILL.md` 重建时重复追加。现直接嵌入 `_DEP_MARKER` 原样，重复构建幂等。
+
+### 内部 / Internal
+
+- `iterate_cli/refresh.py::_build_refreshed_config` 签名由 `(existing_config, new_fingerprints)` 改为 `(existing_config, data: OnboardingData)`；局部用具名拷贝替换 `**dict` 解包以消除 mypy type 错误。
+
+### 测试 / Tests
+
+- 新增 `tests/test_refresh_reconcile.py::TestIncrementalRefreshPersistsReconciledData`（4 例：命令/白名单落盘、dimension_sets 落盘、_build_refreshed_config 直接同步、自定义命令保留）。
+- 新增 `tests/test_validate.py::TestSectionsForRedefinition`（2 例：块止于下个三级标题、两个连续重定义块互不吞并）。
+- 新增 `tests/test_publish_qoder.py`（2 例：幂等标记逐字一致、普通文件仅追加一次）。
+- 全量 Python 测试 874 个全部通过，`ruff check .` 通过。
+
+---
+
 ## [2.11.1] — 2026-08-31
 
 ### 修复 / Fixes
