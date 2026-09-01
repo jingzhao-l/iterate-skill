@@ -258,6 +258,11 @@ def _returning_user_flow(
             data = _run_basic_wizard(project_root, input_func)
             if data is None:
                 return None
+            # The user explicitly re-confirmed a full basic-config rebuild, so
+            # this is now an "update basics" flow: re-arming the flag below
+            # ensures the freshly collected data is written instead of being
+            # discarded by the "declined everything / no changes" guards.
+            update_basic = True
 
     # Ask about personalization.
     tui.empty_line()

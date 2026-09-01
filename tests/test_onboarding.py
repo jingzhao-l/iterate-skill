@@ -3609,6 +3609,78 @@ class TestReturningUserPreservesData:
         )
         assert config["onboarding"]["project_description"] == "Original description"
 
+    def test_reconfirmed_rebuild_not_discarded(self, fake_project: Path, monkeypatch) -> None:
+        """Regression: when existing config fails to load and the user re-confirms
+        a full basic-config rebuild, the freshly collected data must be returned —
+        not silently discarded by the "declined both → NO_CHANGES_NEEDED" guard.
+
+        Path: returning user -> decline basic update -> existing config unreadable
+        -> re-confirm "re-run the basic wizard anyway" -> wizard returns new data
+        -> decline personalization. Previously the re-collected ``data`` was
+        dropped and NO_CHANGES_NEEDED returned, losing the user's confirmed work.
+        """
+        from iterate_cli import wizard as wizard_mod
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        # Break the config so _load_existing_onboarding_data returns None.
+        (fake_project / "iterate.config.yaml").write_text(
+            "dimensions: [unclosed bracket", encoding="utf-8"
+        )
+
+        refetched = _build_onboarding_data(fake_project)
+        monkeypatch.setattr(wizard_mod, "_load_existing_onboarding_data", lambda _p: None)
+        monkeypatch.setattr(
+            wizard_mod,
+            "_run_basic_wizard",
+            lambda project_root, input_func, existing=None: refetched,
+        )
+
+        # decline basic (n) -> re-confirm re-run (y) -> decline personalization (n)
+        responses = iter(["n", "y", "n"])
+        result = wizard_mod._returning_user_flow(
+            fake_project, input_func=lambda _q: next(responses)
+        )
+        assert result is refetched
+        assert result is not NO_CHANGES_NEEDED
+
+    def test_reconfirmed_rebuild_with_cancelled_personalization_kept(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """Same rebuild-confirmation path, but personalization is entered and then
+        cancelled (wizard returns None): the re-collected basics must still be
+        returned — previously the ``elif not update_basic`` branch discarded them
+        with NO_CHANGES_NEEDED."""
+        from iterate_cli import wizard as wizard_mod
+        import iterate_cli.personalize as personalize_mod
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        (fake_project / "iterate.config.yaml").write_text(
+            "dimensions: [unclosed bracket", encoding="utf-8"
+        )
+
+        refetched = _build_onboarding_data(fake_project)
+        monkeypatch.setattr(wizard_mod, "_load_existing_onboarding_data", lambda _p: None)
+        monkeypatch.setattr(
+            wizard_mod,
+            "_run_basic_wizard",
+            lambda project_root, input_func, existing=None: refetched,
+        )
+        # Personalization is offered but cancelled inside the wizard.
+        monkeypatch.setattr(
+            personalize_mod, "run_personalize_wizard", lambda *a, **k: None
+        )
+
+        # decline basic (n) -> re-confirm re-run (y) -> accept personalization (y)
+        # but the personalize wizard itself returns None (user cancelled).
+        responses = iter(["n", "y", "y"])
+        result = wizard_mod._returning_user_flow(
+            fake_project, input_func=lambda _q: next(responses)
+        )
+        assert result is refetched
+        assert result is not NO_CHANGES_NEEDED
+
 
 # ---------------------------------------------------------------------------
 # merge_user_sections tests (personalization content merge)
