@@ -116,10 +116,15 @@ def _sections_for_redefinition(content: str) -> list[str]:
     blocks: list[str] = []
     for match in re.finditer(rf"^{re.escape(_REDEFINITION_HEADER)}\s*$", content, re.MULTILINE):
         start = match.end()
-        # Cut at the next markdown header of equal or higher level.
+        # Cut at the next markdown header of equal or higher level. ``start`` is
+        # an offset into ``content`` (match.end()), so slice from ``start``
+        # directly; the previous ``content[match.start():][start:]`` double
+        # counted the offset because the second ``[start:]`` applied to the
+        # already-shortened substring, potentially skipping a block-internal
+        # header and letting the block bleed past its intended end.
         stop = len(content)
-        for hmm in re.finditer(r"^## |^### ", content[match.start():][start:], re.MULTILINE):
-            stop = match.start() + start + hmm.start()
+        for hmm in re.finditer(r"^## |^### ", content[start:], re.MULTILINE):
+            stop = start + hmm.start()
             break
         blocks.append(content[match.start():stop])
     return blocks

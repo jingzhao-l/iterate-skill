@@ -243,6 +243,71 @@ class TestValidateScopeRedefinitions:
         assert any("no dimension rows" in e for e in errors)
 
 
+class TestSectionsForRedefinition:
+    """Direct unit tests of ``_sections_for_redefinition`` block boundaries.
+
+    Regression: the block was cut via ``content[match.start():][start:]`` where
+    ``start == match.end()``. The second ``[start:]`` sliced the already-shortened
+    substring by an offset meant for the *original* string, over-skipping by
+    ``match.start()`` bytes. When enough leading text precedes the header, the
+    over-skip jumped past the block's terminating ``### `` header, letting the
+    block bleed into content that does not belong to it.
+    """
+
+    def test_block_stops_at_next_level_3_header(self) -> None:
+        content = (
+            "# Log\n"
+            + "filler filler filler filler\n" * 20  # long prefix so match.start() > block length
+            + "### Scope Dimension Redefinition (on-the-fly)\n"
+            + "| Dimension | Independent reason |\n"
+            + "|---|---|\n"
+            + "| security | a real reason |\n"
+            + "### Terminator\n"
+            + "| not | part |\n"
+            + "### Next Section\n"
+            + "body\n"
+        )
+        blocks = validate._sections_for_redefinition(content)
+        assert len(blocks) == 1
+        block = blocks[0]
+        # The block includes its own table row but ends at the terminating
+        # `### Terminator` header — the unrelated `| not | part |` row and the
+        # following section must NOT be swallowed.
+        assert block.startswith("### Scope Dimension Redefinition (on-the-fly)")
+        assert "security" in block
+        assert "| not | part |" not in block
+        assert "### Terminator" not in block
+        assert "### Next Section" not in block
+
+    def test_two_consecutive_blocks_stay_separate(self) -> None:
+        content = (
+            "# Log\n"
+            + "filler filler filler filler\n" * 20
+            + "### Scope Dimension Redefinition (on-the-fly)\n"
+            + "| Dimension | Independent reason |\n"
+            + "|---|---|\n"
+            + "| security | a real reason |\n"
+            + "### Scope Dimension Redefinition (on-the-fly)\n"
+            + "| Dimension | Independent reason |\n"
+            + "|---|---|\n"
+            + "| correctness | another reason |\n"
+            + "## Round 2\n"
+        )
+        blocks = validate._sections_for_redefinition(content)
+        assert len(blocks) == 2
+        # Block one contains only its own header + row; the second redefinition
+        # header and its row are NOT swallowed.
+        assert blocks[0].count("Scope Dimension Redefinition") == 1
+        assert "security" in blocks[0]
+        assert "correctness" not in blocks[0]
+        assert "## Round 2" not in blocks[0]
+        # Block two captures only its own row, ending before `## Round 2`.
+        assert blocks[1].count("Scope Dimension Redefinition") == 1
+        assert "security" not in blocks[1]
+        assert "correctness" in blocks[1]
+        assert "## Round 2" not in blocks[1]
+
+
 class TestCommandIsWhitelisted:
     @pytest.mark.parametrize(
         ("command", "expected"),
