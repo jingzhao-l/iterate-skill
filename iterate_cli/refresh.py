@@ -650,6 +650,16 @@ def _build_refresh_data(
     """Build OnboardingData for a refresh, preserving existing settings."""
     # Preserve existing dimensions, target_branch, etc.
     dimensions = existing_config.get("dimensions") or suggest_dimensions(scan)
+    # Preserve scope-specific dimension sets, additively reconciling with a
+    # freshly-detected stack (a layer added since onboarding gets its preset).
+    from iterate_cli.dimension_sets import (
+        merge_dimension_sets,
+        normalize_dimension_sets,
+        suggest_dimension_sets,
+    )
+
+    existing_dimension_sets = normalize_dimension_sets(existing_config.get("dimension_sets"))
+    dimension_sets = merge_dimension_sets(existing_dimension_sets, suggest_dimension_sets(scan))
     git_cfg = existing_config.get("git")
     git_cfg = git_cfg if isinstance(git_cfg, dict) else {}
     review_cfg = existing_config.get("review")
@@ -690,6 +700,7 @@ def _build_refresh_data(
         project_description=project_description,
         code_conventions=code_conventions,
         dimensions=dimensions,
+        dimension_sets=dimension_sets,
         target_branch=target_branch,
         review_scope=review_scope,
         push_per_round=push_per_round,

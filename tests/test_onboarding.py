@@ -152,6 +152,8 @@ def _build_onboarding_data(project_root: Path, scan: ScanResult | None = None) -
     """Helper: build minimal OnboardingData for generator tests."""
     if scan is None:
         scan = scan_project(project_root)
+    from iterate_cli.dimension_sets import suggest_dimension_sets
+
     return OnboardingData(
         project_root=project_root,
         channel="cli",
@@ -159,6 +161,7 @@ def _build_onboarding_data(project_root: Path, scan: ScanResult | None = None) -
         project_description="Test project",
         code_conventions="Use 4-space indentation",
         dimensions=suggest_dimensions(scan),
+        dimension_sets=suggest_dimension_sets(scan),
         target_branch="main",
         review_scope="full",
         push_per_round=True,
@@ -450,7 +453,7 @@ class TestSuggestCommandWhitelist:
 
     def test_top_level_dirs_oseerror_does_not_crash(self, monkeypatch) -> None:
         """A listing failure during directory scan must not abort the run."""
-        from iterate_cli.scan import _scan_top_level_dirs, ScanResult
+        from iterate_cli.scan import ScanResult, _scan_top_level_dirs
 
         def _boom(*_args, **_kwargs):
             raise OSError("permission denied")
@@ -708,6 +711,7 @@ class TestRunWizard:
             "y",          # tech stack correct
             "y",          # use suggested validation commands
             "",           # use suggested dimensions (press Enter)
+            "",           # dimension sets: enable all suggested
             "",           # target branch: default main
             "",           # review scope: default full
             "y",          # push per round: yes
@@ -742,6 +746,7 @@ class TestRunWizard:
             "y",          # tech stack correct
             "y",          # use suggested commands
             "",           # default dimensions
+            "",           # dimension sets: enable all suggested
             "",           # default branch
             "",           # default scope
             "n",          # push: no
@@ -760,6 +765,7 @@ class TestRunWizard:
             "y",          # tech stack correct
             "y",          # use suggested commands
             "",           # default dimensions
+            "",           # dimension sets: enable all suggested
             "",           # default branch
             "",           # default scope
             "y",          # push: yes
@@ -781,6 +787,7 @@ class TestRunWizard:
             "",               # end python commands
             "",               # end modules
             "",               # default dimensions
+            "",               # dimension sets: enable all suggested
             "",               # default branch
             "",               # default scope
             "y",              # push: yes
@@ -801,6 +808,7 @@ class TestRunWizard:
             "y",          # tech stack correct
             "y",          # use suggested commands
             "1,2,3",      # select dimensions 1,2,3
+            "",           # dimension sets: enable all suggested
             "",           # default branch
             "",           # default scope
             "y",          # push: yes
@@ -1543,17 +1551,7 @@ class TestLoadExistingOnboardingDataNonDictSections:
     def test_non_dict_nested_sections_do_not_crash(self, fake_project: Path) -> None:
         config_path = fake_project / "iterate.config.yaml"
         config_path.write_text(
-            "\n".join(
-                [
-                    "goal: test",
-                    "atomic: oops",
-                    "git: nope",
-                    "reviewer: 42",
-                    "review: x",
-                    "validation: y",
-                    "dimensions: not-a-list",
-                ]
-            ),
+            "goal: test\natomic: oops\ngit: nope\nreviewer: 42\nreview: x\nvalidation: y\ndimensions: not-a-list",
             encoding="utf-8",
         )
         result = _load_existing_onboarding_data(fake_project)
@@ -1620,6 +1618,7 @@ class TestFullReonboard:
             "y",          # tech stack correct
             "y",          # use suggested commands
             "",           # default dimensions
+            "",           # dimension sets: enable all suggested
             "",           # default branch
             "",           # default scope
             "y",          # push: yes
@@ -1647,6 +1646,7 @@ class TestFullReonboard:
             "y",          # tech stack correct
             "y",          # use suggested commands
             "",           # default dimensions
+            "",           # dimension sets: enable all suggested
             "",           # default branch
             "",           # default scope
             "y",          # push: yes
@@ -1785,6 +1785,7 @@ class TestReturningUserFlow:
             "y",          # tech stack correct
             "y",          # use suggested commands
             "",           # default dimensions
+            "",           # dimension sets: enable all suggested
             "develop",    # target branch: develop
             "",           # default scope
             "n",          # push: no

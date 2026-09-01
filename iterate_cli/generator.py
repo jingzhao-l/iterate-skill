@@ -107,6 +107,7 @@ class OnboardingData:
     project_description: str = ""
     code_conventions: str = ""
     dimensions: list[str] = field(default_factory=list)
+    dimension_sets: dict[str, dict] = field(default_factory=dict)
     target_branch: str = DEFAULT_TARGET_BRANCH
     review_scope: str = DEFAULT_REVIEW_SCOPE
     push_per_round: bool = False
@@ -141,7 +142,9 @@ def normalize_reasoning_effort(value: object) -> str | None:
     default) for values outside the accepted set so a bad value never
     persists as a typo in the regenerated config.
     """
-    return value if value in REASONING_EFFORT_VALUES else None
+    if isinstance(value, str) and value in REASONING_EFFORT_VALUES:
+        return value
+    return None
 
 
 def generate_iterate_md(data: OnboardingData, completed_at: str | None = None) -> str:
@@ -175,6 +178,7 @@ def generate_iterate_md(data: OnboardingData, completed_at: str | None = None) -
         "{{TECH_STACK}}": _render_tech_stack(data),
         "{{MODULE_MAP}}": _render_module_map(data),
         "{{RECOMMENDED_DIMENSIONS}}": _render_dimensions(data),
+        "{{RECOMMENDED_DIMENSION_SETS}}": _render_dimension_sets(data),
         "{{ITERATE_NOTES}}": _render_iterate_notes(data),
     }
 
@@ -224,6 +228,7 @@ def generate_config_yaml(data: OnboardingData) -> str:
         "reasoning_effort": data.reasoning_effort,
         "language": data.language,
         "dimensions": data.dimensions,
+        "dimension_sets": data.dimension_sets if data.dimension_sets else {},
         "review": {"scope": data.review_scope},
         "atomic": {
             "max_lines": data.atomic_max_lines,
@@ -648,6 +653,35 @@ def _render_dimensions(data: OnboardingData) -> str:
         priority = priority_map.get(dim, "medium")
         lines.append(f"- `{dim}` (priority: {priority})")
 
+    return "\n".join(lines)
+
+
+def _render_dimension_sets(data: OnboardingData) -> str:
+    """Render the recommended dimension-set blueprints section.
+
+    Each named set lists its dimensions and any scope-specific focus overrides.
+    The global ``dimensions`` list above stays the default for whole-project
+    review; these sets are used when a goal targets a specific scope.
+    """
+    if not data.dimension_sets:
+        return "（未配置 / Not configured）"
+
+    lines: list[str] = []
+    lines.append("以下命名维度集可按审查范围选用（作用于 `iterate.config.yaml` 的 `dimension_sets`）：")
+    lines.append("The following named dimension sets are selectable by review scope (see `dimension_sets` in `iterate.config.yaml`):")
+    lines.append("")
+
+    for name, spec in data.dimension_sets.items():
+        dims = spec.get("dimensions") or []
+        lines.append(f"- **`{name}`**: " + ", ".join(f"`{d}`" for d in dims))
+        focus = spec.get("focus") or {}
+        if focus:
+            for dim, text in focus.items():
+                lines.append(f"  - *{dim} focus*: {text}")
+
+    lines.append("")
+    lines.append("> 全局审查使用上方 `dimensions` 列表；指定范围内未命中以上任一律时，本轮按该范围重定义维度。")
+    lines.append("> Whole-project review uses the `dimensions` list above; for an unmapped scope, dimensions are re-defined for the current run.")
     return "\n".join(lines)
 
 

@@ -36,6 +36,10 @@
 
 {{RECOMMENDED_DIMENSIONS}}
 
+## 推荐审查蓝图（按范围）/ Recommended Review Blueprints (by scope)
+
+{{RECOMMENDED_DIMENSION_SETS}}  
+
 ## Iterate 注意点 / Iterate Notes
 
 {{ITERATE_NOTES}}

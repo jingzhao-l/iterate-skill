@@ -432,6 +432,63 @@ class TestDimensionEnumFromSchema:
         assert validate._dimension_enum_from_schema(None) is None
 
 
+class TestValidateDimensionSets:
+    def test_absent_returns_empty(self) -> None:
+        assert validate.validate_dimension_sets({}) == []
+        assert validate.validate_dimension_sets({"dimensions": ["correctness"]}) == []
+
+    def test_non_mapping_errors(self) -> None:
+        errors = validate.validate_dimension_sets({"dimension_sets": ["frontend"]})
+        assert any("must be a mapping" in e for e in errors)
+
+    def test_valid_set_passes(self) -> None:
+        config = {
+            "dimension_sets": {
+                "frontend": {
+                    "dimensions": ["ui-ux", "correctness"],
+                    "focus": {"ui-ux": "check responsive layout"},
+                }
+            }
+        }
+        assert validate.validate_dimension_sets(config) == []
+
+    def test_invalid_set_name_errors(self) -> None:
+        config = {"dimension_sets": {"bad name": {"dimensions": ["correctness"]}}}
+        errors = validate.validate_dimension_sets(config)
+        assert any("must only contain" in e for e in errors)
+
+    def test_empty_dimensions_errors(self) -> None:
+        config = {"dimension_sets": {"x": {"dimensions": []}}}
+        errors = validate.validate_dimension_sets(config)
+        assert any("non-empty list" in e for e in errors)
+
+    def test_unknown_dimension_errors(self) -> None:
+        config = {"dimension_sets": {"x": {"dimensions": ["correctness", "nonsense"]}}}
+        errors = validate.validate_dimension_sets(config)
+        assert any("unknown dimension" in e for e in errors)
+
+    def test_focus_reference_outside_set_errors(self) -> None:
+        config = {
+            "dimension_sets": {
+                "x": {"dimensions": ["correctness"], "focus": {"security": "hint"}}
+            }
+        }
+        errors = validate.validate_dimension_sets(config)
+        assert any("not in this set" in e for e in errors)
+
+    def test_focus_non_string_errors(self) -> None:
+        config = {
+            "dimension_sets": {"x": {"dimensions": ["correctness"], "focus": {"correctness": ""}}}
+        }
+        errors = validate.validate_dimension_sets(config)
+        assert any("non-empty string" in e for e in errors)
+
+    def test_focus_not_mapping_errors(self) -> None:
+        config = {"dimension_sets": {"x": {"dimensions": ["correctness"], "focus": ["a"]}}}
+        errors = validate.validate_dimension_sets(config)
+        assert any("focus must be a mapping" in e for e in errors)
+
+
 class TestDimensionConsistency:
     def test_consistency_passes(self, tmp_path: Path) -> None:
         dimensions_dir = tmp_path / "dimensions"
@@ -859,7 +916,7 @@ class TestArrowSelectState:
         assert _read_arrow_key(io.StringIO("x")) is None
 
     def test_arrow_select_lines_marks_selected(self) -> None:
-        from install import _ArrowSelectState, _arrow_select_lines
+        from install import _arrow_select_lines, _ArrowSelectState
 
         state = _ArrowSelectState(["a", "b"], default_all=False)
         rendered = "\n".join(_arrow_select_lines(state, "title"))

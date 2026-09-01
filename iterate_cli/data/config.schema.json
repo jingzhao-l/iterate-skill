@@ -20,6 +20,34 @@
         "frontend-backend",
         "ui-ux"
       ]
+    },
+    "dimensionSet": {
+      "type": "object",
+      "description": "A named review-dimension blueprint: a subset of dimensions plus optional per-dimension focus overrides, used when a goal targets a specific scope.",
+      "additionalProperties": false,
+      "properties": {
+        "dimensions": {
+          "type": "array",
+          "description": "Dimension keys enabled for this scope.",
+          "items": {
+            "$ref": "#/$defs/dimension"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "focus": {
+          "type": "object",
+          "description": "Optional extra focus text appended to specific dimension prompts for this scope. Keys must correspond to dimensions present in this set.",
+          "propertyNames": {
+            "$ref": "#/$defs/dimension"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": ["dimensions"]
     }
   },
   "properties": {
@@ -52,6 +80,17 @@
       },
       "minItems": 1,
       "uniqueItems": true
+    },
+    "dimension_sets": {
+      "type": "object",
+      "description": "Named review-dimension blueprints for scope-specific goals (e.g. frontend, api, security). The top-level 'dimensions' remains the default for whole-project/global review; a scoped goal may route to one of these sets instead. Keys are safe scope names (letters/digits/underscore/dot/dash).",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_.-]+$",
+        "description": "Scope names must only contain letters, digits, underscore, dot, or dash."
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/dimensionSet"
+      }
     },
     "review": {
       "type": "object",

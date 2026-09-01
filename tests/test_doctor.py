@@ -582,6 +582,80 @@ class TestDoctorPersonalizationConsistency:
         )
 
 
+class TestDoctorDimensionSets:
+    def test_absent_sets_are_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        report = run_doctor(project)
+        assert any(
+            f.check == "dimension_sets" and f.severity == "ok"
+            for f in report.findings
+        )
+
+    def test_valid_sets_are_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimension_sets"] = {
+            "frontend": {
+                "dimensions": ["ui-ux", "correctness"],
+                "focus": {"ui-ux": "check responsive layout"},
+            }
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(
+            f.check == "dimension_sets" and f.severity == "ok"
+            for f in report.findings
+        )
+
+    def test_non_mapping_sets_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimension_sets"] = ["frontend"]
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "dimension_sets" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_invalid_set_name_warns(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimension_sets"] = {"bad name": {"dimensions": ["correctness"]}}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "dimension_sets" and f.severity == "warn"
+            for f in report.findings
+        )
+
+    def test_unknown_dimension_warns(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimension_sets"] = {"x": {"dimensions": ["correctness", "nonsense"]}}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "dimension_sets" and f.severity == "warn"
+            for f in report.findings
+        )
+
+    def test_focus_outside_set_warns(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimension_sets"] = {
+            "x": {"dimensions": ["correctness"], "focus": {"security": "hint"}}
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "dimension_sets" and f.severity == "warn"
+            for f in report.findings
+        )
+
+
 # ---------------------------------------------------------------------------
 # _render_summary — warning-state UX (summary must not contradict findings)
 # ---------------------------------------------------------------------------

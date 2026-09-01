@@ -262,6 +262,62 @@ def validate_dimensions(path: Path) -> list[str]:
     return errors
 
 
+def validate_dimension_sets(config: dict[str, Any]) -> list[str]:
+    """校验 dimension_sets 段的语义一致性。
+
+    检查：
+    - 每个命名集必须是 mapping，含非空 ``dimensions`` 列表且维度在 schema enum 内。
+    - ``focus`` 的键必须是该集 ``dimensions`` 中的维度（否则是死配置）。
+    - 集名只能含字母/数字/下划线/点/连字符（与 schema propertyNames、TOC 锚点安全一致）。
+    """
+    errors: list[str] = []
+    raw = config.get("dimension_sets")
+    if raw is None:
+        return errors
+    if not isinstance(raw, dict):
+        errors.append("dimension_sets must be a mapping")
+        return errors
+
+    enum = _dimension_enum_from_schema(load_schema_or_none())
+    for name, spec in raw.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+            errors.append(f"dimension_sets key {name!r} must only contain letters, digits, underscore, dot, dash")
+            continue
+        if not isinstance(spec, dict):
+            errors.append(f"dimension_sets.{name} must be a mapping")
+            continue
+        dims = spec.get("dimensions")
+        if not isinstance(dims, list) or not dims:
+            errors.append(f"dimension_sets.{name}.dimensions must be a non-empty list")
+            dims = []
+        if not all(isinstance(d, str) for d in dims):
+            errors.append(f"dimension_sets.{name}.dimensions must be a list of strings")
+        if enum is not None:
+            for d in dims:
+                if isinstance(d, str) and d not in enum:
+                    errors.append(f"dimension_sets.{name}.dimensions has unknown dimension {d!r}")
+        seen = set(dims)
+        focus = spec.get("focus")
+        if focus is not None:
+            if not isinstance(focus, dict):
+                errors.append(f"dimension_sets.{name}.focus must be a mapping")
+            else:
+                for dim, text in focus.items():
+                    if dim not in seen:
+                        errors.append(f"dimension_sets.{name}.focus[{dim}] references a dimension not in this set")
+                    if not isinstance(text, str) or not text.strip():
+                        errors.append(f"dimension_sets.{name}.focus[{dim}] must be a non-empty string")
+    return errors
+
+
+def load_schema_or_none() -> dict[str, Any] | None:
+    """Load the repo schema, returning None on any failure (validation best-effort)."""
+    try:
+        return load_schema(DEFAULT_SCHEMA_PATH)
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 def _dimension_enum_from_schema(schema: dict[str, Any]) -> set[str] | None:
     """从 JSON Schema 中提取 dimensions 的允许取值。
 
@@ -402,6 +458,7 @@ def validate_config(
         errors.extend(validate_config_against_schema(config, schema))
     errors.extend(validate_command_whitelist(config))
     errors.extend(validate_personalization_consistency(config))
+    errors.extend(validate_dimension_sets(config))
 
     resolved_dimensions_dir = dimensions_dir or (path.parent / "dimensions")
     if resolved_dimensions_dir.exists():

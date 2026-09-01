@@ -21,6 +21,9 @@ from typing import Any
 
 import yaml
 
+from iterate_cli.dimension_sets import (
+    suggest_dimension_sets,
+)
 from iterate_cli.fingerprint import capture_fingerprints
 from iterate_cli.generator import (
     DEFAULT_ATOMIC_MAX_ADJACENT_METHODS,
@@ -324,6 +327,7 @@ def _run_basic_wizard(
     validation_commands = _collect_validation_commands(scan, input_func)
     command_whitelist = suggest_command_whitelist(scan)
     dimensions = _collect_dimensions(scan, input_func)
+    dimension_sets = _collect_dimension_sets(dimensions, scan, input_func)
     target_branch, review_scope, push_per_round = _collect_git_config(input_func)
     description, conventions = _collect_project_info(input_func)
 
@@ -336,6 +340,7 @@ def _run_basic_wizard(
         project_description=description or (existing.project_description if existing else ""),
         code_conventions=conventions or (existing.code_conventions if existing else ""),
         dimensions=dimensions,
+        dimension_sets=dimension_sets,
         target_branch=target_branch,
         review_scope=review_scope,
         push_per_round=push_per_round,
@@ -442,6 +447,11 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         dimensions = (
             [str(d) for d in raw_dimensions] if isinstance(raw_dimensions, list) else []
         )
+        # Preserve scope-specific dimension sets so a returning user who
+        # declines a basic-config update does not silently lose them.
+        from iterate_cli.dimension_sets import normalize_dimension_sets
+
+        dimension_sets = normalize_dimension_sets(config.get("dimension_sets"))
         return OnboardingData(
             project_root=project_root,
             channel=channel,
@@ -449,6 +459,7 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             project_description=project_description,
             code_conventions=code_conventions,
             dimensions=dimensions,
+            dimension_sets=dimension_sets,
             target_branch=git.get("target_branch", DEFAULT_TARGET_BRANCH),
             review_scope=review.get("scope", DEFAULT_REVIEW_SCOPE),
             push_per_round=git.get("push_per_round", False),
@@ -648,6 +659,87 @@ def _collect_dimensions(scan: ScanResult, input_func: InputFunc) -> list[str]:
         tui.warning("无效输入，使用推荐项 / Invalid input, using suggestions.", indent=4)
         return suggested
 
+    return selected
+
+
+def _collect_dimension_sets(
+    enabled_dimensions: list[str],
+    scan: ScanResult,
+    input_func: InputFunc,
+) -> dict[str, dict]:
+    """Let the user choose scope-specific dimension-set blueprints.
+
+    Presents the scan-derived named sets and lets the user pick which to
+    enable (or press Enter for all suggested). Any selected set is filtered to
+    only contain dimensions the user already enabled globally, so a blueprint
+    can never pull in a dimension the user explicitly disabled. An empty
+    selection produces no persistable sets and keeps behaviour identical to the
+    pre-dimension-set flow.
+
+    Args:
+        enabled_dimensions: The dimensions the user enabled in the global list.
+        scan: ScanResult used to derive suggested sets.
+        input_func: Callable used to read user input.
+
+    Returns:
+        Ordered mapping of scope-name -> {dimensions: [...]} (focus reserved for
+        future user-authored overrides).
+    """
+    suggested = suggest_dimension_sets(scan)
+    if not suggested:
+        return {}
+
+    enabled = set(enabled_dimensions)
+    # Restrict every suggested set's dimensions to what the user enabled
+    # globally, so a blueprint never references a disabled dimension.
+    pruned: dict[str, dict] = {}
+    names: list[str] = []
+    for name, spec in suggested.items():
+        dims = [d for d in spec.get("dimensions", []) if d in enabled]
+        if dims:
+            pruned[name] = {"dimensions": dims}
+            names.append(name)
+
+    if not pruned:
+        return {}
+
+    tui.section("范围审查蓝图 / Scope Dimension Sets")
+    tui.info("以下命名维度集按审查范围预制，后续指定该范围时优先使用：")
+    tui.hint("Named dimension sets are pre-provisioned per scope and used when a goal targets that scope:", indent=2)
+    tui.empty_line()
+
+    items = []
+    markers = []
+    for name in names:
+        items.append(f"{name} — " + ", ".join(pruned[name]["dimensions"]))
+        markers.append("✓")
+    tui.numbered_list(items, indent=4, markers=markers)
+
+    tui.empty_line()
+    tui.question("选择要启用的范围蓝图编号（逗号分隔），直接回车启用全部 /")
+    tui.hint("Enter the numbers of the scope sets to enable (comma-separated), or press Enter for all:", indent=2)
+    raw = input_func("  └ ").strip()
+
+    if not raw:
+        return dict(pruned)
+
+    selected: dict[str, dict] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            num = int(part)
+        except ValueError:
+            continue
+        if 1 <= num <= len(names):
+            name = names[num - 1]
+            if name not in selected:
+                selected[name] = dict(pruned[name])
+
+    if not selected:
+        tui.warning("无效输入，返回空蓝图 / Invalid input, no scope sets enabled.", indent=4)
+        return {}
     return selected
 
 

@@ -269,6 +269,7 @@ def run_doctor(project_root: Path) -> DoctorReport:
     _check_skill_version(report, config)
     _check_manifest_drift(report, project_root)
     _check_personalization(report, config)
+    _check_dimension_sets(report, config)
 
     return report
 
@@ -708,6 +709,73 @@ def _check_personalization(report: DoctorReport, config: dict[str, Any]) -> None
         )
         return
     _ok(report, "personalization.consistency", "personalization dimension references are consistent.")
+
+
+def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
+    """dimension_sets must be well-formed and internally consistent.
+
+    Each named set must carry a non-empty, unique ``dimensions`` list whose
+    entries are canonical ids; ``focus`` overrides must only reference
+    dimensions actually present in that set. Dimension sets are optional, so
+    an absent ``dimension_sets`` is healthy.
+    """
+    raw = config.get("dimension_sets")
+    if raw is None:
+        _ok(report, "dimension_sets", "No dimension_sets configured (defaults to global dimensions).")
+        return
+    if not isinstance(raw, dict):
+        _err(
+            report,
+            "dimension_sets",
+            "dimension_sets must be a mapping of scope name to set spec.",
+            f"Got {type(raw).__name__} instead.",
+        )
+        return
+
+    canonical_set = set(CANONICAL_DIMENSIONS)
+    name_re = re.compile(r"^[A-Za-z0-9_.-]+$")
+    problems: list[str] = []
+    for name, spec in raw.items():
+        if not name_re.match(name):
+            problems.append(f"set name {name!r} has invalid characters")
+            continue
+        if not isinstance(spec, dict):
+            problems.append(f"{name}: spec is not a mapping")
+            continue
+        dims = spec.get("dimensions")
+        if not isinstance(dims, list) or not dims:
+            problems.append(f"{name}: dimensions must be a non-empty list")
+            dims = []
+        unknown = [d for d in dims if d not in canonical_set]
+        if unknown:
+            problems.append(f"{name}: unknown dimension(s): {', '.join(sorted(set(unknown)))}")
+        seen: set[str] = set()
+        for d in dims:
+            if d in seen:
+                problems.append(f"{name}: duplicate dimension {d!r}")
+            seen.add(d)
+        focus = spec.get("focus")
+        if focus is not None:
+            if not isinstance(focus, dict):
+                problems.append(f"{name}: focus must be a mapping")
+            else:
+                for dim in focus:
+                    if dim not in seen:
+                        problems.append(f"{name}: focus[{dim!r}] not in this set's dimensions")
+
+    if problems:
+        _warn(
+            report,
+            "dimension_sets",
+            f"{len(problems)} dimension_sets consistency issue(s).",
+            "\n".join(f"  - {p}" for p in problems[:SCHEMA_MAX_ERRORS]),
+        )
+        return
+    _ok(
+        report,
+        "dimension_sets",
+        f"All {len(raw)} dimension_set(s) are well-formed and internally consistent.",
+    )
 
 
 def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:

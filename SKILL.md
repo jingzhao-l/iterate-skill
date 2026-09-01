@@ -154,7 +154,7 @@ Setup
   └─ Extract goal → load config → read project context (ITERATE.md → CLAUDE.md → …) → create isolated branch/worktree
 
 Loop (round = 1 .. max_rounds)
-  ├─ Phase 0: Dimension Planning (if goal specifies scope → propose dimensions → user confirms)
+  ├─ Phase 0: Dimension Planning (route goal → dimension_sets | ad-hoc redefine, bounded record)
   ├─ Phase 1: N-dimension parallel review (N = enabled dimensions count, default 9)
   ├─ Phase 2: Atomic fixes (direct)
   ├─ Phase 3: Architectural fixes (approval → serial sub-agents)
@@ -294,6 +294,11 @@ CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适
      - `personalization.forbidden_fixes`：字符串列表，Phase 2/3 修复时**禁止使用**这些方式（如 `# noqa`、`try-catch 吞错`）。
    - 若 `personalization` 段不存在或为空，跳过本步，不影响正常流程。
 
+5b. **读取命名维度集 / Load dimension_sets**
+   - 读取合并后配置中的 `dimension_sets`（由 onboarding 预置或用户手动命名，结构为 `{name: {dimensions: [...], focus?: {...}}}`）。
+   - 将其整理为 `namedScopeSets` 供 Phase 0 范围路由使用；缺失 `<scope>` 时以全局 `dimensions` 为兜底。
+   - `dimension_sets` 为空或不存在时不阻止流程，Phase 0 退化为纯 on-the-fly 逻辑。
+
 6. **读取项目上下文 / Read project context**
    - 按优先级查找项目根目录的上下文文件：`ITERATE.md` → `CLAUDE.md` → `PROJECT.md` → `README.md`。
    - 提取项目名、架构、技术栈、代码规范、审查注意点；若都不存在，使用简要描述。
@@ -365,17 +370,29 @@ return { rounds, converged, findingsByRound, totalFindings, bySeverity, byDimens
 
 ### Phase 0 — 维度规划 / Dimension Planning
 
-**仅在第 1 轮执行**。根据用户当次调用 `/iterate` 的 goal 内容决定是否触发：
+**仅在第 1 轮执行**。根据用户当次调用 `/iterate` 的 goal 内容，按以下**优先级**解析本轮维度方案：
 
-- **goal 为空或泛化**（如 "improve code quality"）→ 直接使用 `iterate.config.yaml` 中的 `dimensions`，不增加摩擦。
-- **goal 指定了具体范围/需求**（如 "fix authentication bugs in the API layer"）→ AI 读取 `ITERATE.md` 中的定制维度 + 当次 goal，输出本轮维度方案：
-  1. 从配置的 `dimensions` 中筛选与 goal 最相关的维度。
-  2. 对每个维度的 focus 进行针对性调整（例如 goal 涉及认证 → security 维度的 focus 加入 "auth/session/JWT"）。
-  3. 如需新增临时维度（不在默认 9 个中），在方案中说明理由。
-  4. 使用 `AskUserQuestion` 向用户展示方案并请求确认。
-  5. 用户确认后，本轮审查使用调整后的维度方案；用户拒绝则回退到配置中的默认维度。
+**① goal 为空或泛化**（如 "improve code quality"）→ 直接使用 `iterate.config.yaml` 中的 `dimensions`，不增加摩擦。
 
-> Dimension Planning 只调整维度的 focus prompt 和启用列表，不改变 atomic/architectural 分类标准、git 隔离、验证流程等核心机制。
+**② goal 指定具体范围，且命中已配维度集**（范围路由 / Scope routing）：
+1. 读取 `iterate.config.yaml` 的 `dimension_sets`（可同时参考 `ITERATE.md`「推荐审查蓝图」区）中的命名集。
+2. 将 goal 范围与命名集名匹配（如 "前端 / 改 UI / 页面样式" → `frontend`；"API layer / 接口" → `api`；"Security audit / 安全审计" → `security`）。
+3. 命中命名集 → 本轮直接采用该集的 `dimensions` 及对应的 `focus` 覆盖，**不重定义**；用 `AskUserQuestion` 简要确认后即可进入 Phase 1。
+4. 用户显式指定使用预设维度（如 "use default dimensions" / "按预设审查"）→ 用全局 `dimensions`，跳过路由。
+
+**③ goal 指定范围，但未命中任何命名集**（偏门范围 → on-the-fly 重定义）→ AI 读取 `ITERATE.md` 中的定制维度 + 当次 goal，输出本轮维度方案：
+1. 从配置的 `dimensions` 中筛选与 goal 最相关的维度。
+2. 对每个维度的 focus 进行针对性调整（例如 goal 涉及认证 → security 维度的 focus 加入 "auth/session/JWT"）。
+3. 如需新增临时维度（不在默认 9 个中），在方案中说明理由。
+4. 使用 `AskUserQuestion` 向用户展示方案并请求确认。
+5. 用户确认后，本轮审查使用调整后的维度方案；用户拒绝则回退到配置中的默认维度。
+
+**有界记录（/ Bounded persistence — 解决迭代信息膨胀）**：
+- 预设命名维度集的定义**只存**于 `iterate.config.yaml` 的 `dimension_sets`（结构性配置）。`ITERATE.md` 仅在 AI 维护区渲染**一次**「推荐审查蓝图」清单，**不随轮次增长**。
+- ③ 的临时重定义**仅**在 `.iterate_decisions.md` 当轮 Round 段的 `AI Important Decisions` 追加一条（结论 + 理由），**不写回** `iterate.config.yaml`，也**不追加**进 `ITERATE.md`。当次迭代结束后该临时方案即失效，后续再遇相同偏门范围应重新路由，而非沿用陈旧记录。
+- `ITERATE.md` 的 AI 维护区在 refresh 时只保留**最新快照**；各轮次过程记录一律落在 `.iterate_decisions.md`。当 `.iterate_decisions.md` 超过阈值时，可将最旧轮次归档（压缩为一行摘要）或将已收敛结论提炼进 `ITERATE.md` 的知识快照后清空历史段，从根本上避免任何知识库文件无限膨胀。
+
+> Dimension Planning 只调整维度的 focus prompt 与启用列表（或路由到命名维度集），不改变 atomic/architectural 分类标准、git 隔离、验证流程等核心机制。
 
 ### Phase 1 — 并行审查 / Parallel Review
 
