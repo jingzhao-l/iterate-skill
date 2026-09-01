@@ -119,6 +119,22 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **2.11.2 状态（2026-09-01）**：GitHub Release v2.11.2 已发布（tag `v2.11.2`，CI 自动生成
+      > `iterate-skill.tar.gz` + `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，
+      > 本地 `sha256sum -c` 通过、tar 解包后 `harness/*` 为 0）；npm `iterate-skill-installer@2.11.2`
+      > 已发布（`npm view` 确认 latest=2.11.2，`npx -y iterate-skill-installer@2.11.2 --version` 输出
+      > 2.11.2）；ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本
+      > `.dist_tmp/clawhub_publish.py` + `clawhub-stage-2.11.2/iterate-skill`（72 文件、1,503,797 字节）
+      > 发布 2.11.2（响应 `ok:true`、`status=pending`，versionId `k97e8fhws61rx9jmhq38b4mn2d8djnez`，
+      > 发布前 resolve 显示 `latestVersion: 2.11.1`；首次上传遇 Convex read-timeout 被中止，重试后成功）；
+      > ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_2112.py` 重建 2.11.2 精简 zip 432,648 字节、
+      > 70 文件，`update_skill_settings` success，file_id `c04caaee-92f2-47d9-8b4c-7c58be35f8bf`，
+      > `get_skill` last_modified 更新至 2026-09-01T13:49:21Z）；SkillHub（skillId `104490`）
+      > `skillhub publish` 成功（`ok:true`，66 文件、430,316 字节，versionId `281031`，
+      > `tags.latest=2.11.2`，`reviewStatus/securityScanStatus/contentAuditStatus=pending` 为平台异步审核）。
+      > 2.11.2 核心变更（纯修复版 patch）：refresh 调和结果真正落盘、doctor 畸形白名单不再绕过
+      > 元字符安全网、wizard 重跑基础配置不再丢弃数据、validate.py 重定义区块切分双重偏移、
+      > publish_qoder 幂等标记字符不一致；含新回归测试（test_refresh_reconcile/test_publish_qoder 等）。
       > **2.11.1 状态（2026-09-01）**：GitHub Release v2.11.1 已发布（tag `v2.11.1`，CI 自动生成
       > `iterate-skill.tar.gz` + `SHA256SUMS.txt`，`:!harness` 剔除 harness）；npm
       > `iterate-skill-installer@2.11.1` 已发布（`npm view` 确认 latest=2.11.1）；ClawHub
