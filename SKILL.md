@@ -380,12 +380,11 @@ return { rounds, converged, findingsByRound, totalFindings, bySeverity, byDimens
 3. 命中命名集 → 本轮直接采用该集的 `dimensions` 及对应的 `focus` 覆盖，**不重定义**；用 `AskUserQuestion` 简要确认后即可进入 Phase 1。
 4. 用户显式指定使用预设维度（如 "use default dimensions" / "按预设审查"）→ 用全局 `dimensions`，跳过路由。
 
-**③ goal 指定范围，但未命中任何命名集**（偏门范围 → on-the-fly 重定义）→ AI 读取 `ITERATE.md` 中的定制维度 + 当次 goal，输出本轮维度方案：
-1. 从配置的 `dimensions` 中筛选与 goal 最相关的维度。
-2. 对每个维度的 focus 进行针对性调整（例如 goal 涉及认证 → security 维度的 focus 加入 "auth/session/JWT"）。
-3. 如需新增临时维度（不在默认 9 个中），在方案中说明理由。
-4. 使用 `AskUserQuestion` 向用户展示方案并请求确认。
-5. 用户确认后，本轮审查使用调整后的维度方案；用户拒绝则回退到配置中的默认维度。
+**③ goal 指定范围，但未命中任何命名集**（偏门范围 → on-the-fly **重定义**）→ 该范围没有任何现成蓝图。**一旦进入重定义，就假设「预设完全不可用」，禁止把全局 `dimensions` 或任一已有维度集当作起点来筛选/微调**——否则那只是伪重定义（多半是你偷懒套预设的结果）。必须从根为该范围重新推导：
+1. **脱离预设，从根推导**：先想清该 goal 的实质——涉及哪些模块/文件、最容易**在这类改动上出错的风险是什么**。基于此推导，从**维度全集**（9 个 canonical：`correctness / security / performance / architecture / style-tests / tech-debt / spec-compliance / frontend-backend / ui-ux`）中重新选择真正相关的维度，**不受全局已启用维度限制**；确有需要时新增非标准临时维度。第 1 步不要打开 `dimensions` 或任何 `dimension_sets` 作为参照。
+2. **强制写出取舍理由**：对选中的每个维度必须给出**本范围特有**的取舍理由（它为何在本范围必要、侧重点与其他范围有何不同），并据此设置针对性的 focus。**凡理由与该范围无关、或与某一预设集雷同，即视为套用预设，必须推翻重想**，直到每个维度都能独立论证。
+3. 将维度 + focus 组装为方案，用 `AskUserQuestion` 请求用户确认，并明确标注这是 **「全新重定义」而非「路由到预设」**。
+4. 用户确认 → 本轮采用重定义方案；用户拒绝 → 回退到全局默认 `dimensions`。
 
 **有界记录（/ Bounded persistence — 解决迭代信息膨胀）**：
 - 预设命名维度集的定义**只存**于 `iterate.config.yaml` 的 `dimension_sets`（结构性配置）。`ITERATE.md` 仅在 AI 维护区渲染**一次**「推荐审查蓝图」清单，**不随轮次增长**。
