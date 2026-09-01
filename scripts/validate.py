@@ -2,7 +2,7 @@
 """校验 iterate-skill 相关文件。
 
 用法：
-    python scripts/validate.py decisions <path-to-.iterate_decisions.md>
+    python scripts/validate.py decisions <path-to-.iterate_decisions.md> [<dimensions-dir>]
     python scripts/validate.py config <path-to-iterate.config.yaml> [<schema-path> [<dimensions-dir>]]
     python scripts/validate.py dimensions <path-to-config/dimensions>
 """
@@ -36,9 +36,23 @@ _COMMAND_METACHARS = set(';|&$`><\r\n\\#*?~"\'\u007b\u007d()[]')
 DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "config" / "config.schema.json"
 
 
-def validate_decisions(path: Path) -> list[str]:
-    """校验 .iterate_decisions.md 格式是否合规。"""
+# Where per-dimension default focus prompts live, used to catch off-catalog
+# scope redefinitions that merely parrot a preset prompt instead of writing an
+# independent rationale.
+DEFAULT_DIMENSIONS_DIR = Path(__file__).resolve().parent.parent / "config" / "dimensions"
+
+
+def validate_decisions(path: Path, dimensions_dir: Path | None = None) -> list[str]:
+    """校验 .iterate_decisions.md 格式是否合规。
+
+    Args:
+        path: Path to the decision log.
+        dimensions_dir: Optional dir of ``<dim>.yaml`` files whose ``focus``
+            text is used to detect off-catalog scope redefinitions that just
+            copy the default prompt. Defaults to ``config/dimensions``.
+    """
     errors: list[str] = []
+    resolved_dimensions_dir = dimensions_dir or DEFAULT_DIMENSIONS_DIR
 
     if not path.exists():
         errors.append(f"File not found: {path}")
@@ -64,6 +78,121 @@ def validate_decisions(path: Path) -> list[str]:
     round_headers = re.findall(r"^## Round (\d+|\{N\})(?:[\s\u2014-]+|$)", content, re.MULTILINE)
     if not round_headers:
         errors.append("No round headers found (expected '## Round N — ...')")
+
+    errors.extend(_validate_scope_redefinitions(content, resolved_dimensions_dir))
+
+    return errors
+
+
+# Header title of the optional off-catalog scope-redefinition table block.
+_REDEFINITION_HEADER = "### Scope Dimension Redefinition (on-the-fly)"
+_ORIGIN_MARKERS = ["**Origin scope:**", "Origin scope:"]
+
+_HEADER_SPLIT_RE = re.compile(r"\s*\|\s*")
+
+
+def _load_dimension_focuses(dimensions_dir: Path) -> dict[str, str]:
+    """Map dimension id -> normalized default focus text."""
+    focuses: dict[str, str] = {}
+    if not dimensions_dir.is_dir():
+        return focuses
+    for yaml_file in sorted(dimensions_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("focus"), str):
+            focuses[yaml_file.stem] = _normalize_focus(data["focus"])
+    return focuses
+
+
+def _normalize_focus(text: str) -> str:
+    """Whitespace/case/punctuation-insensitive comparison key for a prompt."""
+    return " ".join(text.split()).strip().rstrip(".,").lower()
+
+
+def _sections_for_redefinition(content: str) -> list[str]:
+    """Extract every block under a Scope Dimension Redefinition header."""
+    blocks: list[str] = []
+    for match in re.finditer(rf"^{re.escape(_REDEFINITION_HEADER)}\s*$", content, re.MULTILINE):
+        start = match.end()
+        # Cut at the next markdown header of equal or higher level.
+        stop = len(content)
+        for hmm in re.finditer(r"^## |^### ", content[match.start():][start:], re.MULTILINE):
+            stop = match.start() + start + hmm.start()
+            break
+        blocks.append(content[match.start():stop])
+    return blocks
+
+
+def _validate_scope_redefinitions(content: str, dimensions_dir: Path) -> list[str]:
+    """Check off-catalog scope redefinition records carry an independent reason.
+
+    The block (only present when an off-catalog scope was redefined on the
+    fly) must state an Origin scope, list at least one dimension row, and give
+    every dimension a non-empty "Independent reason" that is not just a copy of
+    that dimension's default ``focus`` prompt. This machine check backs the
+    SKILL.md Phase 0 rule that forbids lazily recycling the preset dimensions.
+    """
+    errors: list[str] = []
+    if _REDEFINITION_HEADER not in content:
+        return errors
+
+    focuses = _load_dimension_focuses(dimensions_dir)
+
+    for block in _sections_for_redefinition(content):
+        if not any(marker in block for marker in _ORIGIN_MARKERS):
+            errors.append(
+                f"{_REDEFINITION_HEADER}: missing 'Origin scope:' line "
+                "(must name the redefined scope)"
+            )
+        origin_matches = [m for m in _ORIGIN_MARKERS if m in block]
+        for marker in origin_matches:
+            rest = block.split(marker, 1)[1].splitlines()
+            if not rest or not rest[0].strip():
+                errors.append(f"{_REDEFINITION_HEADER}: empty Origin scope")
+
+        # Find a table header row mentioning Dimension and Reason.
+        table_header_idx = None
+        for i, line in enumerate(block.splitlines()):
+            cells = [c.strip() for c in _HEADER_SPLIT_RE.split(line.strip())[1:-1]]
+            if len(cells) >= 2 and any(c.lower() == "dimension" for c in cells) and any(
+                "reason" in c.lower() for c in cells
+            ):
+                table_header_idx = i
+                break
+        if table_header_idx is None:
+            errors.append(
+                f"{_REDEFINITION_HEADER}: expected a table with 'Dimension' and "
+                "'Independent reason' columns"
+            )
+            continue
+
+        rows = 0
+        for line in block.splitlines()[table_header_idx + 1 :]:
+            if not line.strip().startswith("|") or set(line.replace("|", "").strip()) <= {"-", ":", " "}:
+                continue  # skip the |---| separator and non-row lines
+            cells = [c.strip() for c in _HEADER_SPLIT_RE.split(line.strip())[1:-1]]
+            if len(cells) < 2:
+                continue
+            rows += 1
+            dim, reason = cells[0], cells[1]
+            if not dim:
+                errors.append(f"{_REDEFINITION_HEADER}: row #{rows} has an empty dimension")
+                continue
+            if not reason:
+                errors.append(f"{_REDEFINITION_HEADER}: row '#{rows}' for '{dim}' has no reason")
+                continue
+            default = focuses.get(dim)
+            if default and _normalize_focus(reason) == default:
+                errors.append(
+                    f"{_REDEFINITION_HEADER}: reason for '{dim}' merely copies its default "
+                    "focus prompt — write an independent scope-specific rationale"
+                )
+        if rows == 0:
+            errors.append(
+                f"{_REDEFINITION_HEADER}: section declares a redefinition but lists no dimension rows"
+            )
 
     return errors
 
@@ -490,7 +619,8 @@ def main(argv: list[str] | None = None) -> int:
     target = Path(target_str)
 
     if command == "decisions":
-        errors = validate_decisions(target)
+        dimensions_dir = Path(args[2]) if len(args) > 2 else None
+        errors = validate_decisions(target, dimensions_dir)
     elif command == "config":
         schema_path = Path(args[2]) if len(args) > 2 else None
         dimensions_dir = Path(args[3]) if len(args) > 3 else None

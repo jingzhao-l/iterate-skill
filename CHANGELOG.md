@@ -5,6 +5,26 @@
 
 ---
 
+## [2.11.1] — 2026-08-31
+
+### 修复 / Fixes
+
+- **偏门范围重定义「禁抄预设」**：`SKILL.md` Phase 0 明确——未命中任何命名维度集的 goal，必须从根（维度全集）重新推导维度方案，禁止以全局 `dimensions` 或任一已有维度集为起点筛选/微调；每个选中维度必须给出本范围特有的独立理由（与某预设集雷同即视为套用、推翻重想），并可新增非标准临时维度。范围路由（命中预设）与重定义（未命中）两条路径彻底分离，防止 AI 惰性沿用预设。
+
+### 新增 / Features
+
+- **`scripts/validate.py decisions` 新增重定义记录机器校验**：`.iterate_decisions.md` 中出现 `### Scope Dimension Redefinition (on-the-fly)` 小节时，强制要求 `**Origin scope:**` 与 `Dimension / Independent reason` 表格，且每个维度的理由不得照抄 `config/dimensions/<dim>.yaml` 默认 focus（去空白/大小写归一化后比对）。为「禁抄预设」提供可执行的第二道闸。决策日志模板同步新增该小节示例。
+
+### 内部 / Internal
+
+- `pyproject.toml` 的 ruff `extend-exclude` 收录 `.awesome-claude-skills`（第三方 marketplace 校验用 submodule，本地检出会导致 `ruff check .` 假阳性，CI 未检出子模块不受影响）。
+
+### 测试 / Tests
+
+- 新增 `tests/test_validate.py::TestValidateScopeRedefinitions`（8 例：缺 Origin / 空 Origin / 理由抄默认 focus / 理由为空 / 缺表头 / 无数据行 / 合法通过）；全量 Python 测试 862 个全部通过，`ruff check .` 通过。
+
+---
+
 ## [2.11.0] — 2026-08-31
 
 ### 新增 / Features

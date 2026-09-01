@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iterate-skill"
-version = "2.11.0"
+version = "2.11.1"
 description = "Iterate skill CLI — onboarding and project knowledge management for the iterate AI coding assistant skill."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,6 +47,11 @@ iterate_cli = ["data/*.md", "data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# Third-party skill marketplace vetting submodule; not part of this repo's
+# source, so keep it out of lint scope (its files only exist when checked out).
+extend-exclude = [".awesome-claude-skills"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402"]  # sys.path manipulation before imports is a standard test pattern

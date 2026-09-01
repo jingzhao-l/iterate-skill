@@ -48,6 +48,21 @@ Branch: {iteration-branch}
 |---|---------|--------|
 | 1 | | |
 
+### Scope Dimension Redefinition (on-the-fly)
+
+<!-- 只在未命中任何预设维度集、对偏门范围做 on-the-fly 重定义时才需要本段。
+     每个维度的 Independent reason 必须是本范围特有的论证，不得照抄
+     config/dimensions/<dim>.yaml 的默认 focus。scripts/validate.py 会据此校验。 -->
+<!-- Only needed when an off-catalog scope was redefined on the fly. Each
+     dimension's "Independent reason" must be scope-specific, not a copy of
+     config/dimensions/<dim>.yaml's default focus (enforced by scripts/validate.py). -->
+
+**Origin scope:** {redefined-scope}
+
+| Dimension | Independent reason | Focus |
+|-----------|-------------------|-------|
+| security  | {why this scope needs it / independent rationale} | {scope-specific focus} |
+
 ### Validation
 
 - 

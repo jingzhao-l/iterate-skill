@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification.
-version: 2.11.0
+version: 2.11.1
 permissions:
   file_read: true
   file_write: true
@@ -388,7 +388,12 @@ return { rounds, converged, findingsByRound, totalFindings, bySeverity, byDimens
 
 **有界记录（/ Bounded persistence — 解决迭代信息膨胀）**：
 - 预设命名维度集的定义**只存**于 `iterate.config.yaml` 的 `dimension_sets`（结构性配置）。`ITERATE.md` 仅在 AI 维护区渲染**一次**「推荐审查蓝图」清单，**不随轮次增长**。
-- ③ 的临时重定义**仅**在 `.iterate_decisions.md` 当轮 Round 段的 `AI Important Decisions` 追加一条（结论 + 理由），**不写回** `iterate.config.yaml`，也**不追加**进 `ITERATE.md`。当次迭代结束后该临时方案即失效，后续再遇相同偏门范围应重新路由，而非沿用陈旧记录。
+- ③ 的临时重定义**仅**在 `.iterate_decisions.md` 当轮 Round 段的专用小节
+  `### Scope Dimension Redefinition (on-the-fly)` 记录（格式见决策日志模板）：须写 `**Origin scope:**`，
+  并为每个重定义维度表格行给出**本范围特有的 Independent reason**，不得照抄
+  `config/dimensions/<dim>.yaml` 的默认 focus（`scripts/validate.py decisions` 会据此做机器校验）。
+  该记录**不写回** `iterate.config.yaml`，也**不追加**进 `ITERATE.md`。当次迭代结束后该临时方案即失效，
+  后续再遇相同偏门范围应重新路由，而非沿用陈旧记录。
 - `ITERATE.md` 的 AI 维护区在 refresh 时只保留**最新快照**；各轮次过程记录一律落在 `.iterate_decisions.md`。当 `.iterate_decisions.md` 超过阈值时，可将最旧轮次归档（压缩为一行摘要）或将已收敛结论提炼进 `ITERATE.md` 的知识快照后清空历史段，从根本上避免任何知识库文件无限膨胀。
 
 > Dimension Planning 只调整维度的 focus prompt 与启用列表（或路由到命名维度集），不改变 atomic/architectural 分类标准、git 隔离、验证流程等核心机制。

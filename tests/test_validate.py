@@ -110,6 +110,139 @@ class TestValidateDecisions:
         assert any("No round headers found" in e for e in errors)
 
 
+def _decision_log_with_redefinition(redefinition_block: str) -> str:
+    """A decision log that is otherwise valid, plus a redefinition block."""
+    head = (
+        "# Iterate Decision Log\n\n"
+        "## Round 1 — 2026-01-01\n\n"
+        "### Atomic Fixes (Direct)\n"
+        "### Architectural Fixes (Approved + Executed)\n"
+        "### Architectural Fixes (Deferred to Next Round)\n"
+        "### AI Important Decisions\n"
+    )
+    tail = "\n### Validation\n"
+    return head + redefinition_block + tail
+
+
+def _make_dimensions_dir(tmp_path: Path, focus_text: str = "Independent custom focus") -> Path:
+    d = tmp_path / "dims"
+    d.mkdir()
+    (d / "security.yaml").write_text(
+        f"name: Security\nname_en: Security\npriority: critical\nfocus: |\n  {focus_text}\n",
+        encoding="utf-8",
+    )
+    return d
+
+
+VALID_REDEFINITION = (
+    "### Scope Dimension Redefinition (on-the-fly)\n\n"
+    "**Origin scope:** auth service\n\n"
+    "| Dimension | Independent reason | Focus |\n"
+    "|-----------|-------------------|-------|\n"
+    "| security  | harden token refresh for the mesh | JWT lifecycle |\n"
+)
+
+
+class TestValidateScopeRedefinitions:
+    def test_no_redefinition_block_passes(self, tmp_path: Path) -> None:
+        path = tmp_path / ".iterate_decisions.md"
+        path.write_text(
+            "# Iterate Decision Log\n\n"
+            "## Round 1 — 2026-01-01\n\n"
+            "### Atomic Fixes (Direct)\n"
+            "### Architectural Fixes (Approved + Executed)\n"
+            "### Architectural Fixes (Deferred to Next Round)\n"
+            "### AI Important Decisions\n"
+            "### Validation\n",
+            encoding="utf-8",
+        )
+        assert validate.validate_decisions(path) == []
+
+    def test_valid_redefinition_passes(self, tmp_path: Path) -> None:
+        path = tmp_path / ".iterate_decisions.md"
+        path.write_text(
+            _decision_log_with_redefinition(VALID_REDEFINITION), encoding="utf-8"
+        )
+        dims = _make_dimensions_dir(tmp_path, "A different default focus")
+        assert validate.validate_decisions(path, dims) == []
+
+    def test_missing_origin_errors(self, tmp_path: Path) -> None:
+        path = tmp_path / ".iterate_decisions.md"
+        block = (
+            "### Scope Dimension Redefinition (on-the-fly)\n\n"
+            "| Dimension | Independent reason | Focus |\n"
+            "|-----------|-------------------|-------|\n"
+            "| security  | harden token refresh | JWT |\n"
+        )
+        path.write_text(_decision_log_with_redefinition(block), encoding="utf-8")
+        errors = validate.validate_decisions(path, _make_dimensions_dir(tmp_path))
+        assert any("missing 'Origin scope:'" in e for e in errors)
+
+    def test_empty_origin_errors(self, tmp_path: Path) -> None:
+        path = tmp_path / ".iterate_decisions.md"
+        block = (
+            "### Scope Dimension Redefinition (on-the-fly)\n\n"
+            "**Origin scope:**\n\n"
+            "| Dimension | Independent reason | Focus |\n"
+            "|-----------|-------------------|-------|\n"
+            "| security  | harden token refresh | JWT |\n"
+        )
+        path.write_text(_decision_log_with_redefinition(block), encoding="utf-8")
+        errors = validate.validate_decisions(path, _make_dimensions_dir(tmp_path))
+        assert any("empty Origin scope" in e for e in errors)
+
+    def test_reason_copies_default_focus_errors(self, tmp_path: Path) -> None:
+        path = tmp_path / ".iterate_decisions.md"
+        copied = "Command/SQL injection, path traversal"
+        block = (
+            "### Scope Dimension Redefinition (on-the-fly)\n\n"
+            "**Origin scope:** api layer\n\n"
+            "| Dimension | Independent reason | Focus |\n"
+            "|-----------|-------------------|-------|\n"
+            f"| security  | {copied} | JWT |\n"
+        )
+        path.write_text(_decision_log_with_redefinition(block), encoding="utf-8")
+        errors = validate.validate_decisions(path, _make_dimensions_dir(tmp_path, copied))
+        assert any("merely copies its default focus" in e for e in errors)
+
+    def test_empty_reason_errors(self, tmp_path: Path) -> None:
+        path = tmp_path / ".iterate_decisions.md"
+        block = (
+            "### Scope Dimension Redefinition (on-the-fly)\n\n"
+            "**Origin scope:** data pipeline\n\n"
+            "| Dimension | Independent reason | Focus |\n"
+            "|-----------|-------------------|-------|\n"
+            "| security  |  | JWT |\n"
+        )
+        path.write_text(_decision_log_with_redefinition(block), encoding="utf-8")
+        errors = validate.validate_decisions(path, _make_dimensions_dir(tmp_path))
+        assert any("has no reason" in e for e in errors)
+
+    def test_missing_table_header_errors(self, tmp_path: Path) -> None:
+        path = tmp_path / ".iterate_decisions.md"
+        block = (
+            "### Scope Dimension Redefinition (on-the-fly)\n\n"
+            "**Origin scope:** worker\n\n"
+            "| Foo | Bar |\n"
+            "|-----|-----|\n"
+        )
+        path.write_text(_decision_log_with_redefinition(block), encoding="utf-8")
+        errors = validate.validate_decisions(path, _make_dimensions_dir(tmp_path))
+        assert any("expected a table with 'Dimension'" in e for e in errors)
+
+    def test_no_rows_errors(self, tmp_path: Path) -> None:
+        path = tmp_path / ".iterate_decisions.md"
+        block = (
+            "### Scope Dimension Redefinition (on-the-fly)\n\n"
+            "**Origin scope:** batch job\n\n"
+            "| Dimension | Independent reason | Focus |\n"
+            "|-----------|-------------------|-------|\n"
+        )
+        path.write_text(_decision_log_with_redefinition(block), encoding="utf-8")
+        errors = validate.validate_decisions(path, _make_dimensions_dir(tmp_path))
+        assert any("no dimension rows" in e for e in errors)
+
+
 class TestCommandIsWhitelisted:
     @pytest.mark.parametrize(
         ("command", "expected"),
