@@ -119,6 +119,23 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **2.11.1 状态（2026-09-01）**：GitHub Release v2.11.1 已发布（tag `v2.11.1`，CI 自动生成
+      > `iterate-skill.tar.gz` + `SHA256SUMS.txt`，`:!harness` 剔除 harness）；npm
+      > `iterate-skill-installer@2.11.1` 已发布（`npm view` 确认 latest=2.11.1）；ClawHub
+      > （skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
+      > + `clawhub-stage-2.11.1`（76 文件归档，发布 71 文件）发布 2.11.1（响应 `ok:true`、
+      > `status=pending`，versionId `k97476thb57248qjvwbn8z3k2n8djtxf`，发布前 resolve 显示
+      > `latestVersion: 2.11.0`，发布后待传播为 2.11.1）；ModelScope 已 PATCH 生效
+      > （`.dist_tmp/rebuild_ms_2111.py` 重建 2.11.1 精简 zip 426,568 字节、69 文件，
+      > `update_skill_settings` success，file_id `fb0050a8-8f39-4d6c-9456-6a7070732412`）；
+      > SkillHub（skillId `104490`）`skillhub publish` 成功（`ok:true`，65 文件、424,236 字节，
+      > versionId `280724`，`tags.latest=2.11.1`，`reviewStatus/securityScanStatus/contentAuditStatus=
+      > pending` 为平台异步审核）。
+      > 2.11.1 核心变更：偏门范围 on-the-fly 重定义「禁抄预设」——未命中命名维度集的 goal 必须
+      > 从根（维度全集）重新推导方案，禁止以全局 `dimensions`/任一维度集为起点筛选微调，每个选中
+      > 维度须给出本范围特有的独立理由；`scripts/validate.py decisions` 新增对重定义记录小节的机器校验
+      > （要求 `Origin scope:` 与 `Independent reason` 表格、理由不得照抄 `config/dimensions/<dim>.yaml`
+      > 默认 focus）；决策日志模板同步新增该小节。发版前已全量通过 pytest（862 个）+ ruff。
       > **2.11.0 状态（2026-09-01）**：GitHub Release v2.11.0 已发布（tag `v2.11.0`，CI 自动生成
       > `iterate-skill.tar.gz` + `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness）；
       > npm `iterate-skill-installer@2.11.0` 已发布（`npm view` 确认 latest=2.11.0）；ClawHub
