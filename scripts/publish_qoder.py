@@ -30,7 +30,7 @@ import re
 import shutil
 import tempfile
 import zipfile
-from typing import Callable, Iterable
+from collections.abc import Iterable
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -165,12 +165,12 @@ def _git_archive_extract(dst: str, excludes: Iterable[str]) -> list[str]:
     warnings: list[str] = []
     tmp_zip = os.path.join(dst, ".archive-src.zip")
     cmd = ["git", "archive", "--format=zip", "-o", tmp_zip, "HEAD", *specs]
-    result = os.system(" ".join(cmd))  # noqa: S605  (project uses subprocess-less git here)
+    result = os.system(" ".join(cmd))
     if result != 0:
         raise RuntimeError("git archive failed; are you in the repo root?")
     with zipfile.ZipFile(tmp_zip) as archive:
         for member in archive.namelist():
-            archive.extract(member, dst)  # noqa: S202 (trusted repo-tag content)
+            archive.extract(member, dst)
     os.remove(tmp_zip)
     return warnings
 
@@ -491,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
         return check_package(args.path)
 
     if args.command == "build":
-        zip_path, warnings, meta = build_package(
+        _, warnings, meta = build_package(
             args.version,
             out=args.out,
             source=args.source,
