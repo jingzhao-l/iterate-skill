@@ -284,8 +284,7 @@ def _append_dependencies_section(skill_path: str) -> list[str]:
         "optional: `npx iterate-skill-installer` downloads the release tarball "
         "from GitHub and verifies it against `SHA256SUMS.txt` (mandatory checksum "
         "check) before installing. The auxiliary files resolved at runtime are "
-        "indexed in `references/INDEX.md`.\n\n"
-        "<!-- " + _DEP_MARKER.replace("-->", "").replace("<!-- ", "") + " -->\n"
+        "indexed in `references/INDEX.md`.\n\n" + _DEP_MARKER + "\n"
     )
     with open(skill_path, "a", encoding="utf-8") as handle:
         handle.write("\n" + section)
