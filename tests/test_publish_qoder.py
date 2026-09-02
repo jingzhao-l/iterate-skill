@@ -3,11 +3,15 @@
 Covers the dependencies/self-containment section idempotency marker: a marker
 appended to a staged SKILL.md must be detected verbatim on a later build, so it
 is never appended twice when the same annotated file is reused (``--source``).
+Also covers the safe zip extraction guard (``_safe_members``) that replaces the
+previous unsafe ``os.system`` + bare ``extract`` path.
 """
 
 from __future__ import annotations
 
+import io
 import sys
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -15,6 +19,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 sys.path.insert(0, str(REPO_ROOT))
 
 import publish_qoder
+import pytest
 
 
 class TestAppendDependenciesIdempotent:
@@ -52,3 +57,67 @@ class TestAppendDependenciesIdempotent:
         result = publish_qoder._append_dependencies_section(str(skill))
         assert result
         assert publish_qoder._DEP_MARKER in skill.read_text(encoding="utf-8")
+
+
+def _zip_with_members(
+    dst: Path, entries: list[tuple[str, bytes, bool]]
+) -> zipfile.ZipFile:
+    """Write ``entries`` (name, data, is_symlink) into a zip under ``dst``."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as archive:
+        for name, data, is_symlink in entries:
+            info = zipfile.ZipInfo(name)
+            if is_symlink:
+                # External attr mode 0xA000 == S_IFLNK (symlink).
+                info.create_system = 3
+                info.external_attr = (0xA000 | 0o777) << 16
+            archive.writestr(info, data)
+    buf.seek(0)
+    path = dst / "members.zip"
+    path.write_bytes(buf.getvalue())
+    return zipfile.ZipFile(path)
+
+
+class TestSafeMembers:
+    def test_accepts_normal_nested_members(self, tmp_path: Path) -> None:
+        with _zip_with_members(
+            tmp_path, [("iterate/SKILL.md", b"# skill", False)]
+        ) as archive:
+            names = [
+                m.filename for m in publish_qoder._safe_members(archive, str(tmp_path))
+            ]
+        assert names == ["iterate/SKILL.md"]
+
+    def test_rejects_path_traversal_member(self, tmp_path: Path) -> None:
+        with _zip_with_members(
+            tmp_path, [("../escape.txt", b"pwn", False)]
+        ) as archive, pytest.raises(ValueError, match="unsafe member path"):
+            list(publish_qoder._safe_members(archive, str(tmp_path)))
+
+    def test_rejects_absolute_member(self, tmp_path: Path) -> None:
+        with _zip_with_members(
+            tmp_path, [("/etc/passwd", b"x", False)]
+        ) as archive, pytest.raises(ValueError, match="unsafe member path"):
+            list(publish_qoder._safe_members(archive, str(tmp_path)))
+
+    def test_rejects_duplicate_members(self, tmp_path: Path) -> None:
+        with _zip_with_members(
+            tmp_path,
+            [("iterate/SKILL.md", b"a", False), ("iterate/SKILL.md", b"b", False)],
+        ) as archive, pytest.raises(ValueError, match="duplicate member"):
+            list(publish_qoder._safe_members(archive, str(tmp_path)))
+
+    def test_rejects_symlink_escaping_destination(self, tmp_path: Path) -> None:
+        with _zip_with_members(
+            tmp_path, [("iterate/link", b"../../out", True)]
+        ) as archive, pytest.raises(ValueError, match="unsafe symlink target"):
+            list(publish_qoder._safe_members(archive, str(tmp_path)))
+
+    def test_accepts_safe_symlink_within_destination(self, tmp_path: Path) -> None:
+        with _zip_with_members(
+            tmp_path, [("iterate/link", b"SKILL.md", True)]
+        ) as archive:
+            names = [
+                m.filename for m in publish_qoder._safe_members(archive, str(tmp_path))
+            ]
+        assert names == ["iterate/link"]

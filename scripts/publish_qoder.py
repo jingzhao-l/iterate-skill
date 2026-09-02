@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from collections.abc import Iterable
@@ -165,14 +166,50 @@ def _git_archive_extract(dst: str, excludes: Iterable[str]) -> list[str]:
     warnings: list[str] = []
     tmp_zip = os.path.join(dst, ".archive-src.zip")
     cmd = ["git", "archive", "--format=zip", "-o", tmp_zip, "HEAD", *specs]
-    result = os.system(" ".join(cmd))
-    if result != 0:
+    proc = subprocess.run(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False
+    )
+    if proc.returncode != 0:
         raise RuntimeError("git archive failed; are you in the repo root?")
     with zipfile.ZipFile(tmp_zip) as archive:
-        for member in archive.namelist():
-            archive.extract(member, dst)
+        archive.extractall(dst, members=_safe_members(archive, dst))
     os.remove(tmp_zip)
     return warnings
+
+
+def _safe_members(archive: zipfile.ZipFile, dst: str):
+    """Yield archive members whose stored paths are safe to extract.
+
+    Rejects absolute paths, path-traversal (``..``) segments, duplicate member
+    names, and symlink members whose target would escape ``dst`` — mirroring the
+    zip-slip guard used by ``scripts/install.py``.
+    """
+    base = os.path.realpath(dst)
+    seen: set[str] = set()
+    for info in archive.infolist():
+        normalized = os.path.normpath(info.filename)
+        if os.path.isabs(info.filename) or ".." in normalized.split(os.sep):
+            raise ValueError(f"unsafe member path in archive: {info.filename!r}")
+        resolved = os.path.realpath(os.path.join(dst, normalized))
+        if not (resolved == base or resolved.startswith(base + os.sep)):
+            raise ValueError(f"unsafe member path escapes destination: {info.filename!r}")
+        # Symlink detection via the Unix file-type flag embedded in external_attr
+        # (0xA000 == S_IFLNK); ZipInfo exposes is_dir() but not is_symlink().
+        if (info.external_attr >> 16) & 0xF000 == 0xA000:
+            try:
+                target = archive.read(info).decode("utf-8", "surrogateescape")
+            except KeyError:
+                target = ""
+            link_base = os.path.realpath(os.path.dirname(os.path.join(dst, normalized)))
+            link_target = os.path.realpath(os.path.join(link_base, target))
+            if not (
+                link_target == link_base or link_target.startswith(link_base + os.sep)
+            ):
+                raise ValueError(f"unsafe symlink target in archive: {info.filename!r}")
+        if info.filename in seen:
+            raise ValueError(f"duplicate member in archive: {info.filename!r}")
+        seen.add(info.filename)
+        yield info
 
 
 def build_package(
