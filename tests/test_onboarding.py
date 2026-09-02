@@ -3651,8 +3651,8 @@ class TestReturningUserPreservesData:
         cancelled (wizard returns None): the re-collected basics must still be
         returned — previously the ``elif not update_basic`` branch discarded them
         with NO_CHANGES_NEEDED."""
-        from iterate_cli import wizard as wizard_mod
         import iterate_cli.personalize as personalize_mod
+        from iterate_cli import wizard as wizard_mod
 
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
