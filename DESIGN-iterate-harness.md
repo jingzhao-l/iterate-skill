@@ -1,8 +1,10 @@
-# iterate-harness 设计文档 v1.0
+# iterate-harness 设计文档 v2.0
 
 > 目标：把 iterate 从 Skill 形态升级为「专门用于 iterate 的极简 agent harness」，深度适配原 skill 的体系与功能。
-> 状态：已实现至 v1 稳定期（当前发布 1.11.0）；设计文档迭代至 v1.40。
+> 状态：v1 稳定期已实现（当前发布 1.11.0）；**v2.0 设计启动：双模式（iterate 纯审查 / code 通用编程 agent + 防御式内核 + 多 agent 编排）**；设计文档迭代至 v2.0。
 > 版本记录：见文末。
+>
+> **v2.0 设计主线（新增，保留 v1 全部内容不变）**：见 §20。核心变化——① `task_mode`（code / iterate）与 `permission_mode`（default/plan/full_auto）分离；② code 模式 = 通用编程 agent + 防御式内核 + 多 agent 编排；③ iterate 模式 = 1.x 完整保留；④ TUI Tab 直切模式 + 竖向色条 + 底部模式文字。
 
 ## 1. 背景与目标
 
@@ -568,6 +570,7 @@ iterate-harness/                     # fork 自 HKUDS/OpenHarness @ v0.1.9
 
 - v1.39（2026-08-17）：**WebUI 迭代：对话界面人类-in-the-loop 控制（新增 §18）**——在 WebUI 管理台中嵌入可折叠侧边对话面板，支持启动/暂停/用户输入/停滞检测/督促注入，匹配 iterate 垂直领域定位（主体是管理台，对话是辅助干预）。
 - v1.40（2026-08-17）：**WebUI 迭代：工作区 / Findings 分诊 / 健壮性（新增 §19）**——落地 §17.3 P2 的 Findings 分诊（持久化 approve/reject 审批日志）与 P4 的工作区管理（主工作区 + 隔离 worktree 列表/删除）；对话面板新增工具调用可视化卡片；管理台新增 ErrorBoundary / Skeleton / 键盘快捷键 / SSE 断线轮询兜底 / 连接状态 toast / 浏览器通知等健壮性增强。
+- v2.0（2026-09-02）：**大版本方向：双模式（iterate 纯审查 / code 通用编程 agent + 防御式内核 + 多 agent 编排）（新增 §20）**——v1 系列已至 1.11.0 稳定期，功能趋于做尽；本条目确立 harness 2.0 升级方向。核心决策：① `task_mode`（code / iterate）与 `permission_mode`（default/plan/full_auto）**分离**——`task_mode` 决定 agent 干什么（通用编程 vs iterate 审查迭代闭环），`permission_mode` 决定权限多宽松；② **iterate 模式 = 1.x 完整保留**（9 维度审查→分诊→原子/架构修复→验证→收敛，零破坏）；③ **code 模式 = 通用编程 agent + 防御式内核**——深度融入 iterate 理念但**不脱离 iterate 基础**，防御式编程（最小化假设 / 信任边界验证 / fail-fast+原子事务 / 前置后置条件 / 不变量守护 / 假设声明与校验）成为 agent **每个动作的默认行为**而非事后审查，多 agent 编排（agent / send_message / task_stop + coordinator + swarm 全套）直接启用；④ **TUI 模式切换对齐 opencode**——空输入框 Tab 直切 code ↔ iterate，输入框左侧竖向色条随模式变色（code=primary / iterate=amber），输入框底部模式文字随切随色；⑤ 完整能力审计（§20.4）：对比 `.external/OpenHarness` 原始代码，通用编程 + 多 agent 能力 **100% 完整保留**，仅缺 4 个外围扩展（image_generation / autopilot / channels / vim），不影响 code 模式编程核心。**本版为纯设计细化，不修改 harness 源文件**。头部状态行更新至 v2.0。
 ## 13. 发布手册（Release Manual）
 
 > 本节为 `RELEASE.md` 的镜像章节（v1.31 并入），是 iterate 生态三个对外发布项目的统一发布 checklist。发布操作以本节为准，独立 `RELEASE.md` 保留便于快速勾选。
@@ -1400,3 +1403,149 @@ harness/iterate-harness/
 - 后端：`tests/test_web/test_routes.py` 新增 `TestFindingsTriage`（6 项）与 `TestWorkspaces`（4 项），全量 pytest 通过；
 - 前端：`npm run typecheck` 零错误、`npm run build` 产出正常；
 - 安全：分诊与工作区删除全部走 `confirm=true` + 审计；worktree slug 防路径遍历；敏感信息不回传。
+## 20. v2.0 大版本：双模式架构（iterate 纯审查 / code 通用编程 agent + 防御式内核 + 多 agent 编排）
+
+> v2.0（2026-09-02 设计启动）。本章在保留 v1 全部能力的基础上，为 harness 引入**双模式**架构：`iterate` 模式完整保留 1.x 纯审查迭代闭环；新增 `code` 模式，把 harness 从「iterate 专用引擎」升级为「自带 iterate 防御式编程纪律的通用编程 agent」，并启用完整多 agent 编排能力。本版为纯设计细化，不修改 harness 源文件。
+
+### 20.1 背景与目标
+
+#### 20.1.1 背景
+- harness 1.x 已至稳定期（当前发布 1.11.0），功能围绕 iterate 审查迭代闭环趋于做尽：9 维度并行审查、分诊、原子/架构修复、验证、收敛、checkpoint、决策日志、趋势库、WebUI 等均已实现。
+- 生态三项目（skill / harness / plugin）同期审视后确认：**harness 具备升级为通用编程 agent 的完整底层能力**（OpenHarness fork 内核 + 通用工具面 + 多 agent 编排），只是 1.x 把它约束在 iterate 垂直链路上。
+- 用户方向确认：**不能完全脱离 iterate 的原有基础**——通用编程能力必须「融入 iterate 已有的框架与理念」，尤其深度贯彻**防御式编程**，而非另起炉灶。
+
+#### 20.1.2 目标
+1. 提供**双模式**切换：`iterate`（1.x 纯审查迭代，零破坏保留）/ `code`（通用编程 agent）。
+2. code 模式深度融入 iterate 理念：**防御式编程成为 agent 每个动作的默认行为**，而非事后审查。
+3. code 模式启用**多 agent 编排**：主模型可并行 spawn 多个 subagent，走 coordinator 模式。
+4. TUI 模式切换对齐 opencode 交互：Tab 直切 + 竖向色条 + 底部模式文字。
+
+#### 20.1.3 防御式编程概念界定（本轮认知修正）
+- **防御式编程不是「审查-修复-验证-收敛」这个流程**，而是**编码时的心智模型**（软件工程经典定义）：
+  1. **最小化假设**：假设事情会出错，主动预测并容忍问题，而非乐观假设「应该没事」。
+  2. **信任边界验证**：数据从「不可信来源」进入代码的那一刻必须验证；内部状态可信任，**外部输入必须验证**。
+  3. **快速失败、响亮失败（fail fast, fail loud）**：错误一发生立即停止、报错、回滚，绝不带病继续。
+  4. **前置/后置条件 + 断言**：每个函数声明要求什么（前置）、保证什么（后置），用断言守卫假设。
+- 与 iterate 的关系：iterate 已是防御式编程的一种实现，但只把「防御」用在**审查环节**；v2.0 把整套心智模型变成**通用 agent 每个动作的默认行为**。
+
+### 20.2 模式模型：task_mode 与 permission_mode 分离
+
+| 维度 | 取值 | 切换方式 | 决定什么 |
+|---|---|---|---|
+| `task_mode`（新增） | `code` / `iterate` | **Tab 直切**（空输入框时） | agent 干什么：通用编程 vs iterate 审查迭代闭环 |
+| `permission_mode`（现有） | `default` / `plan` / `full_auto` | `/permissions`（已有） | 权限多宽松 |
+
+- 两者正交：`task_mode` 决定任务类型，`permission_mode` 决定权限级别。
+- 现有「空输入框 Tab 打开 permissions 选择器」逻辑改为「空输入框 Tab 直切 task_mode」；permissions 切换改由 `/permissions` 命令负责（语义干净）。
+- 切换只改变**下一轮行为**，不中断当前进行中的操作；两种模式共享同一 `iterate.config.yaml` / 决策日志 / 趋势库 / checkpoint，数据天然打通。
+
+### 20.3 双模式行为差异
+
+#### 20.3.1 iterate 模式（1.x 完整保留）
+- 系统 prompt 注入 iterate 闭环：9 维度并行审查 → 分诊 → 原子/架构修复 → 验证 → 收敛。
+- 每轮注入「防御式检查点」：修复后自动验证、失败回滚、决策日志。
+- 触发即走既有 `iterate_review` / `loop_policy` 收敛引擎，**1.x 行为零破坏**。
+
+#### 20.3.2 code 模式（通用编程 agent + 防御式内核）
+- 系统 prompt 注入通用编程能力（现有 tools 全可用：bash / file_read / file_write / file_edit / glob / grep / web_fetch / web_search / mcp / lsp / skill / todo / ask_user / cron / team / agent 等）。
+- **防御式内核**（核心新增，作为 agent 默认行为而非可选审查）：
+
+| 防御式编程原则 | 内核落地机制 | 相关既有模块 |
+|---|---|---|
+| 最小化假设 | 每个工具调用前 agent 显式声明「我假设什么成立」（文件存在 / git 干净 / 依赖就绪），harness 记录并校验，假设被证伪立即 fail | 决策日志（decision_log） |
+| 信任边界验证 | 扩展现有权限层：读文件前验证路径白名单、执行前验证命令白名单、写文件前验证目标类型 | `permissions/checker.py` |
+| 前置/后置条件 | 每个 tool 自带契约：前置（文件存在/依赖就绪）→ 执行 → 后置（语法/关键测试） | tools/base.py 契约扩展 |
+| fail-fast + 原子事务 | 编辑进事务缓冲：改前快照 → 改后自动验证 → 失败自动回滚（worktree/checkpoint 机制下沉到每步） | `iterate/worktree_flow.py`、`iterate/checkpoint.py` |
+| 不变量守护 | 项目级不变量（构建必过 / 核心 API 签名不变 / 安全边界不可绕）每次操作后增量检查，违反即中断+回滚 | 新增 invariant 模块（规划） |
+| 自然收敛 | 改动集合周期触发轻量审查，决策日志全程记录，不收敛不宣布完成 | `iterate/loop_policy.py`、`iterate/review.py` |
+
+- iterate 的 review / validate / rollback / converge **不再是显式循环，而是从上述机制自然涌现**：agent 改每一步都被防御，收敛是必然结果而非调度目标——这是「深度融合」而非「表面迁移」的关键。
+
+### 20.4 能力审计：对照 OpenHarness 原始代码（多 agent / 通用编程）
+
+> 审计基准：`.external/OpenHarness`（v0.1.9 稳定版，gitignored）与 `harness/iterate-harness` 逐文件对比。
+
+#### 20.4.1 多 agent 能力（完整保留）
+| 能力 | 状态 | 位置 |
+|---|---|---|
+| 主模型 spawn subagent | ✅ `agent` 工具（local_agent / remote_agent / in_process_teammate 三模式） | `tools/agent_tool.py` |
+| 给运行中 subagent 发后续消息 | ✅ `send_message` 工具（继续/纠偏 worker，保留上下文） | `tools/send_message_tool.py` |
+| 停止 worker | ✅ `task_stop` + `task_create/get/list/output/update` | `tasks/` 目录 |
+| coordinator 编排模式 | ✅ 完整（并行 fan-out、合成 spec、continue vs spawn 决策、失败处理、`<task-notification>` 协议） | `coordinator/coordinator_mode.py` |
+| 多 agent 运行时 | ✅ subprocess + in_process 双后端、mailbox、lockfile、permission_sync、team_lifecycle、worktree（与 OpenHarness 逐文件一致） | `swarm/` 全套 |
+| agent 定义表 | ✅ 975 行（worker / explore / general-purpose 等） | `coordinator/agent_definitions.py` |
+
+#### 20.4.2 通用编程工具（完整保留）
+- bash / file_read / file_write / file_edit / glob / grep / web_fetch / web_search / mcp + mcp_auth / lsp / notebook_edit / skill / todo_write / ask_user_question / enter-exit_plan_mode / enter-exit_worktree / cron_* / team_* / remote_trigger / sleep / tool_search / config / brief —— **与 OpenHarness 逐文件一致**。
+
+#### 20.4.3 缺失的 4 个外围扩展（不影响 code 模式编程核心）
+| 缺失项 | 原 OpenHarness 内容 | 影响评估 | 决策 |
+|---|---|---|---|
+| `image_generation_tool` | 图像生成工具 | 低（编程 agent 边缘能力） | 可选补齐 |
+| `autopilot/` | repo 级自动运行服务 | 低（持续运行扩展） | 可选补齐 |
+| `channels/` | 11 种 IM 渠道（slack/telegram/feishu/qq 等）+ bus | 低（通信集成，非编程核心） | 可选补齐 |
+| `vim/` | vim 键位模式 | 低（纯键位偏好） | 不补齐（与 iterate 生态 UI 定位不符） |
+
+> 注：coordinator prompt 提到的 `subscribe_pr_activity` 在 OpenHarness 中也仅是「if available」文本，无实际实现，不算缺口。
+> **审计结论：code 模式所需的全部通用编程 + 多 agent 编排能力已经在位，无需补核心，只需按需补齐外围扩展。**
+
+### 20.5 code 模式的多 agent 编排
+
+| 编排能力 | 落地 |
+|---|---|
+| 主模型并行 fan-out | `agent` 工具可用，worker 默认 `subagent_type=worker` |
+| 继续/纠偏 worker | `send_message`（worker 保留上下文） |
+| 防御式纪律下放 | worker 继承主会话防御内核：前置/后置校验、原子事务、不变量守护、决策日志 |
+| 结果回收 | `<task-notification>` XML → 主模型合成 → 触发轻量审查收敛 |
+| 团队管理 | `team_create/delete` + swarm team_lifecycle 保留 |
+
+### 20.6 TUI 模式切换（对齐 opencode）
+
+#### 20.6.1 交互规则
+- 输入框**为空**时按 Tab → `code ↔ iterate` 循环直切（替换现有「打开 permissions 选择器」逻辑）。
+- 输入框**非空**时按 Tab → 保持现有补全/跳格行为，不冲突。
+- 切换后前端立即刷新 UI，同时发 `set_task_mode` 请求给后端（后端更新 `task_mode`，下一轮生效）。
+
+#### 20.6.2 视觉设计
+```
+code 模式：    │> 你的输入…        （左侧竖条 = primary 色）
+               [code]              （底部模式文字 = primary 色）
+iterate 模式： │> 你的输入…        （左侧竖条 = amber 色）
+               [iterate]           （底部模式文字 = amber 色）
+```
+- **左侧竖向色条**：输入框左边 1 字符宽竖条（`│`），颜色 = 当前模式色（opencode 风格模式指示灯）。
+- **底部模式文字**：输入框正下方显示 `[code]` / `[iterate]`，颜色跟随模式。
+- **颜色映射**（走主题 token，不硬编码）：`code` → `theme.colors.primary`；`iterate` → `theme.colors.warning`（amber，与 iterate-plugin 暖琥珀主题一致的生态语言）。`minimal` 主题自动退化全白，保持现有降级逻辑。
+- **状态来源**：`task_mode` 从后端 status 推送（`types.ts` 的 `BackendEvent.status` 新增字段），前端 `useBackendSession` 读取，纯受控状态，无本地不一致。
+- **涉及前端文件**：`frontend/terminal/src/components/PromptInput.tsx`（竖条 + 底部文字）、`App.tsx`（Tab 处理，替换现有 L403-406 逻辑）、`types.ts`（status 字段）、`theme/builtinThemes.ts`（颜色 token，若需新增 iterate 专属色）。
+
+### 20.7 与生态三项目协同
+
+| 项目 | v2.0 角色 | 协同点 |
+|---|---|---|
+| iterate-harness（本项目） | 执行者：双模式 + 防御式内核 + 多 agent | code 模式自执行防御式编程纪律 |
+| iterate-skill（3.0） | 制度与经验生产者 | skill 是**指令形态**的防御式编程行为协议（以 iterate 为骨架、教宿主 AI 防御式干活）；harness code 模式是**自执行形态**的同一套理念，通过共享配置与术语表保证一致性 |
+| iterate-plugin（3.0） | 指挥台 | 在 dsh 里同步暴露 task_mode 切换（code/iterate 指示灯）+ 防御事件流（前置失败/回滚/不变量违反） |
+
+### 20.8 里程碑与验收
+
+| 里程碑 | 内容 | 验收 |
+|---|---|---|
+| M1 | task_mode 后端状态 + 双模式 prompt 注入 | `set_task_mode` 生效且下一轮切换；iterate 模式 1.x 行为零破坏（回归全量测试通过） |
+| M2 | TUI Tab 直切 + 竖向色条 + 底部模式文字 | 空输入 Tab 循环切换；色条/文字随模式变色；非空输入 Tab 不冲突；minimal 主题降级正确 |
+| M3 | code 模式防御式内核 | 每个工具调用过前置/后置校验；编辑事务缓冲失败自动回滚；不变量违反即中断；假设声明被记录并校验 |
+| M4 | code 模式多 agent 编排 | `agent` / `send_message` / `task_stop` 全链路可用；worker 继承防御内核；`<task-notification>` 正确回收并触发收敛 |
+| M5 | 外围扩展按需补齐（可选） | image_generation / autopilot / channels 按决策逐项评估 |
+
+**质量门**：
+- 后端：全量 pytest 通过（在既有 1600+ 用例基础上新增 task_mode / 防御内核 / 多 agent 用例）；
+- 前端：`npm run typecheck` 零错误、`npm run build` 产出正常；
+- 回归：iterate 模式全量既有用例零回归（M1 硬约束）；
+- 安全：防御内核所有新增校验沿用既有权限层/路径白名单机制，不引入新的敏感信息暴露面。
+
+### 20.9 风险与开放问题
+1. **code 模式 token 成本**：通用编程 agent 比 iterate 纯审查更耗 token——沿用既有 `token_budget` / `budget_usd` 熔断机制兜底。
+2. **防御内核性能开销**：每步前置/后置校验可能增加延迟——校验默认轻量（语法/关键测试），重量校验（全量测试）仍走周期收敛。
+3. **worker 防御纪律继承**：subagent 需显式继承防御内核上下文——通过 `agent_definitions` 注入 worker system prompt 保证。
+4. **外围扩展取舍**：4 个缺失扩展是否补齐，取决于 code 模式目标场景（本地通用编程优先 → 不补 channels；需要视觉生成 → 补 image_generation）。
+5. **模式切换与运行中任务**：切换只影响下一轮，若运行中任务需要强制切换，需确认是否支持中途打断（复用既有 Esc 暂停机制）。
