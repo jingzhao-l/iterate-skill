@@ -5,6 +5,26 @@
 
 ---
 
+## [2.12.0] — 2026-09-02
+
+### 新增 / Features
+
+- **`iterate config --json` 结构化输出**：非交互式配置命令新增 `--json`，供脚本/CI 场景消费——`iterate config --json` 输出全部可设键的 JSON 对象、`iterate config get KEY --json` 输出 `{"KEY": value}`、`iterate config set KEY VALUE --json` 成功时输出 `{"key": KEY, "value": <解析值>}` 确认对象；stdout 保持纯净（错误仍走 stderr + 非零码），与 `iterate status/show/doctor --json` 契约对齐。
+
+### 修复 / Fixes
+
+- **publish_qoder 安全加固**：`_git_archive_extract` 原先用 `os.system(" ".join(cmd))` 经 shell 执行 `git archive`，`--exclude` 用户输入被无引号拼入命令字符串，存在 shell 注入面。现改用 `subprocess.run(check=False)` 列表形式（不启动 shell）并以真实返回码判定；解压由裸 `archive.extract` 改为 `archive.extractall(members=_safe_members(...))`，`_safe_members` 拒绝绝对路径、`..` 越界、重复成员及逃逸目标目录的符号链接（zip-slip 防护，与 `install.py` 安全基线一致）。
+- **install 下载根目录选择更稳**：`_download_release_source` 原返回 `extracted[0]`（临时目录迭代首个子目录），多顶层目录时可能选中非 skill 目录。现要求 release tarball 顶层目录中恰好一个含 `SKILL.md` 标记，否则拒绝并报错返回。
+
+### 测试 / Tests
+
+- 新增 `tests/test_publish_qoder.py::TestSafeMembers`（6 例：正常嵌套成员、`..` 越界、绝对路径、重复成员、逃逸符号链接、目录内安全符号链接）。
+- 新增 `tests/test_install_script.py::TestDownloadReleaseSource`（3 例：唯一含 SKILL.md 根被选中、无标记根拒绝、多标记根拒绝）。
+- 新增 `tests/test_config.py::TestConfigJson`（5 例：单键 get、全键 list、set 确认且 stdout 纯净、未知键报错、run_config_get 直调）。
+- 全量 Python 测试 888 个全部通过，`ruff check .` 通过。
+
+---
+
 ## [2.11.2] — 2026-09-01
 
 ### 修复 / Fixes

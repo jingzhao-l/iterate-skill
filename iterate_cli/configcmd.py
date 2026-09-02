@@ -17,6 +17,7 @@ through their dedicated flows and intentionally out of scope here.
 
 from __future__ import annotations
 
+import json
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -211,12 +212,17 @@ def _format_value(value: Any) -> str:
     return str(value)
 
 
-def run_config_get(project_root: Path, key: str | None) -> int:
+def run_config_get(
+    project_root: Path, key: str | None, json_output: bool = False
+) -> int:
     """Print one resolved config value (or all) to stdout.
 
     Args:
         project_root: Project root directory.
         key: Flat key to print; when None, prints every settable key.
+        json_output: When True, emit a structured JSON object (single ``{[key]:
+            value}``, or all keys) instead of TUI-formatted lines — matching
+            the ``iterate status/show/doctor --json`` contract for scripts/CI.
 
     Returns:
         Exit code: 0 on success, 1 when the config is missing or the key is
@@ -242,7 +248,20 @@ def run_config_get(project_root: Path, key: str | None) -> int:
         if spec is None:
             tui.error(f"Unknown config key {key!r}. Use `iterate config` to list keys.")
             return 1
-        print(_format_value(_read(spec)))
+        value = _read(spec)
+        if json_output:
+            print(json.dumps({key: value}, ensure_ascii=False))
+        else:
+            print(_format_value(value))
+        return 0
+
+    if json_output:
+        print(
+            json.dumps(
+                {name: _read(spec) for name, spec in SETTABLE_KEYS.items()},
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     for name, spec in SETTABLE_KEYS.items():
@@ -250,7 +269,9 @@ def run_config_get(project_root: Path, key: str | None) -> int:
     return 0
 
 
-def run_config_set(project_root: Path, key: str, raw_value: str) -> int:
+def run_config_set(
+    project_root: Path, key: str, raw_value: str, json_output: bool = False
+) -> int:
     """Validate and write a single config value (with a timestamped backup).
 
     Refuses to modify a corrupt/missing config so a damaged file is never
@@ -260,6 +281,8 @@ def run_config_set(project_root: Path, key: str, raw_value: str) -> int:
         project_root: Project root directory.
         key: Flat config key to set.
         raw_value: Raw CLI value to parse and validate.
+        json_output: When True, emit a JSON confirmation object instead of TUI
+            lines. Errors are still reported on stderr with a non-zero code.
 
     Returns:
         Exit code: 0 on success, 1 on unknown key / invalid value / write
@@ -310,6 +333,10 @@ def run_config_set(project_root: Path, key: str, raw_value: str) -> int:
         tui.error(f"Failed to write {CONFIG_YAML}: {exc}")
         return 1
 
+    if json_output:
+        # Keep stdout clean for scripts/CI: only the JSON confirmation object.
+        print(json.dumps({"key": key, "value": parsed}, ensure_ascii=False))
+        return 0
     tui.success(f"{key} set to {_format_value(parsed)}.")
     tui.hint(f"Backup written to {backup_path.name}.", indent=2)
     return 0

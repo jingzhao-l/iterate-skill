@@ -161,6 +161,7 @@ def _dispatch_command(
             action=getattr(args, "config_action", None),
             key=getattr(args, "key", None),
             value=getattr(args, "value", None),
+            json_output=getattr(args, "json", False),
         )
     parser.print_help()
     return 0
@@ -344,6 +345,12 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help="Value to set (only used with 'set').",
+    )
+    config_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON object instead of TUI output.",
     )
 
     return parser
@@ -872,18 +879,22 @@ def _cmd_config(
     action: str | None,
     key: str | None,
     value: str | None,
+    json_output: bool = False,
 ) -> int:
     """Handle the 'config' subcommand — non-interactive config inspection/edit.
 
     ``iterate config`` prints every settable value, ``iterate config get [k]``
     prints one (or all) resolved value(s), and ``iterate config set k v``
-    validates and writes a single value with a timestamped backup.
+    validates and writes a single value with a timestamped backup. With
+    ``--json``, read/get/set emit a structured JSON object on stdout (for
+    scripts/CI) instead of TUI lines.
 
     Args:
         project_root: Project root directory.
         action: The config action ("get", "set", or None to list all).
         key: Flat config key to read or write (None to list all keys).
         value: Raw CLI value to write (only used with "set").
+        json_output: When True, emit JSON objects instead of TUI output.
 
     Returns:
         Exit code: 0 on success, 1 on unknown key / invalid value / write
@@ -898,8 +909,8 @@ def _cmd_config(
         if value is None:
             tui.error("Usage: iterate config set KEY VALUE")
             return 1
-        return run_config_set(project_root, key, value)
+        return run_config_set(project_root, key, value, json_output=json_output)
 
     # 'get' (explicit or implicit) lists all values when no key is given.
-    return run_config_get(project_root, key)
+    return run_config_get(project_root, key, json_output=json_output)
 

@@ -7,6 +7,7 @@ invalid-value handling, corrupt-config protection, and CLI exit codes.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -260,3 +261,58 @@ class TestConfigCli:
             ["config", "set", "max_rounds", "999", "-p", str(project), "--no-banner"]
         )
         assert code == 1
+
+
+class TestConfigJson:
+    """``iterate config --json`` emits a clean, parseable JSON object."""
+
+    def test_get_single_key_json(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["language"] = "en"
+        config["max_rounds"] = 7
+        _write_config(project, config)
+        code = cli_main(
+            ["config", "get", "max_rounds", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {"max_rounds": 7}
+
+    def test_get_all_keys_json(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            ["config", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert isinstance(payload, dict)
+        assert "max_rounds" in payload
+        assert set(payload) <= set(SETTABLE_KEYS)
+
+    def test_set_json_confirms_and_stdout_is_clean(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            ["config", "set", "max_rounds", "12", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {"key": "max_rounds", "value": 12}
+        assert _read_config(project)["max_rounds"] == 12
+
+    def test_unknown_key_json_returns_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            ["config", "get", "nope", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 1
+
+    def test_run_config_get_all_json(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        assert run_config_get(project, None, json_output=True) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert isinstance(payload, dict) and "dimensions" in payload
