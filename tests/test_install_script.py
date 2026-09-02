@@ -14,6 +14,7 @@ on failed validation) are verified deterministically.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import shutil
@@ -840,6 +841,72 @@ class TestSafeExtractall:
         with tarfile.open(tar_path) as tar:
             install._safe_extractall(tar, dest)
         assert (dest / "evil-hl").exists()
+
+
+class TestDownloadReleaseSource:
+    """_download_release_source must pick the unique top-level dir that carries
+    the SKILL.md marker (previously it blindly returned extracted[0], which
+    could select the wrong directory or, worse, none)."""
+
+    def _tar_bytes(self, roots: dict[str, list[str]]) -> bytes:
+        """Build a gz tarball whose top-level dirs are ``roots`` (name -> files)."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for dname, files in roots.items():
+                dir_ti = tarfile.TarInfo(dname + "/")
+                dir_ti.type = tarfile.DIRTYPE
+                tar.addfile(dir_ti)
+                prev = None
+                for rel in files:
+                    data = b"x"
+                    parts = rel.split("/")
+                    for i in range(len(parts)):
+                        seg = "/".join(parts[: i + 1])
+                        if seg == prev:
+                            continue
+                        if i == len(parts) - 1:
+                            ti = tarfile.TarInfo(f"{dname}/{seg}")
+                            ti.size = len(data)
+                            tar.addfile(ti, io.BytesIO(data))
+                        else:
+                            sub = tarfile.TarInfo(f"{dname}/{seg}/")
+                            sub.type = tarfile.DIRTYPE
+                            tar.addfile(sub)
+                        prev = seg
+        return buf.getvalue()
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch, data: bytes):
+        checksum_text = (
+            f"{hashlib.sha256(data).hexdigest()}  iterate-skill.tar.gz\n"
+        ).encode()
+
+        def fake_download(url: str, token: str | None, timeout: int = 30):
+            if "SHA256SUMS" in url:
+                return checksum_text, None
+            return data, None
+
+        monkeypatch.setattr(install, "_download_bytes", fake_download)
+        return install._download_release_source(
+            "https://example.com/iterate-skill.tar.gz", "https://example.com/SHA256SUMS.txt", None
+        )
+
+    def test_selects_unique_root_with_skill_marker(self, tmp_path: Path, monkeypatch) -> None:
+        data = self._tar_bytes({"srcdir": ["SKILL.md"]})
+        result = self._run(monkeypatch, data)
+        assert result is not None
+        assert (result / "SKILL.md").is_file()
+
+    def test_refuses_when_no_root_has_marker(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        data = self._tar_bytes({"docs": ["README.md"]})
+        result = self._run(monkeypatch, data)
+        assert result is None
+        assert "exactly one" in capsys.readouterr().err
+
+    def test_refuses_when_multiple_roots_have_marker(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        data = self._tar_bytes({"a": ["SKILL.md"], "b": ["SKILL.md"]})
+        result = self._run(monkeypatch, data)
+        assert result is None
+        assert "found 2" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------- #

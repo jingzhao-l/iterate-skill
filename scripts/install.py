@@ -1353,11 +1353,17 @@ def _download_release_source(
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
             _safe_extractall(tar, temp_dir)
-            extracted = [p for p in temp_dir.iterdir() if p.is_dir()]
-            if not extracted:
+            root_candidates = [p for p in temp_dir.iterdir() if p.is_dir()]
+            skill_roots = [d for d in root_candidates if (d / "SKILL.md").is_file()]
+            if len(skill_roots) != 1:
+                _error(
+                    "Refusing to proceed: release tarball must contain exactly one "
+                    "top-level directory with a SKILL.md marker, "
+                    f"found {len(skill_roots)}."
+                )
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 return None
-            return extracted[0]
+            return skill_roots[0]
     except (tarfile.TarError, OSError):
         # Clean up the temp directory on any failure to avoid leaking it.
         shutil.rmtree(temp_dir, ignore_errors=True)
