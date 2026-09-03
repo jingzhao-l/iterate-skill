@@ -2,7 +2,7 @@ name: Release
 
 # This workflow is triggered on every published Release in the monorepo. The
 # repo ships two INDEPENDENT distribution lines that must never cross-contaminate:
-#   * the iterate-skill skill (tags v2.*)  -> skill tarball + SHA256SUMS
+#   * the iterate-skill skill (tags v2.* / v3.*) -> skill tarball + SHA256SUMS
 #   * the iterate-harness package (tags v1.*) -> built wheel, uploaded to the
 #     same GitHub release AND pushed to PyPI (best-effort, gated on the
 #     PYPI_PASSWORD secret).
@@ -25,8 +25,8 @@ permissions:
 
 jobs:
   checksums:
-    # Skill distribution line only — runs for skill tags (v2.*).
-    if: startsWith(github.event.release.tag_name || github.event.inputs.tag, 'v2')
+    # Skill distribution line only — runs for skill tags (v2.* / v3.*).
+    if: startsWith(github.event.release.tag_name || github.event.inputs.tag, 'v2') || startsWith(github.event.release.tag_name || github.event.inputs.tag, 'v3')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -60,12 +60,12 @@ jobs:
             SHA256SUMS.txt
 
   qoder-package:
-    # Qoder distribution line only — runs for skill tags (v2.*).
+    # Qoder distribution line only — runs for skill tags (v2.* / v3.*).
     # Rebuilds the Qoder-compatible skill package (single top-level directory +
     # SKILL.md + references/) and uploads it to the release as a downloadable
     # asset. No Cloud Agents API upload: publication to the Qoder AppHub is
     # done manually by the operator via the packaged zip.
-    if: startsWith(github.event.release.tag_name || github.event.inputs.tag, 'v2')
+    if: startsWith(github.event.release.tag_name || github.event.inputs.tag, 'v2') || startsWith(github.event.release.tag_name || github.event.inputs.tag, 'v3')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tagged tree
