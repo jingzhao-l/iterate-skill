@@ -122,6 +122,18 @@ class TestGuardPrecheck:
         assert result.passed is False
         assert any(label == "config readable" and not ok for label, ok, _ in result.items)
 
+    def test_unsafe_validation_command_fails(self, tmp_path) -> None:
+        """A hand-edited config whose validation.commands contains shell-chaining
+        metacharacters must fail pre-check (fail-closed, never a green light)."""
+        project = _make_project(tmp_path)
+        (project / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+        config = _base_config()
+        config["validation"]["commands"] = {"python": ["true; rm -rf /tmp/x"]}
+        _write_config(project, config)
+        result = run_guard_precheck(project, [])
+        assert result.passed is False
+        assert any(label == "validation commands" and not ok for label, ok, _ in result.items)
+
 
 # ---------------------------------------------------------------------------
 # run_guard_postcheck
@@ -175,6 +187,43 @@ class TestGuardPostcheck:
         (project / CONFIG_YAML).write_text("{unclosed yaml", encoding="utf-8")
         result = run_guard_postcheck(project, None)
         assert result.passed is False
+
+    def test_unsafe_command_refused_execution(self, tmp_path) -> None:
+        """A command containing shell-chaining metacharacters must be REFUSED at
+        execution time — never passed to subprocess.run(shell=True)."""
+        project = _make_project(tmp_path)
+        marker = project / "pwned_marker"
+        config = _base_config()
+        config["validation"]["commands"] = {
+            "python": [f"true; touch {marker.name}"]
+        }
+        _write_config(project, config)
+        result = run_guard_postcheck(project, None)
+        assert result.passed is False
+        assert any("refused: unsafe command" in detail for _, _, detail in result.items)
+        # Fail-closed: the command was never executed, so no side effect.
+        assert not marker.exists()
+
+    def test_unsafe_command_refused_dry_run(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"]["commands"] = {"python": ["true && echo pwned"]}
+        _write_config(project, config)
+        result = run_guard_postcheck(project, None, dry_run=True)
+        assert result.passed is False
+        assert any("refused: unsafe command" in detail for _, _, detail in result.items)
+
+    def test_unconfigured_module_reported_as_failure(self, tmp_path) -> None:
+        """Requesting a module that has no validation.commands entry must FAIL,
+        never silently skip (a host AI must not believe it was validated)."""
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())  # only "python" configured
+        result = run_guard_postcheck(project, ["rust"])
+        assert result.passed is False
+        assert any(
+            label == "rust" and "requested but not configured" in detail
+            for label, _, detail in result.items
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +288,17 @@ class TestInvariantCheck:
         (project / CONFIG_YAML).write_text("{unclosed yaml", encoding="utf-8")
         result = run_invariant_check(project)
         assert result.passed is False
+
+    def test_unsafe_invariant_command_refused(self, tmp_path) -> None:
+        """invariants.commands with shell-chaining metacharacters must be refused
+        at execution time, never run through the shell."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["invariants"] = {"commands": {"python": ["true; echo pwned"]}}
+        _write_config(project, config)
+        result = run_invariant_check(project)
+        assert result.passed is False
+        assert any("refused: unsafe command" in detail for _, _, detail in result.items)
 
 
 # ---------------------------------------------------------------------------

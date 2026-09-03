@@ -152,7 +152,7 @@
 - 安全：新增校验命令全部沿用既有白名单/元字符安全网，不引入新的 shell 注入面；
 - 回归：v2 既有用例零回归（M0 硬约束）。
 
-**质量门实现状态（3.0.0）**：全量测试 **916 通过**（既有 888 + 新增 `tests/test_guard.py` 28 例）；`ruff check .` 通过；新增命令仅执行 `validation.commands` / `invariants.commands` 中的精确条目（不拼装、不走 shell 拼接，`--dry-run` 只预览不执行）。
+**质量门实现状态（3.0.0）**：全量测试 **924 通过**（既有 888 + 新增 `tests/test_guard.py` 33 例，含运行时元字符拒绝与未配置模块报告补测）；`ruff check .` 通过；新增命令仅执行 `validation.commands` / `invariants.commands` 中的精确条目（不拼装、不走 shell 拼接，`--dry-run` 只预览不执行）。
 
 ---
 
@@ -167,4 +167,4 @@
 ## 11. 版本记录
 - v1.0-v2.12.0：v2 系列设计随主仓库 skill 迭代（CHANGELOG 逐版本记录，本文档自 v3.0 起独立承载设计演进）。
 - v3.0（2026-09-02）：**大版本方向：双模式（iterate 原模式 / 防御式编程模式）（本文档首版）**——v2 功能趋于做尽，确立 v3.0 升级方向。核心决策：① **iterate 原模式完整保留**（v2 全部能力，作为默认模式，零破坏）；② **新增防御式编程模式**（`/iterate defensive`）：以 iterate 闭环为主体、从头至尾贯彻防御式编程理念（§5 四步协议），以 iterate 收敛闭环收尾（交付门禁）；③ 尊重"只显式调用"物理约束，防御式协议以本次调用内的完整任务为载体；④ CLI 新增 `guard pre-check / post-check` 与 `invariant` 确定性校验（§6），与既有 `validation.commands` / `command_whitelist` 共用安全基线；⑤ 与 harness 2.0（双模式：iterate / code）对称，四种模式两两对应，共享同一套防御式编程词汇表（§8）。**本版为纯设计细化，不修改 skill 源文件**。头部状态行更新至 v3.0。
-- v3.0 实现（2026-09-03）：**落地实现（发布 3.0.0）**——SKILL.md 注入防御式编程模式专节（心智模型 / 四步协议 / CLI 契约 / 交付门禁，"不收敛不交付"硬约束，明确面向**用户让 AI 做正常增量式编程任务**的场景）；`iterate_cli/guard.py` 实现 `guard pre-check / post-check` 与 `invariant`（`--json` / `--dry-run`，命令仅精确执行配置条目，`invariants` 缺失时退化 `validation.commands`）；`config` 新增 `mode` 与 `invariants` 段（模板 + schema + 随包副本同步）；`iterate show` / `config get|set mode` 支持读写；版本号与 npm-installer 同步 3.0.0；新增 `tests/test_guard.py` 28 例，全量测试 916 通过、`ruff check .` 通过。**防御式编程模式定位再次明确：面向用户让 AI 做正常增量式编程任务（新增功能、修 bug、重构、接入 API、补测试），从头至尾防御式纪律，iterate 闭环收尾作为交付门禁；纯审查用 `review-only`，多轮审查-收敛用 iterate 模式**。
+- v3.0 实现（2026-09-03）：**落地实现（发布 3.0.0）**——SKILL.md 注入防御式编程模式专节（心智模型 / 四步协议 / CLI 契约 / 交付门禁，"不收敛不交付"硬约束，明确面向**用户让 AI 做正常增量式编程任务**的场景）；`iterate_cli/guard.py` 实现 `guard pre-check / post-check` 与 `invariant`（`--json` / `--dry-run`，命令仅精确执行配置条目，运行时元字符拒绝 fail-closed，`invariants` 缺失时退化 `validation.commands`）；`config` 新增 `mode` 与 `invariants` 段（模板 + schema + 随包副本同步）；`iterate show` / `config get|set mode` 支持读写；版本号与 npm-installer 同步 3.0.0；新增 `tests/test_guard.py` 33 例，全量测试 924 通过、`ruff check .` 通过。**防御式编程模式定位再次明确：面向用户让 AI 做正常增量式编程任务（新增功能、修 bug、重构、接入 API、补测试），从头至尾防御式纪律，iterate 闭环收尾作为交付门禁；纯审查用 `review-only`，多轮审查-收敛用 iterate 模式**。

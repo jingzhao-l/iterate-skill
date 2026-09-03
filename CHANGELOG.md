@@ -18,8 +18,8 @@
 
 ### 测试 / Tests
 
-- 新增 `tests/test_guard.py`（28 例）：pre-check / post-check / invariant 的正常路径、异常路径（目标缺失、manifest 缺失、命令失败、脏 worktree、损坏配置）与边界场景（无参数、空配置、模块过滤、dry-run 预览、invariants 退化到 validation.commands、JSON 输出与退出码），并覆盖 CLI 集成（`guard` / `invariant` 子命令的 `--json` 与退出码契约）。
-- 全量 Python 测试 916 个全部通过（既有 888 + 新增 28），`ruff check .` 通过。
+- 新增 `tests/test_guard.py`（33 例）：pre-check / post-check / invariant 的正常路径、异常路径（目标缺失、manifest 缺失、命令失败、脏 worktree、损坏配置）与边界场景（无参数、空配置、模块过滤、dry-run 预览、invariants 退化到 validation.commands、JSON 输出与退出码、运行时元字符拒绝、未配置模块报告），并覆盖 CLI 集成（`guard` / `invariant` 子命令的 `--json` 与退出码契约）。
+- 全量 Python 测试 924 个全部通过（既有 888 + 新增 36），`ruff check .` 通过。
 
 ---
 
