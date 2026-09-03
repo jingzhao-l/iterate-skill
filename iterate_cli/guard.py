@@ -7,7 +7,7 @@ the CLI rather than by prompt discipline alone:
 - ``iterate guard pre-check [paths...]`` — run BEFORE touching anything: verify
   the target paths exist, the git worktree is clean enough to start, required
   dependency manifests are present, and the configured validation commands are
-  still whitelist-compliant. Exit code 0 = clear to proceed; 1 = do not start.
+  still metachar-safe. Exit code 0 = clear to proceed; 1 = do not start.
 - ``iterate guard post-check [module...]`` — run AFTER an edit: execute exactly
   the configured ``validation.commands.<module>`` commands (the runtime
   authoritative whitelist) against the changed modules. Exit code 0 = the edit
@@ -21,8 +21,12 @@ Safety rules carried over from the iterate security baseline:
 - Commands are only ever executed when they EXACTLY match a configured
   ``validation.commands`` / ``invariants.commands`` entry (after trim). No
   command is ever composed, prefixed, or parameterised here.
+- Fail-closed metachar enforcement: a command containing shell-chaining
+  metacharacters (or empty after trim) is REFUSED at execution time — and
+  flagged by ``pre-check`` / ``--dry-run`` — so a hand-edited or drift-polluted
+  config can never chain extra shell through ``subprocess.run(..., shell=True)``.
 - ``--dry-run`` prints the exact commands that WOULD run without executing them
-  (fail-fast: on dry-run, missing/whitelist-broken commands are reported, not run).
+  (fail-fast: unsafe commands are reported as failures, not run).
 """
 
 from __future__ import annotations
@@ -33,7 +37,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from iterate_cli.personalize import CorruptConfigError, load_config_strict
+from iterate_cli.personalize import (
+    CorruptConfigError,
+    FORBIDDEN_COMMAND_CHARS,
+    load_config_strict,
+)
 from iterate_cli.refresh import CONFIG_YAML
 from iterate_cli.tui import tui
 
@@ -41,6 +49,23 @@ from iterate_cli.tui import tui
 EXIT_FAIL = 1
 #: Exit code used when everything passes.
 EXIT_PASS = 0
+
+#: Shell-chaining metacharacters that must never appear in an executable
+#: command string. Same canonical set as personalize.FORBIDDEN_COMMAND_CHARS /
+#: doctor.COMMAND_METACHARS / scripts/validate.py (kept in sync by
+#: tests/test_validate.py). Enforced fail-closed at execution time so a
+#: hand-edited or drift-polluted config can never smuggle chained commands into
+#: ``subprocess.run(..., shell=True)``.
+COMMAND_METACHARS: frozenset[str] = frozenset(FORBIDDEN_COMMAND_CHARS)
+
+
+def _command_is_safe(command: str) -> bool:
+    """True when ``command`` may be executed: non-empty and free of metachars.
+
+    Empty/whitespace-only commands are rejected too, so a stray blank entry
+    cannot yield a false "exit 0 = validated" green light.
+    """
+    return bool(command.strip()) and not any(ch in COMMAND_METACHARS for ch in command)
 
 #: Dependency manifests that indicate "this module's toolchain is ready".
 _KNOWN_MANIFESTS: dict[str, tuple[str, ...]] = {
@@ -156,9 +181,11 @@ def _manifest_ready(project_root: Path, module: str) -> tuple[bool, str]:
 def _validation_commands(config: dict[str, Any]) -> dict[str, list[str]]:
     """Return the runtime-authoritative validation commands mapping.
 
-    Tolerates a hand-edited config where ``validation.commands`` is missing or
-    not a mapping by returning an empty dict (every command check then degrades
-    to "no commands configured").
+    Tolerates a hand-edited config where ``validation.commands`` is missing,
+    not a mapping, or where a module value is not a list: non-list values are
+    skipped (never iterated character-by-character) and empty/whitespace-only
+    command strings are dropped. Every remaining command degrades to "no
+    commands configured" when the section is unusable.
     """
     validation = config.get("validation")
     if not isinstance(validation, dict):
@@ -166,7 +193,14 @@ def _validation_commands(config: dict[str, Any]) -> dict[str, list[str]]:
     commands = validation.get("commands")
     if not isinstance(commands, dict):
         return {}
-    return {str(mod): [str(c) for c in cmds if isinstance(c, str)] for mod, cmds in commands.items()}
+    result: dict[str, list[str]] = {}
+    for mod, cmds in commands.items():
+        if not isinstance(cmds, list):
+            continue
+        cleaned = [str(c) for c in cmds if isinstance(c, str) and c.strip()]
+        if cleaned:
+            result[str(mod)] = cleaned
+    return result
 
 
 def _invariant_commands(config: dict[str, Any]) -> dict[str, list[str]]:
@@ -174,7 +208,8 @@ def _invariant_commands(config: dict[str, Any]) -> dict[str, list[str]]:
 
     Absent/malformed ``invariants`` section yields an empty dict, which makes
     ``iterate invariant`` degrade to the configured ``validation.commands``
-    (see ``_validation_commands``) so old configs stay valid.
+    (see ``_validation_commands``) so old configs stay valid. Non-list module
+    values and empty command strings are skipped (same rules as above).
     """
     invariants = config.get("invariants")
     if not isinstance(invariants, dict):
@@ -182,7 +217,14 @@ def _invariant_commands(config: dict[str, Any]) -> dict[str, list[str]]:
     commands = invariants.get("commands")
     if not isinstance(commands, dict):
         return {}
-    return {str(mod): [str(c) for c in cmds if isinstance(c, str)] for mod, cmds in commands.items()}
+    result: dict[str, list[str]] = {}
+    for mod, cmds in commands.items():
+        if not isinstance(cmds, list):
+            continue
+        cleaned = [str(c) for c in cmds if isinstance(c, str) and c.strip()]
+        if cleaned:
+            result[str(mod)] = cleaned
+    return result
 
 
 def _invariant_ensure(config: dict[str, Any]) -> list[str]:
@@ -200,7 +242,10 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
     """Run one exact command under the project root.
 
     Never composes or prefixes commands: the caller guarantees ``command`` is an
-    exact match from the configured validation/invariant lists.
+    exact match from the configured validation/invariant lists. Fail-closed: a
+    command containing shell-chaining metacharacters (or empty after trim) is
+    refused without being executed, so a hand-edited or drift-polluted config
+    can never execute chained shell.
 
     Args:
         command: Exact command string to execute.
@@ -210,6 +255,8 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
         (returncode, output-tail) where output-tail is a bounded snippet of
         stdout/stderr (for diagnostics).
     """
+    if not _command_is_safe(command):
+        return EXIT_FAIL, f"refused: unsafe command {command!r} (shell metacharacter or empty)"
     try:
         proc = subprocess.run(
             command,
@@ -302,14 +349,24 @@ def run_guard_precheck(project_root: Path, paths: list[str], dry_run: bool = Fal
                 ("manifests ready", True, "; ".join(ready) or "no manifests defined")
             )
 
-    # 4. Validation commands are configured and safe (previewed under dry-run).
+    # 4. Validation commands are configured AND safe (metachar-free), so the
+    #    promised "post-check will only run safe commands" actually holds.
     entries = _command_entries(validation, None)
     if not entries:
-        result.items.append(("validation commands", True, "none configured — post-check will skip"))
-    else:
         result.items.append(
-            ("validation commands", True, f"{len(entries)} command(s) configured (run via post-check)")
+            ("validation commands", True, "none configured — post-check will fail closed")
         )
+    else:
+        unsafe = [f"{m}:{c!r}" for m, c in entries if not _command_is_safe(c)]
+        if unsafe:
+            result.items.append(
+                ("validation commands", False, "unsafe command(s): " + "; ".join(unsafe))
+            )
+            result.passed = False
+        else:
+            result.items.append(
+                ("validation commands", True, f"{len(entries)} command(s) configured and metachar-safe (run via post-check)")
+            )
 
     return result
 
@@ -336,15 +393,36 @@ def run_guard_postcheck(project_root: Path, modules: list[str] | None, dry_run: 
 
     validation = _validation_commands(config)
     entries = _command_entries(validation, modules)
+    # Requested-but-unconfigured modules must be reported, never silently
+    # skipped: a host AI that lists multiple modules must not believe an
+    # unconfigured module was validated.
+    requested_missing = [
+        module for module in (modules or []) if module not in validation
+    ]
+    if requested_missing:
+        for module in requested_missing:
+            result.items.append(
+                (f"{module}", False, "requested but not configured in validation.commands")
+            )
+            result.passed = False
+
     if not entries:
-        wanted = ", ".join(modules) if modules else "(none)"
-        result.items.append(("validation commands", False, f"no commands configured for {wanted or 'any module'}"))
+        wanted = ", ".join(requested_missing or modules or ["any module"])
+        result.items.append(
+            ("validation commands", False, f"no commands configured for {wanted}")
+        )
         result.passed = False
         return result
 
     for module, command in entries:
         if dry_run:
-            result.items.append((f"{module}", True, f"would run: {command}"))
+            if not _command_is_safe(command):
+                result.items.append(
+                    (f"{module}", False, f"refused: unsafe command {command!r} (shell metacharacter or empty)")
+                )
+                result.passed = False
+            else:
+                result.items.append((f"{module}", True, f"would run: {command}"))
             continue
         code, tail = _run_command(command, project_root)
         ok = code == 0
@@ -390,10 +468,14 @@ def run_invariant_check(project_root: Path, dry_run: bool = False) -> GuardResul
         if not ok:
             result.passed = False
 
-    # 2. Invariant commands; fall back to validation.commands for old configs.
+    # 2. Invariant commands; fall back to validation.commands ONLY when the
+    #    invariants section is absent or not a mapping (design §6: "无
+    #    invariants 段时退化为..."). A project that deliberately declares
+    #    invariants with ensure-only (no commands) must NOT silently re-run the
+    #    full validation.commands as invariants.
     commands = _invariant_commands(config)
     source = "invariants.commands"
-    if not commands:
+    if not isinstance(config.get("invariants"), dict):
         commands = _validation_commands(config)
         source = "validation.commands (invariants fallback)"
     entries = _command_entries(commands, None)
@@ -403,7 +485,13 @@ def run_invariant_check(project_root: Path, dry_run: bool = False) -> GuardResul
 
     for module, command in entries:
         if dry_run:
-            result.items.append((f"{module} ({source})", True, f"would run: {command}"))
+            if not _command_is_safe(command):
+                result.items.append(
+                    (f"{module} ({source})", False, f"refused: unsafe command {command!r} (shell metacharacter or empty)")
+                )
+                result.passed = False
+            else:
+                result.items.append((f"{module} ({source})", True, f"would run: {command}"))
             continue
         code, tail = _run_command(command, project_root)
         ok = code == 0

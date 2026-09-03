@@ -431,6 +431,44 @@ class TestValidateConfig:
         errors = validate.validate_config(path, schema_path)
         assert any("is not in command_whitelist" in e for e in errors)
 
+    def test_invariants_command_not_in_whitelist(
+        self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path
+    ) -> None:
+        """invariants.commands must share the SAME config-time whitelist baseline
+        as validation.commands (design §6)."""
+        valid_config["invariants"] = {
+            "ensure": ["README.md"],
+            "commands": {"python": ["rm -rf src/"]},
+        }
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        assert any("invariants.commands.python[0] is not in command_whitelist" in e for e in errors)
+
+    def test_invariants_whitelisted_command_passes(
+        self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path
+    ) -> None:
+        valid_config["invariants"] = {
+            "ensure": ["README.md"],
+            "commands": {"python": ["pytest tests/ -q"]},
+        }
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        assert not any("invariants.commands" in e for e in errors)
+
+    def test_invariants_command_list_not_mapping(
+        self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path
+    ) -> None:
+        """A malformed invariants.commands value is caught by the schema; the
+        whitelist section validator tolerates a non-dict (no crash)."""
+        valid_config["invariants"] = {"commands": "not-a-mapping"}
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config(path, schema_path)
+        # Schema flags the malformed structure.
+        assert any("invariants" in e for e in errors)
+
     def test_empty_whitelist(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:
         valid_config["validation"]["command_whitelist"] = []
         path = tmp_path / "iterate.config.yaml"

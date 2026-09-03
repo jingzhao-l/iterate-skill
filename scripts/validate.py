@@ -281,16 +281,18 @@ def whitelist_rejection_reason(command: str, whitelist: list[str]) -> str:
 
 
 def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
-    """校验 validation.commands 中的命令是否在白名单内。
+    """校验 validation.commands / invariants.commands 中的命令是否安全。
 
     同时校验白名单条目本身不含 shell 特殊字符（; | & $ ` 等），
     避免恶意白名单条目绕过前缀匹配。
 
     白名单是配置期校验用的可选字段（schema 非必填、doctor 按可选处理，
     运行时只信任 validation.commands）：
-    - 未配置 command_whitelist：跳过白名单结构及合规性校验。
-    - 已配置：必须是非空列表，条目须安全，且每条 validation.commands
-      必须以白名单前缀匹配。
+    - **元字符安全网恒生效**：无论是否配置 command_whitelist，validation 与
+      invariants 的命令一律拒绝 shell 链式元字符（与 doctor 一致）。
+    - 未配置 command_whitelist：跳过白名单前缀匹配，元字符安全网仍生效。
+    - 已配置：必须是非空列表，条目须安全，且每条 validation.commands /
+      invariants.commands 必须以白名单前缀匹配。
     """
     errors: list[str] = []
     validation = config.get("validation", {})
@@ -300,15 +302,27 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
         return errors
 
     whitelist = validation.get("command_whitelist")
+    commands_by_module = validation.get("commands", {})
+
+    # Standalone metachar safety net — ALWAYS runs, independent of the optional
+    # whitelist (mirrors iterate_cli.doctor._check_commands_metachars). A config
+    # without command_whitelist must still reject shell-chaining metacharacters,
+    # so a hand-edited config cannot smuggle chained commands into executable
+    # validation/invariant commands.
+    errors.extend(_check_metachars(commands_by_module, "validation"))
+    invariants = config.get("invariants")
+    if isinstance(invariants, dict) and invariants.get("commands") is not None:
+        errors.extend(_check_metachars(invariants.get("commands"), "invariants"))
+
     if whitelist is None:
-        # 白名单未配置：视为可选，跳过结构/合规性校验（与 doctor/schema 一致）。
+        # 白名单未配置：视为可选，跳过白名单前缀匹配；元字符安全网（上方）
+        # 仍然生效（与 doctor/schema 一致）。
         return errors
 
     if not isinstance(whitelist, list) or not whitelist:
         errors.append("validation.command_whitelist must be a non-empty list")
         return errors
 
-    commands_by_module = validation.get("commands", {})
     if not isinstance(commands_by_module, dict):
         errors.append("validation.commands must be a mapping")
         return errors
@@ -328,23 +342,91 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
                 f"validation.command_whitelist[{idx}] contains unsafe characters: {entry!r}"
             )
 
+    errors.extend(
+        _validate_commands_section(commands_by_module, safe_whitelist, "validation")
+    )
+    # v3.0 defensive mode: invariants.commands must share the SAME config-time
+    # safety baseline (design §6). Absent/malformed invariants is tolerated here
+    # (schema covers its structure); a malformed invariants.commands mapping is
+    # still checked when it is a dict.
+    if isinstance(invariants, dict) and invariants.get("commands") is not None:
+        errors.extend(
+            _validate_commands_section(
+                invariants.get("commands"), safe_whitelist, "invariants"
+            )
+        )
+
+    return errors
+
+
+def _check_metachars(commands_by_module: Any, section: str) -> list[str]:
+    """Reject any configured command containing shell-chaining metacharacters.
+
+    This is the standalone safety net for configs without a
+    ``command_whitelist``: metacharacters that allow command chaining
+    (``;`` ``|`` ``&`` ``$`` ...) are rejected regardless of any whitelist, so
+    a hand-edited config cannot smuggle side effects into the executable
+    validation/invariant commands. Shared semantics with
+    ``iterate_cli.doctor._check_commands_metachars``.
+
+    Args:
+        commands_by_module: A ``commands`` mapping from a config section.
+        section: Config section label for error messages (``validation`` /
+            ``invariants``).
+
+    Returns:
+        A list of human-readable validation errors (empty when all pass).
+    """
+    errors: list[str] = []
+    if not isinstance(commands_by_module, dict):
+        return errors
+    for module, cmds in commands_by_module.items():
+        if not isinstance(cmds, list):
+            continue
+        for idx, command in enumerate(cmds):
+            if isinstance(command, str) and any(ch in _COMMAND_METACHARS for ch in command):
+                errors.append(
+                    f"{section}.commands.{module}[{idx}] contains shell metacharacter(s): {command!r}"
+                )
+    return errors
+
+
+def _validate_commands_section(
+    commands_by_module: Any, safe_whitelist: list[str], section: str
+) -> list[str]:
+    """Validate a per-module command mapping against the safe whitelist.
+
+    Shared by ``validation.commands`` and (v3.0) ``invariants.commands`` so both
+    go through the same config-time safety baseline: commands must be lists of
+    strings and every command must match a whitelist prefix (when the whitelist
+    is configured).
+
+    Args:
+        commands_by_module: The ``commands`` mapping from a config section.
+        safe_whitelist: Whitelist entries that survived the metacharacter check.
+        section: Config section label for error messages (``validation`` /
+            ``invariants``).
+
+    Returns:
+        A list of human-readable validation errors (empty when all pass).
+    """
+    errors: list[str] = []
+    if not isinstance(commands_by_module, dict):
+        return errors
     for module, commands in commands_by_module.items():
         if not isinstance(commands, list):
-            errors.append(f"validation.commands.{module} must be a list")
+            errors.append(f"{section}.commands.{module} must be a list")
             continue
         for idx, command in enumerate(commands):
             if not isinstance(command, str):
-                errors.append(
-                    f"validation.commands.{module}[{idx}] must be a string"
-                )
+                errors.append(f"{section}.commands.{module}[{idx}] must be a string")
                 continue
             if not command_is_whitelisted(command, safe_whitelist):
                 reason = whitelist_rejection_reason(command, safe_whitelist)
                 errors.append(
-                    f"validation.commands.{module}[{idx}] is not in command_whitelist: {command!r} "
-                    f"({reason})"
+                    f"{section}.commands.{module}[{idx}] is not in command_whitelist: "
+                    f"{command!r} ({reason})"
                 )
-
     return errors
 
 
