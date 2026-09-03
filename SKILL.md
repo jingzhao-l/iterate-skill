@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.0.0
+version: 3.0.1
 permissions:
   file_read: true
   file_write: true
@@ -87,13 +87,13 @@ Use it for pre-release health checks, audits, or any case where you do not want 
 **iterate 模式**不适用于以下场景：
 
 - 仅需要单次、简单的代码编辑（不需要多轮审查）——**此类场景应改用防御式编程模式 `/iterate defensive`**（正是为"让 AI 做正常增量式编程任务"而设）。
-- 没有可用的验证命令（`validation.commands` 未配置）——防御式模式下 `guard post-check` / `invariant` 会依赖验证命令，缺失时校验退化。
+- 没有可用的验证命令（`validation.commands` 未配置）——防御式模式下 `guard post-check` / `invariant` 会依赖验证命令，缺失时校验退化。**自 v3.0.1 起**：若项目*已 onboarded*（存在非空 `iterate.config.yaml`）但 `validation.commands` 为空，`guard pre-check` 将 **fail-closed**（退出码 1、`PASS`/`FAIL` 为 `FAIL`）——因为它承诺的 post-check 必然失败，不应给出"可以开工"的绿灯；宿主 AI 收到 `FAIL` 应先补配置 `validation.commands`。全新项目（尚无配置）则正常降级放行。
 - 只需要 UI/UX 设计建议（请使用 UI/UX Pro Max 等专业设计 Skill）。
 
 Do **not** use this Skill in **iterate mode** when:
 
 - A single, simple edit is sufficient (no multi-round review needed) — **use `/iterate defensive` instead** (that is exactly the incremental-coding-task scenario it serves).
-- No validation commands are configured in `validation.commands`.
+- No validation commands are configured in `validation.commands`. **Since v3.0.1**: for an *onboarded* project (a non-empty `iterate.config.yaml` exists) with empty `validation.commands`, `guard pre-check` **fails closed** (exit code 1) instead of handing out a misleading "clear to start" green light — configure `validation.commands` first. A brand-new project with no config yet still degrades gracefully (pass).
 - You only need UI/UX design advice (use a dedicated design Skill like UI/UX Pro Max).
 
 ---

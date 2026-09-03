@@ -5,6 +5,26 @@
 
 ---
 
+## [3.0.1] — 2026-09-03
+
+### 修复 / Fixes
+
+- **`guard pre-check` 空验证命令 fail-closed**：对*已 onboarded*（存在非空 `iterate.config.yaml`）但 `validation.commands` 为空的项目，`guard pre-check` 不再返回 `PASS`/退出码 0（此前会给出"可以开工"绿灯，而其承诺的 `post-check` 必然失败）。现按 fail-closed 契约改为 `FAIL`/退出码 1，提示先补配置 `validation.commands`，使 pre-check 与 post-check 的退出码语义一致；全新项目（尚无配置）仍正常降级放行。SKILL.md 防御式模式章节同步说明该行为。
+- **npm 安装器与 install.py 的校验和 `*` 前缀剥离语义统一**：`installer.js::parseChecksums` 原先用 `replace(/^\*/, '')` 仅剥离一个前导 `*`，而 Python `scripts/install.py::_parse_checksum` 用 `lstrip("*")` 剥离全部前导 `*`，破坏了"两处同步"的既定声明。现统一为剥离全部前导 `*`（`/^\*+/`），并新增 `**` 前缀的边界断言。
+
+### 测试 / Tests
+
+- 新增 `tests/test_release_meta.py`（2 例）：绑定 `pyproject.toml` / `iterate_cli/__init__.py` / `SKILL.md` frontmatter / `npm-installer/package.json` 四处版本号必须一致且为 `X.Y.Z` 语义化版本，防止 post-patch 发版漏改某处导致跨分发渠道漂移。
+- `tests/test_guard.py` 新增 2 例：已 onboarded 但无 `validation.commands` 的配置、显式空 `commands` 映射，`guard pre-check` 均 fail-closed。
+- `npm-installer/test/mode.test.js` 新增 1 例：多前导 `*` 校验和标记按 `lstrip("*")` 语义剥离。
+- 全量 Python 测试 928 个全部通过（既有 924 + 新增 4），`ruff check .` 通过，npm 安装器测试通过。
+
+### 内部 / Internal
+
+- `pyproject.toml` build-system 依赖精确定版本：`setuptools>=68.0` → `setuptools==68.0.0`、`wheel` → `wheel==0.42.0`。
+
+---
+
 ## [3.0.0] — 2026-09-03
 
 ### 新增 / Features
