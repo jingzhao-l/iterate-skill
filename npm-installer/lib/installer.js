@@ -189,11 +189,13 @@ function parseChecksums(text) {
     const parts = trimmed.split(/\s+/);
     if (parts.length >= 2) {
       // Normalize the filename the same way scripts/install.py does
-      // (_parse_checksum): strip the GNU tar binary-mode marker ('*') and the
+      // (_parse_checksum): strip all leading GNU tar binary-mode markers a la
+      // Python's name.lstrip("*") (ONE '*', or several in a malformed entry —
+      // strip them all so the two parsers can never disagree), then strip the
       // './' prefix, then match on the basename so entries with a subpath or
       // versioned component (e.g. "dist/iterate-skill.tar.gz" or
       // "./iterate-skill.tar.gz") still resolve to the expected asset.
-      const normalized = parts[1].replace(/^\*/, '').replace(/^\.\//, '');
+      const normalized = parts[1].replace(/^\*+/, '').replace(/^\.\//, '');
       const basename = normalized.split('/').pop();
       map.set(basename, parts[0]);
     }

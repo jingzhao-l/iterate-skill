@@ -107,6 +107,11 @@ async function run() {
   const starredSubpath = parseChecksums('abc123  *./release/iterate-skill-1.2.3.tar.gz\n');
   assert.strictEqual(starredSubpath.get('iterate-skill-1.2.3.tar.gz'), 'abc123', '*./ and versioned subpath should match by basename');
 
+  // Multiple leading '*' markers must be stripped like Python's lstrip("*")
+  // (a malformed entry must never leave a leading '*' in the basename).
+  const multiStar = parseChecksums('abc123  **iterate-skill.tar.gz\n');
+  assert.strictEqual(multiStar.get('iterate-skill.tar.gz'), 'abc123', 'all leading * markers should strip (lstrip matching)');
+
   console.log('mode.test.js: all parseChecksums tests passed');
 
   // parseArgs: --no-cli must toggle skill-only mode, and default to off.
