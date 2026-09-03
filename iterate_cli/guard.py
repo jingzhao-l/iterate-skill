@@ -38,8 +38,8 @@ from pathlib import Path
 from typing import Any
 
 from iterate_cli.personalize import (
-    CorruptConfigError,
     FORBIDDEN_COMMAND_CHARS,
+    CorruptConfigError,
     load_config_strict,
 )
 from iterate_cli.refresh import CONFIG_YAML
@@ -353,9 +353,28 @@ def run_guard_precheck(project_root: Path, paths: list[str], dry_run: bool = Fal
     #    promised "post-check will only run safe commands" actually holds.
     entries = _command_entries(validation, None)
     if not entries:
-        result.items.append(
-            ("validation commands", True, "none configured — post-check will fail closed")
-        )
+        # Fail-closed consistency with ``guard post-check``: an *onboarded*
+        # project (a non-empty iterate.config.yaml exists) that declares no
+        # ``validation.commands`` would make the promised post-check — and
+        # therefore the defensive delivery gate — deterministically fail.
+        # Handing out ``exit 0 = clear to start`` here would mislead a host AI
+        # that relies on the pre-check/post-check exit-code contract. A brand
+        # new project with no config yet degrades gracefully instead (there is
+        # nothing on disk to validate yet).
+        if config:
+            result.items.append(
+                (
+                    "validation commands",
+                    False,
+                    ("no validation commands configured — post-check would fail closed; add"
+                     " validation.commands to iterate.config.yaml"),
+                )
+            )
+            result.passed = False
+        else:
+            result.items.append(
+                ("validation commands", True, "none configured — not onboarded yet")
+            )
     else:
         unsafe = [f"{m}:{c!r}" for m, c in entries if not _command_is_safe(c)]
         if unsafe:

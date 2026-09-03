@@ -134,6 +134,27 @@ class TestGuardPrecheck:
         assert result.passed is False
         assert any(label == "validation commands" and not ok for label, ok, _ in result.items)
 
+    def test_onboarded_without_validation_commands_fails(self, tmp_path) -> None:
+        """Pre-check must fail closed (exit 1) for an *onboarded* project whose
+        iterate.config.yaml declares no validation.commands, so its exit code is
+        consistent with the guaranteed post-check failure — never a misleading
+        'clear to start' green light (guard.py #4)."""
+        project = _make_project(tmp_path)
+        _write_config(project, {"dimensions": ["correctness"]})
+        result = run_guard_precheck(project, [])
+        assert result.passed is False
+        hit = next((ok for label, ok, _ in result.items if label == "validation commands"), None)
+        assert hit is False
+
+    def test_onboarded_empty_commands_map_fails(self, tmp_path) -> None:
+        """An explicit-but-empty ``validation: {commands: {}}`` still means the
+        post-check cannot run; pre-check must reflect that as a failure."""
+        project = _make_project(tmp_path)
+        _write_config(project, {"dimensions": ["correctness"], "validation": {"commands": {}}})
+        result = run_guard_precheck(project, [])
+        assert result.passed is False
+        assert any(label == "validation commands" and not ok for label, ok, _ in result.items)
+
 
 # ---------------------------------------------------------------------------
 # run_guard_postcheck
