@@ -5,6 +5,24 @@
 
 ---
 
+## [3.0.0] — 2026-09-03
+
+### 新增 / Features
+
+- **双模式：iterate 原模式 + 防御式编程模式**（v3.0 大版本主线）：SKILL.md 新增防御式编程模式（`/iterate defensive`），面向**用户让 AI 做正常增量式编程任务**（新增功能、修 bug、重构、接入 API、补测试）——宿主 AI 从动手前到收尾**从头至尾贯彻防御式编程理念**：① 动手前（声明假设 + 前置校验）→ ② 动手时（信任边界验证 + 最小步进）→ ③ 动手后（每步后置校验）→ ④ 收尾（不变量守护 + iterate 收敛门禁，**不收敛不交付**）。iterate 原模式（`/iterate`）行为与 v2 完全一致，零回归，默认不变。
+- **CLI `iterate guard pre-check [paths...]`**：动手前确定性前置校验——目标路径存在、git worktree 干净、依赖 manifest 就绪、验证命令配置安全；退出码 0 = 可以开工，1 = 禁止开工；支持 `--json` / `--dry-run`。
+- **CLI `iterate guard post-check [module...]`**：动手后后置校验——精确执行 `validation.commands.<module>`（运行时唯一权威白名单，不拼装不前缀）；退出码 0 = 本次改动安全，1 = 必须先修复或回滚；支持 `--json` / `--dry-run`。
+- **CLI `iterate invariant`**：项目级不变量检查——`invariants.ensure` 文件断言 + `invariants.commands` 命令列表；无 `invariants` 段时自动退化为 `validation.commands`（旧配置零破坏）；退出码 0 = 不变量成立，1 = 存在违反项；支持 `--json` / `--dry-run`。
+- **配置 `mode: iterate | defensive`**：`iterate.config.yaml` 新增默认执行模式配置项（默认 `iterate`，零破坏），可用调用参数显式 `defensive` 覆盖；`iterate show` / `iterate config get|set mode` 支持读写。
+- **配置 `invariants` 段**：`iterate.config.yaml` 新增 `invariants`（`ensure` 文件断言 + `commands` 精确命令列表），与 `validation.commands` / `command_whitelist` 共用安全基线（白名单校验、元字符防护）；`config/config.schema.json` 与随包分发副本同步扩展。
+
+### 测试 / Tests
+
+- 新增 `tests/test_guard.py`（28 例）：pre-check / post-check / invariant 的正常路径、异常路径（目标缺失、manifest 缺失、命令失败、脏 worktree、损坏配置）与边界场景（无参数、空配置、模块过滤、dry-run 预览、invariants 退化到 validation.commands、JSON 输出与退出码），并覆盖 CLI 集成（`guard` / `invariant` 子命令的 `--json` 与退出码契约）。
+- 全量 Python 测试 916 个全部通过（既有 888 + 新增 28），`ruff check .` 通过。
+
+---
+
 ## [2.12.0] — 2026-09-02
 
 ### 新增 / Features

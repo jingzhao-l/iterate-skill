@@ -72,6 +72,12 @@
       "enum": ["zh", "en"],
       "description": "Output language for prompts and reports."
     },
+    "mode": {
+      "type": "string",
+      "enum": ["iterate", "defensive"],
+      "default": "iterate",
+      "description": "Default execution mode for this invocation (v3.0): 'iterate' (original review-fix-converge loop) or 'defensive' (defensive-programming mode for incremental coding tasks). An explicit 'defensive' in the invocation overrides this. 'iterate' stays the default for zero breakage."
+    },
     "dimensions": {
       "type": "array",
       "description": "Enabled review dimensions. Values are defined in config/dimensions.yaml.",
@@ -164,6 +170,37 @@
         "commands": {
           "type": "object",
           "description": "Per-module validation command lists. Keys are module identifiers; values are shell commands. This is the runtime authoritative whitelist: the agent executes exactly these commands and no others.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "description": "Module identifiers must only contain letters, digits, underscore, dash, or dot (no shell metacharacters)."
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "invariants": {
+      "type": "object",
+      "description": "Project-level invariants for defensive-programming mode (v3.0). Optional section evaluated by `iterate invariant` at delivery. When absent, `iterate invariant` degrades to validation.commands.",
+      "additionalProperties": false,
+      "properties": {
+        "ensure": {
+          "type": "array",
+          "description": "File-existence assertions (relative to project root) that must hold at delivery.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "commands": {
+          "type": "object",
+          "description": "Per-module invariant command lists. Each command must match a configured entry EXACTLY (same rule as validation.commands); no composition or prefixing.",
           "propertyNames": {
             "pattern": "^[A-Za-z0-9_.-]+$",
             "description": "Module identifiers must only contain letters, digits, underscore, dash, or dot (no shell metacharacters)."

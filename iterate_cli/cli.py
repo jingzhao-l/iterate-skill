@@ -8,6 +8,8 @@ Provides subcommands for onboarding and personalization management:
     iterate status      — Show onboarding status and drift detection
     iterate show        — Read-only resolved config + personalization detail
     iterate doctor      — Project health diagnostics (--json / --json-out / --fix)
+    iterate guard       — Defensive-programming pre/post-edit checks (v3.0)
+    iterate invariant   — Project-level invariant check (v3.0, defensive mode)
     iterate --version   — Print version
 
 All user-facing output is routed through the unified TUI layer
@@ -162,6 +164,24 @@ def _dispatch_command(
             key=getattr(args, "key", None),
             value=getattr(args, "value", None),
             json_output=getattr(args, "json", False),
+        )
+    if args.command == "guard":
+        if show_banner:
+            tui.banner()
+        return _cmd_guard(
+            project_root,
+            guard_action=getattr(args, "guard_action", None),
+            targets=getattr(args, "targets", None),
+            json_output=getattr(args, "json", False),
+            dry_run=getattr(args, "dry_run", False),
+        )
+    if args.command == "invariant":
+        if show_banner:
+            tui.banner()
+        return _cmd_invariant(
+            project_root,
+            json_output=getattr(args, "json", False),
+            dry_run=getattr(args, "dry_run", False),
         )
     parser.print_help()
     return 0
@@ -351,6 +371,62 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Emit a structured JSON object instead of TUI output.",
+    )
+
+    guard_parser = subparsers.add_parser(
+        "guard",
+        parents=[parent],
+        help="Defensive-programming pre/post-edit checks (v3.0 defensive mode).",
+        description="Deterministic checks a host AI runs around every coding step: "
+        "'pre-check' verifies targets exist / worktree is clean / manifests are "
+        "ready before editing; 'post-check' executes exactly the configured "
+        "validation.commands after editing. Exits non-zero on failure. "
+        "Use --dry-run to preview exact commands without executing them.",
+    )
+    guard_parser.add_argument(
+        "guard_action",
+        choices=["pre-check", "post-check"],
+        help="Which guard to run: 'pre-check' (before edits) or 'post-check' (after edits).",
+    )
+    guard_parser.add_argument(
+        "targets",
+        nargs="*",
+        default=None,
+        help="Paths to check (pre-check: must exist; post-check: module names to filter).",
+    )
+    guard_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON object instead of TUI output.",
+    )
+    guard_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Preview the exact commands that would run without executing anything.",
+    )
+
+    invariant_parser = subparsers.add_parser(
+        "invariant",
+        parents=[parent],
+        help="Run project-level invariant checks (v3.0 defensive mode).",
+        description="Evaluate the invariants declared under config.invariants "
+        "(per-module command lists plus 'ensure' file assertions). Degrades to "
+        "validation.commands when no invariants section is configured. "
+        "Exits non-zero when any invariant is violated. Use --dry-run to preview.",
+    )
+    invariant_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON object instead of TUI output.",
+    )
+    invariant_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Preview the exact commands that would run without executing anything.",
     )
 
     return parser
@@ -913,4 +989,58 @@ def _cmd_config(
 
     # 'get' (explicit or implicit) lists all values when no key is given.
     return run_config_get(project_root, key, json_output=json_output)
+
+
+def _cmd_guard(
+    project_root: Path,
+    guard_action: str | None,
+    targets: list[str] | None,
+    json_output: bool = False,
+    dry_run: bool = False,
+) -> int:
+    """Handle the 'guard' subcommand — defensive-programming pre/post-edit checks.
+
+    Args:
+        project_root: Project root directory.
+        guard_action: Which guard to run (``pre-check`` / ``post-check``).
+        targets: For pre-check, paths that must exist; for post-check, module
+            names to filter the validation commands.
+        json_output: When True, emit a structured JSON object instead of TUI.
+        dry_run: When True, preview exact commands without executing anything.
+
+    Returns:
+        Exit code: 0 when all checks pass, 1 otherwise.
+    """
+    from iterate_cli.guard import (
+        render_guard_result,
+        run_guard_postcheck,
+        run_guard_precheck,
+    )
+
+    if guard_action == "pre-check":
+        result = run_guard_precheck(project_root, targets or [], dry_run=dry_run)
+    else:
+        result = run_guard_postcheck(project_root, targets or None, dry_run=dry_run)
+    return render_guard_result(result, json_output=json_output)
+
+
+def _cmd_invariant(
+    project_root: Path,
+    json_output: bool = False,
+    dry_run: bool = False,
+) -> int:
+    """Handle the 'invariant' subcommand — project-level invariant check.
+
+    Args:
+        project_root: Project root directory.
+        json_output: When True, emit a structured JSON object instead of TUI.
+        dry_run: When True, preview exact commands without executing anything.
+
+    Returns:
+        Exit code: 0 when every invariant holds, 1 otherwise.
+    """
+    from iterate_cli.guard import render_guard_result, run_invariant_check
+
+    result = run_invariant_check(project_root, dry_run=dry_run)
+    return render_guard_result(result, json_output=json_output)
 

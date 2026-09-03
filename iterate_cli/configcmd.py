@@ -157,6 +157,9 @@ SETTABLE_KEYS: dict[str, ConfigKeySpec] = {
     "language": ConfigKeySpec(
         "language", _parse_enum(frozenset(SUPPORTED_LANGUAGES)), ()
     ),
+    "mode": ConfigKeySpec(
+        "mode", _parse_enum(frozenset({"iterate", "defensive"})), ()
+    ),
     "dimensions": ConfigKeySpec("dimensions", _parse_dimensions, ()),
     "atomic_max_lines": ConfigKeySpec(
         "atomic_max_lines", _parse_int(1, None), ("atomic", "max_lines")

@@ -16,6 +16,15 @@ max_rounds: 7
 # 输出语言 / Output language: zh | en
 language: en
 
+# 默认执行模式 / Default execution mode (v3.0):
+#   iterate   — 原模式：多轮审查-修复-收敛（默认，零破坏）
+#   defensive — 防御式编程模式：面向"让 AI 做正常增量式编程任务"，从头至尾防御式纪律
+# 调用参数里的显式 `defensive` 会覆盖此默认值。
+# Default execution mode (v3.0): 'iterate' (original loop, default, zero breakage)
+# or 'defensive' (defensive-programming mode for incremental coding tasks).
+# An explicit 'defensive' in the invocation overrides this value.
+mode: iterate
+
 # 启用的审查维度 / Enabled review dimensions
 # 可用值见 config/dimensions.yaml
 dimensions:
@@ -86,6 +95,28 @@ validation:
       - "pytest tests/ -x -q --timeout=60"
     swift:
       - "swift build -c debug"
+    typescript:
+      - "npm run compile"
+
+# 项目级不变量（防御式编程模式 / v3.0 可选段）
+# 在「防御式编程模式」（/iterate defensive）的收尾阶段由 `iterate invariant`
+# 执行：声明"项目在任何时候都必须成立"的约束。命令与 validation.commands
+# 同样要求精确匹配；ensure 为文件存在断言（相对项目根）。
+# 未配置本段时，`iterate invariant` 自动退化为执行 validation.commands，
+# 因此旧配置无需任何改动。
+# Project-level invariants (defensive-programming mode / v3.0, optional).
+# Run by `iterate invariant` at the end of defensive mode: constraints that must
+# always hold. Commands must match EXACTLY (same rule as validation.commands);
+# ensure entries are file-existence assertions (relative to project root).
+# When this section is absent, `iterate invariant` degrades to validation.commands.
+invariants:
+  # 收尾时必须存在的关键产物（相对项目根） / Artifacts that must exist at delivery
+  ensure:
+    - "README.md"
+  # 收尾时必须通过的命令 / Commands that must pass at delivery
+  commands:
+    python:
+      - "pytest tests/ -x -q --timeout=60"
     typescript:
       - "npm run compile"
 

@@ -55,7 +55,7 @@ def _collect_resolved_config(config: dict[str, Any]) -> dict[str, Any]:
     # Top-level keys. ``reasoning_effort`` is always surfaced (even when null,
     # i.e. provider default) so the knob is visible to users; other top-level
     # keys are only shown when set.
-    for key in ("language", "goal"):
+    for key in ("language", "goal", "mode"):
         if key in config and config[key] is not None:
             resolved[key] = config[key]
     if "max_rounds" in config and config["max_rounds"] is not None:
@@ -272,7 +272,7 @@ def _render_config(config: dict[str, Any]) -> None:
     tui.empty_line()
     tui.section("Resolved Config")
     for key in (
-        "language", "goal", "max_rounds", "reasoning_effort", "atomic_max_lines",
+        "language", "goal", "mode", "max_rounds", "reasoning_effort", "atomic_max_lines",
         "atomic_max_adjacent_methods", "use_worktree", "auto_merge",
         "output_schema_validation", "evidence_validation",
         "coverage_validation", "scope_chunk_size",
