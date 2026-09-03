@@ -71,8 +71,11 @@ dsh plugin --profile web add github:jingzhao-l/iterate-plugin#main
 
 | 能力 | 说明 |
 |---|---|
+| **双模式** | `/iterate` —— 原模式：多轮审查→修复→收敛闭环（v2 行为，零破坏）；`/iterate defensive` —— 防御式编程模式：面向正常增量式编程任务，最终以同一套 iterate 收敛门禁收尾 |
 | **9 维度并行审查** | correctness、security、performance、architecture、style-tests、tech-debt、spec-compliance、frontend-backend、ui-ux |
+| **按范围维度集** | onboarding 时预置命名 `dimension_sets`（如 `frontend`、`api`、`security`）；指定范围的 goal 会路由到对应维度集，未命中的偏门范围触发 on-the-fly 重定义并记录到 `.iterate_decisions.md`（禁止照抄预设） |
 | **双轨修复** | 原子问题（≤20 行、单文件）自动修；架构问题经你批准后再修 |
+| **确定性门禁 CLI** | `iterate guard pre-check` / `post-check` + `iterate invariant` —— 宿主 AI 在动手前后与交付时执行的精确、响亮失败校验（防御式模式） |
 | **Git 隔离** | 每轮在独立 `iterate/*` 分支或 worktree 中完成；merge/push 默认关闭，需显式开启 |
 | **Secure-by-default** | `push_per_round` 和 `auto_merge` 默认均为 `false` |
 | **命令白名单** | 配置时 + 个性化时双层校验，拒绝危险 shell 元字符 |
@@ -253,9 +256,12 @@ skills.sh 等市场页面仍会保留，用于展示和发现，但不再作为�
 /iterate "你的目标" no-limit
 /iterate "审查代码质量" review-only    # 纯审查模式：反复审查到零 findings，只读不改代码
 /iterate "full health check" --dry-run # 纯审查别名：出审查报告 + meta-review 最终审查报告
+/iterate defensive "新增用户登录 + 修复支付 bug"   # 防御式编程模式（v3.0）：从设计到交付全程防御式纪律
 ```
 
 首次调用会自动触发 onboarding（如果项目还没有 `ITERATE.md`）。
+
+> **防御式编程模式（`/iterate defensive`）**：当你想让 AI 做**正常的增量式编程任务**——新增功能、修 bug、重构、接入 API、补测试——而不是纯审查时，用 `/iterate defensive`。宿主 AI 从动手前到收尾**从头至尾贯彻防御式编程理念**：动手前声明假设并跑 `iterate guard pre-check` 确认、动手时最小步进 + 信任边界验证、每次改动后跑 `iterate guard post-check`，收尾时用 `iterate invariant` + 完整 9 维度审查→修复→收敛闭环作为**交付门禁**——不收敛不交付。原模式（`/iterate`，v2）行为完全不变。
 
 > **纯审查模式 / review-only（dry-run）**：调用参数含 `review-only` 或 `dry-run` 时，本 skill 只做只读健康检查，**绝不修改任何文件**。它会反复并行审查直到某一轮 0 个新 findings（收敛），生成审查报告；随后**再审查这份报告本身**（meta-review，校验报告内部一致性），给出带 `approved` / `needs_revision` 判定的最终审查报告。适用于发布前体检、代码质量审计、不想让 AI 动代码的场景。
 
@@ -282,6 +288,16 @@ iterate reonboard
 
 # 项目健康诊断（体检：config/ITERATE.md/onboarding 是否与 skill 规范一致）
 iterate doctor
+
+# 非交互式配置查看与修改（不走向导）
+iterate config                      # 列出全部可设值
+iterate config get max_rounds      # 读单个解析值（--json 输出 {"key": value}）
+iterate config set goal "..."      # 校验并写回单个值（写前自动生成时间戳备份）
+
+# 防御式编程确定性校验（v3.0 防御式模式）
+iterate guard pre-check src/        # 动手前：目标存在 / worktree 干净 / manifest 就绪
+iterate guard post-check python     # 每次改动后：精确执行 validation.commands.<module>
+iterate invariant                   # 交付时：文件断言 + 精确命令（缺省退化为 validation.commands）
 ```
 
 #### iterate doctor（项目健康诊断）
@@ -331,6 +347,35 @@ iterate personalize --clear --yes # 跳过确认直接清空
 ```
 
 若当前没有任何个性化内容，会提示"无个性化可清空"并正常退出（退出码 0）。
+
+#### iterate config（非交互式配置 get/set）
+
+`iterate config` 让你无需打开交互向导即可查看或修改配置值，适合脚本 / CI / 快速编辑：
+
+```bash
+iterate config                 # TUI：列出每个可设键及其当前值
+iterate config --json          # 输出全部可设值的 JSON 对象（stdout 保持纯净，供脚本消费）
+iterate config get max_rounds  # 打印单个解析值；--json -> {"max_rounds": ...}
+iterate config set language zh # 校验并写回单个值（写入前自动生成时间戳备份）
+iterate config set goal "..."  # 成功时输出确认对象 {"key": ..., "value": ...}
+```
+
+支持扁平键（`goal`、`max_rounds`、`reasoning_effort`、`language`、`mode`、`dimensions`）与嵌套段（`atomic.*`、`git.*`、`review.scope`、`reviewer.*`、`validation.commands`、`invariants.*`）。损坏配置**不会被覆写**——`set` 会中止并报清晰错误。
+
+#### iterate guard（防御式模式动手前/后校验，v3.0）
+
+宿主 AI 在防御式模式下围绕每个编码步骤执行的确定性、响亮失败校验。契约（退出码 0 = 可以开工 / 本次改动安全；1 = 必须先修复或回滚）：
+
+| 命令 | 时机 | 校验内容 |
+|---|---|---|
+| `iterate guard pre-check [paths...]` | 动手前 | 目标存在、git worktree 干净、manifest 就绪、验证配置安全（`PASS`/`FAIL`） |
+| `iterate guard post-check [module...]` | 每次改动后 | 精确执行配置的 `validation.commands.<module>`（运行时唯一权威白名单——不拼装、不加前缀） |
+
+两者都支持 `--json` 与 `--dry-run`（仅预览将要执行的精确命令，不真正执行）。
+
+#### iterate invariant（防御式模式交付门禁，v3.0）
+
+`iterate invariant` 校验配置中声明的项目级 `invariants`（`invariants.ensure` 文件存在断言 + `invariants.commands` 精确按模块命令列表）。未配置 `invariants` 段时**自动退化为执行 `validation.commands`**，因此旧配置无需任何改动。退出码 0 = 不变量成立，1 = 存在违反项。支持 `--json` / `--dry-run`。
 
 ### 常见边界场景 / Edge Cases
 
@@ -397,6 +442,20 @@ AI 扫描能发现技术栈和目录结构，但无法发现项目专属约束�
 
 完整示例请参考 [`config/iterate.config.yaml`](./config/iterate.config.yaml)。
 
+### 按范围维度集与审查路由
+
+顶层 `dimensions` 是**整仓 / 全局**审查的默认维度。对于**指定范围**的 goal，skill 的维度规划（SKILL.md Phase 0）会路由到合适的维度方案：
+
+1. **goal 为空或泛化**（如"提升代码质量"）→ 直接用全局 `dimensions`。零摩擦。
+2. **goal 命中已预置的 `dimension_sets` 命名集**（如"审查前端" → `frontend`）→ 直接采用该集的 `dimensions` + `focus` 覆盖，简要确认后即可。
+3. **goal 未命中任何命名集（偏门范围）**→ AI **从根重新定义维度**：从 9 个规范维度出发（**不**以全局 `dimensions` 或任一已有维度集为起点——那只是惰性照抄），挑选真正与当前范围相关的维度，为每个维度给出**本范围特有的独立理由**，并可新增临时非标准维度。这次重定义会记录在 `.iterate_decisions.md` 的专用 `### Scope Dimension Redefinition (on-the-fly)` 小节中，并由 `scripts/validate.py decisions` **机器校验**——保证每个理由都不是照抄该维度默认 focus 提示词。
+
+预设集只存于 `iterate.config.yaml`（`dimension_sets`）；`ITERATE.md` 只渲染一次"推荐审查蓝图（按范围）"清单。临时的重定义被**有界记录**在 `.iterate_decisions.md` 的当轮段落中，绝不会把 `ITERATE.md` 或 `iterate.config.yaml` 撑大——无论迭代积累多少轮，知识库都保持精简。
+
+### 决策日志（`.iterate_decisions.md`）
+
+每轮 AI 的决策——原子修复（直接）、架构修复（批准+执行 / 顺延）、回滚的修复、重要 AI 决策、验证结果，以及任何偏门范围的重定义——都会记录在 `.iterate_decisions.md`（模板见 `templates/iterate-decisions.template.md`）。这让过程可审计，同时保持 `ITERATE.md` 的 AI 维护区只是**最新快照**。
+
 ### 核心流程
 
 ```text
@@ -431,14 +490,23 @@ Summary
 | `goal` | string | `"Improve code quality"` | 迭代目标 |
 | `max_rounds` | int | `7` | 最大轮数（上限 50） |
 | `language` | string | `"en"` | 输出语言：`zh` / `en` |
-| `dimensions` | list | 9 维度 | 启用的审查维度 |
+| `mode` | string | `"iterate"` | 默认执行模式：`iterate` / `defensive`（v3.0） |
+| `reasoning_effort` | string? | `null` | `low` / `medium` / `high`；`null` = 跟随 provider 默认 |
+| `dimensions` | list | 9 维度 | 启用的审查维度（整仓默认） |
+| `dimension_sets` | object | — | 命名范围蓝图（`frontend`/`api`/`security`/…），含 `dimensions` + 可选 `focus` |
+| `invariants` | object | — | `ensure` 文件存在断言 + `commands` 精确按模块命令列表（防御式模式交付门禁） |
 | `review.scope` | string | `"full"` | `full` 全量 / `changed-only` 增量 |
 | `atomic.max_lines` | int | `20` | 原子问题最大行数 |
+| `atomic.max_adjacent_methods` | int | `3` | 原子问题最多的相邻方法数 |
 | `git.target_branch` | string | `main` | 合并目标分支 |
+| `git.use_worktree` | bool | `false` | 是否优先用 worktree 隔离 |
 | `git.push_per_round` | bool | `false` | 每轮通过后是否 push |
 | `git.auto_merge` | bool | `false` | 验证后是否自动 merge |
-| `validation.command_whitelist` | list | 常用前缀 | 允许执行的命令前缀 |
-| `validation.commands` | object | 示例 | 按语言分组的验证命令 |
+| `validation.command_whitelist` | list | 常用前缀 | 允许执行的命令前缀（配置期安全） |
+| `validation.commands` | object | 示例 | 按语言分组的验证命令（运行时唯一权威白名单） |
+| `reviewer.evidence_validation` | bool | `true` | 硬证据门禁：每个 finding 的 file/line 必须真实存在 |
+| `reviewer.coverage_validation` | bool | `true` | 作为遗漏文件时提示 `COVERAGE_GAP` |
+| `reviewer.scope_chunk_size` | int | `25` | `full` 范围审查每批分配的文件数 |
 | `onboarding.drift_check` | bool | `true` | 是否检查 manifest 漂移 |
 
 示例：
@@ -447,6 +515,7 @@ Summary
 goal: "提升代码质量，确保所有函数 ≤80 行且测试通过"
 max_rounds: 7
 language: zh
+mode: iterate          # 或 defensive
 
 dimensions:
   - correctness
@@ -458,6 +527,31 @@ dimensions:
   - spec-compliance
   - frontend-backend
   - ui-ux
+
+# 命名范围蓝图：指定范围的 goal 会路由到对应维度集，而不是全局 dimensions。
+dimension_sets:
+  frontend:
+    dimensions:
+      - ui-ux
+      - frontend-backend
+      - correctness
+      - performance
+    focus:
+      ui-ux: "响应式布局、可访问性，以及视图特有的状态处理"
+  security:
+    dimensions:
+      - security
+      - correctness
+    focus:
+      security: "OWASP Top 10、认证/授权、注入、密钥处理"
+
+# 防御式模式交付门禁：交付时必须存在的产物与必须通过的命令（缺省退化为 validation.commands）。
+invariants:
+  ensure:
+    - "README.md"
+  commands:
+    python:
+      - "pytest tests/ -x -q --timeout=60"
 
 validation:
   command_whitelist:
@@ -504,6 +598,9 @@ A: 不会。安装器在临时目录中完成下载、校验、解压，选中�
 
 **Q: 这个 Skill 适合什么场景？不适合什么场景？**
 A: 适合**多轮**的代码审查与自动修复——例如压制技术债、多轮消除 lint/类型/测试问题、项目级重构。**不适合**单次简单改动（改一行、加个注释），这类需求直接用普通对话即可，无需 `/iterate`。
+
+**Q: 该用 `iterate` 模式还是 `defensive` 模式？**
+A: `/iterate` 适合**审查/修复已有代码**直到收敛。`/iterate defensive` 适合让 AI 做**正常编码工作**（新增功能、修 bug、重构、接入 API、补测试）：宿主 AI 动手前跑 `guard pre-check`、每次改动后跑 `guard post-check`，收尾用 `invariant` + 完整审查→修复→收敛闭环作为交付门禁。想让 AI"把东西做对"→ `defensive`；想让 AI"把已有的打磨到零 findings"→ `iterate`。
 
 **Q: 第一次使用为什么什么都不做？**
 A: 首次调用 `/iterate` 或运行 `iterate onboard` 前，项目还没有 `ITERATE.md` 与 `iterate.config.yaml`。首次使用时 skill 会**先进行项目初始化（Onboarding）**：AI 会明确告知"这是首次使用，将先初始化项目"，扫描代码库生成 `ITERATE.md` 与配置后再进入迭代。若你看到初始化提示而不是立刻审查，这是正常流程，不是失效；也可直接在项目根目录运行 `iterate onboard` 手动完成初始化。
@@ -583,13 +680,22 @@ iterate-skill/
 │       ├── src/                      #   服务端逻辑（TypeScript，编译到 dist/）
 │       ├── lib/                      #   客户端 UI 注入入口
 │       └── cordis.patch.yml          #   dsh bundle 声明
-├── templates/                        # 模板文件
+├── templates/
+│   ├── ITERATE.template.md           # 知识库模板
+│   └── iterate-decisions.template.md # 每轮决策日志模板
 ├── iterate_cli/                      # onboarding CLI 源码
+│   ├── cli.py                        #   顶层命令分发器
+│   ├── guard.py                      #   guard 动手前/后校验（防御式模式）
+│   ├── configcmd.py                  #   iterate config get/set
+│   ├── dimension_sets.py             #   范围维度集 建议/规范化/合并
+│   ├── wizard.py / scan.py / generator.py / refresh.py / personalize.py /
+│   │   doctor.py / show.py / fingerprint.py / tui.py
 │   └── data/
-│       └── ITERATE.template.md       # wheel 打包模板
+│       ├── ITERATE.template.md       # wheel 打包模板
+│       └── config.schema.json        # wheel 打包 schema（与主文件保持同步）
 ├── scripts/
 │   ├── install.py                    # 安装/卸载/配置/校验脚本
-│   ├── validate.py                   # 配置与维度校验
+│   ├── validate.py                   # 配置与决策日志校验（含范围重定义检查）
 │   └── requirements.txt              # 脚本依赖
 ├── tools/                            # 各 AI 助手专属实现示例
 ├── tests/                            # 单元测试

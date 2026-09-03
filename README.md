@@ -93,8 +93,11 @@ dsh plugin --profile web add github:jingzhao-l/iterate-plugin#main
 
 | Capability | Description |
 |---|---|
+| **Dual modes** | `/iterate` — original multi-round review→fix→converge loop (v2 behavior, zero breakage); `/iterate defensive` — defensive-programming mode for normal incremental coding tasks, ending in the same iterate convergence gate |
 | **9 dimensions in parallel** | correctness, security, performance, architecture, style-tests, tech-debt, spec-compliance, frontend-backend, ui-ux |
+| **Scope dimension sets** | Named `dimension_sets` (e.g. `frontend`, `api`, `security`) preset at onboarding; a scoped goal routes to the matching set, off-catalog scopes trigger an on-the-fly redefinition recorded in `.iterate_decisions.md` (never copied from presets) |
 | **Two-track fixing** | Atomic issues (≤20 lines, single file) are fixed automatically; architecture issues are fixed after your approval |
+| **Deterministic gate CLI** | `iterate guard pre-check` / `post-check` + `iterate invariant` — exact, fail-loud checks the host AI runs before/after every edit and at delivery (defensive mode) |
 | **Git isolation** | Each round runs on an isolated `iterate/*` branch or worktree; merge/push is off by default and must be explicitly enabled |
 | **Secure-by-default** | `push_per_round` and `auto_merge` default to `false` |
 | **Command whitelist** | Double validation at config time and personalization time; rejects dangerous shell metacharacters |
@@ -275,9 +278,12 @@ After installing the skill, type these into any AI tool that supports it:
 /iterate "your goal" no-limit
 /iterate "review code quality" review-only    # pure review mode: review repeatedly to zero findings, read-only
 /iterate "full health check" --dry-run # pure review alias: review report + meta-review final report
+/iterate defensive "add user login + fix the payment bug"   # defensive-programming mode (v3.0): from design to delivery
 ```
 
 The first invocation auto-triggers onboarding (if the project has no `ITERATE.md`).
+
+> **Defensive-programming mode (`/iterate defensive`)**: when you want the AI to do **normal incremental coding work** — add features, fix bugs, refactor, wire up an API, add tests — instead of a pure review, use `/iterate defensive`. The host AI carries defensive-programming discipline from start to finish: declare assumptions + run `iterate guard pre-check` before touching code, validate at trust boundaries with minimal steps while editing, run `iterate guard post-check` after every change, and finish with `iterate invariant` plus the full 9-dimension review→fix→converge loop as a **delivery gate**. It does not deliver until everything converges. The original `/iterate` mode (v2) is unchanged.
 
 > **Pure review mode / review-only (dry-run)**: when the invocation contains `review-only` or `dry-run`, this skill does a read-only health check and **never modifies any file**. It repeatedly reviews in parallel until a round yields 0 new findings (convergence), produces a review report, then **reviews that report itself** (meta-review, checking internal consistency) and gives a final report with an `approved` / `needs_revision` verdict. Use it for pre-release health checks, code quality audits, or when you don't want the AI to touch code.
 
@@ -304,6 +310,16 @@ iterate reonboard
 
 # Project health diagnostics (config / ITERATE.md / onboarding vs skill spec)
 iterate doctor
+
+# Non-interactive config inspection & editing (no wizard)
+iterate config                      # list all settable values
+iterate config get max_rounds      # read one resolved value (--json for {"key": value})
+iterate config set goal "..."      # validate + write one value (auto timestamped backup)
+
+# Defensive-programming deterministic checks (v3.0 defensive mode)
+iterate guard pre-check src/        # before editing: target exists / worktree clean / manifests ready
+iterate guard post-check python     # after editing: run exactly validation.commands.<module>
+iterate invariant                   # at delivery: file-assertions + exact commands (degrades to validation.commands)
 ```
 
 #### iterate doctor (project health diagnostics)
@@ -353,6 +369,35 @@ iterate personalize --clear --yes # skip confirmation
 ```
 
 If there is no personalization content, it says "no personalization to clear" and exits normally (exit code 0).
+
+#### iterate config (non-interactive config get/set)
+
+`iterate config` lets you inspect or change config values without launching the wizard — handy for scripts / CI / quick edits:
+
+```bash
+iterate config                 # TUI: list every settable key + current value
+iterate config --json          # JSON object of all settable values (stdout stays clean for scripts)
+iterate config get max_rounds  # print one resolved value; --json -> {"max_rounds": ...}
+iterate config set language zh # validate + write one value (auto timestamped backup before write)
+iterate config set reasoning_effort high --json  # confirm object {"key": ..., "value": ...}
+```
+
+Supports flat keys (`goal`, `max_rounds`, `reasoning_effort`, `language`, `mode`, `dimensions`) and nested segments (`atomic.*`, `git.*`, `review.scope`, `reviewer.*`, `validation.commands`, `invariants.*`). A corrupted config is never overwritten — `set` aborts with a clear error.
+
+#### iterate guard (defensive-mode pre/post-edit checks, v3.0)
+
+Deterministic fail-loud checks the host AI runs around every coding step in defensive mode. Contracts (exit code 0 = safe to proceed / change is safe; 1 = must fix or roll back):
+
+| Command | When | Checks |
+|---|---|---|
+| `iterate guard pre-check [paths...]` | before editing | targets exist, git worktree is clean, manifest files ready, validation config is safe (`PASS`/`FAIL`) |
+| `iterate guard post-check [module...]` | after each change | executes exactly the configured `validation.commands.<module>` (the runtime's single authority whitelist — no composition, no prefixing) |
+
+Both support `--json` and `--dry-run` (preview exact commands without executing).
+
+#### iterate invariant (defensive-mode delivery gate, v3.0)
+
+`iterate invariant` checks the project-level `invariants` declared in config (`invariants.ensure` file-existence assertions + `invariants.commands` exact per-module command lists). When no `invariants` section is configured it **degrades to `validation.commands`**, so old configs keep working unchanged. Exit 0 = invariants hold, 1 = violations found. Supports `--json` / `--dry-run`.
 
 ### Edge Cases
 
@@ -419,6 +464,20 @@ An AI scan can discover the tech stack and directory structure, but not project-
 
 See [`config/iterate.config.yaml`](./config/iterate.config.yaml) for a complete example.
 
+### Scope dimension sets & review routing
+
+The top-level `dimensions` is the default for **whole-project / global** review. For **scope-specific** goals, the skill's dimension planning (SKILL.md Phase 0) routes to the right dimension scheme:
+
+1. **Goal is empty or generic** (e.g. "improve code quality") → use the global `dimensions`. Zero friction.
+2. **Goal names a scope that hits a preset `dimension_sets` set** (e.g. "review the frontend" → `frontend`) → use that set's `dimensions` + `focus` override directly, after a quick confirmation.
+3. **Goal names an off-catalog scope** (no preset matches) → the AI **redefines dimensions from scratch**: it starts from the 9 canonical dimensions (not from global `dimensions` or any existing set, which would just be a lazy copy), picks the ones truly relevant to that scope, gives each **a scope-specific independent reason**, and may add temporary non-standard dimensions. This redefinition is recorded in `.iterate_decisions.md` under a dedicated `### Scope Dimension Redefinition (on-the-fly)` section, and is **validated by `scripts/validate.py decisions`** to ensure each reason isn't just a copy of the dimension's default focus prompt.
+
+Preset sets live only in `iterate.config.yaml` (`dimension_sets`); `ITERATE.md` renders a one-time "Recommended Review Blueprints" listing. Ad-hoc redefinitions are bounded to `.iterate_decisions.md` per-round — they never balloon `ITERATE.md` or `iterate.config.yaml`, so the knowledge base stays small no matter how many iterations accumulate.
+
+### Decision log (`.iterate_decisions.md`)
+
+Every round's AI decisions — atomic fixes (direct), architectural fixes (approved + executed / deferred), reverted fixes, important AI decisions, validation results, and any off-catalog scope redefinitions — are recorded in `.iterate_decisions.md` (see the template in `templates/iterate-decisions.template.md`). This keeps the process auditable while keeping `ITERATE.md`'s AI-maintained section to a **single latest snapshot**.
+
 ### Core flow
 
 ```text
@@ -453,14 +512,23 @@ Common config options:
 | `goal` | string | `"Improve code quality"` | iteration goal |
 | `max_rounds` | int | `7` | max rounds (cap 50) |
 | `language` | string | `"en"` | output language: `zh` / `en` |
-| `dimensions` | list | 9 dimensions | enabled review dimensions |
+| `mode` | string | `"iterate"` | default execution mode: `iterate` / `defensive` (v3.0) |
+| `reasoning_effort` | string? | `null` | `low` / `medium` / `high`; `null` = follow provider default |
+| `dimensions` | list | 9 dimensions | enabled review dimensions (whole-project default) |
+| `dimension_sets` | object | — | named scope blueprints (`frontend`/`api`/`security`/…) with `dimensions` + optional `focus` |
+| `invariants` | object | — | `ensure` file-existence assertions + `commands` exact per-module lists (defensive-mode delivery gate) |
 | `review.scope` | string | `"full"` | `full` / `changed-only` |
 | `atomic.max_lines` | int | `20` | max lines for an atomic issue |
+| `atomic.max_adjacent_methods` | int | `3` | max adjacent methods for an atomic issue |
 | `git.target_branch` | string | `main` | merge target branch |
+| `git.use_worktree` | bool | `false` | prefer a worktree for isolation |
 | `git.push_per_round` | bool | `false` | push after each round passes |
 | `git.auto_merge` | bool | `false` | auto-merge after verification |
-| `validation.command_whitelist` | list | common prefixes | allowed command prefixes |
-| `validation.commands` | object | example | per-language validation commands |
+| `validation.command_whitelist` | list | common prefixes | allowed command prefixes (config-time safety) |
+| `validation.commands` | object | example | per-language validation commands (runtime's single authority whitelist) |
+| `reviewer.evidence_validation` | bool | `true` | hard gate: every finding's file/line must exist on disk |
+| `reviewer.coverage_validation` | bool | `true` | emit `COVERAGE_GAP` when a reviewer skipped assigned files |
+| `reviewer.scope_chunk_size` | int | `25` | files per reviewer batch in a `full` scope review |
 | `onboarding.drift_check` | bool | `true` | whether to check manifest drift |
 
 Example:
@@ -469,6 +537,7 @@ Example:
 goal: "improve code quality, ensure all functions are ≤80 lines and tests pass"
 max_rounds: 7
 language: en
+mode: iterate          # or defensive
 
 dimensions:
   - correctness
@@ -480,6 +549,33 @@ dimensions:
   - spec-compliance
   - frontend-backend
   - ui-ux
+
+# Named scope blueprints: a scoped goal routes to its matching set instead
+# of the global `dimensions`.
+dimension_sets:
+  frontend:
+    dimensions:
+      - ui-ux
+      - frontend-backend
+      - correctness
+      - performance
+    focus:
+      ui-ux: "responsive layout, a11y, and state handling specific to views"
+  security:
+    dimensions:
+      - security
+      - correctness
+    focus:
+      security: "OWASP Top 10, authn/authz, injection, secret handling"
+
+# Defensive-mode delivery gate: artifacts that must exist and commands that
+# must pass at delivery (absent -> degrades to validation.commands).
+invariants:
+  ensure:
+    - "README.md"
+  commands:
+    python:
+      - "pytest tests/ -x -q --timeout=60"
 
 validation:
   command_whitelist:
@@ -526,6 +622,9 @@ A: No. The installer does download/verify/unpack in a temp dir and only writes i
 
 **Q: What is this Skill for, and what isn't it for?**
 A: It's for **multi-round** code review and auto-fixing — e.g. paying down tech debt, eliminating lint/type/test issues over rounds, project-level refactoring. It's **not** for single simple changes (one line, add a comment) — use a normal conversation for those, no need for `/iterate`.
+
+**Q: `iterate` mode vs `defensive` mode — which should I use?**
+A: `/iterate` is for **reviewing/fixing existing code** until it converges. `/iterate defensive` is for when you want the AI to do **normal coding work** (add a feature, fix a bug, refactor, wire up an API, write tests): the host AI runs `guard pre-check` before editing, `guard post-check` after every change, and finishes with `invariant` plus the full review→fix→converge loop as a delivery gate. Want the AI to "build something correctly" → `defensive`; want it to "polish/review what's there to zero findings" → `iterate`.
 
 **Q: Why does the first use appear to do nothing?**
 A: Before your first `/iterate` or `iterate onboard`, the project has no `ITERATE.md` or `iterate.config.yaml`. On first use the skill does **onboarding first**: it tells you "this is the first use, initializing the project", scans the codebase to generate `ITERATE.md` and config, then iterates. If you see an init message instead of immediate review, that's normal. You can also run `iterate onboard` in the project root to init manually.
@@ -605,13 +704,22 @@ iterate-skill/
 │       ├── src/                      #   server logic (TypeScript, compiled to dist/)
 │       ├── lib/                      #   client UI injection entry
 │       └── cordis.patch.yml          #   dsh bundle declaration
-├── templates/                        # template files
+├── templates/
+│   ├── ITERATE.template.md           # knowledge-base template
+│   └── iterate-decisions.template.md # per-round decision log template
 ├── iterate_cli/                      # onboarding CLI source
+│   ├── cli.py                        #   top-level command dispatcher
+│   ├── guard.py                      #   guard pre/post-check (defensive mode)
+│   ├── configcmd.py                  #   iterate config get/set
+│   ├── dimension_sets.py             #   scope dimension-set suggestion / normalize / merge
+│   ├── wizard.py / scan.py / generator.py / refresh.py / personalize.py /
+│   │   doctor.py / show.py / fingerprint.py / tui.py
 │   └── data/
-│       └── ITERATE.template.md       # wheel packaging template
+│       ├── ITERATE.template.md       # wheel-packaged template
+│       └── config.schema.json        # wheel-packaged schema (kept in sync)
 ├── scripts/
 │   ├── install.py                    # install/uninstall/config/validate script
-│   ├── validate.py                   # config & dimension validation
+│   ├── validate.py                   # config & decision-log validation (incl. scope redefinition checks)
 │   └── requirements.txt              # script dependencies
 ├── tools/                            # per-assistant implementation examples
 ├── tests/                            # unit tests
