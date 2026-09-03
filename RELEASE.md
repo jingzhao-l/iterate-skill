@@ -12,7 +12,7 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 
 | 项目 | 仓库 | 分发渠道 | 版本线 |
 |---|---|---|---|
-| **iterate-skill**（skill 本体 + CLI + 安装器） | `jingzhao-l/iterate-skill`（主仓库，唯一维护点） | GitHub Release / npm / ClawHub / ModelScope / Tencent SkillHub | 2.9.x（与 skill 同步） |
+| **iterate-skill**（skill 本体 + CLI + 安装器） | `jingzhao-l/iterate-skill`（主仓库，唯一维护点） | GitHub Release / npm / ClawHub / ModelScope / Tencent SkillHub | 3.0.x（与 skill 同步） |
 | **iterate-harness**（Python 引擎 + npm 包装器） | `jingzhao-l/iterate-harness`（subtree 独立发布仓） | GitHub tag / npm 包装器 | 1.9.x（独立） |
 | **iterate-plugin**（dsh 插件） | `jingzhao-l/iterate-plugin`（subtree 独立发布仓） | npm | 2.12.x（独立，自 2.3.7 起） |
 
@@ -60,9 +60,9 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 
 ### 发布清单
 
-- [ ] **1. 同步版本号**：人工编辑上述 5 个文件 + 更新 `CHANGELOG.md`（保留旧版本条目，只新增）。
-- [ ] **2. 本地验证**：跑通全部测试（`pytest tests/ -q`、`ruff check`），确认 `iterate --version` 输出新版本。
-- [ ] **3. 提交并推送主仓库**：`git add -A && git commit && git push origin main`。
+- [x] **1. 同步版本号**：人工编辑上述 5 个文件 + 更新 `CHANGELOG.md`（保留旧版本条目，只新增）。
+- [x] **2. 本地验证**：跑通全部测试（`pytest tests/ -q`、`ruff check`），确认 `iterate --version` 输出新版本。
+- [x] **3. 提交并推送主仓库**：`git add -A && git commit && git push origin main`。
 - [x] **4. 打 GitHub Release tag**：`git tag v<X.Y.Z> && git push origin v<X.Y.Z>`，在 GitHub 创建 Release。
       > `.github/workflows/release.yml` 会在 Release published 时自动生成并上传
       > `iterate-skill.tar.gz` + `SHA256SUMS.txt`（从 tag 树确定性构建）。
@@ -119,6 +119,26 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.0.1 状态（2026-09-03）**：GitHub Release v3.0.1 已发布（tag `v3.0.1`，CI 自动生成
+      > `iterate-skill.tar.gz` + `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness）；
+      > npm `iterate-skill-installer@3.0.1` 已发布（`npm view` 确认 latest=3.0.1）；ClawHub
+      > （skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
+      > + `clawhub-stage-3.0.1`（82 文件归档，发布 77 文件、1,640,836 字节）发布 3.0.1
+      > （resolve 已显示 `latestVersion: 3.0.1` 传播；重传同版本被拒 `Version 3.0.1 already exists`，
+      > 确认并行会话已先行发布成功）；ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_301.py`
+      > 重建 3.0.1 精简 zip 481,396 字节、`update_skill_settings` success，
+      > `get_skill.last_modified` 更新至 2026-09-03T13:41:30Z；下载
+      > `archive/zip/master` 复核 `SKILL.md version: 3.0.1`、`harness` 条目为 0）；SkillHub
+      > （skillId `104490`）`skillhub publish` 成功（重传同版本被拒 `VERSION_EXISTS` 409，
+      > 确认 `tags.latest=3.0.1` 已生效，`reviewStatus/securityScanStatus=pending` 为平台异步审核）。
+      > 3.0.1 核心变更（纯修复版 patch）：`guard pre-check` 空验证命令 fail-closed、npm 安装器 /
+      > install.py 校验和 `*` 前缀剥离语义统一、build-system 精确定版本、新增 release-meta
+      > 四版本源一致性测试（`tests/test_release_meta.py`）。发版前已全量通过 pytest（928 个）+ ruff。
+      > **3.0.0 状态（2026-09-03）**：GitHub Release v3.0.0 已发布（tag `v3.0.0`）；npm
+      > `iterate-skill-installer@3.0.0` 已发布；ClawHub 发布 3.0.0（76 文件、1,632,761 字节，
+      > versionId `k979w3z4vc4sv363xb77r5xa218dpybr`，`ok:true`）。3.0.0 为 3.0 大版本：
+      > 新增防御式编程模式（`/iterate defensive` + `guard pre-check/post-check/invariant`），
+      > 因紧随补丁升 3.0.1，ModelScope / SkillHub 未落 3.0.0 版，最终一致状态以 3.0.1 为准。
       > **2.11.2 状态（2026-09-01）**：GitHub Release v2.11.2 已发布（tag `v2.11.2`，CI 自动生成
       > `iterate-skill.tar.gz` + `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，
       > 本地 `sha256sum -c` 通过、tar 解包后 `harness/*` 为 0）；npm `iterate-skill-installer@2.11.2`
