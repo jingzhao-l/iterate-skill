@@ -295,10 +295,10 @@ stamp 不匹配会自动重装到新 tag。
 
 ### 发布清单
 
-- [ ] **1. 同步版本号**：编辑上述文件 + 更新 `CHANGELOG.md`（保留旧条目）。
-- [ ] **2. 本地验证**：跑通 harness 测试（`cd harness/iterate-harness && pytest tests/ -q`）
+- [x] **1. 同步版本号**：编辑上述文件 + 更新 `CHANGELOG.md`（保留旧条目）。
+- [x] **2. 本地验证**：跑通 harness 测试（`cd harness/iterate-harness && pytest tests/ -q`）
       与 npm 包装器测试（`cd harness/iterate-harness/npm && node --test test/bootstrap.test.js`）。
-- [ ] **3. 提交并推送主仓库**：`git commit && git push origin main`。
+- [x] **3. 提交并推送主仓库**：`git commit && git push origin main`。
 - [ ] **4. subtree 拆分到独立发布仓**：
       ```bash
       git subtree split --prefix=harness/iterate-harness -b subtree-harness
@@ -306,9 +306,9 @@ stamp 不匹配会自动重装到新 tag。
       git branch -D subtree-harness
       ```
       > 独立仓 `jingzhao-l/iterate-harness` 同时承载 Python 源码 + `npm/` 包装器。
-- [ ] **5. 独立仓打 tag + Release**：在独立仓打 `v<X.Y.Z>` tag 并创建 GitHub Release
+- [x] **5. 独立仓打 tag + Release**：在独立仓打 `v<X.Y.Z>` tag 并创建 GitHub Release
       （作为 npm 包装器 pip-install 的 tarball 锚点）。
-- [ ] **6. 同步发布工作区 + npm publish**：
+- [x] **6. 同步发布工作区 + npm publish**：
       ```bash
       # 进入发布工作区（克隆的独立仓，gitignore）
       cd .release/iterate-harness
@@ -318,6 +318,21 @@ stamp 不匹配会自动重装到新 tag。
       ```
       验证：`npm install -g iterate-harness && ih --version` 输出新版本。
       > npm `repository` 元数据指向独立仓 `jingzhao-l/iterate-harness`。
+      >
+      > **2.0.0 发布记录（2026-09-04）**：v2.0 双模式架构（dual-mode）大版本——`task_mode`
+      >（`code` / `iterate`）与 `permission_mode` 正交；code 模式新增防御式内核（原子事务缓冲、
+      > 不变量守护、假设审计，`defensive/` 包）+ `record_assumption` 工具；`--task-mode`
+      > 全链路穿透使 worker 继承防御内核；TUI 空输入 Tab 循环切换模式 + 竖向色条/底部模式文字。
+      > 版本号在 `__init__.py` / `npm/package.json` / `CHANGELOG.md` 同步至 2.0.0；校验 2045
+      > pytest + 36 npm 包装器测试全过，ruff / mypy / 前端 tsc 全净。**subtree split push 仍被拒
+      >（non-fast-forward）**，继续走 `.release/iterate-harness` 替代路径（与公开 main 共享历史）
+      > 提交并快进推送（`597a436..3767267`）。GitHub Release v2.0.0 已建，release.yml 构建
+      > `iterate_harness-2.0.0-py3-none-any.whl`（759,999 字节）上传 release + 自动发布 PyPI 2.0.0
+      >（已验证 PyPI latest=2.0.0）；npm `iterate-harness@2.0.0` 已发布（registry 传播约 60s，
+      > latest=2.0.0）。端到端验证：本机 PyPI 官方源 pip 安装 2.0.0 成功，`ih --version`
+      > = `iterate_harness 2.0.0`，`defensive.kernel.DefensiveKernel` 与
+      > `IterateAssumptionTool` 导入正常（本机 npm 包装器直连 GitHub 下载受 TLS 证书/502
+      > 影响失败，属已知环境网络问题，PyPI 通道不受影响）。
       >
       > **1.16.2 发布记录（2026-08-28）**：版本号在 `__init__.py` / `npm/package.json` / `CHANGELOG.md`
       > 同步至 1.16.2；校验 1995 pytest + 39 npm 包装器测试全过。**subtree split push 被拒
