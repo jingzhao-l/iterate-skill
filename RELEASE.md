@@ -319,6 +319,20 @@ stamp 不匹配会自动重装到新 tag。
       验证：`npm install -g iterate-harness && ih --version` 输出新版本。
       > npm `repository` 元数据指向独立仓 `jingzhao-l/iterate-harness`。
       >
+      > **2.0.1 发布记录（2026-09-04）**：v2.0 后首个补丁版——修复 `config_loader.py`
+      > `invariants` 配置段未被解析的关键 bug（此前 `effective.config.invariants` 恒为 `None`，
+      > code 模式防御式内核收不到项目不变量、只能回退 `validation.commands`；现已正确解析
+      > `ensure` + `commands`，段内字段形状错误整体降级为 `None`），并同步中英 README 补记
+      > v2.0 双模式架构。版本号在 `__init__.py` / `npm/package.json` / `CHANGELOG.md` 同步至
+      > 2.0.1；校验 2049 pytest + 39 npm 包装器测试全过，ruff clean。继续走
+      > `.release/iterate-harness` 替代路径提交并快进推送（`dfae8f3..81c3adc`）。GitHub Release
+      > v2.0.1 已建，release.yml 自动触发构建 `iterate_harness-2.0.1-py3-none-any.whl` 上传
+      > release + 自动发布 PyPI 2.0.1（已验证 PyPI latest=2.0.1）；npm `iterate-harness@2.0.1`
+      > 已发布。**本次 npm publish 首次 PUT 返回 202（staged 异步处理），registry 数分钟未出现
+      > 新版本；重试报 409 `Cannot publish over previously staged version`，属预期状态而非失败，
+      > 等待约 1 分钟后 registry 正常呈现 latest=2.0.1。** 后续发版遇到 202 时可先等待再核验，
+      > 无需重试（重试只会撞 409）。
+      >
       > **2.0.0 发布记录（2026-09-04）**：v2.0 双模式架构（dual-mode）大版本——`task_mode`
       >（`code` / `iterate`）与 `permission_mode` 正交；code 模式新增防御式内核（原子事务缓冲、
       > 不变量守护、假设审计，`defensive/` 包）+ `record_assumption` 工具；`--task-mode`
