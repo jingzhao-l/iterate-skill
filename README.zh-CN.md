@@ -289,6 +289,10 @@ iterate reonboard
 # 项目健康诊断（体检：config/ITERATE.md/onboarding 是否与 skill 规范一致）
 iterate doctor
 
+# 校验 manifest 指纹与当前项目状态是否一致（非阻塞漂移检查）
+iterate fingerprint           # verify（默认）：退出码 0 = 无漂移，1 = 新增/移除/变更了 manifest
+iterate fingerprint --json    # 结构化 JSON 输出（脚本友好）
+
 # 非交互式配置查看与修改（不走向导）
 iterate config                      # 列出全部可设值
 iterate config get max_rounds      # 读单个解析值（--json 输出 {"key": value}）
@@ -325,6 +329,17 @@ iterate doctor --fix      # 先应用安全、非破坏性修复（自动写时�
 ```
 
 `--fix` 只做可安全自动修复的项，且每次修复前都会为 `iterate.config.yaml` 生成带时间戳的备份（`.doctorfix-<时间戳>` 后缀）；破坏性/有歧义的修复不会自动执行，会在报告中提示你手工处理。目前可自动修复的项包括：`dimensions` 去重/空时恢复默认、`language` 非法值重置为 `en`、`max_rounds` 非整数移除/越界收敛到 `[1, 50]`、`git.target_branch` 空值重置为 `main`、`onboarding.skill_version` 同步为当前安装版本。
+
+#### iterate fingerprint（校验 manifest 指纹 / 漂移）
+
+`iterate fingerprint`（默认动作 `verify`）将 onboarding / refresh 时记录的 manifest SHA-256 指纹与当前项目根目录比对，检测技术栈清单的新增 / 移除 / 变更——属于**非阻塞**的信息化健康检查。无漂移（或漂移检查不可用）时退出码 0，检测到漂移时退出码 1，适合接入 CI：
+
+```bash
+iterate fingerprint         # verify（默认）：TUI 输出
+iterate fingerprint --json  # 结构化 JSON：{"project": ..., "available": bool, "drift": bool, ...}
+```
+
+指纹由 `iterate onboard` / `iterate refresh` / `iterate reonboard`（重新）采集；同一套检查也会静默运行在 `iterate status` 及每次 `/iterate` 调用的漂移提示路径中。
 
 #### iterate show（只读查看合并配置与个性化）
 
@@ -612,7 +627,7 @@ A: 大项目首轮要并行审查多个维度，可能耗时较长。为缓解"�
 - 适当降低 `max_rounds`，避免无谓的额外轮次。
 
 **Q: 运行时提示有漂移（drift）是什么意思？**
-A: 漂移检测会对比 `package.json`、`pyproject.toml` 等 manifest 文件的 SHA-256 指纹。若依赖或配置发生变化，说明项目状态与上次 onboarding 不一致，会提示你选择：继续 / 增量刷新（`iterate refresh`）/ 完整重新 onboarding（`iterate reonboard`）。
+A: 漂移检测会对比 `package.json`、`pyproject.toml` 等 manifest 文件的 SHA-256 指纹（onboarding 时记录的指纹 vs 当前项目状态）。若依赖或配置发生变化，说明项目状态与上次 onboarding 不一致，会提示你选择：继续 / 增量刷新（`iterate refresh`）/ 完整重新 onboarding（`iterate reonboard`）。若想在不触发迭代的情况下单独检查漂移，可运行 `iterate fingerprint`（检测到漂移时退出码为 1）。
 
 **Q: 修改没有合并到主分支，也没推送到远程？**
 A: 这是**安全默认**行为：`git.auto_merge` 与 `git.push_per_round` 默认均为 `false`，改动保留在隔离的 `iterate/*` 分支或 worktree 中，由你 review 后决定是否合并/推送。如需自动合并推送，请在 `iterate.config.yaml` 中显式开启这两个选项。

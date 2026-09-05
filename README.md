@@ -311,6 +311,10 @@ iterate reonboard
 # Project health diagnostics (config / ITERATE.md / onboarding vs skill spec)
 iterate doctor
 
+# Verify manifest fingerprints vs the recorded ones (non-blocking drift check)
+iterate fingerprint           # verify (default): exits 0 = no drift, 1 = added/removed/changed manifests
+iterate fingerprint --json    # structured JSON output (script-friendly)
+
 # Non-interactive config inspection & editing (no wizard)
 iterate config                      # list all settable values
 iterate config get max_rounds      # read one resolved value (--json for {"key": value})
@@ -347,6 +351,17 @@ iterate doctor --fix      # apply safe, non-destructive fixes (auto timestamped 
 ```
 
 `--fix` only does items that can be safely auto-fixed, and always creates a timestamped backup of `iterate.config.yaml` (`.doctorfix-<timestamp>` suffix) before fixing. Destructive/ambiguous fixes are never applied automatically — they're reported for you to handle manually. Currently auto-fixable: `dimensions` de-dupe/empty-restore-to-default, `language` invalid value reset to `en`, `max_rounds` non-integer removal / out-of-range clamp to `[1, 50]`, `git.target_branch` empty reset to `main`, `onboarding.skill_version` sync to installed version.
+
+#### iterate fingerprint (verify manifest drift)
+
+`iterate fingerprint` (default action `verify`) compares the SHA-256 manifest fingerprints recorded at onboarding/refresh time against the current project root, detecting added / removed / changed tech-stack manifests — a non-blocking informational health check. It exits `0` when there is no drift (or drift checking is unavailable), and `1` when drift is detected, making it CI-friendly:
+
+```bash
+iterate fingerprint         # verify (default): TUI output
+iterate fingerprint --json  # structured JSON: {"project": ..., "available": bool, "drift": bool, ...}
+```
+
+Fingerprints are (re)captured by `iterate onboard` / `iterate refresh` / `iterate reonboard`, and the same check runs silently inside `iterate status` and in the drift-prompt path of each `/iterate` invocation.
 
 #### iterate show (read-only merged config & personalization)
 
@@ -636,7 +651,7 @@ A: The first round reviews multiple dimensions in parallel and can take a while.
 - Lower `max_rounds` to avoid unnecessary extra rounds.
 
 **Q: What does the drift prompt mean at runtime?**
-A: Drift detection compares SHA-256 fingerprints of manifest files like `package.json`, `pyproject.toml`. If deps or config changed, it means the project state differs from the last onboarding; you'll be prompted to: continue / incremental refresh (`iterate refresh`) / full re-onboarding (`iterate reonboard`).
+A: Drift detection compares SHA-256 fingerprints of manifest files like `package.json`, `pyproject.toml` (onboarding-time fingerprints vs the current project state). If deps or config changed, it means the project state differs from the last onboarding; you'll be prompted to: continue / incremental refresh (`iterate refresh`) / full re-onboarding (`iterate reonboard`). To check drift without triggering a run, use `iterate fingerprint` (exits 1 when drift is detected).
 
 **Q: My changes weren't merged to main or pushed remotely?**
 A: That's the **secure default**: `git.auto_merge` and `git.push_per_round` both default to `false`, so changes stay on an isolated `iterate/*` branch or worktree for you to review before deciding to merge/push. To auto-merge/push, enable those two options explicitly in `iterate.config.yaml`.
