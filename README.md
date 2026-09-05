@@ -33,7 +33,8 @@
 - [At a Glance](#at-a-glance)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
-- [Daily Usage](#daily-usage)
+- [Usage](#usage)
+- [CLI Command Reference](#cli-command-reference)
 - [How It Works](#how-it-works)
 - [Configuration](#configuration)
 - [FAQ](#faq)
@@ -266,7 +267,7 @@ Marketplace pages like skills.sh remain for display and discovery but are no lon
 
 ---
 
-## Daily Usage
+## Usage
 
 ### In an AI assistant
 
@@ -308,9 +309,6 @@ iterate refresh
 # Full re-onboarding (backs up old files)
 iterate reonboard
 
-# Project health diagnostics (config / ITERATE.md / onboarding vs skill spec)
-iterate doctor
-
 # Verify manifest fingerprints vs the recorded ones (non-blocking drift check)
 iterate fingerprint           # verify (default): exits 0 = no drift, 1 = added/removed/changed manifests
 iterate fingerprint --json    # structured JSON output (script-friendly)
@@ -326,7 +324,24 @@ iterate guard post-check python     # after editing: run exactly validation.comm
 iterate invariant                   # at delivery: file-assertions + exact commands (degrades to validation.commands)
 ```
 
-#### iterate doctor (project health diagnostics)
+> **Recommended new-user path**: `npx iterate-skill-installer` (install) → `iterate onboard` (init) → `iterate doctor` (optional health check) → `iterate personalize` (optional constraints) → `/iterate "your goal"` in your AI assistant, or `iterate status` / `iterate refresh` / `iterate personalize` on the CLI.
+>
+> The first `/iterate` invocation will do onboarding first if the project has no knowledge base — seeing a "initializing project" message is normal, not a failure. After that, every round's changes stay on an isolated `iterate/*` branch/worktree; merge/push is off by default and happens after you review.
+
+### Edge Cases
+
+- **Onboarding cancelled mid-way (Ctrl+C / "skip")**: no half-finished artifacts. All files are written **atomically** (`tempfile + os.replace`), so nothing is left behind — just re-run.
+- **Hand-written `ITERATE.md` missing `USER-OWNED` markers**: `iterate refresh` (and AI refresh) **refuses to overwrite and errors** instead of destroying your hand-written content. Add `<!-- ITERATE:USER-OWNED:START/END -->` markers to refresh normally.
+- **Non-git project**: `onboard` / `status` / `refresh` / `doctor` / `personalize` don't depend on git and work directly; but the git-isolated branch/merge/push steps in `/iterate` need a git repo — without one those steps are skipped or prompted.
+- **Empty project / no manifest files**: onboarding generates the knowledge base normally; without fingerprint files like `package.json` / `pyproject.toml`, drift detection skips fingerprint comparison.
+- **Corrupted `iterate.config.yaml` (YAML error / schema violation)**: `iterate doctor` reports schema errors; `doctor --fix` only fixes safely auto-fixable items, the rest need manual fixing. If config fails schema validation, `/iterate` aborts immediately with an error rather than running with a broken config.
+- **Early convergence**: when a round returns 0 new findings, iteration ends early (Early Stop) instead of running to `max_rounds`.
+
+---
+
+## CLI Command Reference
+
+### iterate doctor (project health diagnostics)
 
 `iterate doctor` checks your project against the skill's own spec to catch drift early:
 
@@ -352,7 +367,7 @@ iterate doctor --fix      # apply safe, non-destructive fixes (auto timestamped 
 
 `--fix` only does items that can be safely auto-fixed, and always creates a timestamped backup of `iterate.config.yaml` (`.doctorfix-<timestamp>` suffix) before fixing. Destructive/ambiguous fixes are never applied automatically — they're reported for you to handle manually. Currently auto-fixable: `dimensions` de-dupe/empty-restore-to-default, `language` invalid value reset to `en`, `max_rounds` non-integer removal / out-of-range clamp to `[1, 50]`, `git.target_branch` empty reset to `main`, `onboarding.skill_version` sync to installed version.
 
-#### iterate fingerprint (verify manifest drift)
+### iterate fingerprint (verify manifest drift)
 
 `iterate fingerprint` (default action `verify`) compares the SHA-256 manifest fingerprints recorded at onboarding/refresh time against the current project root, detecting added / removed / changed tech-stack manifests — a non-blocking informational health check. It exits `0` when there is no drift (or drift checking is unavailable), and `1` when drift is detected, making it CI-friendly:
 
@@ -363,7 +378,7 @@ iterate fingerprint --json  # structured JSON: {"project": ..., "available": boo
 
 Fingerprints are (re)captured by `iterate onboard` / `iterate refresh` / `iterate reonboard`, and the same check runs silently inside `iterate status` and in the drift-prompt path of each `/iterate` invocation.
 
-#### iterate show (read-only merged config & personalization)
+### iterate show (read-only merged config & personalization)
 
 `iterate show` read-only displays the current merged project state — handy for quickly checking config and constraints, **writing no files**:
 
@@ -374,7 +389,7 @@ iterate show --json # structured JSON to stdout (for scripts / CI / quick diff)
 
 When you just want to confirm what restrictions are configured (forbidden areas, risk zones, known intent, dimension customization, fix order, notes, code conventions, extra validation commands), or check the merged `validation.commands` / whitelist, `iterate show` is clearer than reading `iterate.config.yaml` + `ITERATE.md` directly.
 
-#### iterate personalize --clear (clear personalization)
+### iterate personalize --clear (clear personalization)
 
 When you need to clear previously configured personalization constraints, do it in one shot after confirmation (structured rules removed from `iterate.config.yaml`, associated extra validation commands cleaned from `validation.commands`, personalization section in `ITERATE.md` user area removed, while keeping your hand-written content):
 
@@ -385,7 +400,7 @@ iterate personalize --clear --yes # skip confirmation
 
 If there is no personalization content, it says "no personalization to clear" and exits normally (exit code 0).
 
-#### iterate config (non-interactive config get/set)
+### iterate config (non-interactive config get/set)
 
 `iterate config` lets you inspect or change config values without launching the wizard — handy for scripts / CI / quick edits:
 
@@ -399,7 +414,7 @@ iterate config set reasoning_effort high --json  # confirm object {"key": ..., "
 
 Supports flat keys (`goal`, `max_rounds`, `reasoning_effort`, `language`, `mode`, `dimensions`) and nested segments (`atomic.*`, `git.*`, `review.scope`, `reviewer.*`, `validation.commands`, `invariants.*`). A corrupted config is never overwritten — `set` aborts with a clear error.
 
-#### iterate guard (defensive-mode pre/post-edit checks, v3.0)
+### iterate guard (defensive-mode pre/post-edit checks, v3.0)
 
 Deterministic fail-loud checks the host AI runs around every coding step in defensive mode. Contracts (exit code 0 = safe to proceed / change is safe; 1 = must fix or roll back):
 
@@ -410,30 +425,9 @@ Deterministic fail-loud checks the host AI runs around every coding step in defe
 
 Both support `--json` and `--dry-run` (preview exact commands without executing).
 
-#### iterate invariant (defensive-mode delivery gate, v3.0)
+### iterate invariant (defensive-mode delivery gate, v3.0)
 
 `iterate invariant` checks the project-level `invariants` declared in config (`invariants.ensure` file-existence assertions + `invariants.commands` exact per-module command lists). When no `invariants` section is configured it **degrades to `validation.commands`**, so old configs keep working unchanged. Exit 0 = invariants hold, 1 = violations found. Supports `--json` / `--dry-run`.
-
-### Edge Cases
-
-- **Onboarding cancelled mid-way (Ctrl+C / "skip")**: no half-finished artifacts. All files are written **atomically** (`tempfile + os.replace`), so nothing is left behind — just re-run.
-- **Hand-written `ITERATE.md` missing `USER-OWNED` markers**: `iterate refresh` (and AI refresh) **refuses to overwrite and errors** instead of destroying your hand-written content. Add `<!-- ITERATE:USER-OWNED:START/END -->` markers to refresh normally.
-- **Non-git project**: `onboard` / `status` / `refresh` / `doctor` / `personalize` don't depend on git and work directly; but the git-isolated branch/merge/push steps in `/iterate` need a git repo — without one those steps are skipped or prompted.
-- **Empty project / no manifest files**: onboarding generates the knowledge base normally; without fingerprint files like `package.json` / `pyproject.toml`, drift detection skips fingerprint comparison.
-- **Corrupted `iterate.config.yaml` (YAML error / schema violation)**: `iterate doctor` reports schema errors; `doctor --fix` only fixes safely auto-fixable items, the rest need manual fixing. If config fails schema validation, `/iterate` aborts immediately with an error rather than running with a broken config.
-- **Early convergence**: when a round returns 0 new findings, iteration ends early (Early Stop) instead of running to `max_rounds`.
-
-### Recommended New-User Path
-
-```text
-1. Install      npx iterate-skill-installer      # auto-installs skill + iterate CLI
-2. Init         iterate onboard                  # generates ITERATE.md + iterate.config.yaml
-3. Health check iterate doctor                    # confirm config health (optional but recommended)
-4. Add rules    iterate personalize              # project-specific constraints (optional)
-5. Iterate      /iterate "your goal"             # or directly in your AI assistant
-```
-
-The first `/iterate` invocation will do onboarding first if the project has no knowledge base — seeing a "initializing project" message is normal, not a failure. After that, every round's changes stay on an isolated `iterate/*` branch/worktree; merge/push is off by default and happens after you review.
 
 ---
 

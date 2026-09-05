@@ -23,6 +23,25 @@
 
 ---
 
+## 目录 / Table of Contents
+
+- [这是什么 / About This Project](#这是什么--about-this-project)
+- [30 秒了解 / At a Glance](#30-秒了解--at-a-glance)
+- [3 分钟上手 / Quick Start](#3-分钟上手--quick-start)
+- [安装 / Installation](#安装--installation)
+- [使用 / Usage](#使用--usage)
+- [CLI 命令参考 / CLI Command Reference](#cli-命令参考--cli-command-reference)
+- [它如何工作 / How It Works](#它如何工作--how-it-works)
+- [配置参考 / Configuration](#配置参考--configuration)
+- [常见问题 / FAQ](#常见问题--faq)
+- [安全说明 / Security](#安全说明--security)
+- [目录结构 / Directory Structure](#目录结构--directory-structure)
+- [贡献 / Contributing](#贡献--contributing)
+- [免责声明 / Disclaimer](#免责声明--disclaimer)
+- [许可证 / License](#许可证--license)
+
+---
+
 ## 这是什么 / About This Project
 
 **iterate** 是一个让 AI 编程助手具备**多轮自主代码审查与修复**能力的开源项目。你无需从任何"iterate"概念开始——它解决的是一个很具体的痛点：
@@ -244,7 +263,7 @@ skills.sh 等市场页面仍会保留，用于展示和发现，但不再作为�
 
 ---
 
-## 日常使用 / Daily Usage
+## 使用 / Usage
 
 ### 在 AI 助手中
 
@@ -286,9 +305,6 @@ iterate refresh
 # 完整重新 onboarding（备份旧文件）
 iterate reonboard
 
-# 项目健康诊断（体检：config/ITERATE.md/onboarding 是否与 skill 规范一致）
-iterate doctor
-
 # 校验 manifest 指纹与当前项目状态是否一致（非阻塞漂移检查）
 iterate fingerprint           # verify（默认）：退出码 0 = 无漂移，1 = 新增/移除/变更了 manifest
 iterate fingerprint --json    # 结构化 JSON 输出（脚本友好）
@@ -304,7 +320,32 @@ iterate guard post-check python     # 每次改动后：精确执行 validation.
 iterate invariant                   # 交付时：文件断言 + 精确命令（缺省退化为 validation.commands）
 ```
 
-#### iterate doctor（项目健康诊断）
+### 常见边界场景 / Edge Cases
+
+- **onboarding 中途取消（Ctrl+C / 选择"跳过"）**：不会留下半成品。所有文件均以**原子写入**（临时文件 + `os.replace`）落盘，取消时未写入任何内容，下次直接重跑即可。
+- **手写 `ITERATE.md` 缺少 `USER-OWNED` 标记**：`iterate refresh`（以及 AI 刷新）会**拒绝覆盖并报错**，而不是销毁你的手写内容。补齐 `<!-- ITERATE:USER-OWNED:START/END -->` 标记后即可正常刷新。
+- **非 Git 项目**：`onboard` / `status` / `refresh` / `doctor` / `personalize` 等 CLI 命令不依赖 git，可直接使用；但 `/iterate` 迭代流程中的 Git 隔离分支、合并、推送等步骤需要 git 仓库，缺省时这些步骤会被跳过或提示。
+- **空项目 / 无 manifest 文件**：onboarding 正常生成知识库；由于没有 `package.json` / `pyproject.toml` 等指纹文件，漂移检测会跳过指纹比对。
+- **`iterate.config.yaml` 损坏（YAML 语法错误 / 不符合 schema）**：`iterate doctor` 会报告 schema 错误；`doctor --fix` 只修可安全自动修复项，其余需手工修正。`/iterate` 调用时若配置无法通过 schema 校验会立即中止并报错，不会带病运行。
+- **多轮收敛提前终止**：某一轮并行审查返回 0 个新 findings 时，迭代提前结束（Early Stop），不会空转到 `max_rounds`。
+
+### 新手推荐路径 / New-User Path
+
+```text
+1. 安装        npx iterate-skill-installer      # 自动装 skill + iterate CLI
+2. 初始化      iterate onboard                  # 生成 ITERATE.md + iterate.config.yaml
+3. 体检        iterate doctor                    # 确认配置健康（可选，但推荐）
+4. 补充约束    iterate personalize              # 项目专属约束（可选）
+5. 开始迭代    /iterate "你的目标"               # 或在 AI 助手中直接调用
+```
+
+首次调用 `/iterate` 时若项目还没有知识库，skill 会**先做 onboarding** 再进入迭代——看到"正在初始化项目"的提示是正常流程，不是失效。之后每轮改动都保留在隔离的 `iterate/*` 分支/worktree 中，merge/push 默认关闭，由你 review 后再合并。
+
+---
+
+## CLI 命令参考 / CLI Command Reference
+
+### iterate doctor（项目健康诊断）
 
 `iterate doctor` 会对照 skill 自身的规范定义检查你的项目，尽早发现与预期漂移的地方：
 
@@ -330,7 +371,7 @@ iterate doctor --fix      # 先应用安全、非破坏性修复（自动写时�
 
 `--fix` 只做可安全自动修复的项，且每次修复前都会为 `iterate.config.yaml` 生成带时间戳的备份（`.doctorfix-<时间戳>` 后缀）；破坏性/有歧义的修复不会自动执行，会在报告中提示你手工处理。目前可自动修复的项包括：`dimensions` 去重/空时恢复默认、`language` 非法值重置为 `en`、`max_rounds` 非整数移除/越界收敛到 `[1, 50]`、`git.target_branch` 空值重置为 `main`、`onboarding.skill_version` 同步为当前安装版本。
 
-#### iterate fingerprint（校验 manifest 指纹 / 漂移）
+### iterate fingerprint（校验 manifest 指纹 / 漂移）
 
 `iterate fingerprint`（默认动作 `verify`）将 onboarding / refresh 时记录的 manifest SHA-256 指纹与当前项目根目录比对，检测技术栈清单的新增 / 移除 / 变更——属于**非阻塞**的信息化健康检查。无漂移（或漂移检查不可用）时退出码 0，检测到漂移时退出码 1，适合接入 CI：
 
@@ -341,7 +382,7 @@ iterate fingerprint --json  # 结构化 JSON：{"project": ..., "available": boo
 
 指纹由 `iterate onboard` / `iterate refresh` / `iterate reonboard`（重新）采集；同一套检查也会静默运行在 `iterate status` 及每次 `/iterate` 调用的漂移提示路径中。
 
-#### iterate show（只读查看合并配置与个性化）
+### iterate show（只读查看合并配置与个性化）
 
 `iterate show` 只读展示项目当前生效的合并后状态，适合快速核对配置与约束，**不会写任何文件**：
 
@@ -352,7 +393,7 @@ iterate show --json # 结构化 JSON 输出到 stdout（供脚本 / CI / 快速 
 
 当你只想确认当前个性化里配了什么（禁区、风险区、已知意图、维度定制、修复顺序、注意点、代码约定、额外验证命令），或核对合并后的 `validation.commands` / 白名单时，用 `iterate show` 比直接翻 `iterate.config.yaml` + `ITERATE.md` 更直观。
 
-#### iterate personalize --clear（清空个性化）
+### iterate personalize --clear（清空个性化）
 
 需要清掉此前配置的个性化约束时，可在确认后一次性清空（结构化规则从 `iterate.config.yaml` 移除、关联的额外验证命令从 `validation.commands` 清理、`ITERATE.md` 用户区中的个性化段落移除，同时保留你手写的内容）：
 
@@ -363,7 +404,7 @@ iterate personalize --clear --yes # 跳过确认直接清空
 
 若当前没有任何个性化内容，会提示"无个性化可清空"并正常退出（退出码 0）。
 
-#### iterate config（非交互式配置 get/set）
+### iterate config（非交互式配置 get/set）
 
 `iterate config` 让你无需打开交互向导即可查看或修改配置值，适合脚本 / CI / 快速编辑：
 
@@ -377,7 +418,7 @@ iterate config set goal "..."  # 成功时输出确认对象 {"key": ..., "value
 
 支持扁平键（`goal`、`max_rounds`、`reasoning_effort`、`language`、`mode`、`dimensions`）与嵌套段（`atomic.*`、`git.*`、`review.scope`、`reviewer.*`、`validation.commands`、`invariants.*`）。损坏配置**不会被覆写**——`set` 会中止并报清晰错误。
 
-#### iterate guard（防御式模式动手前/后校验，v3.0）
+### iterate guard（防御式模式动手前/后校验，v3.0）
 
 宿主 AI 在防御式模式下围绕每个编码步骤执行的确定性、响亮失败校验。契约（退出码 0 = 可以开工 / 本次改动安全；1 = 必须先修复或回滚）：
 
@@ -388,30 +429,9 @@ iterate config set goal "..."  # 成功时输出确认对象 {"key": ..., "value
 
 两者都支持 `--json` 与 `--dry-run`（仅预览将要执行的精确命令，不真正执行）。
 
-#### iterate invariant（防御式模式交付门禁，v3.0）
+### iterate invariant（防御式模式交付门禁，v3.0）
 
 `iterate invariant` 校验配置中声明的项目级 `invariants`（`invariants.ensure` 文件存在断言 + `invariants.commands` 精确按模块命令列表）。未配置 `invariants` 段时**自动退化为执行 `validation.commands`**，因此旧配置无需任何改动。退出码 0 = 不变量成立，1 = 存在违反项。支持 `--json` / `--dry-run`。
-
-### 常见边界场景 / Edge Cases
-
-- **onboarding 中途取消（Ctrl+C / 选择"跳过"）**：不会留下半成品。所有文件均以**原子写入**（临时文件 + `os.replace`）落盘，取消时未写入任何内容，下次直接重跑即可。
-- **手写 `ITERATE.md` 缺少 `USER-OWNED` 标记**：`iterate refresh`（以及 AI 刷新）会**拒绝覆盖并报错**，而不是销毁你的手写内容。补齐 `<!-- ITERATE:USER-OWNED:START/END -->` 标记后即可正常刷新。
-- **非 Git 项目**：`onboard` / `status` / `refresh` / `doctor` / `personalize` 等 CLI 命令不依赖 git，可直接使用；但 `/iterate` 迭代流程中的 Git 隔离分支、合并、推送等步骤需要 git 仓库，缺省时这些步骤会被跳过或提示。
-- **空项目 / 无 manifest 文件**：onboarding 正常生成知识库；由于没有 `package.json` / `pyproject.toml` 等指纹文件，漂移检测会跳过指纹比对。
-- **`iterate.config.yaml` 损坏（YAML 语法错误 / 不符合 schema）**：`iterate doctor` 会报告 schema 错误；`doctor --fix` 只修可安全自动修复项，其余需手工修正。`/iterate` 调用时若配置无法通过 schema 校验会立即中止并报错，不会带病运行。
-- **多轮收敛提前终止**：某一轮并行审查返回 0 个新 findings 时，迭代提前结束（Early Stop），不会空转到 `max_rounds`。
-
-### 新手推荐路径 / New-User Path
-
-```text
-1. 安装        npx iterate-skill-installer      # 自动装 skill + iterate CLI
-2. 初始化      iterate onboard                  # 生成 ITERATE.md + iterate.config.yaml
-3. 体检        iterate doctor                    # 确认配置健康（可选，但推荐）
-4. 补充约束    iterate personalize              # 项目专属约束（可选）
-5. 开始迭代    /iterate "你的目标"               # 或在 AI 助手中直接调用
-```
-
-首次调用 `/iterate` 时若项目还没有知识库，skill 会**先做 onboarding** 再进入迭代——看到"正在初始化项目"的提示是正常流程，不是失效。之后每轮改动都保留在隔离的 `iterate/*` 分支/worktree 中，merge/push 默认关闭，由你 review 后再合并。
 
 ---
 
