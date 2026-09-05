@@ -119,6 +119,36 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.1.0 状态（2026-09-05）**：GitHub Release v3.1.0 已发布（tag `v3.1.0`，CI 自动生成
+      > `iterate-skill.tar.gz` 475,872 字节 + `SHA256SUMS.txt` + `iterate-qoder.zip` 517,636 字节，
+      > `:!harness` 剔除 harness，复核 harness 条目 0）；npm `iterate-skill-installer@3.1.0` 已发布
+      >（latest=3.1.0）；ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本
+      > `.dist_tmp/clawhub_publish.py` + `clawhub-stage-3.1.0`（82 文件归档，发布 77 文件、1,676,737 字节）
+      > 发布 3.1.0（`ok:true`，versionId `k9715bdha605j512hsyzqr43dd8dvee4`，status pending=normal）；
+      > ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_310.py` 重建精简 zip 488,759 字节、77 文件、
+      > harness 0；`.dist_tmp/verify_update_310.py` `update_skill_settings` success，file_id
+      > `b50e6971-4efd-42b8-9948-7c3bd0b73e13`；`archive/zip/master` 复核 `SKILL.md version: 3.1.0`、
+      > harness 0、`last_modified 2026-09-05T01:48:13Z`）；SkillHub（skillId `104490`）
+      > `skillhub publish` 成功（`ok:true`，73 文件、486,427 字节，versionId `288704`，
+      > `tags.latest=3.1.0`，`reviewStatus/securityScanStatus=pending` 为平台异步审核）。
+      > 3.1.0 为 3.0 稳定版收口（`/iterate` 主流程 + repo-map 交互 + publish-rate-limit 保护）。
+      >
+      > **⚠️ 历史重写与 tag 清理（2026-09-05，本次发版前置）**：主仓库 `jingzhao-l/iterate-skill`
+      > 执行了一次 message-only 历史重写 —— 剔除早期两笔提交中的 `Co-authored-by: traeagent` 尾行
+      >（GitHub contributor 统计会按 co-author 计入，重写后 contributor 不再显示 TRAE agent；
+      > 树内容、全部 99 tag 的对象树、主分支 tree 哈希均未变，各平台发布包字节级不受影响），
+      > 并清理了主仓库 tag 命名空间：**主仓库只保留 skill 本体版本 tag（v2.x/v3.x 共 58 个）**，
+      > 删除误推的 plugin/harness tag（`v1.*`、无 `v` 前缀 `1.12.1`/`2.8.1`，以及 plugin 线的
+      > `v2.7.2`/`v2.7.3`/`v2.8.2`/`v2.8.4`/`v2.9.2`–`v2.9.4`/`v2.12.1`）；同步将 plugin 独立仓
+      > `jingzhao-l/iterate-plugin` 补打 `v3.2.1` tag（npm `iterate-plugin@3.2.1` 对应提交
+      > `de8116e`，approval-gate fail-safe fix + hardening，已推远端）。此后主仓库 tag 只发 skill
+      > 本体，harness/plugin 各自 tag 只发各自独立仓。
+      >
+      > **SkillHub CLI SSL 坑（新）**：SkillHub CLI 默认用框架自带 Python 3.11 的 CA 库，
+      > 缺少 DNSPod 根证书导致上传报 SSL 错；须带
+      > `SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")` 环境变量执行
+      > `~/.local/bin/skillhub publish`。
+      >
       > **3.0.1 状态（2026-09-03）**：GitHub Release v3.0.1 已发布（tag `v3.0.1`，CI 自动生成
       > `iterate-skill.tar.gz` + `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness）；
       > npm `iterate-skill-installer@3.0.1` 已发布（`npm view` 确认 latest=3.0.1）；ClawHub
@@ -423,6 +453,10 @@ stamp 不匹配会自动重装到新 tag。
       > 426 个单元测试；独立仓 main `3377f91..0e745f9`（含重建 dist/jobs.js 与 client bundle，
       > 修复 git-clone 安装 dist 与 src 不一致问题）；npm `iterate-plugin@2.12.3` latest
       > 已生效（64 文件 / 254.0 kB）。
+      > **3.2.1 发布记录（2026-09-05）**：approval-gate fail-safe fix + hardening；提交
+      > `de8116e`（`chore: release iterate-plugin v3.2.1`），独立仓 main 已含（其上前置
+      > `4096c92`/`67e1092` 为 README 重构，vs skill 子树仅 README 差异、src 完全一致）；
+      > 补打 `v3.2.1` tag 并推送远端（`a7c4ff1`）；npm `iterate-plugin@3.2.1` latest 已生效。
 - [ ] **5. 同步发布工作区 + npm publish**：
       ```bash
       cd .release/iterate-plugin
