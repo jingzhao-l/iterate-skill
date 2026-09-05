@@ -58,15 +58,19 @@ Its operating mechanism can be summarized as a self-closing pipeline:
 Set the goal → multi-dimension parallel review → atomic fixes + architecture fixes (with your approval) → verify → re-review → iterate until convergence / max rounds → output summary
 ```
 
+The skill keeps evolving through major versions:
+
+- **v2** — deterministic convergence: repeated multi-dimension review until a round finds zero new issues, plus isolated `iterate/*` branches and a decision log.
+- **v3.0** — dual modes: the original `/iterate` review/fix loop stays untouched, and a new **defensive-programming mode** (`/iterate defensive`) covers everyday coding tasks (add features, fix bugs, refactor), hardened by deterministic `iterate guard` pre/post checks and an `invariant` delivery gate.
+- **v3.1** — `iterate fingerprint` for non-blocking manifest-drift verification, a smarter `iterate doctor` that reports how many checks passed, and fail-closed guard semantics.
+
 **iterate is not a standalone tool; it is a skill ecosystem that attaches to your existing AI assistants.** It doesn't replace your IDE or AI tools; instead it adds a strict "code gatekeeping" layer to your existing workflow. The ecosystem is made up of three components that share the same configuration and review dimensions:
 
-| Component | Form & Location | Use Case |
-|---|---|---|
-| **Core Skill + CLI** | Portable AI skill `/iterate` + `iterate` CLI (root of this repo) | Multi-round iteration inside conversational UIs of Trae / Claude Code / Cursor / Copilot / Codex and 25+ assistants |
-| **[iterate-harness](https://github.com/jingzhao-l/iterate-harness)** | Standalone headless engine, command `ih` (source `harness/iterate-harness`, npm: `iterate-harness`) | Run the same closed loop outside a conversational assistant, in the terminal / CI / git hooks |
-| **[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)** | dsh desktop client plugin (source `harness/iterate-plugin`, npm: `iterate-plugin`) | Use the dsh desktop client to bring iterate's convergence dashboard and review progress into the UI |
+- **Core Skill + CLI** — a portable AI skill `/iterate` + `iterate` CLI (root of this repo). Multi-round iteration inside the conversational UIs of Trae / Claude Code / Cursor / Copilot / Codex and 25+ assistants.
+- **[iterate-harness](https://github.com/jingzhao-l/iterate-harness)** — a standalone headless engine, command `ih` (source `harness/iterate-harness`, npm: `iterate-harness`). Runs the same closed loop outside a conversational assistant — in the terminal / CI / git hooks.
+- **[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)** — a dsh desktop-client plugin (source `harness/iterate-plugin`, npm: `iterate-plugin`). Brings iterate's convergence dashboard and review progress into the dsh desktop UI.
 
-The relationship: the **skill** (this repo's core deliverable) targets conversational iteration in any AI assistant; the **harness** is the same closed-loop engine for headless / CI scenarios; the **plugin** brings harness's runtime experience into dsh. The configuration (`iterate.config.yaml`) and dimension system are fully consistent across all three — understand one and you can transfer the rest.
+The relationship: the **skill** (this repo's core deliverable) targets conversational iteration in any AI assistant; the **harness** is the same closed-loop engine for headless / CI scenarios; the **plugin** re-plays the harness runtime inside dsh. The configuration (`iterate.config.yaml`) and dimension system are fully consistent across all three — understand one and you can transfer the rest.
 
 The harness and plugin can also be installed and used independently of this repo:
 
@@ -92,19 +96,17 @@ dsh plugin --profile web add github:jingzhao-l/iterate-plugin#main
 
 **Iterate Skill** lets an AI assistant review and fix a codebase over multiple rounds, like a rigorous senior engineer.
 
-| Capability | Description |
-|---|---|
-| **Dual modes** | `/iterate` — original multi-round review→fix→converge loop (v2 behavior, zero breakage); `/iterate defensive` — defensive-programming mode for normal incremental coding tasks, ending in the same iterate convergence gate |
-| **9 dimensions in parallel** | correctness, security, performance, architecture, style-tests, tech-debt, spec-compliance, frontend-backend, ui-ux |
-| **Scope dimension sets** | Named `dimension_sets` (e.g. `frontend`, `api`, `security`) preset at onboarding; a scoped goal routes to the matching set, off-catalog scopes trigger an on-the-fly redefinition recorded in `.iterate_decisions.md` (never copied from presets) |
-| **Two-track fixing** | Atomic issues (≤20 lines, single file) are fixed automatically; architecture issues are fixed after your approval |
-| **Deterministic gate CLI** | `iterate guard pre-check` / `post-check` + `iterate invariant` — exact, fail-loud checks the host AI runs before/after every edit and at delivery (defensive mode) |
-| **Git isolation** | Each round runs on an isolated `iterate/*` branch or worktree; merge/push is off by default and must be explicitly enabled |
-| **Secure-by-default** | `push_per_round` and `auto_merge` default to `false` |
-| **Command whitelist** | Double validation at config time and personalization time; rejects dangerous shell metacharacters |
-| **Checksum & verification** | Enforces SHA256 verification when updating from GitHub Release |
-| **Multi-assistant support** | Trae, Claude Code, Cursor, Windsurf, GitHub Copilot, Codex, Roo Code and 25+ tools |
-| **Project knowledge base** | Auto-generates `ITERATE.md` + `iterate.config.yaml`, with drift detection and incremental refresh |
+- **Dual modes** — `/iterate` is the original multi-round review → fix → converge loop (v2 behavior, zero breakage); `/iterate defensive` is a defensive-programming mode for normal incremental coding tasks, ending in the same iterate convergence gate.
+- **9 dimensions in parallel** — correctness, security, performance, architecture, style-tests, tech-debt, spec-compliance, frontend-backend, ui-ux.
+- **Scope dimension sets** — named `dimension_sets` (e.g. `frontend`, `api`, `security`) preset at onboarding; a scoped goal routes to the matching set, off-catalog scopes trigger an on-the-fly redefinition recorded in `.iterate_decisions.md` (never copied from presets).
+- **Two-track fixing** — atomic issues (≤20 lines, single file) are fixed automatically; architecture issues are fixed only after your approval.
+- **Deterministic gate CLI** — `iterate guard pre-check` / `post-check` + `iterate invariant` — exact, fail-loud checks the host AI runs before/after every edit and at delivery (defensive mode).
+- **Git isolation** — each round runs on an isolated `iterate/*` branch or worktree; merge/push is off by default and must be explicitly enabled.
+- **Secure-by-default** — `push_per_round` and `auto_merge` default to `false`.
+- **Command whitelist** — double validation at config time and personalization time; rejects dangerous shell metacharacters.
+- **Checksum & verification** — enforces SHA256 verification when updating from GitHub Release.
+- **Multi-assistant support** — Trae, Claude Code, Cursor, Windsurf, GitHub Copilot, Codex, Roo Code and 25+ tools.
+- **Project knowledge base** — auto-generates `ITERATE.md` + `iterate.config.yaml`, with drift detection and incremental refresh.
 
 ---
 
@@ -170,15 +172,12 @@ npx iterate-skill-installer --ai trae --global --force
 
 Common options:
 
-| Option | Description |
-|---|---|
-| `--ai <name>` | Install only into a specific assistant, e.g. `trae`, `claude`, `cursor` |
-| `--target <path>` | Project-level install into a directory |
-| `--global` | Install into the user home directory (default) |
-| `--force` | Overwrite existing skill files |
-| `--token <token>` | GitHub token to raise API rate limits |
-| `-h, --help` | Show help |
-| `-v, --version` | Show version |
+- `--ai <name>` — install only into a specific assistant, e.g. `trae`, `claude`, `cursor`
+- `--target <path>` — project-level install into a directory
+- `--global` — install into the user home directory (default)
+- `--force` — overwrite existing skill files
+- `--token <token>` — GitHub token to raise API rate limits
+- `-h, --help` / `-v, --version` — show help / version
 
 > **The installer puts the `iterate` CLI on your PATH** (prefer `pipx` isolated install, else `pip install --user`) so that `npx iterate-skill-installer` completes "skill + CLI" in one command. That does place an executable on your system. If you don't want automatic CLI install, use the "manually copy SKILL.md" or "source scripts" approaches below instead.
 >
@@ -247,10 +246,8 @@ python scripts/install.py uninstall --ai trae --target /path/to/project --yes
 
 ### Global vs. project-level install
 
-| Scope | Example path | Effect |
-|---|---|---|
-| **Global install** | `~/.trae/skills/iterate/` | First `/iterate` invocation triggers onboarding in every project |
-| **Project-level install** | `/project/.trae/skills/iterate/` | After onboarding it reuses the project root's `ITERATE.md` |
+- **Global install** (`~/.trae/skills/iterate/`) — the first `/iterate` invocation triggers onboarding in every project.
+- **Project-level install** (`/project/.trae/skills/iterate/`) — after onboarding it reuses the project root's `ITERATE.md`, no repeated onboarding.
 
 Suggestion: install globally once so the assistant "gets to know you"; then do a project-level install in important projects to avoid repeated onboarding.
 
@@ -343,20 +340,18 @@ iterate invariant                   # at delivery: file-assertions + exact comma
 
 ### iterate doctor (project health diagnostics)
 
-`iterate doctor` checks your project against the skill's own spec to catch drift early:
+`iterate doctor` checks your project against the skill's own spec to catch drift early. It verifies:
 
-| Check | Description |
-|---|---|
-| Onboarding completeness | `ITERATE.md` and `iterate.config.yaml` exist |
-| Config parses & is valid | Config parses as YAML and **fully** matches `config/config.schema.json` |
-| Dimensions valid | `dimensions` only reference one of the 9 spec dimensions |
-| Review scope valid | `review.scope` allows only `full` / `changed-only` |
-| Merge target branch | `git.target_branch` is a non-empty string |
-| Validation commands | `validation.commands` is a non-empty string list |
-| Command whitelist | `command_whitelist` entries are safe and every command is within the whitelist |
-| Personalization dimension refs | `personalization` dimension references point to enabled dimensions |
-| Version consistency | onboarding `skill_version` matches the currently installed skill version |
-| Drift detection | whether the tech-stack manifest changed since onboarding |
+- **Onboarding completeness** — `ITERATE.md` and `iterate.config.yaml` exist
+- **Config parses & is valid** — config parses as YAML and **fully** matches `config/config.schema.json`
+- **Dimensions valid** — `dimensions` only reference one of the 9 spec dimensions
+- **Review scope valid** — `review.scope` allows only `full` / `changed-only`
+- **Merge target branch** — `git.target_branch` is a non-empty string
+- **Validation commands** — `validation.commands` is a non-empty string list
+- **Command whitelist** — `command_whitelist` entries are safe and every command is within the whitelist
+- **Personalization dimension refs** — `personalization` dimension references point to enabled dimensions
+- **Version consistency** — onboarding `skill_version` matches the currently installed skill version
+- **Drift detection** — whether the tech-stack manifest changed since onboarding
 
 ```bash
 iterate doctor            # TUI output; healthy exit 0, problems exit 1
@@ -416,12 +411,10 @@ Supports flat keys (`goal`, `max_rounds`, `reasoning_effort`, `language`, `mode`
 
 ### iterate guard (defensive-mode pre/post-edit checks, v3.0)
 
-Deterministic fail-loud checks the host AI runs around every coding step in defensive mode. Contracts (exit code 0 = safe to proceed / change is safe; 1 = must fix or roll back):
+Deterministic fail-loud checks the host AI runs around every coding step in defensive mode. Contract: exit code 0 = safe to proceed / change is safe; 1 = must fix or roll back.
 
-| Command | When | Checks |
-|---|---|---|
-| `iterate guard pre-check [paths...]` | before editing | targets exist, git worktree is clean, manifest files ready, validation config is safe (`PASS`/`FAIL`) |
-| `iterate guard post-check [module...]` | after each change | executes exactly the configured `validation.commands.<module>` (the runtime's single authority whitelist — no composition, no prefixing) |
+- `iterate guard pre-check [paths...]` — runs **before editing**: targets exist, git worktree clean, manifest files ready, validation config safe (`PASS`/`FAIL`).
+- `iterate guard post-check [module...]` — runs **after each change**: executes exactly the configured `validation.commands.<module>` (the runtime's single authority whitelist — no composition, no prefixing).
 
 Both support `--json` and `--dry-run` (preview exact commands without executing).
 
@@ -435,12 +428,10 @@ Both support `--json` and `--dry-run` (preview exact commands without executing)
 
 ### Onboarding (project knowledge base initialization)
 
-Each `/iterate` invocation checks whether `ITERATE.md` exists in the project root. If not, onboarding is triggered.
+Each `/iterate` invocation checks whether `ITERATE.md` exists in the project root. If not, onboarding is triggered through either channel:
 
-| Channel | Use case | Output |
-|---|---|---|
-| **AI Onboarding** | AI auto-identifies the tech stack from directory structure / manifest files | `ITERATE.md` + `iterate.config.yaml` |
-| **CLI Onboarding** | CLI scans then lets you confirm/adjust the tech stack and config | Same as above |
+- **AI Onboarding** — the AI auto-identifies the tech stack from directory structure / manifest files, producing `ITERATE.md` + `iterate.config.yaml`.
+- **CLI Onboarding** — the CLI scans then lets you confirm/adjust the tech stack and config, producing the same output.
 
 The scan only reads file/directory **existence** and a few public context files like README.md — it does not read `.env`, keys, credentials, or other sensitive file contents. Project-specific constraints can be added with `iterate personalize`.
 
@@ -460,16 +451,14 @@ Each `/iterate` invocation recomputes SHA-256 fingerprints of manifest files suc
 
 An AI scan can discover the tech stack and directory structure, but not project-specific constraints. `iterate personalize` captures that knowledge:
 
-| Category | Description | Location |
-|---|---|---|
-| Forbidden areas | files/dirs iterate must not modify | `iterate.config.yaml` |
-| Risk zones | changes needing architecture approval | `iterate.config.yaml` |
-| Known intent | suppresses false positives | `iterate.config.yaml` |
-| Dimension customization | append focus to specific dimensions | `iterate.config.yaml` |
-| Fix priority order | per-dimension fix priority | `iterate.config.yaml` |
-| Forbidden fix methods | techniques that must not be used | `iterate.config.yaml` |
-| Project conventions & notes | lessons learned, known pitfalls | `ITERATE.md` user area |
-| Extra validation commands | project-specific validation commands | `iterate.config.yaml` |
+- **Forbidden areas** — files/dirs iterate must not modify → `iterate.config.yaml`
+- **Risk zones** — changes needing architecture approval → `iterate.config.yaml`
+- **Known intent** — suppresses false positives → `iterate.config.yaml`
+- **Dimension customization** — append focus to specific dimensions → `iterate.config.yaml`
+- **Fix priority order** — per-dimension fix priority → `iterate.config.yaml`
+- **Forbidden fix methods** — techniques that must not be used → `iterate.config.yaml`
+- **Project conventions & notes** — lessons learned, known pitfalls → `ITERATE.md` user area
+- **Extra validation commands** — project-specific validation commands → `iterate.config.yaml`
 
 See [`config/iterate.config.yaml`](./config/iterate.config.yaml) for a complete example.
 
@@ -514,31 +503,29 @@ For the detailed flow, see [`SKILL.md`](./SKILL.md).
 
 The default config lives in [`config/iterate.config.yaml`](./config/iterate.config.yaml). Project-level config recursively overrides same-name fields in the Master config.
 
-Common config options:
+Common config options (each entry: key — type, default, meaning):
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `goal` | string | `"Improve code quality"` | iteration goal |
-| `max_rounds` | int | `7` | max rounds (cap 50) |
-| `language` | string | `"en"` | output language: `zh` / `en` |
-| `mode` | string | `"iterate"` | default execution mode: `iterate` / `defensive` (v3.0) |
-| `reasoning_effort` | string? | `null` | `low` / `medium` / `high`; `null` = follow provider default |
-| `dimensions` | list | 9 dimensions | enabled review dimensions (whole-project default) |
-| `dimension_sets` | object | — | named scope blueprints (`frontend`/`api`/`security`/…) with `dimensions` + optional `focus` |
-| `invariants` | object | — | `ensure` file-existence assertions + `commands` exact per-module lists (defensive-mode delivery gate) |
-| `review.scope` | string | `"full"` | `full` / `changed-only` |
-| `atomic.max_lines` | int | `20` | max lines for an atomic issue |
-| `atomic.max_adjacent_methods` | int | `3` | max adjacent methods for an atomic issue |
-| `git.target_branch` | string | `main` | merge target branch |
-| `git.use_worktree` | bool | `false` | prefer a worktree for isolation |
-| `git.push_per_round` | bool | `false` | push after each round passes |
-| `git.auto_merge` | bool | `false` | auto-merge after verification |
-| `validation.command_whitelist` | list | common prefixes | allowed command prefixes (config-time safety) |
-| `validation.commands` | object | example | per-language validation commands (runtime's single authority whitelist) |
-| `reviewer.evidence_validation` | bool | `true` | hard gate: every finding's file/line must exist on disk |
-| `reviewer.coverage_validation` | bool | `true` | emit `COVERAGE_GAP` when a reviewer skipped assigned files |
-| `reviewer.scope_chunk_size` | int | `25` | files per reviewer batch in a `full` scope review |
-| `onboarding.drift_check` | bool | `true` | whether to check manifest drift |
+- `goal` — string, default `"Improve code quality"` — iteration goal
+- `max_rounds` — int, default `7` — max rounds (cap 50)
+- `language` — string, default `"en"` — output language: `zh` / `en`
+- `mode` — string, default `"iterate"` — default execution mode: `iterate` / `defensive` (v3.0)
+- `reasoning_effort` — string?, default `null` — `low` / `medium` / `high`; `null` = follow provider default
+- `dimensions` — list, default all 9 — enabled review dimensions (whole-project default)
+- `dimension_sets` — object — named scope blueprints (`frontend`/`api`/`security`/…) with `dimensions` + optional `focus`
+- `invariants` — object — `ensure` file-existence assertions + `commands` exact per-module lists (defensive-mode delivery gate)
+- `review.scope` — string, default `"full"` — `full` / `changed-only`
+- `atomic.max_lines` — int, default `20` — max lines for an atomic issue
+- `atomic.max_adjacent_methods` — int, default `3` — max adjacent methods for an atomic issue
+- `git.target_branch` — string, default `main` — merge target branch
+- `git.use_worktree` — bool, default `false` — prefer a worktree for isolation
+- `git.push_per_round` — bool, default `false` — push after each round passes
+- `git.auto_merge` — bool, default `false` — auto-merge after verification
+- `validation.command_whitelist` — list, default common prefixes — allowed command prefixes (config-time safety)
+- `validation.commands` — object, default example — per-language validation commands (runtime's single authority whitelist)
+- `reviewer.evidence_validation` — bool, default `true` — hard gate: every finding's file/line must exist on disk
+- `reviewer.coverage_validation` — bool, default `true` — emit `COVERAGE_GAP` when a reviewer skipped assigned files
+- `reviewer.scope_chunk_size` — int, default `25` — files per reviewer batch in a `full` scope review
+- `onboarding.drift_check` — bool, default `true` — whether to check manifest drift
 
 Example:
 

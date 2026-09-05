@@ -54,13 +54,17 @@
 定目标 → 多维度并行审查 → 原子修复 + 架构修复（需你批准）→ 验证 → 再审查 → 循环直到收敛 / 达轮数上限 → 输出总结
 ```
 
+技能本身也随大版本持续演进：
+
+- **v2** — 确定性收敛：反复多维度审查直到某一轮零新问题，配合隔离的 `iterate/*` 分支与决策日志。
+- **v3.0** — 双模式：原 `/iterate` 审查/修复闭环保持不变，新增**防御式编程模式**（`/iterate defensive`）覆盖日常增量编码任务（新增功能、修 bug、重构），以确定性的 `iterate guard` 动手前/后校验与 `invariant` 交付门禁加固。
+- **v3.1** — 新增 `iterate fingerprint` 非阻塞式 manifest 漂移校验、更聪明的 `iterate doctor`（汇总显示通过了几项检查）、guard 语义 fail-closed。
+
 **iterate 不是一个独立的工具，而是一套附着在现有 AI 助手之上的技能生态。** 它不会替换你的 IDE 或 AI 工具，而是在你已有的工作流里，加一层"严格的代码把关"。整个生态由三个组件构成，共用同一套配置与审查维度：
 
-| 组件 | 形态与位置 | 面向场景 |
-|---|---|---|
-| **Core Skill + CLI** | 可移植 AI 技能 `/iterate` + `iterate` 命令行（本仓库根目录） | 在 Trae / Claude Code / Cursor / Copilot / Codex 等 25+ 助手的对话式界面里多轮迭代 |
-| **[iterate-harness](https://github.com/jingzhao-l/iterate-harness)** | 独立无头引擎，命令 `ih`（源码 `harness/iterate-harness`，npm: `iterate-harness`） | 在终端 / CI / Git 钩子里，脱离对话式助手运行同一套闭环 |
-| **[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)** | dsh 桌面客户端插件（源码 `harness/iterate-plugin`，npm: `iterate-plugin`） | 使用 dsh 桌面客户端，把 iterate 的收敛仪表盘、review 进度带进界面 |
+- **Core Skill + CLI** — 可移植 AI 技能 `/iterate` + `iterate` 命令行（本仓库根目录）。在 Trae / Claude Code / Cursor / Copilot / Codex 等 25+ 助手的对话式界面里多轮迭代。
+- **[iterate-harness](https://github.com/jingzhao-l/iterate-harness)** — 独立无头引擎，命令 `ih`（源码 `harness/iterate-harness`，npm: `iterate-harness`）。在终端 / CI / Git 钩子里，脱离对话式助手运行同一套闭环。
+- **[iterate-plugin](https://github.com/jingzhao-l/iterate-plugin)** — dsh 桌面客户端插件（源码 `harness/iterate-plugin`，npm: `iterate-plugin`）。使用 dsh 桌面客户端，把 iterate 的收敛仪表盘、review 进度带进界面。
 
 三者的关系：**skill**（本仓库核心交付物）面向任意 AI 助手的对话式迭代；**harness** 面向无头 / CI 场景的同一闭环引擎实现；**plugin** 把 harness 的运行时体验接入 dsh。配置（`iterate.config.yaml`）与维度体系在三者间完全一致——理解其一即可举一反三。
 
@@ -88,19 +92,17 @@ dsh plugin --profile web add github:jingzhao-l/iterate-plugin#main
 
 **Iterate Skill** 让 AI 助手像一位严谨的资深工程师一样，对代码库进行多轮审查与修复。
 
-| 能力 | 说明 |
-|---|---|
-| **双模式** | `/iterate` —— 原模式：多轮审查→修复→收敛闭环（v2 行为，零破坏）；`/iterate defensive` —— 防御式编程模式：面向正常增量式编程任务，最终以同一套 iterate 收敛门禁收尾 |
-| **9 维度并行审查** | correctness、security、performance、architecture、style-tests、tech-debt、spec-compliance、frontend-backend、ui-ux |
-| **按范围维度集** | onboarding 时预置命名 `dimension_sets`（如 `frontend`、`api`、`security`）；指定范围的 goal 会路由到对应维度集，未命中的偏门范围触发 on-the-fly 重定义并记录到 `.iterate_decisions.md`（禁止照抄预设） |
-| **双轨修复** | 原子问题（≤20 行、单文件）自动修；架构问题经你批准后再修 |
-| **确定性门禁 CLI** | `iterate guard pre-check` / `post-check` + `iterate invariant` —— 宿主 AI 在动手前后与交付时执行的精确、响亮失败校验（防御式模式） |
-| **Git 隔离** | 每轮在独立 `iterate/*` 分支或 worktree 中完成；merge/push 默认关闭，需显式开启 |
-| **Secure-by-default** | `push_per_round` 和 `auto_merge` 默认均为 `false` |
-| **命令白名单** | 配置时 + 个性化时双层校验，拒绝危险 shell 元字符 |
-| **校验和验证** | 从 GitHub Release 更新时强制 SHA256 校验 |
-| **多助手支持** | Trae、Claude Code、Cursor、Windsurf、GitHub Copilot、Codex、Roo Code 等 25+ 工具 |
-| **项目知识库** | 自动生成 `ITERATE.md` + `iterate.config.yaml`，支持漂移检测和增量刷新 |
+- **双模式** — `/iterate`：原模式，多轮审查 → 修复 → 收敛闭环（v2 行为，零破坏）；`/iterate defensive`：防御式编程模式，面向正常增量式编程任务，最终以同一套 iterate 收敛门禁收尾。
+- **9 维度并行审查** — correctness、security、performance、architecture、style-tests、tech-debt、spec-compliance、frontend-backend、ui-ux。
+- **按范围维度集** — onboarding 时预置命名 `dimension_sets`（如 `frontend`、`api`、`security`）；指定范围的 goal 会路由到对应维度集，未命中的偏门范围触发 on-the-fly 重定义并记录到 `.iterate_decisions.md`（禁止照抄预设）。
+- **双轨修复** — 原子问题（≤20 行、单文件）自动修；架构问题经你批准后再修。
+- **确定性门禁 CLI** — `iterate guard pre-check` / `post-check` + `iterate invariant`：宿主 AI 在动手前后与交付时执行的精确、响亮失败校验（防御式模式）。
+- **Git 隔离** — 每轮在独立 `iterate/*` 分支或 worktree 中完成；merge/push 默认关闭，需显式开启。
+- **Secure-by-default** — `push_per_round` 和 `auto_merge` 默认均为 `false`。
+- **命令白名单** — 配置时 + 个性化时双层校验，拒绝危险 shell 元字符。
+- **校验和验证** — 从 GitHub Release 更新时强制 SHA256 校验。
+- **多助手支持** — Trae、Claude Code、Cursor、Windsurf、GitHub Copilot、Codex、Roo Code 等 25+ 工具。
+- **项目知识库** — 自动生成 `ITERATE.md` + `iterate.config.yaml`，支持漂移检测和增量刷新。
 
 ---
 
@@ -166,15 +168,12 @@ npx iterate-skill-installer --ai trae --global --force
 
 常用选项：
 
-| 选项 | 说明 |
-|---|---|
-| `--ai <name>` | 仅安装到指定助手，如 `trae`、`claude`、`cursor` |
-| `--target <path>` | 项目级安装到指定目录 |
-| `--global` | 安装到用户主目录（默认） |
-| `--force` | 覆盖已存在的 skill 文件 |
-| `--token <token>` | GitHub token，用于提高 API 速率限制 |
-| `-h, --help` | 查看帮助 |
-| `-v, --version` | 查看版本 |
+- `--ai <name>` — 仅安装到指定助手，如 `trae`、`claude`、`cursor`
+- `--target <path>` — 项目级安装到指定目录
+- `--global` — 安装到用户主目录（默认）
+- `--force` — 覆盖已存在的 skill 文件
+- `--token <token>` — GitHub token，用于提高 API 速率限制
+- `-h, --help` / `-v, --version` — 查看帮助 / 版本
 
 > **安装器会安装 `iterate` CLI 到你的 PATH**（优先 `pipx` 隔离安装，否则 `pip install --user`）。这是为了让 `npx iterate-skill-installer` 一条命令完成 "skill + CLI"，但安装器确实会在你的系统上放置一个可执行文件。若不希望自动安装 CLI，可改用下方的"手动复制 SKILL.md"或"源码脚本"方式。
 >
@@ -243,10 +242,8 @@ python scripts/install.py uninstall --ai trae --target /path/to/project --yes
 
 ### 全局安装 vs 项目级安装
 
-| 安装范围 | 路径示例 | 效果 |
-|---|---|---|
-| **全局安装** | `~/.trae/skills/iterate/` | 所有项目首次调用 `/iterate` 都会触发 onboarding |
-| **项目级安装** | `/project/.trae/skills/iterate/` | onboarding 完成后直接复用项目根目录的 `ITERATE.md` |
+- **全局安装**（`~/.trae/skills/iterate/`）— 所有项目首次调用 `/iterate` 都会触发 onboarding。
+- **项目级安装**（`/project/.trae/skills/iterate/`）— onboarding 完成后直接复用项目根目录的 `ITERATE.md`，无需重复 onboarding。
 
 建议：先在全局安装一次，让助手认识你；再在重要项目里做一次项目级安装，避免重复 onboarding。
 
@@ -347,20 +344,18 @@ iterate invariant                   # 交付时：文件断言 + 精确命令（
 
 ### iterate doctor（项目健康诊断）
 
-`iterate doctor` 会对照 skill 自身的规范定义检查你的项目，尽早发现与预期漂移的地方：
+`iterate doctor` 会对照 skill 自身的规范定义检查你的项目，尽早发现与预期漂移的地方。它逐项校验：
 
-| 检查项 | 说明 |
-|---|---|
-| Onboarding 完整性 | `ITERATE.md` 与 `iterate.config.yaml` 是否存在 |
-| 配置可解析且合法 | config 能被解析为 YAML，且**完整**匹配 `config/config.schema.json` |
-| 维度合法 | `dimensions` 只引用 9 个规范维度之一 |
-| 审查范围合法 | `review.scope` 只允许 `full` / `changed-only` |
-| 合并目标分支 | `git.target_branch` 为非空字符串 |
-| 验证命令 | `validation.commands` 是非空字符串列表 |
-| 命令白名单 | `command_whitelist` 条目安全，且每条命令都在白名单内 |
-| 个性化维度引用 | `personalization` 的维度引用指向已启用的维度 |
-| 版本一致 | onboarding 时的 `skill_version` 与当前安装的 skill 版本一致 |
-| 漂移检测 | 自 onboarding 以来技术栈 manifest 是否变化 |
+- **Onboarding 完整性** — `ITERATE.md` 与 `iterate.config.yaml` 是否存在
+- **配置可解析且合法** — config 能被解析为 YAML，且**完整**匹配 `config/config.schema.json`
+- **维度合法** — `dimensions` 只引用 9 个规范维度之一
+- **审查范围合法** — `review.scope` 只允许 `full` / `changed-only`
+- **合并目标分支** — `git.target_branch` 为非空字符串
+- **验证命令** — `validation.commands` 是非空字符串列表
+- **命令白名单** — `command_whitelist` 条目安全，且每条命令都在白名单内
+- **个性化维度引用** — `personalization` 的维度引用指向已启用的维度
+- **版本一致** — onboarding 时的 `skill_version` 与当前安装的 skill 版本一致
+- **漂移检测** — 自 onboarding 以来技术栈 manifest 是否变化
 
 ```bash
 iterate doctor            # TUI 输出；健康退出码 0，发现问题退出码 1
@@ -420,12 +415,10 @@ iterate config set goal "..."  # 成功时输出确认对象 {"key": ..., "value
 
 ### iterate guard（防御式模式动手前/后校验，v3.0）
 
-宿主 AI 在防御式模式下围绕每个编码步骤执行的确定性、响亮失败校验。契约（退出码 0 = 可以开工 / 本次改动安全；1 = 必须先修复或回滚）：
+宿主 AI 在防御式模式下围绕每个编码步骤执行的确定性、响亮失败校验。契约：退出码 0 = 可以开工 / 本次改动安全；1 = 必须先修复或回滚。
 
-| 命令 | 时机 | 校验内容 |
-|---|---|---|
-| `iterate guard pre-check [paths...]` | 动手前 | 目标存在、git worktree 干净、manifest 就绪、验证配置安全（`PASS`/`FAIL`） |
-| `iterate guard post-check [module...]` | 每次改动后 | 精确执行配置的 `validation.commands.<module>`（运行时唯一权威白名单——不拼装、不加前缀） |
+- `iterate guard pre-check [paths...]` — **动手前**执行：目标存在、git worktree 干净、manifest 就绪、验证配置安全（`PASS`/`FAIL`）。
+- `iterate guard post-check [module...]` — **每次改动后**执行：精确执行配置的 `validation.commands.<module>`（运行时唯一权威白名单——不拼装、不加前缀）。
 
 两者都支持 `--json` 与 `--dry-run`（仅预览将要执行的精确命令，不真正执行）。
 
@@ -439,12 +432,10 @@ iterate config set goal "..."  # 成功时输出确认对象 {"key": ..., "value
 
 ### Onboarding（项目知识库初始化）
 
-每次调用 `/iterate` 时，skill 会检查项目根目录是否存在 `ITERATE.md`。若不存在，触发 onboarding。
+每次调用 `/iterate` 时，skill 会检查项目根目录是否存在 `ITERATE.md`。若不存在，触发 onboarding，可通过任一条通道：
 
-| 通道 | 适用场景 | 产出 |
-|---|---|---|
-| **AI Onboarding** | 希望 AI 根据项目目录结构/清单文件自动识别技术栈并生成 | `ITERATE.md` + `iterate.config.yaml` |
-| **CLI Onboarding** | 希望 CLI 扫描后手动确认/调整技术栈与配置 | 同上 |
+- **AI Onboarding** — AI 根据项目目录结构/清单文件自动识别技术栈并生成 `ITERATE.md` + `iterate.config.yaml`。
+- **CLI Onboarding** — CLI 扫描后由你手动确认/调整技术栈与配置，产出相同产物。
 
 扫描仅读取文件/目录**存在性**和 README.md 等少量公开上下文文件，不会读取 `.env`、密钥、凭证或其他敏感文件内容。项目专属约束可通过 `iterate personalize` 补充。
 
@@ -464,16 +455,14 @@ iterate config set goal "..."  # 成功时输出确认对象 {"key": ..., "value
 
 AI 扫描能发现技术栈和目录结构，但无法发现项目专属约束。`iterate personalize` 把这些知识沉淀下来：
 
-| 类别 | 说明 | 存储位置 |
-|---|---|---|
-| 禁区 | iterate 不得修改的文件/目录 | `iterate.config.yaml` |
-| 风险区 | 改动需架构审批 | `iterate.config.yaml` |
-| 已知意图 | 抑制误报 | `iterate.config.yaml` |
-| 维度定制 | 为特定维度追加 focus | `iterate.config.yaml` |
-| 优先修复顺序 | 维度修复优先级 | `iterate.config.yaml` |
-| 禁止的修复方式 | 不可使用的手法 | `iterate.config.yaml` |
-| 项目约定与注意点 | 经验教训、已知陷阱 | `ITERATE.md` 用户区 |
-| 补充验证命令 | 项目特有验证命令 | `iterate.config.yaml` |
+- **禁区** — iterate 不得修改的文件/目录 → `iterate.config.yaml`
+- **风险区** — 改动需架构审批 → `iterate.config.yaml`
+- **已知意图** — 抑制误报 → `iterate.config.yaml`
+- **维度定制** — 为特定维度追加 focus → `iterate.config.yaml`
+- **优先修复顺序** — 维度修复优先级 → `iterate.config.yaml`
+- **禁止的修复方式** — 不可使用的手法 → `iterate.config.yaml`
+- **项目约定与注意点** — 经验教训、已知陷阱 → `ITERATE.md` 用户区
+- **补充验证命令** — 项目特有验证命令 → `iterate.config.yaml`
 
 完整示例请参考 [`config/iterate.config.yaml`](./config/iterate.config.yaml)。
 
@@ -518,31 +507,29 @@ Summary
 
 默认配置位于 [`config/iterate.config.yaml`](./config/iterate.config.yaml)。项目级配置会递归覆盖 Master 配置的同名字段。
 
-常用配置项：
+常用配置项（每条格式：键 — 类型，默认值，含义）：
 
-| 配置项 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `goal` | string | `"Improve code quality"` | 迭代目标 |
-| `max_rounds` | int | `7` | 最大轮数（上限 50） |
-| `language` | string | `"en"` | 输出语言：`zh` / `en` |
-| `mode` | string | `"iterate"` | 默认执行模式：`iterate` / `defensive`（v3.0） |
-| `reasoning_effort` | string? | `null` | `low` / `medium` / `high`；`null` = 跟随 provider 默认 |
-| `dimensions` | list | 9 维度 | 启用的审查维度（整仓默认） |
-| `dimension_sets` | object | — | 命名范围蓝图（`frontend`/`api`/`security`/…），含 `dimensions` + 可选 `focus` |
-| `invariants` | object | — | `ensure` 文件存在断言 + `commands` 精确按模块命令列表（防御式模式交付门禁） |
-| `review.scope` | string | `"full"` | `full` 全量 / `changed-only` 增量 |
-| `atomic.max_lines` | int | `20` | 原子问题最大行数 |
-| `atomic.max_adjacent_methods` | int | `3` | 原子问题最多的相邻方法数 |
-| `git.target_branch` | string | `main` | 合并目标分支 |
-| `git.use_worktree` | bool | `false` | 是否优先用 worktree 隔离 |
-| `git.push_per_round` | bool | `false` | 每轮通过后是否 push |
-| `git.auto_merge` | bool | `false` | 验证后是否自动 merge |
-| `validation.command_whitelist` | list | 常用前缀 | 允许执行的命令前缀（配置期安全） |
-| `validation.commands` | object | 示例 | 按语言分组的验证命令（运行时唯一权威白名单） |
-| `reviewer.evidence_validation` | bool | `true` | 硬证据门禁：每个 finding 的 file/line 必须真实存在 |
-| `reviewer.coverage_validation` | bool | `true` | 作为遗漏文件时提示 `COVERAGE_GAP` |
-| `reviewer.scope_chunk_size` | int | `25` | `full` 范围审查每批分配的文件数 |
-| `onboarding.drift_check` | bool | `true` | 是否检查 manifest 漂移 |
+- `goal` — string，默认 `"Improve code quality"` — 迭代目标
+- `max_rounds` — int，默认 `7` — 最大轮数（上限 50）
+- `language` — string，默认 `"en"` — 输出语言：`zh` / `en`
+- `mode` — string，默认 `"iterate"` — 默认执行模式：`iterate` / `defensive`（v3.0）
+- `reasoning_effort` — string?，默认 `null` — `low` / `medium` / `high`；`null` = 跟随 provider 默认
+- `dimensions` — list，默认全部 9 维度 — 启用的审查维度（整仓默认）
+- `dimension_sets` — object — 命名范围蓝图（`frontend`/`api`/`security`/…），含 `dimensions` + 可选 `focus`
+- `invariants` — object — `ensure` 文件存在断言 + `commands` 精确按模块命令列表（防御式模式交付门禁）
+- `review.scope` — string，默认 `"full"` — `full` 全量 / `changed-only` 增量
+- `atomic.max_lines` — int，默认 `20` — 原子问题最大行数
+- `atomic.max_adjacent_methods` — int，默认 `3` — 原子问题最多的相邻方法数
+- `git.target_branch` — string，默认 `main` — 合并目标分支
+- `git.use_worktree` — bool，默认 `false` — 是否优先用 worktree 隔离
+- `git.push_per_round` — bool，默认 `false` — 每轮通过后是否 push
+- `git.auto_merge` — bool，默认 `false` — 验证后是否自动 merge
+- `validation.command_whitelist` — list，默认常用前缀 — 允许执行的命令前缀（配置期安全）
+- `validation.commands` — object，默认示例 — 按语言分组的验证命令（运行时唯一权威白名单）
+- `reviewer.evidence_validation` — bool，默认 `true` — 硬证据门禁：每个 finding 的 file/line 必须真实存在
+- `reviewer.coverage_validation` — bool，默认 `true` — 遗漏分配文件时提示 `COVERAGE_GAP`
+- `reviewer.scope_chunk_size` — int，默认 `25` — `full` 范围审查每批分配的文件数
+- `onboarding.drift_check` — bool，默认 `true` — 是否检查 manifest 漂移
 
 示例：
 
