@@ -3559,7 +3559,9 @@ class TestReturningUserPreservesData:
         result = _load_existing_onboarding_data(fake_project)
         assert result is None
         captured = capsys.readouterr()
-        assert "Failed to load" in captured.err or "not found" in captured.err
+        # Error message should be logged to stderr (Chinese or English variants).
+        assert captured.err, "Expected an error message on stderr for corrupt config"
+        assert "iterate.config.yaml" in captured.err or "not found" in captured.err
 
     def test_returning_user_preserves_project_description(self, fake_project: Path) -> None:
         """Returning user who declines basic update keeps project_description (B-1)."""

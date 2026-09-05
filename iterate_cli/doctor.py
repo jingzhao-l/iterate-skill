@@ -292,12 +292,39 @@ def _check_config_parse(
     report: DoctorReport, project_root: Path
 ) -> dict[str, Any] | None:
     """Load the config as a YAML mapping; return None to stop the run."""
-    config = load_onboarding_config(project_root)
-    if config is None:
+    from iterate_cli.personalize import CorruptConfigError, load_config_strict
+
+    config_path = project_root / CONFIG_YAML
+    if not config_path.is_file():
         _err(
             report,
             "config.parse",
-            "iterate.config.yaml is missing, unreadable, or not a YAML mapping.",
+            "iterate.config.yaml is missing.",
+            "Run `iterate onboard` to initialize the project.",
+        )
+        return None
+    try:
+        config = load_config_strict(config_path)
+    except CorruptConfigError as exc:
+        _err(
+            report,
+            "config.parse",
+            "iterate.config.yaml is corrupt and cannot be parsed.",
+            str(exc),
+        )
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        _err(
+            report,
+            "config.parse",
+            f"iterate.config.yaml is unreadable: {exc}",
+        )
+        return None
+    if not config:
+        _err(
+            report,
+            "config.parse",
+            "iterate.config.yaml is empty or not a YAML mapping.",
         )
         return None
     _ok(report, "config.parse", "iterate.config.yaml parsed as a valid YAML mapping.")
@@ -975,7 +1002,11 @@ def _render_summary(tui: Any, report: DoctorReport) -> None:
     error_count = sum(1 for f in report.findings if f.severity == "error")
     warn_count = sum(1 for f in report.findings if f.severity == "warn")
     if error_count:
-        tui.error(f"Doctor: {error_count} error(s) found.")
+        passed_count = sum(1 for f in report.findings if f.severity == "ok")
+        tui.error(
+            f"Doctor: {error_count} error(s) found "
+            f"({passed_count} check(s) passed)."
+        )
         return
     if warn_count:
         tui.warning(

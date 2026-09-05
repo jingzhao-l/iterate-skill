@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -273,3 +274,59 @@ class TestStatusAdvice:
         assert "Fingerprints" in captured.out
         assert "Drift check" in captured.out
         assert "No drift" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# fingerprint verify CLI subcommand
+# ---------------------------------------------------------------------------
+
+class TestFingerprintVerifyCli:
+    def test_verify_no_drift_exits_zero(self, py_project: Path, capsys) -> None:
+        write_onboarding_outputs(_build_onboarding_data(py_project), py_project)
+        assert cli_main(["fingerprint", "verify", "-p", str(py_project)]) == 0
+        captured = capsys.readouterr()
+        assert "No drift detected" in captured.out
+
+    def test_verify_drift_exits_one(self, py_project: Path, capsys) -> None:
+        write_onboarding_outputs(_build_onboarding_data(py_project), py_project)
+        (py_project / "pyproject.toml").write_text(
+            '[project]\nname = "pyproj"\nversion = "0.2.0"\n',
+            encoding="utf-8",
+        )
+        assert cli_main(["fingerprint", "verify", "-p", str(py_project)]) == 1
+        captured = capsys.readouterr()
+        assert "Drift detected" in captured.out
+        assert "pyproject.toml" in captured.out
+
+    def test_verify_removed_manifest_exits_one(self, js_project: Path, capsys) -> None:
+        write_onboarding_outputs(_build_onboarding_data(js_project), js_project)
+        (js_project / "tsconfig.json").unlink()
+        assert cli_main(["fingerprint", "verify", "-p", str(js_project)]) == 1
+        captured = capsys.readouterr()
+        assert "removed" in captured.out
+        assert "tsconfig.json" in captured.out
+
+    def test_verify_not_onboarded_exits_zero(self, tmp_path: Path, capsys) -> None:
+        assert cli_main(["fingerprint", "verify", "-p", str(tmp_path)]) == 0
+        captured = capsys.readouterr()
+        assert "unavailable" in captured.out.lower()
+
+    def test_verify_json_no_drift(self, py_project: Path, capsys) -> None:
+        write_onboarding_outputs(_build_onboarding_data(py_project), py_project)
+        assert cli_main(["fingerprint", "verify", "--json", "-p", str(py_project)]) == 0
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        assert payload["drift"] is False
+        assert payload["available"] is True
+
+    def test_verify_json_drift(self, py_project: Path, capsys) -> None:
+        write_onboarding_outputs(_build_onboarding_data(py_project), py_project)
+        (py_project / "pyproject.toml").write_text(
+            '[project]\nname = "pyproj"\nversion = "0.3.0"\n',
+            encoding="utf-8",
+        )
+        assert cli_main(["fingerprint", "verify", "--json", "-p", str(py_project)]) == 1
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        assert payload["drift"] is True
+        assert payload["changed"] == ["pyproject.toml"]

@@ -406,15 +406,25 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             tui.error("iterate.config.yaml not found, cannot load existing config.")
             return None
 
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        # Reject non-dict YAML (e.g. ``- item`` or ``just a string``) so
-        # that ``config.get(...)`` below does not raise AttributeError.
-        if not isinstance(config, dict):
-            tui.error(
-                f"{config_path} is not a YAML mapping (got {type(config).__name__})."
-            )
+        from iterate_cli.personalize import CorruptConfigError, load_config_strict
+
+        try:
+            config = load_config_strict(config_path)
+        except CorruptConfigError as exc:
+            tui.error(str(exc))
             return None
-        scan = scan_project(project_root)
+
+        # load_config_strict returns {} for non-mapping YAML (e.g. a bare list).
+        # Treat that as unreadable so the wizard does not silently merge into it.
+        if not config and config_path.is_file():
+            raw = config_path.read_text(encoding="utf-8").strip()
+            if raw:
+                tui.error(
+                    f"{config_path} is not a YAML mapping (got {type(config).__name__})."
+                )
+                return None
+        with tui.status("正在扫描项目 / Scanning project..."):
+            scan = scan_project(project_root)
 
         onboarding_section = config.get("onboarding")
         onboarding_section = onboarding_section if isinstance(onboarding_section, dict) else {}

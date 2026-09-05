@@ -183,6 +183,13 @@ def _dispatch_command(
             json_output=getattr(args, "json", False),
             dry_run=getattr(args, "dry_run", False),
         )
+    if args.command == "fingerprint":
+        if show_banner:
+            tui.banner()
+        return _cmd_fingerprint(
+            project_root,
+            json_output=getattr(args, "json", False),
+        )
     parser.print_help()
     return 0
 
@@ -429,6 +436,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Preview the exact commands that would run without executing anything.",
     )
 
+    fingerprint_parser = subparsers.add_parser(
+        "fingerprint",
+        parents=[parent],
+        help="Verify manifest fingerprints against the project state.",
+        description="Compare the SHA-256 manifest fingerprints recorded at "
+        "onboarding/refresh time against the current project root. Detects "
+        "added, removed, and changed tech-stack manifests. Exits non-zero "
+        "when drift is detected.",
+    )
+    fingerprint_parser.add_argument(
+        "fingerprint_action",
+        nargs="?",
+        choices=["verify"],
+        default="verify",
+        help="Action to perform (default: 'verify').",
+    )
+    fingerprint_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON object instead of TUI output.",
+    )
+
     return parser
 
 
@@ -566,6 +596,9 @@ def _cmd_personalize(project_root: Path, clear: bool = False, yes: bool = False)
         config_path, iterate_md_path = save_personalization(project_root, personalization)
     except CorruptConfigError as exc:
         tui.error(str(exc))
+        return 1
+    except (OSError, UnicodeDecodeError) as exc:
+        tui.error(f"Failed to write personalization: {exc}")
         return 1
 
     tui.empty_line()
@@ -1043,4 +1076,97 @@ def _cmd_invariant(
 
     result = run_invariant_check(project_root, dry_run=dry_run)
     return render_guard_result(result, json_output=json_output)
+
+
+def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
+    """Handle the 'fingerprint' subcommand — verify manifest drift.
+
+    Compares the fingerprints stored in iterate.config.yaml against the
+    current project root via ``check_onboarding_drift``. Drift is
+    non-blocking (an iteration can always continue), so this command is an
+    informational health check: it exits 0 when no drift is detected and 1
+    when added/removed/changed manifests are found.
+
+    Args:
+        project_root: Project root directory.
+        json_output: When True, emit a structured JSON object instead of TUI.
+
+    Returns:
+        Exit code: 0 when no drift (or drift checking is unavailable), 1 when
+        drift is detected.
+    """
+    from iterate_cli.refresh import check_onboarding_drift
+
+    drift = check_onboarding_drift(project_root)
+
+    if json_output:
+        import json
+
+        if drift is None:
+            print(
+                json.dumps(
+                    {
+                        "project": str(project_root),
+                        "available": False,
+                        "reason": "Onboarding incomplete or drift check disabled.",
+                        "drift": False,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        print(
+            json.dumps(
+                {
+                    "project": str(project_root),
+                    "available": True,
+                    "drift": drift.has_drift,
+                    "summary": drift.summary(),
+                    "added": drift.added,
+                    "removed": drift.removed,
+                    "changed": drift.changed,
+                    "unchanged": drift.unchanged,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 1 if drift.has_drift else 0
+
+    tui.intro(f"Iterate Skill — Fingerprint Verify / {project_root.name}")
+
+    if drift is None:
+        tui.info("Fingerprint verification unavailable.", indent=2)
+        tui.hint(
+            "Run 'iterate onboard' first, or enable drift_check in "
+            "iterate.config.yaml.",
+            indent=4,
+        )
+        return 0
+
+    if drift.has_drift:
+        tui.warning("Drift detected:", indent=2)
+        if drift.added:
+            tui.bullet(f"added: {', '.join(sorted(drift.added))}", indent=4)
+        if drift.removed:
+            tui.bullet(f"removed: {', '.join(sorted(drift.removed))}", indent=4)
+        if drift.changed:
+            tui.bullet(f"changed: {', '.join(sorted(drift.changed))}", indent=4)
+        tui.empty_line()
+        tui.hint(
+            "Drift is non-blocking. Run 'iterate refresh' to resync the "
+            "knowledge base when the tech stack changed.",
+            indent=2,
+        )
+        return 1
+
+    tui.success("No drift detected.", indent=2)
+    if drift.unchanged:
+        tui.hint(
+            f"{len(drift.unchanged)} manifest(s) verified: "
+            f"{', '.join(sorted(drift.unchanged))}.",
+            indent=4,
+        )
+    return 0
 

@@ -193,6 +193,18 @@ def _has_api_layer(scan: ScanResult) -> bool:
     return any(d in API_LAYER_INDICATORS for d in scan.top_level_dirs)
 
 
+def _detect_test_dir(scan: ScanResult) -> str:
+    """Return the test directory name detected by the scanner.
+
+    Falls back to ``tests`` (the most common Python convention) when none of
+    the candidates is in the top-level directory listing.
+    """
+    for candidate in TEST_DIR_CANDIDATES:
+        if candidate in scan.top_level_dirs:
+            return candidate
+    return "tests"
+
+
 def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
     """Suggest validation commands based on detected languages.
 
@@ -213,12 +225,13 @@ def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
     # it once so a project with both pom.xml and build.gradle(.kts) does not
     # execute the branch twice and overwrite the build-tool choice.
     java_handled = False
+    test_dir = _detect_test_dir(scan)
     for lang in scan.detected_languages:
         if lang == "Python":
             commands["python"] = [
                 "ruff check src/",
                 "mypy src/ --ignore-missing-imports",
-                "pytest tests/ -x -q --timeout=60",
+                f"pytest {test_dir} -x -q --timeout=60",
             ]
         elif lang in ("JavaScript/TypeScript", "TypeScript"):
             commands["typescript"] = [

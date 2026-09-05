@@ -715,6 +715,14 @@ class TestRenderSummary:
         assert "error" in tui.finished_line()
         assert "warning" not in tui.finished_line()
 
+    def test_errors_report_passed_check_count(self) -> None:
+        tui = _CapturingTui()
+        _render_summary(tui, _report_with("ok", "error", "ok"))
+        line = tui.finished_line()
+        assert "1 error" in line
+        assert "2 check(s) passed" in line
+        assert "warning" not in line
+
 
 # ---------------------------------------------------------------------------
 # Regression: malformed dimensions / shell-metachar safety net (P1 fixes)

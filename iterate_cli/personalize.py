@@ -110,11 +110,11 @@ KNOWN_SAFE_COMMAND_PREFIXES: tuple[str, ...] = (
 # command accepted at personalization time is never later rejected as a
 # whitelist violation, and vice-versa. Sync is enforced by
 # tests/test_validate.py (test_metachar_sets_in_sync).
-FORBIDDEN_COMMAND_CHARS: tuple[str, ...] = (
+FORBIDDEN_COMMAND_CHARS: frozenset[str] = frozenset((
     ";", "|", "&", "`", "$", ">", "<", "\n", "\r",
     "\\", "#", "*", "?", "~", '"', "'",
     "(", ")", "[", "]", "{", "}",
-)
+))
 
 # Environment variable that lets the *operator* (system level) extend the
 # known-safe command-prefix allowlist without editing source. This is
