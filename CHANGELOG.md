@@ -5,6 +5,33 @@
 
 ---
 
+## [3.1.0] — 2026-09-05
+
+### 新增 / Features
+
+- **CLI `iterate fingerprint verify`**：新增指纹校验子命令，比对 `iterate.config.yaml` 记录的 manifest SHA-256 指纹与当前项目根的实际状态，检测技术栈 manifest 的新增/删除/变更（与 `iterate status` 漂移检测共享 `check_onboarding_drift` 逻辑）；退出码 0 = 无漂移，1 = 存在漂移（漂移非阻塞，附 `iterate refresh` 建议）；支持 `--json` 结构化输出（新增/删除/变更/未变清单）。
+- **`iterate doctor` 错误摘要带通过计数**：存在错误时汇总行由 `Doctor: N error(s) found.` 升级为 `Doctor: N error(s) found (M check(s) passed).`，一次看清有多少检查通过（仅 warnings 与 clean 路径行为不变）。
+
+### 修复 / Fixes
+
+- **`_cmd_personalize` 写入错误兜底**：`save_personalization` 除 `CorruptConfigError` 外还可能抛 `OSError`/`UnicodeDecodeError`（磁盘满、权限不足、非 UTF-8 路径等），此前会冒泡成原始 traceback；现统一捕获并显示友好错误、退出码 1。
+- **wizard 读取既有配置改用 `load_config_strict`**：`_load_existing_onboarding_data` 原先用裸 `yaml.safe_load`，损坏的 YAML 会被静默当作"空配置"继续合并。现改用 `load_config_strict` 明确报错；非 mapping（如裸列表）的配置返回 None 而非静默吞掉。
+- **`doctor` 配置解析区分"缺失/损坏/不可读"**：`_check_config_parse` 改用 `load_config_strict`，损坏的 `iterate.config.yaml` 不再笼统报"缺失或不可解析"，而是给出具体 YAML 语法错误定位。
+- **`suggest_validation_commands` 不再硬编码 `tests/` 目录**：Python 项目建议的 `pytest` 命令按实际扫描到的测试目录（`tests`/`test`/`__tests__`/`spec`）生成，项目用 `test/` 时不再给出一条必然失败的默认命令。
+- **`FORBIDDEN_COMMAND_CHARS` 改为 `frozenset`**：与 `doctor.py`/`guard.py` 的 `COMMAND_METACHARS` 保持一致，获得 O(1) 成员判定（成员检查在命令校验热路径上）。
+
+### 测试 / Tests
+
+- 新增 7 例：`tests/test_drift_ignore.py::TestFingerprintVerifyCli`（6 例：无漂移退出码/输出、变更退出码 1、删除 manifest、未 onboarding 优雅降级、`--json` 无漂移/有漂移负载字段）；`tests/test_doctor.py::TestRenderSummary::test_errors_report_passed_check_count`（错误路径汇总行含通过计数）。
+- 更新 2 例以匹配新错误形态：`test_load_existing_onboarding_data_logs_error`、`test_returns_none_on_yaml_list`（wizard 改用 `load_config_strict` 后的错误文案/空配置判定）。
+- 全量 Python 测试 935 个全部通过（既有 928 + 新增 7），`ruff check .` 与 `mypy iterate_cli` 均通过。
+
+### 内部 / Internal
+
+- wizard 返回用户流程（`_load_existing_onboarding_data`）的 `scan_project` 调用纳入 `tui.status(...)` 进度上下文，与首次基础配置流程的扫描反馈保持一致。
+
+---
+
 ## [3.0.1] — 2026-09-03
 
 ### 修复 / Fixes
