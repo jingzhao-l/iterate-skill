@@ -1,0 +1,1005 @@
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+import {
+  SEVERITY_ORDER,
+  SEVERITY_LABEL,
+  SEVERITY_COLOR,
+  isReviewReport,
+  findReportInObject,
+  scanSessionForReport,
+  isRunSummary,
+  findRunSummaryInObject,
+  scanSessionForRunSummary,
+  extractVerdict,
+  normalizeReport,
+  computeConvergenceProgress,
+  getCurrentRound,
+  getTotalRounds,
+  severityStats,
+  groupByDimension,
+  buildTriageState,
+  hashReport,
+  toKnownIntentionalYaml,
+  buildApplyInstruction,
+  collectIgnoredEntries,
+  normalizeFindingFilter,
+  findingMatches,
+  filterFindings,
+  filterFindingsWithIndices,
+  buildFilterOptions,
+  countVerdicts,
+  batchSetVerdict,
+  setAllVerdicts,
+  buildRoundHistory,
+  buildFindingTrend,
+  computeTrendMetrics,
+  trendMax,
+  buildCompletionSummary,
+  buildConfigEditGuide,
+  buildConfigEditInstruction,
+  keyToVerdict,
+  allVerdictKeys,
+  RUNTIME_ARTIFACTS,
+  buildRuntimeStatusGuide,
+  scanSessionForResume,
+  countSessionImages,
+  scanSessionForTranscript,
+  normalizeTranscript,
+  filterLiveEntries,
+  filterTimelineEntries,
+  serializeObservatoryExport,
+  latestPhase,
+} from '../lib/parse.js'
+
+// ─── Fixtures ────────────────────────────────────────────────────────────────
+
+function makeFinding(overrides: Record<string, unknown> = {}) {
+  return {
+    dimension: 'correctness',
+    file: 'src/app.ts',
+    line: 12,
+    severity: 'high',
+    summary: 'Null deref on optional input',
+    failure_scenario: 'undefined input crashes',
+    suggested_fix: 'Guard the input',
+    is_atomic: true,
+    ...overrides,
+  }
+}
+
+function makeReport() {
+  const f1 = makeFinding()
+  const f2 = makeFinding({
+    dimension: 'security',
+    file: 'src/auth.ts',
+    severity: 'critical',
+    summary: 'Missing auth check',
+  })
+  return {
+    mode: 'dry-run',
+    goal: 'Improve code quality',
+    dimensions: ['correctness', 'security'],
+    maxReviewRounds: 3,
+    rounds: [
+      { round: 1, findings: [f1] },
+      { round: 2, findings: [f2] },
+    ],
+    findings: [f1, f2],
+    convergence: {
+      totalRounds: 3,
+      findingsByRound: [1, 1, 0],
+      converged: true,
+      stoppedReason: 'converged',
+    },
+    summary: {
+      totalFindings: 2,
+      critical: 1,
+      high: 1,
+      medium: 0,
+      low: 0,
+      byDimension: { correctness: 1, security: 1 },
+    },
+  }
+}
+
+// ─── isReviewReport ──────────────────────────────────────────────────────────
+
+describe('isReviewReport', () => {
+  it('accepts an object with convergence/findings/rounds', () => {
+    assert.equal(isReviewReport(makeReport()), true)
+  })
+
+  it('rejects null, non-objects, and partial shapes', () => {
+    assert.equal(isReviewReport(null), false)
+    assert.equal(isReviewReport('report'), false)
+    assert.equal(isReviewReport(42), false)
+    assert.equal(isReviewReport({}), false)
+    assert.equal(isReviewReport({ convergence: {}, findings: [] }), false)
+    assert.equal(isReviewReport({ convergence: {}, findings: [], rounds: [] }), true)
+  })
+})
+
+// ─── findReportInObject ──────────────────────────────────────────────────────
+
+describe('findReportInObject', () => {
+  it('finds a report nested inside tool-call results', () => {
+    const report = makeReport()
+    const session = { messages: [{ content: 'x' }], latest: { result: { report } } }
+    assert.equal(findReportInObject(session), report)
+  })
+
+  it('returns null for objects without a report', () => {
+    assert.equal(findReportInObject({ a: { b: [1, 2, 3] } }), null)
+    assert.equal(findReportInObject(null), null)
+    assert.equal(findReportInObject('nope'), null)
+  })
+
+  it('handles circular references without infinite recursion', () => {
+    const node: Record<string, unknown> = { name: 'root', child: null as unknown }
+    node.child = node
+    assert.equal(findReportInObject(node), null)
+  })
+
+  it('respects maxDepth', () => {
+    const report = makeReport()
+    const deep = { a: { b: { c: { d: { e: report } } } } }
+    assert.equal(findReportInObject(deep, undefined, 2), null)
+    assert.equal(findReportInObject(deep, undefined, 10), report)
+  })
+})
+
+// ─── scanSessionForReport ────────────────────────────────────────────────────
+
+describe('scanSessionForReport', () => {
+  it('finds a report in session.toolCalls from the most recent iterate_review call', () => {
+    const report = makeReport()
+    const session = {
+      toolCalls: [
+        { tool: 'other', result: { value: 1 } },
+        { tool: 'iterate_review', result: { report } },
+      ],
+    }
+    assert.equal(scanSessionForReport(session), report)
+  })
+
+  it('returns null when no iterate_review result exists', () => {
+    assert.equal(scanSessionForReport({ toolCalls: [{ tool: 'other', result: {} }] }), null)
+    assert.equal(scanSessionForReport(null), null)
+  })
+})
+
+// ─── normalizeReport ─────────────────────────────────────────────────────────
+
+describe('normalizeReport', () => {
+  it('fills missing convergence/summary fields from the rounds and findings', () => {
+    const minimal = {
+      convergence: {},
+      rounds: [{ round: 1, findings: [makeFinding()] }],
+      findings: [makeFinding()],
+    }
+    const norm = normalizeReport(minimal)
+    const conv = norm.convergence as { totalRounds: number; findingsByRound: number[] }
+    const sum = norm.summary as { totalFindings: number; high: number }
+    assert.equal(conv.totalRounds, 1)
+    assert.deepEqual(conv.findingsByRound, [1])
+    assert.equal(sum.totalFindings, 1)
+    assert.equal(sum.high, 1)
+    assert.equal(norm.mode, 'dry-run')
+  })
+
+  it('preserves explicitly provided convergence and summary', () => {
+    const report = makeReport()
+    const norm = normalizeReport(report)
+    const conv = norm.convergence as { totalRounds: number; converged: boolean }
+    const sum = norm.summary as { critical: number; byDimension: Record<string, number> }
+    assert.equal(conv.totalRounds, 3)
+    assert.equal(conv.converged, true)
+    assert.equal(sum.critical, 1)
+    assert.equal(sum.byDimension.security, 1)
+  })
+
+  it('does not mutate the input', () => {
+    const report = makeReport()
+    const snapshot = JSON.stringify(report)
+    normalizeReport(report)
+    assert.equal(JSON.stringify(report), snapshot)
+  })
+
+  it('does not mutate a partially-populated summary object', () => {
+    const report = makeReport()
+    report.summary = { totalFindings: 2 } as {
+      totalFindings: number
+      critical: number
+      high: number
+      medium: number
+      low: number
+      byDimension: { correctness: number; security: number }
+    } // partial: severity counts missing
+    const snapshot = JSON.stringify(report)
+    const norm = normalizeReport(report)
+    // The input summary object must be left untouched…
+    assert.equal(JSON.stringify(report), snapshot)
+    // …while the normalized summary still carries the full computed fields.
+    const sum = norm.summary as { totalFindings: number; high: number; byDimension: Record<string, number> }
+    assert.equal(sum.totalFindings, 2)
+    assert.equal(sum.high, 1)
+    assert.equal(sum.byDimension.security, 1)
+  })
+})
+
+// ─── Convergence helpers ─────────────────────────────────────────────────────
+
+describe('convergence helpers', () => {
+  it('computes progress, current round, and total rounds', () => {
+    const report = makeReport()
+    assert.equal(getCurrentRound(report), 2)
+    assert.equal(getTotalRounds(report), 3)
+    assert.equal(computeConvergenceProgress(report), Math.round((2 / 3) * 100))
+  })
+
+  it('clamps progress to 100', () => {
+    const report = normalizeReport({
+      convergence: { totalRounds: 1 },
+      rounds: [{ round: 1, findings: [] }],
+      findings: [],
+    })
+    assert.equal(computeConvergenceProgress(report), 100)
+  })
+
+  it('returns 0 (not NaN) when total rounds is missing or 0', () => {
+    const empty = normalizeReport({ convergence: {}, rounds: [], findings: [] })
+    assert.equal(computeConvergenceProgress(empty), 0)
+    const zero = normalizeReport({ convergence: { totalRounds: 0 }, rounds: [], findings: [] })
+    assert.equal(computeConvergenceProgress(zero), 0)
+    assert.ok(Number.isFinite(computeConvergenceProgress(empty)))
+  })
+})
+
+// ─── severityStats / groupByDimension ────────────────────────────────────────
+
+describe('severityStats / groupByDimension', () => {
+  it('counts findings by severity', () => {
+    const stats = severityStats(makeReport())
+    assert.deepEqual(stats, { critical: 1, high: 1, medium: 0, low: 0 })
+  })
+
+  it('groups findings by dimension', () => {
+    const groups = groupByDimension(makeReport())
+    assert.equal(groups.correctness?.length, 1)
+    assert.equal(groups.security?.length, 1)
+  })
+})
+
+// ─── buildTriageState / hashReport ───────────────────────────────────────────
+
+describe('buildTriageState / hashReport', () => {
+  it('initializes every finding to keep', () => {
+    const report = makeReport()
+    assert.deepEqual(buildTriageState(report), { '0': 'keep', '1': 'keep' } as Record<string, 'keep' | 'skip' | 'ignore'>)
+  })
+
+  it('produces a deterministic hash', () => {
+    const report = makeReport()
+    assert.equal(hashReport(report), hashReport(makeReport()))
+    assert.ok(hashReport(report).startsWith('iterate-triage-'))
+  })
+})
+
+// ─── toKnownIntentionalYaml / buildApplyInstruction / collectIgnoredEntries ──
+
+describe('triage serialization helpers', () => {
+  it('renders entries as known_intentional YAML with optional line', () => {
+    const yamlText = toKnownIntentionalYaml([
+      { file: 'src/a.ts', line: 5, dimension: 'security', reason: 'test only' },
+      { file: 'src/b.ts', dimension: 'style', reason: 'legacy' },
+    ])
+    assert.match(yamlText, /known_intentional:/)
+    assert.match(yamlText, /file: "src\/a.ts"/)
+    assert.match(yamlText, /line: 5/)
+    assert.match(yamlText, /file: "src\/b.ts"/)
+    assert.ok(!yamlText.includes('line: undefined'))
+  })
+
+  it('returns empty string for no entries', () => {
+    assert.equal(toKnownIntentionalYaml([]), '')
+  })
+
+  it('builds an apply instruction that names iterate_triage', () => {
+    const text = buildApplyInstruction([
+      { file: 'src/a.ts', dimension: 'security', reason: 'r' },
+    ])
+    assert.match(text, /iterate_triage/)
+    assert.match(text, /"operation": "apply"/)
+    assert.match(text, /"file": "src\/a.ts"/)
+  })
+
+  it('collects ignored entries from triage state', () => {
+    const report = makeReport()
+    const state: Record<string, 'keep' | 'skip' | 'ignore'> = { '0': 'keep', '1': 'ignore' }
+    const entries = collectIgnoredEntries(state, report.findings)
+    assert.equal(entries.length, 1)
+    assert.equal(entries[0]!.file, 'src/auth.ts')
+    assert.equal(entries[0]!.dimension, 'security')
+    assert.equal(entries[0]!.line, 12)
+  })
+})
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+describe('constants', () => {
+  it('defines a consistent severity taxonomy', () => {
+    assert.deepEqual(SEVERITY_ORDER, ['critical', 'high', 'medium', 'low'])
+    for (const sev of SEVERITY_ORDER) {
+      const key = sev as keyof typeof SEVERITY_LABEL
+      assert.ok(typeof SEVERITY_LABEL[key] === 'string')
+      assert.match(SEVERITY_COLOR[key], /^#/)
+    }
+  })
+})
+
+// ─── Finding filtering ───────────────────────────────────────────────────────
+
+describe('finding filtering', () => {
+  it('normalizes filters (drops unknown severities, trims search)', () => {
+    assert.deepEqual(
+      normalizeFindingFilter({ severities: ['high', 'bogus'], dimensions: ['', 'security'], search: '  Guard  ' }),
+      { severities: ['high'], dimensions: ['security'], search: 'guard' },
+    )
+    assert.deepEqual(normalizeFindingFilter(null), { severities: [], dimensions: [], search: '' })
+    assert.deepEqual(normalizeFindingFilter(undefined), { severities: [], dimensions: [], search: '' })
+  })
+
+  it('findingMatches respects severity, dimension, and search filters', () => {
+    const f = makeFinding()
+    assert.equal(findingMatches(f, { severities: ['high'], dimensions: [], search: '' }), true)
+    assert.equal(findingMatches(f, { severities: ['critical'], dimensions: [], search: '' }), false)
+    assert.equal(findingMatches(f, { severities: [], dimensions: ['correctness'], search: '' }), true)
+    assert.equal(findingMatches(f, { severities: [], dimensions: ['security'], search: '' }), false)
+    assert.equal(findingMatches(f, { severities: [], dimensions: [], search: 'null deref' }), true)
+    assert.equal(findingMatches(f, { severities: [], dimensions: [], search: 'zzz' }), false)
+  })
+
+  it('filterFindings returns matches only', () => {
+    const report = makeReport()
+    const criticalOnly = filterFindings(report.findings, { severities: ['critical'], dimensions: [], search: '' })
+    assert.equal(criticalOnly.length, 1)
+    assert.equal(criticalOnly[0]!.dimension, 'security')
+  })
+
+  it('filterFindingsWithIndices keeps original indices for batch ops', () => {
+    const report = makeReport() // findings[0]=correctness/high, findings[1]=security/critical
+    const { filtered, indices } = filterFindingsWithIndices(report.findings, {
+      severities: [],
+      dimensions: ['security'],
+      search: '',
+    })
+    assert.equal(filtered.length, 1)
+    assert.deepEqual(indices, [1])
+  })
+})
+
+// ─── Filter options / verdicts / batch ops ───────────────────────────────────
+
+describe('filter options & batch verdicts', () => {
+  it('buildFilterOptions counts severities and dimensions', () => {
+    const report = makeReport()
+    const opts = buildFilterOptions(report.findings)
+    assert.equal(opts.severities.find((s) => s.value === 'critical')!.count, 1)
+    assert.equal(opts.severities.find((s) => s.value === 'high')!.count, 1)
+    assert.equal(opts.dimensions.find((d) => d.value === 'security')!.count, 1)
+  })
+
+  it('countVerdicts tallies each verdict', () => {
+    assert.deepEqual(countVerdicts({ '0': 'keep', '1': 'ignore', '2': 'skip' }), { keep: 1, skip: 1, ignore: 1 })
+    assert.deepEqual(countVerdicts({}), { keep: 0, skip: 0, ignore: 0 })
+  })
+
+  it('batchSetVerdict returns a NEW state without mutating the input', () => {
+    const state: Record<string, 'keep' | 'skip' | 'ignore'> = { '0': 'keep', '1': 'keep', '2': 'keep' }
+    const snapshot = JSON.stringify(state)
+    const next = batchSetVerdict(state, [1, 2], 'ignore')
+    assert.equal(state[1], 'keep')
+    assert.equal(JSON.stringify(state), snapshot)
+    assert.deepEqual(next, { '0': 'keep', '1': 'ignore', '2': 'ignore' })
+  })
+
+  it('batchSetVerdict ignores invalid verdicts / indices', () => {
+    const state: Record<string, 'keep' | 'skip' | 'ignore'> = { '0': 'keep' }
+    assert.equal(batchSetVerdict(state, [0], 'bogus' as 'keep' | 'skip' | 'ignore'), state)
+    assert.equal(batchSetVerdict(state, [], 'ignore'), state)
+    assert.deepEqual(batchSetVerdict(state, [0, -1, 1.5], 'skip'), { '0': 'skip' })
+  })
+
+  it('setAllVerdicts can target the whole state or a whitelist', () => {
+    const state: Record<string, 'keep' | 'skip' | 'ignore'> = { '0': 'keep', '1': 'keep' }
+    assert.deepEqual(setAllVerdicts(state, 'skip'), { '0': 'skip', '1': 'skip' })
+    assert.deepEqual(setAllVerdicts(state, 'ignore', [0]), { '0': 'ignore', '1': 'keep' })
+  })
+})
+
+// ─── History & trend ─────────────────────────────────────────────────────────
+
+describe('history & trend', () => {
+  it('buildRoundHistory produces per-round counts with severity breakdown', () => {
+    const report = makeReport()
+    const history = buildRoundHistory(report)
+    assert.equal(history.length, 2)
+    assert.deepEqual(history[0], { round: 1, count: 1, critical: 0, high: 1, medium: 0, low: 0 })
+    assert.deepEqual(history[1], { round: 2, count: 1, critical: 1, high: 0, medium: 0, low: 0 })
+  })
+
+  it('buildFindingTrend prefers convergence.findingsByRound', () => {
+    const report = makeReport()
+    assert.deepEqual(buildFindingTrend(report), [
+      { round: 1, count: 1 },
+      { round: 2, count: 1 },
+      { round: 3, count: 0 },
+    ])
+  })
+
+  it('computeTrendMetrics derives reduction and convergence', () => {
+    const report = makeReport()
+    const metrics = computeTrendMetrics(report)
+    assert.equal(metrics.total, 2)
+    assert.equal(metrics.firstRound, 1)
+    assert.equal(metrics.lastRound, 0)
+    assert.equal(metrics.reductionPercent, 100)
+    assert.equal(metrics.converged, true)
+  })
+
+  it('computeTrendMetrics handles an empty trend without division by zero', () => {
+    const metrics = computeTrendMetrics(normalizeReport({ convergence: {}, rounds: [], findings: [] }))
+    assert.equal(metrics.firstRound, 0)
+    assert.equal(metrics.reductionPercent, 0)
+  })
+
+  it('trendMax returns a positive baseline even for an empty / all-zero series', () => {
+    assert.equal(trendMax([]), 1)
+    assert.equal(trendMax([{ round: 1, count: 0 }]), 1)
+    assert.equal(trendMax([{ round: 1, count: 3 }, { round: 2, count: 7 }]), 7)
+  })
+})
+
+// ─── Completion summary / config guide / shortcuts ───────────────────────────
+
+describe('completion & guidance helpers', () => {
+  it('buildCompletionSummary describes convergence or max rounds', () => {
+    const report = makeReport()
+    assert.match(buildCompletionSummary(report), /2\/3 轮/)
+    assert.match(buildCompletionSummary(report), /已收敛/)
+    const notConverged = normalizeReport({
+      convergence: { totalRounds: 3, converged: false },
+      rounds: [{ round: 1, findings: [makeFinding()] }],
+      findings: [makeFinding()],
+    })
+    assert.match(buildCompletionSummary(notConverged), /已达最大轮数 3/)
+  })
+
+  it('buildConfigEditGuide lists the editable fields', () => {
+    const guide = buildConfigEditGuide()
+    assert.match(guide, /iterate.config.yaml/)
+    assert.match(guide, /max_rounds/)
+    assert.match(guide, /atomic.max_lines/)
+    assert.match(guide, /iterate_config/)
+  })
+
+  it('buildConfigEditInstruction serializes the desired update', () => {
+    const text = buildConfigEditInstruction({ max_rounds: 5, dimensions: ['correctness'] })
+    assert.match(text, /iterate_config/)
+    assert.match(text, /"operation": "write"/)
+    assert.match(text, /"max_rounds": 5/)
+  })
+
+  it('keyToVerdict maps y/n/a shortcuts and returns null otherwise', () => {
+    assert.equal(keyToVerdict('y'), 'keep')
+    assert.equal(keyToVerdict('Y'), 'keep')
+    assert.equal(keyToVerdict('n'), 'skip')
+    assert.equal(keyToVerdict('a'), 'ignore')
+    assert.equal(keyToVerdict('ArrowDown'), null)
+    assert.equal(keyToVerdict('x'), null)
+  })
+})
+
+// ─── Select-all keys & runtime status guide ──────────────────────────────────
+
+describe('select-all keys & runtime status guide', () => {
+  it('allVerdictKeys returns all numeric indices sorted ascending', () => {
+    assert.deepEqual(allVerdictKeys({ 3: 'keep', 0: 'skip', 1: 'ignore' }), [0, 1, 3])
+  })
+
+  it('allVerdictKeys ignores non-numeric and negative keys', () => {
+    assert.deepEqual(allVerdictKeys({ '-1': 'keep', foo: 'skip', 2: 'ignore' }), [2])
+  })
+
+  it('allVerdictKeys handles null / undefined / non-object input', () => {
+    assert.deepEqual(allVerdictKeys(null), [])
+    assert.deepEqual(allVerdictKeys(undefined), [])
+    assert.deepEqual(allVerdictKeys({} as Record<string, 'keep' | 'skip' | 'ignore'>), [])
+  })
+
+  it('RUNTIME_ARTIFACTS covers the four expected artifacts', () => {
+    const keys = RUNTIME_ARTIFACTS.map((a) => a.key)
+    assert.deepEqual(keys, ['decision-log.jsonl', 'checkpoint.json', 'fixes/registry.json', 'fixes/*.bak'])
+    for (const a of RUNTIME_ARTIFACTS) {
+      assert.equal(typeof a.label, 'string')
+      assert.ok(a.label.length > 0)
+      assert.equal(typeof a.hint, 'string')
+      assert.ok(a.hint.length > 0)
+    }
+  })
+
+  it('buildRuntimeStatusGuide mentions artifacts and inspect/prune tools', () => {
+    const guide = buildRuntimeStatusGuide()
+    assert.match(guide, /\.iterate\//)
+    assert.match(guide, /decision-log\.jsonl/)
+    assert.match(guide, /checkpoint\.json/)
+    assert.match(guide, /iterate_status/)
+    assert.match(guide, /iterate_history/)
+    assert.match(guide, /iterate_prune/)
+    assert.match(guide, /dry-run/)
+  })
+})
+
+// ─── Run-summary / meta-review verdict ───────────────────────────────────────
+
+describe('run-summary / meta-review verdict detection', () => {
+  function makeRunSummary(overrides = {}) {
+    return {
+      mode: 'dry-run',
+      goal: 'Improve code quality',
+      rounds: 3,
+      converged: true,
+      totalFindings: 2,
+      report: makeReport(),
+      metaReview: { verdict: 'approved', issues: [], checksRun: 6 },
+      finalReport: {
+        verdict: 'approved',
+        source: {},
+        metaReview: { verdict: 'approved', checksRun: 6, issues: [] },
+        summary: { totalFindings: 2, converged: true, totalRounds: 3, reportIssues: 0, verdict: 'approved' },
+      },
+      ...overrides,
+    }
+  }
+
+  it('isRunSummary recognizes the closing dry-run object', () => {
+    assert.equal(isRunSummary(makeRunSummary()), true)
+    assert.equal(isRunSummary(null), false)
+    assert.equal(isRunSummary(makeReport()), false) // ReviewReport ≠ run-summary
+    const needsRevision = makeRunSummary({ finalReport: { verdict: 'needs_revision' } })
+    assert.equal(isRunSummary(needsRevision), true)
+    const bogus = makeRunSummary({ finalReport: { verdict: 'pending' } })
+    assert.equal(isRunSummary(bogus), false)
+  })
+
+  it('findRunSummaryInObject finds a run-summary nested in the session tree', () => {
+    const run = makeRunSummary()
+    const session = { latest: { result: { run } } }
+    assert.equal(findRunSummaryInObject(session), run)
+    assert.equal(findRunSummaryInObject({ a: { b: [1, 2, 3] } }), null)
+    assert.equal(findRunSummaryInObject(null), null)
+  })
+
+  it('scanSessionForRunSummary finds the run-summary from a workflow result', () => {
+    const run = makeRunSummary()
+    const session = { toolCalls: [{ tool: 'workflow', result: run }] }
+    assert.equal(scanSessionForRunSummary(session), run)
+    assert.equal(scanSessionForRunSummary({ toolCalls: [{ tool: 'iterate_review', result: { report: makeReport() } }] }), null)
+    assert.equal(scanSessionForRunSummary(null), null)
+  })
+
+  it('extractVerdict yields an approved verdict summary', () => {
+    const v = extractVerdict(makeRunSummary())
+    assert.equal(v?.verdict, 'approved')
+    assert.equal(v?.totalRounds, 3)
+    assert.equal(v?.totalFindings, 2)
+    assert.equal(v?.checksRun, 6)
+    assert.equal(v?.reportIssues, 0)
+    assert.equal(v?.converged, true)
+  })
+
+  it('extractVerdict reports needs_revision with issue counts', () => {
+    const v = extractVerdict(makeRunSummary({
+      converged: false,
+      finalReport: {
+        verdict: 'needs_revision',
+        metaReview: { verdict: 'revise', checksRun: 6, issues: [{ code: 'SEVERITY_SUM' }] },
+      },
+    }))
+    assert.equal(v?.verdict, 'needs_revision')
+    assert.equal(v?.reportIssues, 1)
+    assert.equal(v?.converged, false)
+  })
+
+  it('extractVerdict returns null for non-run-summary input', () => {
+    assert.equal(extractVerdict(null), null)
+    assert.equal(extractVerdict(makeReport()), null)
+  })
+})
+
+// ─── fixedCount threading through normalization ─────────────────────────────
+
+describe('normalizeReport preserves normal-mode fixedCount', () => {
+  it('carries fixedCount through when the summary provides it', () => {
+    const report = makeReport()
+    report.mode = 'normal'
+    report.summary = {
+      ...(report.summary as Record<string, unknown>),
+      fixedCount: 7,
+    } as typeof report.summary & { fixedCount: number }
+    const norm = normalizeReport(report)
+    const sum = norm.summary as { fixedCount?: number }
+    assert.equal(sum.fixedCount, 7)
+  })
+
+  it('leaves fixedCount absent when the summary does not provide it', () => {
+    const norm = normalizeReport(makeReport())
+    const sum = norm.summary as { fixedCount?: number }
+    assert.equal(sum.fixedCount, undefined)
+  })
+})
+
+// ─── scanSessionForResume ────────────────────────────────────────────────────
+
+describe('scanSessionForResume', () => {
+  it('returns 0 for non-object / empty input', () => {
+    assert.equal(scanSessionForResume(null), 0)
+    assert.equal(scanSessionForResume(undefined), 0)
+    assert.equal(scanSessionForResume('x'), 0)
+    assert.equal(scanSessionForResume({}), 0)
+  })
+
+  it('finds a direct resume marker with its resumeCount', () => {
+    const session = { type: 'resume', data: { resumedFromRound: 2, resumeCount: 3 } }
+    assert.equal(scanSessionForResume(session), 3)
+  })
+
+  it('finds a nested decision-log resume entry', () => {
+    const session = {
+      entries: [
+        { type: 'review_result', round: 2 },
+        { entry: { type: 'resume', data: { resumedFromRound: 1, resumeCount: 2 } } },
+      ],
+    }
+    assert.equal(scanSessionForResume(session), 2)
+  })
+
+  it('returns the highest resumeCount observed across the tree', () => {
+    const session = {
+      a: { entry: { type: 'resume', data: { resumeCount: 1 } } },
+      b: [{ type: 'resume', data: { resumeCount: 4 } }, { type: 'resume', data: { resumeCount: 2 } }],
+    }
+    assert.equal(scanSessionForResume(session), 4)
+  })
+
+  it('treats non-numeric resumeCount as 0', () => {
+    assert.equal(scanSessionForResume({ type: 'resume', data: { resumeCount: 'x' } }), 0)
+  })
+})
+
+// ─── countSessionImages ──────────────────────────────────────────────────────
+
+describe('countSessionImages', () => {
+  it('returns 0 for non-object / empty input', () => {
+    assert.equal(countSessionImages(null), 0)
+    assert.equal(countSessionImages('x'), 0)
+    assert.equal(countSessionImages({}), 0)
+  })
+
+  it('counts dsh image blocks with an attachment ref', () => {
+    const session = {
+      messages: [
+        { role: 'user', content: [{ type: 'image', attachment: { attachmentId: 'img-1', mediaType: 'image/png' } }] },
+      ],
+    }
+    assert.equal(countSessionImages(session), 1)
+  })
+
+  it('counts raw attachment references by mediaType', () => {
+    const session = { attachments: [{ mediaType: 'image/png', width: 800, height: 600 }] }
+    assert.equal(countSessionImages(session), 1)
+  })
+
+  it('dedupes the same attachmentId across multiple blocks', () => {
+    const session = {
+      messages: [
+        { content: [{ type: 'image', attachment: { attachmentId: 'img-1' } }] },
+        { content: [{ type: 'image', attachment: { attachmentId: 'img-1' } }] },
+      ],
+    }
+    assert.equal(countSessionImages(session), 1)
+  })
+
+  it('counts distinct attachmentIds separately', () => {
+    const session = {
+      content: [
+        { type: 'image', attachment: { attachmentId: 'a' } },
+        { type: 'image', attachment: { attachmentId: 'b' } },
+        { type: 'image', attachment: { attachmentId: 'a' } },
+      ],
+    }
+    assert.equal(countSessionImages(session), 2)
+  })
+
+  it('ignores non-image media types', () => {
+    const session = { attachments: [{ mediaType: 'application/pdf' }] }
+    assert.equal(countSessionImages(session), 0)
+  })
+})
+
+// ─── Transcript live-feed bridge (attachLive + normalizeTranscript) ────────
+
+const LIVE_SAMPLE = [
+  { ts: '2026-01-01T00:00:00.000Z', type: 'read', tool: 'read_file', target: 'src/a.ts' },
+  { ts: 1780123456789, type: 'fix', tool: 'iterate_fix', target: 'src/b.ts' },
+]
+
+/** A valid TranscriptManifest (isTranscriptManifest requires version+rounds+convergence-array). */
+function makeTranscriptManifest() {
+  return {
+    version: 1,
+    project: 'proj',
+    mode: 'normal',
+    goal: 'Improve code quality',
+    maxRounds: 3,
+    rounds: [{ round: 1, threads: [], findings: [], readFiles: [] }],
+    convergence: [1, 0],
+    findings: [],
+    fixes: [],
+    checkpoint: null,
+    timeline: [],
+    nudge: null,
+  }
+}
+
+describe('transcript live bridge', () => {
+  it('scanSessionForTranscript surfaces the sibling live array on the manifest', () => {
+    const transcript = makeTranscriptManifest()
+    const session = {
+      toolCalls: [
+        {
+          tool: 'iterate_transcript',
+          result: { operation: 'capture', found: true, live: LIVE_SAMPLE, transcript },
+        },
+      ],
+    }
+    const manifest = scanSessionForTranscript(session) as Record<string, unknown> | null
+    assert.ok(manifest)
+    assert.deepEqual(safeLiveOf(manifest), LIVE_SAMPLE.map((e) => ({ ...e })))
+  })
+
+  it('does not mutate the found manifest when attaching live (shallow copy)', () => {
+    const transcript = makeTranscriptManifest()
+    const session = {
+      toolCalls: [{ tool: 'iterate_transcript', result: { operation: 'capture', live: LIVE_SAMPLE, transcript } }],
+    }
+    const snapshot = JSON.stringify(transcript)
+    const manifest = scanSessionForTranscript(session) as Record<string, unknown> | null
+    assert.ok(manifest)
+    assert.notEqual(manifest, transcript) // not the same reference
+    assert.equal(JSON.stringify(transcript), snapshot) // input untouched
+  })
+
+  it('keeps the manifest unchanged when the source has no live array', () => {
+    const transcript = makeTranscriptManifest()
+    const session = { toolCalls: [{ tool: 'iterate_transcript', result: { operation: 'capture', transcript } }] }
+    const manifest = scanSessionForTranscript(session) as Record<string, unknown> | null
+    assert.ok(manifest)
+    assert.equal(safeLiveOf(manifest), undefined)
+  })
+
+  it('normalizeTranscript maps live entries into strings and tolerates missing live', () => {
+    const normWithLive = normalizeTranscript({
+      ...makeTranscriptManifest(),
+      live: LIVE_SAMPLE,
+    }) as unknown as { live: Array<{ ts?: string; type?: string; tool?: string; target?: string }> }
+    assert.ok(Array.isArray(normWithLive.live))
+    assert.equal(normWithLive.live.length, 2)
+    // Numeric epoch ms is stringified; ISO string is preserved as-is.
+    assert.equal(normWithLive.live[0]!.ts, '2026-01-01T00:00:00.000Z')
+    assert.equal(normWithLive.live[1]!.ts, String(1780123456789))
+    assert.equal(normWithLive.live[1]!.type, 'fix')
+    assert.equal(normWithLive.live[1]!.target, 'src/b.ts')
+
+    const normNoLive = normalizeTranscript(makeTranscriptManifest()) as unknown as { live: unknown[] }
+    assert.ok(Array.isArray(normNoLive.live))
+    assert.equal(normNoLive.live.length, 0)
+  })
+
+  it('drops malformed live entries that lack a ts string', () => {
+    const norm = normalizeTranscript({
+      ...makeTranscriptManifest(),
+      live: [
+        { type: 'read', tool: 'read_file', target: 'ok.ts' }, // no ts -> asStr -> ''
+        { ts: 'bad-ts', type: 'fix', tool: 'iterate_fix', target: 'x.ts' },
+      ],
+    }) as unknown as { live: Array<{ ts?: string }> }
+    assert.equal(norm.live.length, 2)
+    // Entries without a usable ts degrade to '' rather than throwing.
+    assert.equal(norm.live[0]!.ts, '')
+  })
+})
+
+function safeLiveOf(manifest: Record<string, unknown>): unknown[] | undefined {
+  const v = manifest.live
+  return Array.isArray(v) ? (v as unknown[]) : undefined
+}
+
+describe('hashReport (content digest)', () => {
+  const base = {
+    mode: 'dry-run',
+    findings: [
+      { dimension: 'correctness', file: 'a.ts', line: 1, summary: 'missing null check' },
+      { dimension: 'security', file: 'b.ts', line: 0, summary: 'unpinned dep' },
+    ],
+  }
+  it('is stable for identical reports', () => {
+    const h1 = hashReport(JSON.parse(JSON.stringify(base)))
+    const h2 = hashReport(JSON.parse(JSON.stringify(base)))
+    assert.equal(h1, h2)
+  })
+  it('differs when a finding summary changes', () => {
+    const other = JSON.parse(JSON.stringify(base))
+    other.findings[0].summary = 'missing bounds check'
+    assert.notEqual(hashReport(base), hashReport(other))
+  })
+  it('differs when only the first-20-chars collide (old weak signature)', () => {
+    const a = JSON.parse(JSON.stringify(base))
+    const b = JSON.parse(JSON.stringify(base))
+    a.findings[0].summary = 'missing null check at line X'
+    b.findings[0].summary = 'missing null check at line Y'
+    // old key used mode+count+first 20 chars — these two collide under the old scheme
+    assert.equal(String(a.findings[0].summary).slice(0, 20), String(b.findings[0].summary).slice(0, 20))
+    assert.notEqual(hashReport(a), hashReport(b))
+  })
+  it('differs when a finding line changes', () => {
+    const other = JSON.parse(JSON.stringify(base))
+    other.findings[0].line = 2
+    assert.notEqual(hashReport(base), hashReport(other))
+  })
+})
+
+// ─── Runtime-observatory UI pure helpers ─────────────────────────────────────
+
+describe('filterLiveEntries', () => {
+  const entries = [
+    { ts: 't1', type: 'read', tool: 'read_file', target: 'a.ts' },
+    { ts: 't2', type: 'fix', tool: 'iterate_fix', target: 'b.ts' },
+    { ts: 't3', type: 'rollback', tool: 'iterate_rollback', target: 'fix-1' },
+    { ts: 't4', type: 'read', tool: 'read_file', target: 'c.ts' },
+  ]
+  it('returns a copy of all entries when type is empty', () => {
+    const out = filterLiveEntries(entries, '')
+    assert.deepEqual(out, entries)
+    assert.notEqual(out, entries) // copy, not the same reference
+  })
+  it('filters by exact type', () => {
+    const out = filterLiveEntries(entries, 'read')
+    assert.deepEqual(out.map((e) => e.target), ['a.ts', 'c.ts'])
+  })
+  it('returns [] for an unknown type', () => {
+    assert.deepEqual(filterLiveEntries(entries, 'prune'), [])
+  })
+  it('treats non-string / missing type as "match everything"', () => {
+    assert.equal(filterLiveEntries(entries, undefined).length, 4)
+    assert.equal(filterLiveEntries(entries, 5 as unknown as string).length, 4)
+  })
+  it('is defensive for non-array input', () => {
+    assert.deepEqual(filterLiveEntries(null, 'read'), [])
+    assert.deepEqual(filterLiveEntries({}, 'read'), [])
+  })
+  it('preserves the original (newest first) order', () => {
+    const out = filterLiveEntries(entries, '')
+    assert.deepEqual(out.map((e) => e.ts), ['t1', 't2', 't3', 't4'])
+  })
+})
+
+describe('filterTimelineEntries', () => {
+  const entries = [
+    { timestamp: '2026-01-01T00:00:00.000Z', round: 2, type: 'atomic_fix', data: { file: 'b.ts' } },
+    { timestamp: '2026-01-01T00:00:01.000Z', round: 1, type: 'round_start', data: { round: 1 } },
+    { timestamp: '2026-01-01T00:00:02.000Z', round: 1, type: 'review_result', data: { count: 2 } },
+    { timestamp: '2026-01-01T00:00:03.000Z', round: 2, type: 'revert', data: { id: 'f1' } },
+  ]
+  it('returns all entries newest first when no filters are set', () => {
+    const out = filterTimelineEntries(entries, {})
+    assert.deepEqual(out.map((e) => e.timestamp), [
+      '2026-01-01T00:00:03.000Z',
+      '2026-01-01T00:00:02.000Z',
+      '2026-01-01T00:00:01.000Z',
+      '2026-01-01T00:00:00.000Z',
+    ])
+  })
+  it('filters by type', () => {
+    const out = filterTimelineEntries(entries, { type: 'revert' })
+    assert.equal(out.length, 1)
+    assert.equal(out[0]!.type, 'revert')
+  })
+  it('filters by round (string-compared)', () => {
+    const out = filterTimelineEntries(entries, { round: '1' })
+    assert.equal(out.length, 2)
+    for (const e of out) assert.equal(String(e.round), '1')
+  })
+  it('filters by case-insensitive search over type/round/data', () => {
+    const out = filterTimelineEntries(entries, { search: 'b.ts' })
+    assert.equal(out.length, 1)
+    assert.equal(out[0]!.type, 'atomic_fix')
+    const byType = filterTimelineEntries(entries, { search: 'REVIEW_RESULT' })
+    assert.equal(byType.length, 1)
+    assert.equal(byType[0]!.type, 'review_result')
+  })
+  it('combines type + round + search filters', () => {
+    const out = filterTimelineEntries(entries, { type: 'round_start', round: '1', search: 'round_start' })
+    assert.equal(out.length, 1)
+    assert.equal(out[0]!.type, 'round_start')
+  })
+  it('returns [] when no entry matches', () => {
+    assert.deepEqual(filterTimelineEntries(entries, { round: '9' }), [])
+  })
+  it('is defensive for non-array input and drops non-object entries', () => {
+    assert.deepEqual(filterTimelineEntries(null, {}), [])
+    assert.deepEqual(filterTimelineEntries([null, 42, 'x', ...entries], { type: 'revert' }), [
+      entries[3],
+    ])
+  })
+  it('still sorts newest first when timestamps are absent (localeCompare on "")', () => {
+    const out = filterTimelineEntries(
+      [{ type: 'a' }, { type: 'b', timestamp: '2026-01-01T00:00:00.000Z' }],
+      {},
+    )
+    assert.equal(out.length, 2)
+  })
+})
+
+describe('serializeObservatoryExport', () => {
+  it('produces valid JSON with exportedAt, manifest and live', () => {
+    const manifest = { version: 1, goal: 'g', rounds: [] }
+    const live = [{ type: 'read', target: 'a.ts' }]
+    const parsed = JSON.parse(serializeObservatoryExport(manifest, live)) as {
+      exportedAt: string
+      manifest: Record<string, unknown>
+      live: unknown[]
+    }
+    assert.equal(typeof parsed.exportedAt, 'string')
+    assert.deepEqual(parsed.manifest, manifest)
+    assert.deepEqual(parsed.live, live)
+  })
+  it('includes a parseable exportedAt stamp', () => {
+    const before = Date.now()
+    const parsed = JSON.parse(serializeObservatoryExport({}, [])) as { exportedAt: string }
+    const stamp = Date.parse(parsed.exportedAt)
+    assert.ok(Number.isFinite(stamp), 'exportedAt must be a parseable ISO timestamp')
+    assert.ok(stamp >= before - 1000 && stamp <= Date.now() + 1000, 'exportedAt must be "now"')
+  })
+  it('guards a null manifest and non-array live', () => {
+    const parsed = JSON.parse(serializeObservatoryExport(null, 'nope')) as {
+      manifest: unknown
+      live: unknown[]
+    }
+    assert.equal(parsed.manifest, null)
+    assert.deepEqual(parsed.live, [])
+  })
+  it('never throws on a non-serializable manifest (cyclic)', () => {
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    const text = serializeObservatoryExport(cyclic, [])
+    const parsed = JSON.parse(text) as { manifest: unknown }
+    assert.equal(parsed.manifest, null)
+  })
+})
+
+describe('latestPhase', () => {
+  it('returns the last non-empty phase', () => {
+    assert.equal(latestPhase(['plan', 'review', 'fix']), 'fix')
+    assert.equal(latestPhase(['plan', 'review']), 'review')
+  })
+  it('skips blank / non-string entries', () => {
+    assert.equal(latestPhase(['plan', '', '  review  ']), 'review')
+    assert.equal(latestPhase(['', null, 42]), '')
+  })
+  it('returns "" for an empty or non-array input', () => {
+    assert.equal(latestPhase([]), '')
+    assert.equal(latestPhase(null), '')
+    assert.equal(latestPhase('plan'), '')
+  })
+})

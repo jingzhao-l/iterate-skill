@@ -1,0 +1,3330 @@
+window.__ModuleLoader__.load({ id: "iterate-plugin", factory: (require) => {
+var module = { exports: {} };
+var exports = module.exports;
+"use strict";
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name2 in all)
+    __defProp(target, name2, { get: all[name2], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/client/index.ts
+var index_exports = {};
+__export(index_exports, {
+  apply: () => apply,
+  inject: () => inject,
+  name: () => name
+});
+module.exports = __toCommonJS(index_exports);
+
+// lib/parse.js
+var SEVERITY_ORDER = ["critical", "high", "medium", "low"];
+var SEVERITY_LABEL = {
+  critical: "CRIT",
+  high: "HIGH",
+  medium: "MED",
+  low: "LOW"
+};
+var SEVERITY_COLOR = {
+  critical: "#ef4444",
+  high: "#f97316",
+  // medium is used both for dots/fills and as TEXT (stat numbers, table
+  // headers); #eab308 is illegible as text on light backgrounds (~1.6:1).
+  // amber-600 (#d97706) ~3.2:1 — still short of AA; go darker for legibility.
+  medium: "#b45309",
+  low: "#6b7280"
+};
+function safeGet(o, key) {
+  try {
+    return o[key];
+  } catch {
+    return void 0;
+  }
+}
+function safeKeys(o) {
+  try {
+    return Object.keys(o);
+  } catch {
+    return [];
+  }
+}
+function scanSessionForResume(obj, seen, maxDepth = 20) {
+  if (maxDepth <= 0) return 0;
+  if (!obj || typeof obj !== "object") return 0;
+  const s = seen || /* @__PURE__ */ new Set();
+  if (s.has(obj)) return 0;
+  s.add(obj);
+  let best = 0;
+  const direct = (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  if (safeGet(direct, "type") === "resume") {
+    const data = (
+      /** @type {Record<string, unknown>} */
+      safeGet(direct, "data") || {}
+    );
+    if (typeof safeGet(data, "resumeCount") === "number" && safeGet(data, "resumeCount") > best) {
+      best = safeGet(data, "resumeCount");
+    }
+  }
+  const directEntry = safeGet(direct, "entry");
+  if (directEntry && typeof directEntry === "object") {
+    const entry = (
+      /** @type {Record<string, unknown>} */
+      directEntry
+    );
+    if (safeGet(entry, "type") === "resume") {
+      const data = (
+        /** @type {Record<string, unknown>} */
+        safeGet(entry, "data") || {}
+      );
+      if (typeof safeGet(data, "resumeCount") === "number" && safeGet(data, "resumeCount") > best) {
+        best = safeGet(data, "resumeCount");
+      }
+    }
+  }
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = scanSessionForResume(item, s, maxDepth - 1);
+      if (found > best) best = found;
+    }
+    return best;
+  }
+  for (const key of safeKeys(direct)) {
+    const val = safeGet(direct, key);
+    if (val && typeof val === "object") {
+      const found = scanSessionForResume(val, s, maxDepth - 1);
+      if (found > best) best = found;
+    }
+  }
+  return best;
+}
+function countSessionImages(session) {
+  if (!session || typeof session !== "object") return 0;
+  const ids = /* @__PURE__ */ new Set();
+  let count = 0;
+  const walk = (obj, depth) => {
+    if (depth <= 0 || !obj || typeof obj !== "object") return;
+    if (seen.has(obj)) return;
+    seen.add(obj);
+    const o = (
+      /** @type {Record<string, unknown>} */
+      obj
+    );
+    let ref = null;
+    if (safeGet(o, "type") === "image" && safeGet(o, "attachment") && typeof safeGet(o, "attachment") === "object") {
+      ref = /** @type {Record<string, unknown>} */
+      safeGet(o, "attachment");
+    }
+    if (!ref && typeof safeGet(o, "mediaType") === "string" && String(safeGet(o, "mediaType")).startsWith("image/")) {
+      ref = o;
+    }
+    if (ref) {
+      const id = typeof safeGet(ref, "attachmentId") === "string" ? safeGet(ref, "attachmentId") : null;
+      if (id) {
+        if (!ids.has(id)) {
+          ids.add(id);
+          count += 1;
+        }
+      } else {
+        count += 1;
+      }
+    }
+    if (Array.isArray(obj)) {
+      for (const item of obj) walk(item, depth - 1);
+      return;
+    }
+    for (const key of safeKeys(o)) {
+      const val = safeGet(o, key);
+      if (val && typeof val === "object") walk(val, depth - 1);
+    }
+  };
+  const seen = /* @__PURE__ */ new Set();
+  walk(session, 12);
+  return count;
+}
+function isReviewReport(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  const o = (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  const convergence = safeGet(o, "convergence");
+  return typeof convergence === "object" && convergence !== null && Array.isArray(safeGet(o, "findings")) && Array.isArray(safeGet(o, "rounds"));
+}
+function findReportInObject(obj, seen, maxDepth = 20) {
+  if (maxDepth <= 0) return null;
+  if (!obj || typeof obj !== "object") return null;
+  const s = seen || /* @__PURE__ */ new Set();
+  if (s.has(obj)) return null;
+  s.add(obj);
+  if (isReviewReport(obj)) return (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = findReportInObject(item, s, maxDepth - 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  const o = (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  for (const key of safeKeys(o)) {
+    const val = safeGet(o, key);
+    if (val && typeof val === "object") {
+      const found = findReportInObject(val, s, maxDepth - 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+function scanSessionForReport(session) {
+  if (!session || typeof session !== "object") return null;
+  const s = (
+    /** @type {Record<string, unknown>} */
+    session
+  );
+  const toolCalls = safeGet(s, "toolCalls");
+  if (Array.isArray(toolCalls)) {
+    const calls = (
+      /** @type {Array<Record<string, unknown>>} */
+      toolCalls
+    );
+    for (let i = calls.length - 1; i >= 0; i--) {
+      const call = calls[i];
+      if (!call) continue;
+      if (safeGet(call, "tool") === "iterate_review" || String(safeGet(call, "tool") ?? "").endsWith("iterate_review")) {
+        const result = safeGet(call, "result");
+        if (result && typeof result === "object") {
+          const r = (
+            /** @type {Record<string, unknown>} */
+            result
+          );
+          const report = safeGet(r, "report");
+          if (report && typeof report === "object") {
+            return (
+              /** @type {Record<string, unknown>} */
+              report
+            );
+          }
+        }
+      }
+    }
+  }
+  const messages = safeGet(s, "messages");
+  if (Array.isArray(messages)) {
+    const msgs = (
+      /** @type {Array<Record<string, unknown>>} */
+      messages
+    );
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const msg = msgs[i];
+      const msgCalls = msg && Array.isArray(safeGet(msg, "tool_calls")) ? safeGet(msg, "tool_calls") : null;
+      if (!msg || !msgCalls) continue;
+      const calls = (
+        /** @type {Array<Record<string, unknown>>} */
+        msgCalls
+      );
+      for (const call of calls) {
+        if (!call) continue;
+        const fn = safeGet(call, "function");
+        if (fn && typeof fn === "object") {
+          const f = (
+            /** @type {Record<string, unknown>} */
+            fn
+          );
+          if (String(safeGet(f, "name") ?? "").endsWith("iterate_review")) {
+            try {
+              const args = JSON.parse(String(safeGet(f, "arguments") ?? "{}"));
+              const found = findReportInObject(args);
+              if (found) return found;
+            } catch {
+            }
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+function isTranscriptManifest(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  const o = (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  return typeof safeGet(o, "version") === "number" && Array.isArray(safeGet(o, "rounds")) && Array.isArray(safeGet(o, "convergence"));
+}
+function attachLive(manifest, source) {
+  if (!manifest || typeof manifest !== "object") return manifest;
+  const live = source && typeof source === "object" ? safeGet(source, "live") : void 0;
+  if (!Array.isArray(live)) return manifest;
+  const m = (
+    /** @type {Record<string, unknown>} */
+    manifest
+  );
+  if (safeGet(m, "live") !== void 0) return manifest;
+  const copy = (
+    /** @type {Record<string, unknown>} */
+    {}
+  );
+  for (const k of safeKeys(m)) copy[k] = safeGet(m, k);
+  copy.live = live;
+  return copy;
+}
+function extractTranscript(obj) {
+  if (typeof obj === "string") {
+    try {
+      const parsed = JSON.parse(obj);
+      return extractTranscript(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (!obj || typeof obj !== "object") return null;
+  if (isTranscriptManifest(obj)) return (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  const o = (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  if (safeGet(o, "operation") === "capture") {
+    const t = safeGet(o, "transcript");
+    if (t && typeof t === "object" && isTranscriptManifest(t)) {
+      return attachLive(
+        /** @type {Record<string, unknown>} */
+        t,
+        o
+      );
+    }
+  }
+  for (const key of ["message", "result", "content"]) {
+    const val = safeGet(o, key);
+    if (val !== void 0) {
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          const found = extractTranscript(item);
+          if (found) return attachLive(found, o);
+        }
+      } else {
+        const found = extractTranscript(val);
+        if (found) return attachLive(found, o);
+      }
+    }
+  }
+  return attachLive(findTranscriptInObject(o), o);
+}
+function findTranscriptInObject(obj, seen, maxDepth = 20) {
+  if (maxDepth <= 0) return null;
+  if (!obj || typeof obj !== "object") return null;
+  const s = seen || /* @__PURE__ */ new Set();
+  if (s.has(obj)) return null;
+  s.add(obj);
+  if (isTranscriptManifest(obj)) return (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = findTranscriptInObject(item, s, maxDepth - 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  const o = (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  for (const key of safeKeys(o)) {
+    const val = safeGet(o, key);
+    if (val && typeof val === "object") {
+      const found = findTranscriptInObject(val, s, maxDepth - 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+function scanSessionForTranscript(session) {
+  if (!session || typeof session !== "object") return null;
+  const s = (
+    /** @type {Record<string, unknown>} */
+    session
+  );
+  const toolCalls = safeGet(s, "toolCalls");
+  if (Array.isArray(toolCalls)) {
+    const calls = (
+      /** @type {Array<Record<string, unknown>>} */
+      toolCalls
+    );
+    for (let i = calls.length - 1; i >= 0; i--) {
+      const call = calls[i];
+      if (!call) continue;
+      const tool = String(safeGet(call, "tool") ?? "");
+      if (tool !== "iterate_transcript" && !tool.endsWith("iterate_transcript")) continue;
+      const found = extractTranscript(safeGet(call, "result")) || extractTranscript(safeGet(call, "message"));
+      if (found) return found;
+    }
+  }
+  const messages = safeGet(s, "messages");
+  if (Array.isArray(messages)) {
+    const msgs = (
+      /** @type {Array<Record<string, unknown>>} */
+      messages
+    );
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const msg = msgs[i];
+      if (!msg) continue;
+      const calls = safeGet(msg, "tool_calls");
+      if (Array.isArray(calls)) {
+        for (const call of calls) {
+          if (!call) continue;
+          const args = safeGet(call, "arguments");
+          if (typeof args === "string") {
+            const found2 = extractTranscript(args);
+            if (found2) return found2;
+          }
+        }
+      }
+      const found = extractTranscript(safeGet(msg, "content"));
+      if (found) return found;
+    }
+  }
+  return null;
+}
+function normalizeTranscript(manifest) {
+  const src = manifest && typeof manifest === "object" ? (
+    /** @type {Record<string, unknown>} */
+    manifest
+  ) : {};
+  const asNum = (v) => typeof v === "number" ? v : 0;
+  const asStr = (v) => typeof v === "string" ? v : "";
+  const asBool = (v) => v === true;
+  const asCount = (v) => typeof v === "number" ? v : 0;
+  const asArray = (v) => Array.isArray(v) ? (
+    /** @type {Array<Record<string, unknown>>} */
+    v
+  ) : [];
+  const rounds = asArray(safeGet(src, "rounds")).map((r) => ({
+    round: asNum(safeGet(r, "round")),
+    threads: asArray(safeGet(r, "threads")).map((t) => ({
+      dimension: asStr(safeGet(t, "dimension")),
+      attempt: asNum(safeGet(t, "attempt")),
+      messages: asArray(safeGet(t, "messages")).map((m) => typeof m === "string" ? m : ""),
+      readFiles: asArray(safeGet(t, "readFiles")).map((f) => typeof f === "string" ? f : ""),
+      findings: asArray(safeGet(t, "findings")).map((f) => ({ ...f }))
+    }))
+  }));
+  const cp = safeGet(src, "checkpoint");
+  const checkpoint = cp && typeof cp === "object" ? {
+    mode: asStr(safeGet(cp, "mode")),
+    round: asNum(safeGet(cp, "round")),
+    maxRounds: asNum(safeGet(cp, "maxRounds")),
+    fixedCount: asNum(safeGet(cp, "fixedCount")),
+    resumeCount: asNum(safeGet(cp, "resumeCount")),
+    updatedAt: asStr(safeGet(cp, "updatedAt"))
+  } : null;
+  const ng = safeGet(src, "nudge");
+  const nudge = ng && typeof ng === "object" ? { timestamp: asStr(safeGet(ng, "timestamp")), text: asStr(safeGet(ng, "text")) } : null;
+  const ap = safeGet(src, "approval");
+  return {
+    version: asNum(safeGet(src, "version")),
+    project: asStr(safeGet(src, "project")),
+    updatedAt: asStr(safeGet(src, "updatedAt")),
+    active: asBool(safeGet(src, "active")),
+    mode: asStr(safeGet(src, "mode")) || null,
+    goal: asStr(safeGet(src, "goal")),
+    phases: asArray(safeGet(src, "phases")).map((p) => typeof p === "string" ? p : ""),
+    round: asNum(safeGet(src, "round")),
+    maxRounds: asNum(safeGet(src, "maxRounds")),
+    rounds,
+    convergence: asArray(safeGet(src, "convergence")).map((n) => asCount(n)),
+    findings: asArray(safeGet(src, "findings")).map((f) => ({ ...f })),
+    fixes: asArray(safeGet(src, "fixes")).map((f) => ({ ...f })),
+    live: asArray(safeGet(src, "live")).map((e) => ({
+      ts: typeof safeGet(e, "ts") === "number" ? String(safeGet(e, "ts")) : asStr(safeGet(e, "ts")),
+      type: asStr(safeGet(e, "type")),
+      tool: asStr(safeGet(e, "tool")),
+      target: asStr(safeGet(e, "target"))
+    })),
+    checkpoint,
+    timeline: asArray(safeGet(src, "timeline")).map((t) => ({ ...t })),
+    nudge,
+    approval: ap && typeof ap === "object" ? { active: asBool(safeGet(ap, "active")), policy: asStr(safeGet(ap, "policy")) || "ask" } : { active: false, policy: "ask" }
+  };
+}
+function isRunSummary(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  const o = (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  const final = safeGet(o, "finalReport");
+  return !!final && typeof final === "object" && (safeGet(final, "verdict") === "approved" || safeGet(final, "verdict") === "needs_revision");
+}
+function findRunSummaryInObject(obj, seen, maxDepth = 20) {
+  if (maxDepth <= 0) return null;
+  if (!obj || typeof obj !== "object") return null;
+  const s = seen || /* @__PURE__ */ new Set();
+  if (s.has(obj)) return null;
+  s.add(obj);
+  if (isRunSummary(obj)) return (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = findRunSummaryInObject(item, s, maxDepth - 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  const o = (
+    /** @type {Record<string, unknown>} */
+    obj
+  );
+  for (const key of safeKeys(o)) {
+    const val = safeGet(o, key);
+    if (val && typeof val === "object") {
+      const found = findRunSummaryInObject(val, s, maxDepth - 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+function scanSessionForRunSummary(session) {
+  if (!session || typeof session !== "object") return null;
+  const s = (
+    /** @type {Record<string, unknown>} */
+    session
+  );
+  const toolCalls = safeGet(s, "toolCalls");
+  if (Array.isArray(toolCalls)) {
+    const calls = (
+      /** @type {Array<Record<string, unknown>>} */
+      toolCalls
+    );
+    for (let i = calls.length - 1; i >= 0; i--) {
+      const call = calls[i];
+      if (!call) continue;
+      if (safeGet(call, "tool") === "workflow" || String(safeGet(call, "tool") ?? "").endsWith("workflow")) {
+        const found = findRunSummaryInObject(safeGet(call, "result"), void 0, 24);
+        if (found) return found;
+      }
+    }
+  }
+  const messages = safeGet(s, "messages");
+  if (Array.isArray(messages)) {
+    const msgs = (
+      /** @type {Array<Record<string, unknown>>} */
+      messages
+    );
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const msg = msgs[i];
+      if (!msg) continue;
+      const found = findRunSummaryInObject(safeGet(msg, "content"));
+      if (found) return found;
+    }
+  }
+  return null;
+}
+function extractVerdict(runSummary) {
+  if (!isRunSummary(runSummary)) return null;
+  const o = (
+    /** @type {Record<string, unknown>} */
+    runSummary
+  );
+  const final = (
+    /** @type {Record<string, unknown>} */
+    safeGet(o, "finalReport")
+  );
+  const meta = safeGet(final, "metaReview") && typeof safeGet(final, "metaReview") === "object" ? (
+    /** @type {Record<string, unknown>} */
+    safeGet(final, "metaReview")
+  ) : {};
+  const issues = Array.isArray(safeGet(meta, "issues")) ? safeGet(meta, "issues") : [];
+  const roundsVal = safeGet(o, "rounds");
+  const totalRounds = typeof roundsVal === "number" ? roundsVal : Array.isArray(roundsVal) ? roundsVal.length : 0;
+  return {
+    verdict: safeGet(final, "verdict") === "needs_revision" ? "needs_revision" : "approved",
+    reportIssues: issues.length,
+    checksRun: typeof safeGet(meta, "checksRun") === "number" ? safeGet(meta, "checksRun") : 0,
+    converged: safeGet(o, "converged") === true,
+    totalRounds,
+    totalFindings: typeof safeGet(o, "totalFindings") === "number" ? safeGet(o, "totalFindings") : 0
+  };
+}
+function normalizeReport(report) {
+  const convergence = (
+    /** @type {Record<string, unknown>} */
+    report.convergence ?? {}
+  );
+  const rounds = (
+    /** @type {Array<unknown>} */
+    report.rounds ?? []
+  );
+  const findings = (
+    /** @type {Array<Record<string, unknown>>} */
+    report.findings ?? []
+  );
+  const totalRounds = typeof convergence.totalRounds === "number" ? convergence.totalRounds : rounds.length;
+  const normalizedConvergence = {
+    totalRounds,
+    findingsByRound: Array.isArray(convergence.findingsByRound) ? convergence.findingsByRound : rounds.map((r) => {
+      const rr = (
+        /** @type {Record<string, unknown>} */
+        r
+      );
+      return Array.isArray(rr?.findings) ? rr.findings.length : 0;
+    }),
+    converged: convergence.converged === true,
+    stoppedReason: convergence.stoppedReason ?? (rounds.length < totalRounds ? "converged" : "max_rounds_reached")
+  };
+  let summary = report.summary;
+  if (!summary || typeof summary !== "object") {
+    summary = computeSummaryFromFindings(findings);
+  } else {
+    const s = (
+      /** @type {Record<string, unknown>} */
+      summary
+    );
+    const computed = computeSummaryFromFindings(findings);
+    summary = {
+      totalFindings: typeof s.totalFindings === "number" ? s.totalFindings : findings.length,
+      critical: typeof s.critical === "number" ? s.critical : computed.critical,
+      high: typeof s.high === "number" ? s.high : computed.high,
+      medium: typeof s.medium === "number" ? s.medium : computed.medium,
+      low: typeof s.low === "number" ? s.low : computed.low,
+      byDimension: s.byDimension && typeof s.byDimension === "object" ? s.byDimension : computed.byDimension,
+      ...typeof s.fixedCount === "number" ? { fixedCount: s.fixedCount } : {}
+    };
+  }
+  return {
+    mode: report.mode ?? "dry-run",
+    goal: report.goal ?? "",
+    dimensions: Array.isArray(report.dimensions) ? report.dimensions : [],
+    maxReviewRounds: report.maxReviewRounds ?? totalRounds,
+    rounds,
+    findings,
+    convergence: normalizedConvergence,
+    summary
+  };
+}
+function computeSummaryFromFindings(findings) {
+  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+  const byDimension = {};
+  for (const f of findings) {
+    const sev = String(f.severity ?? "low");
+    if (sev in counts) counts[sev]++;
+    const dim = String(f.dimension ?? "unknown");
+    byDimension[dim] = (byDimension[dim] ?? 0) + 1;
+  }
+  return {
+    totalFindings: findings.length,
+    critical: counts.critical,
+    high: counts.high,
+    medium: counts.medium,
+    low: counts.low,
+    byDimension
+  };
+}
+function computeConvergenceProgress(report) {
+  const convergence = (
+    /** @type {Record<string, unknown>} */
+    report.convergence ?? {}
+  );
+  const totalRounds = typeof convergence.totalRounds === "number" ? convergence.totalRounds : 1;
+  const currentRounds = (
+    /** @type {Array<unknown>} */
+    (report.rounds ?? []).length
+  );
+  if (!(totalRounds > 0)) return 0;
+  return Math.min(100, Math.round(currentRounds / totalRounds * 100));
+}
+function getCurrentRound(report) {
+  return (
+    /** @type {Array<unknown>} */
+    (report.rounds ?? []).length
+  );
+}
+function getTotalRounds(report) {
+  const convergence = (
+    /** @type {Record<string, unknown>} */
+    report.convergence ?? {}
+  );
+  return typeof convergence.totalRounds === "number" ? convergence.totalRounds : 1;
+}
+function severityStats(report) {
+  const findings = (
+    /** @type {Array<Record<string, unknown>>} */
+    report.findings ?? []
+  );
+  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const f of findings) {
+    const sev = String(f.severity ?? "low");
+    if (sev in counts) counts[sev]++;
+  }
+  return counts;
+}
+function groupByDimension(report) {
+  const findings = (
+    /** @type {Array<Record<string, unknown>>} */
+    report.findings ?? []
+  );
+  const groups = {};
+  for (const f of findings) {
+    const dim = String(f.dimension ?? "unknown");
+    if (!groups[dim]) groups[dim] = [];
+    groups[dim].push(f);
+  }
+  return groups;
+}
+function buildTriageState(report) {
+  const findings = (
+    /** @type {Array<unknown>} */
+    report.findings ?? []
+  );
+  const state = {};
+  for (let i = 0; i < findings.length; i++) {
+    state[String(i)] = "keep";
+  }
+  return state;
+}
+function hashReport(report) {
+  const findings = (
+    /** @type {Array<Record<string, unknown>>} */
+    report.findings ?? []
+  );
+  let h = 2166136261;
+  const mix = (s) => {
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+  };
+  mix(`${String(report.mode ?? "")}|`);
+  for (const f of findings) {
+    if (!f || typeof f !== "object") continue;
+    mix(`${String(f.file ?? "")}|${typeof f.line === "number" ? f.line : 0}|${String(f.dimension ?? "")}|${String(f.summary ?? "")}
+`);
+  }
+  return `iterate-triage-${h.toString(36)}`;
+}
+function toKnownIntentionalYaml(entries) {
+  if (!entries || entries.length === 0) return "";
+  const lines = ["known_intentional:"];
+  for (const e of entries) {
+    lines.push(`  - file: ${JSON.stringify(e.file)}`);
+    if (e.line !== void 0 && e.line > 0) {
+      lines.push(`    line: ${e.line}`);
+    }
+    lines.push(`    dimension: ${JSON.stringify(e.dimension)}`);
+    lines.push(`    reason: ${JSON.stringify(e.reason)}`);
+  }
+  return lines.join("\n");
+}
+function buildApplyInstruction(entries) {
+  if (!entries || entries.length === 0) return "";
+  const payload = JSON.stringify(
+    {
+      operation: "apply",
+      entries: entries.map((e) => ({
+        file: e.file,
+        ...e.line !== void 0 ? { line: e.line } : {},
+        dimension: e.dimension,
+        reason: e.reason
+      }))
+    },
+    null,
+    2
+  );
+  return `Please call \`iterate_triage\` with the following payload to apply the triage verdicts:
+
+\`\`\`json
+${payload}
+\`\`\``;
+}
+function collectIgnoredEntries(triageState, findings) {
+  const entries = [];
+  for (const [idx, verdict] of Object.entries(triageState)) {
+    if (verdict !== "ignore") continue;
+    const finding = findings[Number(idx)];
+    if (!finding) continue;
+    entries.push({
+      file: String(finding.file ?? ""),
+      ...typeof finding.line === "number" && finding.line > 0 ? { line: finding.line } : {},
+      dimension: String(finding.dimension ?? ""),
+      reason: String(finding.summary ?? "")
+    });
+  }
+  return entries;
+}
+function normalizeFindingFilter(filter) {
+  const f = filter && typeof filter === "object" ? filter : {};
+  const severities = Array.isArray(f.severities) ? f.severities.filter((s) => SEVERITY_ORDER.includes(String(s))) : [];
+  const dimensions = Array.isArray(f.dimensions) ? f.dimensions.filter((d) => typeof d === "string" && d.length > 0) : [];
+  const search = typeof f.search === "string" ? f.search.trim().toLowerCase() : "";
+  return { severities, dimensions, search };
+}
+function findingMatches(finding, filter) {
+  const f = normalizeFindingFilter(filter);
+  const sev = String(finding.severity ?? "low");
+  if (f.severities.length > 0 && !f.severities.includes(sev)) return false;
+  const dim = String(finding.dimension ?? "");
+  if (f.dimensions.length > 0 && !f.dimensions.includes(dim)) return false;
+  if (f.search) {
+    const haystack = [
+      String(finding.file ?? ""),
+      String(finding.summary ?? ""),
+      String(finding.dimension ?? ""),
+      String(finding.suggested_fix ?? "")
+    ].join(" ").toLowerCase();
+    if (haystack.indexOf(f.search) < 0) return false;
+  }
+  return true;
+}
+function filterFindingsWithIndices(findings, filter) {
+  const f = normalizeFindingFilter(filter);
+  const list = Array.isArray(findings) ? findings : [];
+  const filtered = [];
+  const indices = [];
+  for (let i = 0; i < list.length; i++) {
+    if (findingMatches(list[i], f)) {
+      filtered.push(list[i]);
+      indices.push(i);
+    }
+  }
+  return { filtered, indices };
+}
+function buildFilterOptions(findings) {
+  const list = Array.isArray(findings) ? findings : [];
+  const severities = SEVERITY_ORDER.map((value) => ({ value, count: 0 }));
+  const dimCounts = {};
+  for (const f of list) {
+    const sev = String(f.severity ?? "low");
+    const sv = severities.find((s) => s.value === sev);
+    if (sv) sv.count++;
+    const dim = String(f.dimension ?? "unknown");
+    dimCounts[dim] = (dimCounts[dim] ?? 0) + 1;
+  }
+  return {
+    severities: severities.map((s) => ({ ...s })),
+    dimensions: Object.keys(dimCounts).map((value) => ({ value, count: dimCounts[value] }))
+  };
+}
+function countVerdicts(triageState) {
+  const counts = { keep: 0, skip: 0, ignore: 0 };
+  for (const v of Object.values(triageState ?? {})) {
+    if (v === "keep" || v === "skip" || v === "ignore") counts[v]++;
+  }
+  return counts;
+}
+function batchSetVerdict(triageState, indices, verdict) {
+  if (verdict !== "keep" && verdict !== "skip" && verdict !== "ignore") return triageState;
+  if (!Array.isArray(indices) || indices.length === 0) return triageState;
+  const next = { ...triageState };
+  for (const idx of indices) {
+    if (typeof idx === "number" && Number.isInteger(idx) && idx >= 0) {
+      next[String(idx)] = verdict;
+    }
+  }
+  return next;
+}
+function setAllVerdicts(triageState, verdict, indices) {
+  const targets = Array.isArray(indices) ? indices : Object.keys(triageState ?? {}).map(Number);
+  return batchSetVerdict(triageState, targets, verdict);
+}
+function buildRoundHistory(report) {
+  const rounds = Array.isArray(report.rounds) ? report.rounds : [];
+  return rounds.map((r) => {
+    const rr = (
+      /** @type {Record<string, unknown>} */
+      r
+    );
+    const findings = Array.isArray(rr.findings) ? rr.findings : [];
+    const sev = severityStats({ findings });
+    return {
+      round: typeof rr.round === "number" ? rr.round : 0,
+      count: findings.length,
+      critical: sev.critical,
+      high: sev.high,
+      medium: sev.medium,
+      low: sev.low
+    };
+  });
+}
+function buildFindingTrend(report) {
+  const conv = (
+    /** @type {Record<string, unknown>} */
+    report.convergence ?? {}
+  );
+  if (Array.isArray(conv.findingsByRound)) {
+    return conv.findingsByRound.map((n, i) => ({ round: i + 1, count: typeof n === "number" ? n : 0 }));
+  }
+  return buildRoundHistory(report).map((h) => ({ round: h.round, count: h.count }));
+}
+function computeTrendMetrics(report) {
+  const conv = (
+    /** @type {Record<string, unknown>} */
+    report.convergence ?? {}
+  );
+  const points = buildFindingTrend(report);
+  const total = points.reduce((sum, p) => sum + p.count, 0);
+  const firstRound = points.length > 0 ? points[0].count : 0;
+  const lastRound = points.length > 0 ? points[points.length - 1].count : 0;
+  const reductionPercent = firstRound > 0 ? Math.round((firstRound - lastRound) / firstRound * 100) : 0;
+  return {
+    points,
+    total,
+    firstRound,
+    lastRound,
+    reductionPercent,
+    converged: conv.converged === true
+  };
+}
+function trendMax(points) {
+  let max = 1;
+  for (const p of Array.isArray(points) ? points : []) {
+    if (typeof p.count === "number" && p.count > max) max = p.count;
+  }
+  return max;
+}
+function buildCompletionSummary(report) {
+  const conv = (
+    /** @type {Record<string, unknown>} */
+    report.convergence ?? {}
+  );
+  const rounds = getCurrentRound(report);
+  const total = getTotalRounds(report);
+  const stats = severityStats(report);
+  const converged = conv.converged === true;
+  const reason = converged ? "\u5DF2\u6536\u655B" : `\u5DF2\u8FBE\u6700\u5927\u8F6E\u6570 ${total}`;
+  const totalFindings = stats.critical + stats.high + stats.medium + stats.low;
+  return `iterate \u8BC4\u5BA1\u5B8C\u6210 \xB7 ${rounds}/${total} \u8F6E \xB7 ${totalFindings} \u9879\u53D1\u73B0 \xB7 ${reason}`;
+}
+var CONFIG_EDIT_FIELDS = [
+  { key: "goal", label: "\u76EE\u6807", hint: "\u4E00\u53E5\u8BDD\u63CF\u8FF0\u672C\u6B21\u8FED\u4EE3\u76EE\u6807\uFF08\u5B57\u7B26\u4E32\uFF09" },
+  { key: "dimensions", label: "\u5BA1\u67E5\u7EF4\u5EA6", hint: '\u6570\u7EC4\uFF0C\u5982 ["correctness","security"]' },
+  { key: "max_rounds", label: "\u6700\u5927\u8F6E\u6570", hint: "\u6B63\u6574\u6570" },
+  { key: "review.scope", label: "\u5BA1\u67E5\u8303\u56F4", hint: '"full" \u6216 "changed-only"' },
+  { key: "atomic.max_lines", label: "\u539F\u5B50\u4FEE\u590D\u4E0A\u9650\u884C\u6570", hint: "\u6B63\u6574\u6570" },
+  { key: "git.push_per_round", label: "\u6BCF\u8F6E\u63A8\u9001", hint: "true / false" }
+];
+function buildConfigEditGuide() {
+  const lines = [
+    "iterate \u914D\u7F6E\u7F16\u8F91\u6307\u5F15",
+    "---------------------",
+    "\u914D\u7F6E\u6587\u4EF6\uFF1A\u9879\u76EE\u6839\u76EE\u5F55 iterate.config.yaml\u3002",
+    "",
+    "\u53EF\u7F16\u8F91\u5B57\u6BB5\uFF1A",
+    ...CONFIG_EDIT_FIELDS.map((f) => `- ${f.key}\uFF08${f.label}\uFF09\uFF1A${f.hint}`),
+    "",
+    "\u8BA9\u6A21\u578B\u5E2E\u4F60\u6539\uFF1A",
+    '1. \u8C03\u7528 iterate_config({ operation: "read" }) \u67E5\u770B\u5F53\u524D\u914D\u7F6E\uFF1B',
+    "2. \u8BF4\u660E\u60F3\u6539\u7684\u5B57\u6BB5\uFF0C\u4F8B\u5982\u300C\u628A max_rounds \u6539\u6210 5\uFF0Cdimensions \u53EA\u4FDD\u7559 correctness \u548C security\u300D\uFF1B",
+    '3. \u6A21\u578B\u4F1A\u8C03\u7528 iterate_config({ operation: "write", updates: {...} }) \u5199\u5165\uFF0C\u5199\u5165\u524D\u81EA\u52A8\u5907\u4EFD\uFF0C\u5931\u8D25\u81EA\u52A8\u56DE\u6EDA\u3002'
+  ];
+  return lines.join("\n");
+}
+var VERDICT_SHORTCUTS = {
+  y: "keep",
+  Y: "keep",
+  n: "skip",
+  N: "skip",
+  a: "ignore",
+  A: "ignore"
+};
+function keyToVerdict(key) {
+  return VERDICT_SHORTCUTS[key] ?? null;
+}
+function allVerdictKeys(triageState) {
+  const state = triageState && typeof triageState === "object" ? triageState : {};
+  return Object.keys(state).map(Number).filter((n) => Number.isInteger(n) && n >= 0).sort((a, b) => a - b);
+}
+var RUNTIME_ARTIFACTS = [
+  {
+    key: "decision-log.jsonl",
+    label: "\u51B3\u7B56\u65E5\u5FD7",
+    hint: "\u8FFD\u52A0\u5F0F JSONL\uFF0C\u8BB0\u5F55\u6BCF\u8F6E plan / review / fix / revert / validation \u51B3\u7B56"
+  },
+  {
+    key: "checkpoint.json",
+    label: "\u8FED\u4EE3\u65AD\u70B9",
+    hint: "\u957F\u8FED\u4EE3\u7684\u8FDB\u5EA6\u5FEB\u7167\uFF0C\u4E2D\u65AD\u540E\u53EF\u6062\u590D\uFF08iterate_checkpoint\uFF09"
+  },
+  {
+    key: "fixes/registry.json",
+    label: "\u4FEE\u590D\u6CE8\u518C\u8868",
+    hint: "\u6BCF\u4E2A\u539F\u5B50\u4FEE\u590D\u7684 id / diff / \u5907\u4EFD\u8DEF\u5F84\uFF08iterate_fix / iterate_diff\uFF09"
+  },
+  {
+    key: "fixes/*.bak",
+    label: "\u4FEE\u590D\u5907\u4EFD",
+    hint: "\u6BCF\u6B21\u4FEE\u590D\u524D\u7684\u539F\u6587\u4EF6\u5907\u4EFD\uFF0C\u56DE\u6EDA\u4F9D\u8D56\uFF08iterate_rollback\uFF09"
+  }
+];
+function buildRuntimeStatusGuide() {
+  const lines = [
+    "iterate \u8FD0\u884C\u65F6\u72B6\u6001\u6982\u89C8",
+    "----------------------",
+    "\u6240\u6709\u8FD0\u884C\u65F6\u4EA7\u7269\u4F4D\u4E8E\u9879\u76EE\u6839\u76EE\u5F55 .iterate/ \u4E0B\uFF1A",
+    "",
+    ...RUNTIME_ARTIFACTS.map((a) => `- ${a.key}\uFF08${a.label}\uFF09\uFF1A${a.hint}`),
+    "",
+    "\u67E5\u770B\u72B6\u6001\uFF1A\u8BA9\u6A21\u578B\u8C03\u7528 iterate_status\uFF08\u6C47\u603B\uFF09\u6216 iterate_history\uFF08\u660E\u7EC6\uFF09\u3002",
+    "\u6E05\u7406\u72B6\u6001\uFF1A\u8BA9\u6A21\u578B\u8C03\u7528 iterate_prune\uFF08\u9ED8\u8BA4 dry-run\uFF0C\u53EA\u62A5\u544A\u4E0D\u5220\u9664\uFF0C\u663E\u5F0F dryRun:false \u624D\u771F\u6B63\u6E05\u7406\uFF09\u3002"
+  ];
+  return lines.join("\n");
+}
+function filterLiveEntries(entries, type) {
+  const list = Array.isArray(entries) ? entries : [];
+  const t = typeof type === "string" ? type.trim() : "";
+  if (!t) return list.slice();
+  return list.filter((e) => e && typeof e === "object" && String(e.type ?? "") === t);
+}
+function filterTimelineEntries(entries, opts) {
+  const list = Array.isArray(entries) ? entries : [];
+  const o = opts && typeof opts === "object" ? opts : {};
+  const type = typeof o.type === "string" ? o.type : "";
+  const round = typeof o.round === "string" ? o.round : "";
+  const q = typeof o.search === "string" ? o.search.trim().toLowerCase() : "";
+  const filtered = list.filter((t) => {
+    if (!t || typeof t !== "object") return false;
+    if (type && String(t.type ?? "") !== type) return false;
+    if (round && String(t.round ?? "") !== round) return false;
+    if (q) {
+      const hay = [String(t.type ?? ""), String(t.round ?? ""), JSON.stringify(t.data ?? {})].join(" ").toLowerCase();
+      if (hay.indexOf(q) < 0) return false;
+    }
+    return true;
+  });
+  return filtered.slice().sort((a, b) => String(b.timestamp ?? "").localeCompare(String(a.timestamp ?? "")));
+}
+function serializeObservatoryExport(manifest, live) {
+  const payload = {
+    exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    manifest: manifest && typeof manifest === "object" ? manifest : null,
+    live: Array.isArray(live) ? live : []
+  };
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch {
+    return JSON.stringify({ exportedAt: payload.exportedAt, manifest: null, live: [] }, null, 2);
+  }
+}
+function latestPhase(phases) {
+  const list = Array.isArray(phases) ? phases : [];
+  let latest = "";
+  for (const p of list) {
+    if (typeof p === "string" && p.trim()) latest = p.trim();
+  }
+  return latest;
+}
+
+// src/client/index.ts
+var React = require("react");
+var name = "iterate-plugin";
+var inject = ["slots", "theme"];
+var PLUGIN_TAG = "iterate-ui";
+var TRIAGE_STORAGE_PREFIX = "iterate.triage.";
+var THEME_STORAGE_KEY = "iterate.theme.enabled";
+var THEME_SOURCE = "iterate";
+var ITERATE_TOKENS = {
+  "--dsw-alias-bg-base": { light: "#FAF8F5", dark: "#171412" },
+  "--dsw-alias-bg-layer-1": { light: "#FFFFFF", dark: "#1F1B17" },
+  "--dsw-alias-bg-layer-2": { light: "#F4F1EA", dark: "#27221C" },
+  "--dsw-alias-bg-overlay": { light: "rgba(255,255,255,0.96)", dark: "rgba(23,20,18,0.96)" },
+  "--dsw-alias-border-l1": { light: "#E8E2D8", dark: "#332C25" },
+  "--dsw-alias-border-l2": { light: "#DDD5C9", dark: "#3C342B" },
+  "--dsw-alias-brand-primary": { light: "#B45309", dark: "#F59E0B" },
+  "--dsw-alias-label-primary": { light: "#1C1917", dark: "#F5F0EA" },
+  "--dsw-alias-label-secondary": { light: "#57534E", dark: "#A9A29B" },
+  "--dsw-alias-state-error-primary": { light: "#DC2626", dark: "#F87171" },
+  "--dsw-alias-state-success-primary": { light: "#15803D", dark: "#4ADE80" },
+  "--dsw-alias-state-warn-primary": { light: "#D97706", dark: "#FBBF24" },
+  "--dsw-specific-sidebar-fill": { light: "#F5F2EC", dark: "#14110E" }
+};
+var ITERATE_CSS = `
+[data-iterate-root] { box-sizing: border-box; font-family: var(--dsw-font-sans, system-ui, sans-serif); }
+[data-iterate-root] * , [data-iterate-root] *::before, [data-iterate-root] *::after { box-sizing: border-box; }
+
+.iterate-dashboard {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 14px; margin: 6px 0;
+  border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  font-size: 12px; color: var(--dsw-alias-label-primary);
+}
+.iterate-round-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
+  color: var(--dsw-alias-brand-primary); font-weight: 600; white-space: nowrap;
+}
+.iterate-round-badge[data-pulse] { animation: iterate-pulse 700ms ease-out; }
+@keyframes iterate-pulse {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 60%, transparent); }
+  50% { transform: scale(1.12); box-shadow: 0 0 0 6px color-mix(in srgb, var(--dsw-alias-brand-primary) 0%, transparent); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 transparent; }
+}
+.iterate-progress { flex: 1 1 120px; min-width: 120px; height: 6px; border-radius: 999px; background: var(--dsw-alias-bg-layer-2); overflow: hidden; }
+.iterate-progress-fill { height: 100%; border-radius: 999px; background: var(--dsw-alias-brand-primary); transition: width 300ms ease; }
+.iterate-metric { display: inline-flex; align-items: center; gap: 5px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.iterate-sev-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.iterate-dim-badge {
+  padding: 2px 8px; border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-secondary); font-size: 11px; white-space: nowrap;
+}
+
+.iterate-triage { margin: 10px 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
+.iterate-triage-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+.iterate-triage-hint { font-size: 11px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
+.iterate-finding { padding: 10px 14px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.iterate-finding:last-child { border-bottom: none; }
+.iterate-finding-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.iterate-finding-file { font-family: var(--dsw-font-mono, ui-monospace, monospace); color: var(--dsw-alias-label-primary); }
+.iterate-finding-summary { margin-top: 4px; font-size: 12px; color: var(--dsw-alias-label-primary); line-height: 1.5; }
+.iterate-finding-actions { display: flex; gap: 6px; margin-top: 8px; }
+.iterate-vbtn {
+  padding: 3px 10px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary);
+  font-size: 11px; cursor: pointer;
+}
+.iterate-vbtn[data-active="keep"] { border-color: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); }
+.iterate-vbtn[data-active="skip"] { border-color: var(--dsw-alias-state-warn-primary); color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); }
+.iterate-vbtn[data-active="ignore"] { border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); }
+.iterate-triage-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 14px; background: var(--dsw-alias-bg-layer-2); font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.iterate-btn {
+  padding: 4px 10px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-size: 11px; cursor: pointer;
+}
+.iterate-btn[data-primary] { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.iterate-btn[data-copied] { border-color: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-state-success-primary); }
+.iterate-payload { width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font-family: var(--dsw-font-mono, ui-monospace, monospace); font-size: 11px; white-space: pre-wrap; }
+
+.iterate-stats { margin: 10px 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); padding: 12px 14px; }
+.iterate-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; margin-top: 8px; }
+.iterate-stat { padding: 8px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); text-align: center; }
+.iterate-stat-num { font-size: 18px; font-weight: 700; color: var(--dsw-alias-label-primary); }
+.iterate-stat-label { font-size: 10px; color: var(--dsw-alias-label-secondary); margin-top: 2px; }
+
+.iterate-capsule {
+  position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+  padding: 8px 14px; border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-label-primary); font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  animation: iterate-fadein 200ms ease-out; pointer-events: auto;
+}
+@keyframes iterate-fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+.iterate-settings { display: flex; flex-direction: column; gap: 12px; padding: 4px 2px 12px; }
+.iterate-settings-title { font-size: 14px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+.iterate-settings-desc { font-size: 12px; color: var(--dsw-alias-label-secondary); margin-top: 3px; line-height: 1.5; }
+.iterate-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); font-size: 11px; color: var(--dsw-alias-label-secondary); }
+
+/* Filter bar + batch toolbar (triage) */
+.iterate-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 14px; border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.iterate-filter-select { padding: 4px 8px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font-size: 11px; }
+.iterate-filter-search { padding: 4px 8px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font-size: 11px; min-width: 140px; }
+.iterate-filter-search::placeholder { color: var(--dsw-alias-label-secondary); }
+.iterate-filter-count { margin-left: auto; white-space: nowrap; }
+.iterate-filter-chip { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 11px; cursor: pointer; }
+.iterate-filter-chip:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.iterate-filter-chip[data-active] { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); font-weight: 600; }
+.iterate-filter-clear { padding: 3px 9px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 45%, transparent); color: var(--dsw-alias-state-warn-primary); background: transparent; font-size: 11px; cursor: pointer; }
+.iterate-filter-clear:hover { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent); }
+.iterate-batch { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.iterate-batch-label { margin-right: 2px; }
+.iterate-batch-btn { padding: 3px 8px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 11px; cursor: pointer; }
+.iterate-batch-btn:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.iterate-finding[data-selected] { outline: 1px solid var(--dsw-alias-brand-primary); outline-offset: -1px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, transparent); }
+
+/* Trend chart (inline SVG) */
+.iterate-trend { display: flex; align-items: flex-end; gap: 3px; height: 26px; padding: 2px 0; }
+.iterate-trend-bar { width: 6px; border-radius: 2px 2px 0 0; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 70%, var(--dsw-alias-bg-layer-2)); }
+.iterate-trend-bar[data-hot] { background: var(--dsw-alias-brand-primary); }
+
+/* History panel */
+.iterate-history { margin: 10px 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
+.iterate-history-body { padding: 10px 14px; }
+.iterate-history-table { width: 100%; border-collapse: collapse; font-size: 11px; color: var(--dsw-alias-label-primary); }
+.iterate-history-table th { text-align: left; font-weight: 600; color: var(--dsw-alias-label-secondary); padding: 4px 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.iterate-history-table td { padding: 4px 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.iterate-history-table tr:last-child td { border-bottom: none; }
+.iterate-history-num { font-weight: 600; }
+.iterate-history-trendline { margin-top: 10px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.iterate-completion { margin-top: 8px; padding: 6px 10px; border-radius: 8px; font-size: 11px; }
+.iterate-completion[data-ok] { border: 1px solid var(--dsw-alias-state-success-primary); color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); }
+.iterate-completion[data-warn] { border: 1px solid var(--dsw-alias-state-warn-primary); color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent); }
+.iterate-capsule[data-ok] { border-color: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-state-success-primary); }
+.iterate-chip[data-ok] { border-color: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); }
+.iterate-batch-check { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 11px; cursor: pointer; }
+.iterate-batch-check input { margin: 0; cursor: pointer; }
+
+/* Meta-review verdict banner (dry-run closing result) */
+.iterate-verdict { margin: 10px 0; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--dsw-alias-label-primary); }
+.iterate-verdict-tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-weight: 600; white-space: nowrap; }
+.iterate-verdict-tag[data-ok] { color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent); }
+.iterate-verdict-tag[data-warn] { color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent); }
+.iterate-verdict-detail { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--dsw-alias-label-secondary); }
+.iterate-verdict-item { white-space: nowrap; }
+.iterate-verdict-item b { color: var(--dsw-alias-label-primary); font-weight: 600; }
+
+/* Settings page redesign: grouped cards + switch + code blocks. */
+.iterate-settings { display: flex; flex-direction: column; gap: 14px; padding: 6px 2px 16px; }
+.iterate-scard { border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); padding: 14px 16px; }
+.iterate-scard-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.iterate-scard-title { font-size: 14px; font-weight: 650; color: var(--dsw-alias-label-primary); letter-spacing: -0.01em; }
+.iterate-scard-desc { font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-secondary); margin-top: 4px; }
+.iterate-scard-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* Status pill */
+.iterate-pill { display: inline-flex; align-items: center; gap: 7px; padding: 3px 11px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 28%, transparent); }
+.iterate-pill-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* Interruption / resume + attachment chips (dashboard) */
+.iterate-chip-resume { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 28%, transparent); }
+.iterate-chip-images { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent); }
+/* Live workflow-phase chip (dashboard) */
+.iterate-chip-phase { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--dsw-alias-label-primary); background: color-mix(in srgb, var(--dsw-alias-label-secondary) 14%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-label-secondary) 26%, transparent); }
+.iterate-chip-phase[data-live] { color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 28%, transparent); }
+
+/* v3.0: task_mode indicator chip */
+.iterate-chip-taskmode { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.iterate-chip-taskmode[data-mode="code"] { color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent); }
+.iterate-chip-taskmode[data-mode="iterate"] { color: #B45309; background: color-mix(in srgb, #B45309 12%, transparent); border: 1px solid color-mix(in srgb, #B45309 28%, transparent); }
+
+/* v3.0: Quality gate status */
+.iterate-gate { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.iterate-gate[data-status="pass"] { color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 28%, transparent); }
+.iterate-gate[data-status="fail"] { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 28%, transparent); }
+.iterate-gate[data-status="pending"] { color: var(--dsw-alias-label-secondary); background: color-mix(in srgb, var(--dsw-alias-label-secondary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-label-secondary) 28%, transparent); }
+
+/* v3.0: Experience bank hit highlight */
+.iterate-exp-hit { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 6px; background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 28%, transparent); font-size: 11px; color: var(--dsw-alias-state-success-primary); }
+.iterate-exp-hit b { font-weight: 600; }
+
+/* v3.0: Defense event type badges */
+.iterate-defense-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.iterate-defense-badge[data-type="precondition_failed"] { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 28%, transparent); }
+.iterate-defense-badge[data-type="rollback"] { color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 28%, transparent); }
+.iterate-defense-badge[data-type="invariant_violated"] { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 28%, transparent); }
+.iterate-defense-badge[data-type="assumption_falsified"] { color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent); }
+
+/* v3.0: Command buttons */
+.iterate-cmd { padding: 4px 10px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-size: 11px; cursor: pointer; font-weight: 500; }
+.iterate-cmd:hover { background: var(--dsw-alias-bg-layer-2); }
+.iterate-cmd[data-primary] { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.iterate-cmd[data-danger] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent); color: var(--dsw-alias-state-error-primary); }
+.iterate-cmd:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* v3.0: Dimension score bar */
+.iterate-dim-score { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.iterate-dim-score-bar { width: 60px; height: 6px; border-radius: 3px; background: var(--dsw-alias-bg-layer-2); overflow: hidden; }
+.iterate-dim-score-fill { height: 100%; border-radius: 3px; transition: width 300ms ease; }
+.iterate-dim-score-fill[data-status="pass"] { background: var(--dsw-alias-state-success-primary); }
+.iterate-dim-score-fill[data-status="warn"] { background: var(--dsw-alias-state-warn-primary); }
+.iterate-dim-score-fill[data-status="fail"] { background: var(--dsw-alias-state-error-primary); }
+
+/* Accessibility-switch toggle */
+.iterate-switch { position: relative; width: 42px; height: 24px; border-radius: 999px; padding: 0; cursor: pointer; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); transition: background-color 160ms ease, border-color 160ms ease; }
+.iterate-switch:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.iterate-switch-knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--dsw-alias-label-secondary); transition: transform 160ms ease, background-color 160ms ease; }
+.iterate-switch[data-on] { background: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); }
+.iterate-switch[data-on] .iterate-switch-knob { transform: translateX(18px); background: #FFFFFF; }
+
+/* Shared keyboard focus ring for every iterate interactive control */
+.iterate-btn:focus-visible, .iterate-vbtn:focus-visible, .iterate-batch-btn:focus-visible,
+.iterate-filter-select:focus-visible, .iterate-filter-search:focus-visible,
+.iterate-finding:focus-visible, .iterate-switch:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px;
+}
+
+/* Dashboard empty/onboarding state */
+.iterate-dashboard-empty { opacity: 0.75; }
+.iterate-empty-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+
+/* Convergence-completed progress fill */
+.iterate-progress-fill-done { background: var(--dsw-alias-state-success-primary); }
+
+/* Batch scope segmented control */
+.iterate-batch-scope { opacity: 0.6; }
+.iterate-batch-scope-on { opacity: 1; border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-label-primary); }
+
+/* Overflow dimension chip */
+.iterate-dim-more { opacity: 0.7; font-style: italic; }
+
+/* Button variants */
+.iterate-btn[data-ghost] { background: transparent; }
+.iterate-btn[data-danger] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent); color: var(--dsw-alias-state-error-primary); background: transparent; }
+.iterate-btn[data-danger]:hover { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); }
+.iterate-btn[data-confirm] { border-color: var(--dsw-alias-state-error-primary); color: #FFFFFF; background: var(--dsw-alias-state-error-primary); }
+
+/* Collapsible guide / status code blocks */
+.iterate-guide { margin-top: 4px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; background: var(--dsw-alias-bg-layer-2); }
+.iterate-guide-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--dsw-alias-bg-layer-2); border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.iterate-guide-body { padding: 12px 14px; font-family: var(--dsw-font-mono, ui-monospace, monospace); font-size: 11.5px; line-height: 1.75; white-space: pre-wrap; color: var(--dsw-alias-label-primary); max-height: 260px; overflow: auto; }
+
+/* \u2500\u2500 Runtime observatory panel \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+.iterate-obs { margin: 6px 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); overflow: hidden; font-size: 12px; color: var(--dsw-alias-label-primary); }
+.iterate-obs-head { display: flex; align-items: center; gap: 10px; padding: 8px 14px; cursor: pointer; border-bottom: 1px solid var(--dsw-alias-border-l1); flex-wrap: wrap; }
+.iterate-obs-head[data-closed] { border-bottom: none; }
+.iterate-obs-title { font-weight: 650; }
+.iterate-obs-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); color: var(--dsw-alias-brand-primary); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.iterate-obs-badge[data-live] { color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); }
+.iterate-obs-head-meta { margin-left: auto; font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.iterate-obs-tabs { display: flex; gap: 4px; padding: 8px 14px 0; flex-wrap: wrap; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.iterate-obs-tab { padding: 4px 10px; border-radius: 7px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 11px; cursor: pointer; }
+.iterate-obs-tab[data-active] { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.iterate-obs-body { padding: 12px 14px; max-height: 460px; overflow: auto; }
+.iterate-obs-block { border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+.iterate-obs-block:last-child { margin-bottom: 0; }
+.iterate-obs-block-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--dsw-alias-bg-layer-2); border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 11px; color: var(--dsw-alias-label-primary); flex-wrap: wrap; }
+.iterate-obs-block-head[data-click] { cursor: pointer; }
+.iterate-obs-block-body { padding: 8px 10px; }
+.iterate-obs-chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 6px; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.iterate-obs-msg { padding: 2px 0; color: var(--dsw-alias-label-secondary); line-height: 1.5; font-size: 11px; word-break: break-word; }
+.iterate-obs-file { font-family: var(--dsw-font-mono, ui-monospace, monospace); font-size: 10.5px; color: var(--dsw-alias-label-secondary); word-break: break-all; }
+.iterate-obs-bar { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dsw-alias-label-secondary); flex-wrap: wrap; }
+.iterate-obs-bar b { color: var(--dsw-alias-label-primary); font-weight: 600; }
+.iterate-obs-mono { font-family: var(--dsw-font-mono, ui-monospace, monospace); }
+.iterate-obs-code { padding: 6px 8px; margin-top: 4px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); font-family: var(--dsw-font-mono, ui-monospace, monospace); font-size: 10.5px; color: var(--dsw-alias-label-secondary); white-space: pre-wrap; word-break: break-all; }
+.iterate-obs-input { width: 100%; padding: 8px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font-size: 11px; resize: vertical; }
+.iterate-obs-input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.iterate-obs-input::placeholder { color: var(--dsw-alias-label-secondary); }
+.iterate-obs-empty { font-size: 11px; color: var(--dsw-alias-label-secondary); padding: 8px 0; }
+.iterate-obs-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 11px; color: var(--dsw-alias-label-secondary); flex-wrap: wrap; }
+.iterate-obs-row:last-child { border-bottom: none; }
+.iterate-obs-livebadge { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 6px; border: 1px solid currentColor; background: color-mix(in srgb, currentColor 10%, transparent); font-size: 10.5px; font-weight: 600; white-space: nowrap; }
+`;
+function log(...args) {
+  if (typeof console !== "undefined" && typeof console.error === "function") {
+    console.error(`[${PLUGIN_TAG}]`, ...args);
+  }
+}
+function createStorage() {
+  try {
+    const testKey = "__iterate_storage_test__";
+    window.localStorage.setItem(testKey, "1");
+    window.localStorage.removeItem(testKey);
+    return {
+      get(key) {
+        return window.localStorage.getItem(key);
+      },
+      set(key, value) {
+        window.localStorage.setItem(key, value);
+      },
+      remove(key) {
+        window.localStorage.removeItem(key);
+      },
+      keys() {
+        return Object.keys(window.localStorage);
+      }
+    };
+  } catch {
+    const mem = /* @__PURE__ */ new Map();
+    return {
+      get(key) {
+        return mem.has(key) ? mem.get(key) : null;
+      },
+      set(key, value) {
+        mem.set(key, value);
+      },
+      remove(key) {
+        mem.delete(key);
+      },
+      keys() {
+        return [...mem.keys()];
+      }
+    };
+  }
+}
+function removeStorageByPrefix(prefix) {
+  if (!storage) return 0;
+  let removed = 0;
+  try {
+    for (const key of storage.keys()) {
+      if (key.startsWith(prefix)) {
+        storage.remove(key);
+        removed++;
+      }
+    }
+  } catch (err) {
+    log("failed to clear storage prefix", prefix, err);
+  }
+  return removed;
+}
+function copyText(text) {
+  if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    return navigator.clipboard.writeText(text).then(
+      () => true,
+      () => false
+    );
+  }
+  return Promise.resolve(false);
+}
+function downloadTextFile(filename, text) {
+  if (typeof document === "undefined" || typeof Blob === "undefined" || typeof URL === "undefined") return false;
+  try {
+    const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+var SEVERITY_KEYS = ["critical", "high", "medium", "low"];
+function coerceSeverity(severity) {
+  return SEVERITY_KEYS.includes(severity ?? "") ? severity : "low";
+}
+function severityColor(severity) {
+  return SEVERITY_COLOR[coerceSeverity(severity)];
+}
+function severityLabel(severity) {
+  return SEVERITY_LABEL[coerceSeverity(severity)];
+}
+function readSlots(ctx) {
+  if (ctx && ctx.slots && typeof ctx.slots.inject === "function" && typeof ctx.slots.register === "function") {
+    return ctx.slots;
+  }
+  const raw = ctx && typeof ctx.get === "function" ? ctx.get("slots", false) : void 0;
+  if (raw && typeof raw.inject === "function" && typeof raw.register === "function") {
+    return raw;
+  }
+  return void 0;
+}
+function readTheme(ctx) {
+  if (ctx && ctx.theme && typeof ctx.theme.overrideTokens === "function") {
+    return ctx.theme;
+  }
+  const raw = ctx && typeof ctx.get === "function" ? ctx.get("theme", false) : void 0;
+  if (raw && typeof raw.overrideTokens === "function") {
+    return raw;
+  }
+  return void 0;
+}
+var slotsSvc = void 0;
+var themeSvc = void 0;
+var storage = null;
+var themeDisposer = null;
+var themeEnabled = true;
+var roundPulseListeners = [];
+function emitRoundPulse(round, converged) {
+  const payload = { round, converged: converged === true };
+  for (const fn of roundPulseListeners.slice()) fn(payload);
+}
+function applyThemeSkin() {
+  if (!themeSvc || typeof themeSvc.overrideTokens !== "function") return;
+  clearThemeSkin();
+  themeDisposer = themeSvc.overrideTokens(THEME_SOURCE, ITERATE_TOKENS);
+}
+function clearThemeSkin() {
+  if (themeDisposer) {
+    try {
+      themeDisposer();
+    } catch (err) {
+      log("theme disposer failed", err);
+    }
+    themeDisposer = null;
+  }
+}
+function setThemeEnabled(enabled) {
+  themeEnabled = enabled;
+  if (storage) storage.set(THEME_STORAGE_KEY, enabled ? "1" : "0");
+  if (enabled) applyThemeSkin();
+  else clearThemeSkin();
+}
+function latestReport(session) {
+  if (!session) return null;
+  const raw = scanSessionForReport(session) || findReportInObject(session, void 0, 24);
+  return raw ? normalizeReport(raw) : null;
+}
+function TrendChart({ points }) {
+  if (!points || points.length === 0) return null;
+  const max = trendMax(points);
+  const bars = points.map(
+    (p) => React.createElement("div", {
+      key: p.round,
+      className: "iterate-trend-bar",
+      "data-hot": p.count > 0 ? "" : void 0,
+      title: `Round ${p.round}\uFF1A${p.count} \u9879`,
+      style: { height: `${Math.max(4, Math.round(p.count / max * 24))}px` }
+    })
+  );
+  const summary = points.map((p) => `Round ${p.round}: ${p.count}`).join(", ");
+  return React.createElement("div", {
+    className: "iterate-trend",
+    role: "img",
+    "aria-label": `\u5404\u8F6E\u53D1\u73B0\u6570\u91CF\u8D8B\u52BF\uFF1A${summary}`
+  }, ...bars);
+}
+function ConvergenceDashboard(props) {
+  const [pulseKey, setPulseKey] = React.useState(0);
+  const session = props && props.session ? props.session : null;
+  const report = latestReport(session);
+  React.useEffect(() => {
+    if (!report) return;
+    const cur = getCurrentRound(report);
+    const conv = report.convergence;
+    emitRoundPulse(cur, conv?.converged === true);
+    setPulseKey((k) => k + 1);
+  }, [report && hashReport(report) + ":" + getCurrentRound(report)]);
+  if (!report) {
+    return React.createElement(
+      "div",
+      { "data-iterate-root": "", "data-iterate": "dashboard", className: "iterate-dashboard iterate-dashboard-empty" },
+      React.createElement("span", { className: "iterate-round-badge" }, "iterate"),
+      React.createElement("span", { className: "iterate-empty-hint" }, "\u8FD0\u884C\u4E00\u6B21\u8BC4\u5BA1\u540E\uFF0C\u8FD9\u91CC\u4F1A\u663E\u793A\u6536\u655B\u8FDB\u5EA6\u4E0E\u53D1\u73B0\u7EDF\u8BA1\u3002\u8BD5\u8BD5\u300Creview this project\u300D\u6216\u300C/iterate review-only\u300D")
+    );
+  }
+  const round = getCurrentRound(report);
+  const total = getTotalRounds(report);
+  const progress = computeConvergenceProgress(report);
+  const stats = severityStats(report);
+  const dims = groupByDimension(report);
+  const trend = computeTrendMetrics(report);
+  const resumeCount = scanSessionForResume(session);
+  const imageCount = countSessionImages(session);
+  const resumeChip = resumeCount > 0 ? React.createElement("span", {
+    className: "iterate-chip-resume",
+    key: "resume",
+    title: "\u672C\u6B21\u8FED\u4EE3\u4ECE\u4E0A\u4E00\u6B21\u4E2D\u65AD\u7684\u65AD\u70B9\u7EE7\u7EED\u6267\u884C"
+  }, `\u5DF2\u4E2D\u65AD\u6062\u590D \xD7${String(resumeCount)}`) : null;
+  const imageChip = imageCount > 0 ? React.createElement("span", {
+    className: "iterate-chip-images",
+    key: "images",
+    title: "\u4F1A\u8BDD\u4E2D\u68C0\u6D4B\u5230\u7528\u6237\u9644\u5E26\u7684\u56FE\u7247\uFF0C\u8BC4\u5BA1\u5C06\u4F5C\u4E3A\u89C6\u89C9\u8BC1\u636E\u53C2\u8003"
+  }, `\u9644\u4EF6\u56FE\u7247 ${String(imageCount)}`) : null;
+  const transcript = latestTranscript(session);
+  const phase = transcript ? latestPhase(transcript.phases) : "";
+  const liveChip = transcript && phase ? React.createElement("span", {
+    className: "iterate-chip-phase",
+    key: "phase",
+    "data-live": transcript.active === true ? "" : void 0,
+    title: transcript.active === true ? `\u5F53\u524D\u5904\u4E8E\u300C${phase}\u300D\u9636\u6BB5\uFF08\u8FD0\u884C\u4E2D\uFF09` : `\u6700\u8FD1\u4E00\u6B21\u6267\u884C\u505C\u7559\u5728\u300C${phase}\u300D\u9636\u6BB5\uFF08\u5DF2\u7ED3\u675F\uFF09`
+  }, `${phase} \xB7 ${transcript.active === true ? "\u8FD0\u884C\u4E2D" : "\u5DF2\u7ED3\u675F"}`) : null;
+  const taskModeTranscript = latestTranscript(session);
+  const taskMode = taskModeTranscript?.taskMode;
+  const taskModeChip = taskMode ? React.createElement("span", {
+    className: "iterate-chip-taskmode",
+    key: "taskmode",
+    "data-mode": taskMode,
+    title: taskMode === "code" ? "\u4EE3\u7801\u6A21\u5F0F\uFF1A\u76F4\u63A5\u4FEE\u6539\u6587\u4EF6" : "\u8FED\u4EE3\u6A21\u5F0F\uFF1A\u5BA1\u67E5-\u4FEE\u590D\u5FAA\u73AF"
+  }, taskMode === "code" ? "\u25CF code" : "\u25CF iterate") : null;
+  const dimNames = Object.keys(dims);
+  const dimBadges = dimNames.slice(0, 6).map(
+    (dim) => React.createElement(
+      "span",
+      { key: dim, className: "iterate-dim-badge" },
+      `${dim} \xB7 ${dims[dim]?.length ?? 0}`
+    )
+  );
+  const overflow = dimNames.length - 6;
+  if (overflow > 0) {
+    dimBadges.push(
+      React.createElement(
+        "span",
+        { key: "+more", className: "iterate-dim-badge iterate-dim-more", title: dimNames.slice(6).join(", ") },
+        `+${overflow} \u66F4\u591A`
+      )
+    );
+  }
+  const mode = report.mode;
+  const summary = report.summary;
+  const isNormal = mode === "normal";
+  const fixCount = isNormal && summary && typeof summary.fixedCount === "number" ? summary.fixedCount : null;
+  const fixBadge = fixCount !== null ? React.createElement("span", {
+    className: "iterate-metric",
+    key: "fixes",
+    title: "\u672C\u8F6E\u5DF2\u5E94\u7528\u7684\u539F\u5B50\u4FEE\u590D\u6570\uFF08\u6B63\u5E38\u6A21\u5F0F\uFF09"
+  }, `${String(fixCount)} fixes`) : null;
+  const converged = report.convergence && report.convergence.converged === true;
+  const convChip = converged ? React.createElement("span", {
+    className: "iterate-chip-resume",
+    key: "converged",
+    title: "\u5BA1\u67E5\u5DF2\u6536\u655B\uFF1A\u6700\u540E\u4E00\u8F6E\u672A\u53D1\u73B0\u65B0\u95EE\u9898"
+  }, "\u2713 \u5DF2\u6536\u655B") : null;
+  const sevMetric = (key, label) => React.createElement(
+    "span",
+    { className: "iterate-metric", key, title: label },
+    React.createElement("span", { className: "iterate-sev-dot", style: { background: SEVERITY_COLOR[key] } }),
+    `${label} ${String(stats[key])}`
+  );
+  return React.createElement(
+    "div",
+    { "data-iterate-root": "", "data-iterate": "dashboard", className: "iterate-dashboard" },
+    React.createElement(
+      "span",
+      { className: "iterate-round-badge", "data-pulse": pulseKey > 0 ? "" : void 0, key: `round-${round}` },
+      `Round ${round} / ${total}`
+    ),
+    React.createElement(
+      "div",
+      { className: "iterate-progress" },
+      React.createElement("div", {
+        className: converged ? "iterate-progress-fill iterate-progress-fill-done" : "iterate-progress-fill",
+        style: { width: `${progress}%` }
+      })
+    ),
+    convChip,
+    sevMetric("critical", "CRIT"),
+    sevMetric("high", "HIGH"),
+    sevMetric("medium", "MED"),
+    sevMetric("low", "LOW"),
+    fixBadge,
+    resumeChip,
+    imageChip,
+    liveChip,
+    taskModeChip,
+    React.createElement(TrendChart, { points: trend.points }),
+    ...dimBadges
+  );
+}
+function StatsCard(props) {
+  const report = props.report;
+  const [showHistory, setShowHistory] = React.useState(false);
+  const stats = severityStats(report);
+  const total = stats.critical + stats.high + stats.medium + stats.low;
+  const rows = [
+    { label: "Critical", value: stats.critical, color: SEVERITY_COLOR.critical },
+    { label: "High", value: stats.high, color: SEVERITY_COLOR.high },
+    { label: "Medium", value: stats.medium, color: SEVERITY_COLOR.medium },
+    { label: "Low", value: stats.low, color: SEVERITY_COLOR.low }
+  ].map(
+    (r) => React.createElement(
+      "div",
+      { key: r.label, className: "iterate-stat" },
+      React.createElement("div", { className: "iterate-stat-num", style: { color: r.color } }, String(r.value)),
+      React.createElement("div", { className: "iterate-stat-label" }, r.label)
+    )
+  );
+  const history = buildRoundHistory(report);
+  const trend = computeTrendMetrics(report);
+  const historyRows = history.map(
+    (h) => React.createElement(
+      "tr",
+      { key: h.round },
+      React.createElement("td", { className: "iterate-history-num" }, `Round ${h.round}`),
+      React.createElement("td", {}, String(h.count)),
+      React.createElement("td", { style: { color: SEVERITY_COLOR.critical } }, String(h.critical)),
+      React.createElement("td", { style: { color: SEVERITY_COLOR.high } }, String(h.high)),
+      React.createElement("td", { style: { color: SEVERITY_COLOR.medium } }, String(h.medium)),
+      React.createElement("td", { style: { color: SEVERITY_COLOR.low } }, String(h.low))
+    )
+  );
+  const trendLine = `\u9996\u8F6E ${trend.firstRound} \u2192 \u672B\u8F6E ${trend.lastRound} \u9879\uFF0C\u964D\u5E45 ${trend.reductionPercent}%${trend.converged ? "\uFF0C\u5DF2\u6536\u655B" : ""}`;
+  const completion = buildCompletionSummary(report);
+  return React.createElement(
+    "div",
+    { "data-iterate-root": "", "data-iterate": "stats", className: "iterate-stats" },
+    React.createElement(
+      "div",
+      { className: "iterate-triage-head" },
+      React.createElement("span", {}, "Iterate \xB7 \u6536\u655B\u7EDF\u8BA1"),
+      React.createElement(
+        "span",
+        { className: "iterate-triage-hint" },
+        `Round ${getCurrentRound(report)}/${getTotalRounds(report)} \xB7 ${total} findings \xB7 ${report.convergence && report.convergence.converged ? "\u5DF2\u6536\u655B" : "\u672A\u6536\u655B"}`
+      )
+    ),
+    React.createElement("div", { className: "iterate-stats-grid" }, ...rows),
+    React.createElement("div", { className: "iterate-completion", "data-ok": trend.converged ? "" : void 0, "data-warn": trend.converged ? void 0 : "" }, completion),
+    React.createElement(
+      "div",
+      { className: "iterate-triage-foot", style: { marginTop: 8, borderRadius: 8 } },
+      React.createElement("span", {}, trendLine),
+      React.createElement("button", {
+        className: "iterate-btn",
+        "data-primary": showHistory ? "" : void 0,
+        onClick: () => setShowHistory((v) => !v)
+      }, showHistory ? "\u6536\u8D77\u5386\u53F2" : "\u5386\u53F2 / \u8D8B\u52BF")
+    ),
+    showHistory ? React.createElement(
+      "div",
+      { className: "iterate-history-body" },
+      React.createElement(
+        "table",
+        { className: "iterate-history-table" },
+        React.createElement(
+          "thead",
+          {},
+          React.createElement(
+            "tr",
+            {},
+            React.createElement("th", {}, "\u8F6E\u6B21"),
+            React.createElement("th", {}, "\u53D1\u73B0"),
+            React.createElement("th", { style: { color: SEVERITY_COLOR.critical } }, "CRIT"),
+            React.createElement("th", { style: { color: SEVERITY_COLOR.high } }, "HIGH"),
+            React.createElement("th", { style: { color: SEVERITY_COLOR.medium } }, "MED"),
+            React.createElement("th", { style: { color: SEVERITY_COLOR.low } }, "LOW")
+          )
+        ),
+        React.createElement("tbody", {}, ...historyRows)
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-history-trendline" },
+        React.createElement(TrendChart, { points: trend.points })
+      )
+    ) : null
+  );
+}
+function TriagePanel(props) {
+  const report = props.report;
+  const findings = report.findings || [];
+  const storageKey = TRIAGE_STORAGE_PREFIX + hashReport(report);
+  const [verdicts, setVerdicts] = React.useState(() => {
+    const initial = buildTriageState(report);
+    const saved = storage ? storage.get(storageKey) : null;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === "object") {
+          for (const key of Object.keys(initial)) {
+            if (parsed[key] === "keep" || parsed[key] === "skip" || parsed[key] === "ignore") {
+              initial[key] = parsed[key];
+            }
+          }
+        }
+      } catch {
+      }
+    }
+    return initial;
+  });
+  const [payload, setPayload] = React.useState(null);
+  const [copied, setCopied] = React.useState(false);
+  const [filter, setFilter] = React.useState({ severities: [], dimensions: [], search: "" });
+  const [selected, setSelected] = React.useState(null);
+  const [selectAll, setSelectAll] = React.useState(false);
+  const [cmdCopied, setCmdCopied] = React.useState(null);
+  React.useEffect(() => {
+    if (storage) storage.set(storageKey, JSON.stringify(verdicts));
+  }, [storageKey, verdicts]);
+  const setVerdict = (index, verdict) => {
+    setVerdicts((prev) => ({ ...prev, [String(index)]: verdict }));
+  };
+  const { filtered, indices } = filterFindingsWithIndices(findings, filter);
+  const indicesKey = indices.join(",");
+  const options = buildFilterOptions(findings);
+  const isFilterActive = filter.severities.length > 0 || filter.dimensions.length > 0 || filter.search !== "";
+  const setSeverityFilter = (value) => setFilter((f) => ({ ...f, severities: value ? [value] : [] }));
+  const setDimensionFilter = (value) => setFilter((f) => ({ ...f, dimensions: value ? [value] : [] }));
+  const setSearchFilter = (value) => setFilter((f) => ({ ...f, search: value }));
+  const clearFilter = () => setFilter({ severities: [], dimensions: [], search: "" });
+  const allIndices = allVerdictKeys(verdicts);
+  const batchTarget = selectAll ? allIndices : indices;
+  const applyBatch = (verdict) => {
+    setVerdicts((prev) => batchSetVerdict(prev, batchTarget, verdict));
+  };
+  const doResetVerdicts = () => {
+    setVerdicts((prev) => setAllVerdicts(prev, "keep"));
+    setSelectAll(false);
+  };
+  React.useEffect(() => {
+    const doc = typeof document !== "undefined" ? document : null;
+    if (!doc) return;
+    const onKeyDown = (ev) => {
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      const t = ev.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      if (t && typeof t.isContentEditable === "boolean" && t.isContentEditable) return;
+      const rootEl = doc.querySelector('[data-iterate="triage"]');
+      if (!rootEl) return;
+      const activeEl = doc.activeElement;
+      if (!activeEl) return;
+      if (activeEl !== rootEl && !(typeof rootEl.contains === "function" && rootEl.contains(activeEl))) return;
+      const verdict = keyToVerdict(ev.key);
+      if (verdict && selected !== null && indices.includes(selected)) {
+        ev.preventDefault();
+        setVerdict(selected, verdict);
+        const pos = indices.indexOf(selected);
+        const nextIdx = indices[pos + 1];
+        if (nextIdx !== void 0) setSelected(nextIdx);
+        return;
+      }
+      if (ev.key === "ArrowDown" && indices.length > 0) {
+        ev.preventDefault();
+        const pos = selected === null ? -1 : indices.indexOf(selected);
+        setSelected(indices[Math.min(pos + 1, indices.length - 1)] ?? null);
+        return;
+      }
+      if (ev.key === "ArrowUp" && indices.length > 0) {
+        ev.preventDefault();
+        const pos = selected === null ? 0 : indices.indexOf(selected);
+        setSelected(indices[Math.max(pos - 1, 0)] ?? null);
+      }
+    };
+    doc.addEventListener("keydown", onKeyDown);
+    return () => doc.removeEventListener("keydown", onKeyDown);
+  }, [selected, indicesKey]);
+  const ignored = collectIgnoredEntries(verdicts, findings);
+  const ignoredCount = ignored.length;
+  const counts = countVerdicts(verdicts);
+  const doApproveArchitecturalFix = () => {
+    const cmd = "\u8BF7\u8C03\u7528 `iterate_fix` \u6279\u51C6\u67B6\u6784\u4FEE\u590D\uFF08\u8BBE\u7F6E is_architectural: true\uFF09";
+    copyText(cmd).then((ok) => {
+      if (ok) {
+        setCmdCopied("approve-arch");
+        setTimeout(() => setCmdCopied(null), 1600);
+      }
+    });
+  };
+  const doTriggerNewRound = () => {
+    const cmd = "\u8BF7\u7EE7\u7EED\u6267\u884C\u4E0B\u4E00\u8F6E\u8FED\u4EE3\u5BA1\u67E5";
+    copyText(cmd).then((ok) => {
+      if (ok) {
+        setCmdCopied("new-round");
+        setTimeout(() => setCmdCopied(null), 1600);
+      }
+    });
+  };
+  const doRollbackToCheckpoint = () => {
+    const cmd = "\u8BF7\u8C03\u7528 `iterate_checkpoint` \u56DE\u6EDA\u5230\u4E0A\u4E00\u4E2A\u68C0\u67E5\u70B9";
+    copyText(cmd).then((ok) => {
+      if (ok) {
+        setCmdCopied("rollback");
+        setTimeout(() => setCmdCopied(null), 1600);
+      }
+    });
+  };
+  const doCopyYaml = () => {
+    const yaml = toKnownIntentionalYaml(ignored);
+    if (!yaml) return;
+    copyText(yaml).then((ok) => {
+      if (ok) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1600);
+      } else {
+        setPayload(yaml);
+      }
+    });
+  };
+  const doBuildInstruction = () => {
+    const text = buildApplyInstruction(ignored);
+    setPayload(text);
+    if (text) copyText(text);
+  };
+  const rows = filtered.map((finding, i) => {
+    const index = indices[i];
+    const severity = finding.severity || "low";
+    const verdict = verdicts[String(index)] || "keep";
+    const isSelected = selected === index;
+    const btn = (label, value, title) => React.createElement(
+      "button",
+      {
+        key: value,
+        className: "iterate-vbtn",
+        "data-active": verdict === value ? value : void 0,
+        title,
+        onClick: () => setVerdict(index, value)
+      },
+      label
+    );
+    return React.createElement(
+      "div",
+      {
+        key: String(index),
+        className: "iterate-finding",
+        "data-selected": isSelected ? "" : void 0,
+        role: "option",
+        "aria-selected": isSelected,
+        tabIndex: 0,
+        onClick: () => setSelected(index),
+        onFocus: () => setSelected(index),
+        onKeyDown: (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setSelected(index);
+          }
+        }
+      },
+      React.createElement(
+        "div",
+        { className: "iterate-finding-meta" },
+        React.createElement("span", { className: "iterate-sev-dot", style: { background: severityColor(severity) } }),
+        React.createElement("span", {}, severityLabel(severity)),
+        React.createElement("span", { className: "iterate-finding-file" }, String(finding.file || "?")),
+        finding.line ? React.createElement("span", {}, `:${finding.line}`) : null,
+        React.createElement("span", {}, String(finding.dimension || ""))
+      ),
+      React.createElement("div", { className: "iterate-finding-summary" }, String(finding.summary || "")),
+      React.createElement(
+        "div",
+        { className: "iterate-finding-actions" },
+        btn("y \u4FEE\u590D", "keep", "\u4FDD\u7559\u8BE5 finding\uFF0C\u8FDB\u5165\u4FEE\u590D"),
+        btn("n \u8DF3\u8FC7", "skip", "\u8DF3\u8FC7\u8BE5 finding"),
+        btn("a \u5DF2\u77E5\u6709\u610F", "ignore", "\u6807\u8BB0\u4E3A\u5DF2\u77E5\u6709\u610F\u5E76\u5199\u5165 known_intentional")
+      )
+    );
+  });
+  return React.createElement(
+    "div",
+    { "data-iterate-root": "", "data-iterate": "triage", className: "iterate-triage" },
+    React.createElement(
+      "div",
+      { className: "iterate-triage-head" },
+      React.createElement("span", { role: "heading", "aria-level": 3 }, `Iterate \xB7 Findings \u5206\u8BCA (${filtered.length}/${findings.length})`),
+      React.createElement("span", { className: "iterate-triage-hint" }, "y=\u4FEE\u590D \xB7 n=\u8DF3\u8FC7 \xB7 a=\u5DF2\u77E5\u6709\u610F \xB7 \u2191/\u2193 \u9009\u62E9")
+    ),
+    React.createElement(
+      "div",
+      { className: "iterate-filter" },
+      React.createElement(
+        "select",
+        { className: "iterate-filter-select", value: filter.severities[0] || "", onChange: (e) => setSeverityFilter(e.target.value), "aria-label": "\u6309\u4E25\u91CD\u5EA6\u7B5B\u9009" },
+        React.createElement("option", { value: "" }, "\u5168\u90E8\u4E25\u91CD\u5EA6"),
+        ...options.severities.map(
+          (s) => React.createElement("option", { key: s.value, value: s.value }, `${severityLabel(s.value)} (${s.count})`)
+        )
+      ),
+      React.createElement(
+        "select",
+        { className: "iterate-filter-select", value: filter.dimensions[0] || "", onChange: (e) => setDimensionFilter(e.target.value), "aria-label": "\u6309\u7EF4\u5EA6\u7B5B\u9009" },
+        React.createElement("option", { value: "" }, "\u5168\u90E8\u7EF4\u5EA6"),
+        ...options.dimensions.map(
+          (d) => React.createElement("option", { key: d.value, value: d.value }, `${d.value} (${d.count})`)
+        )
+      ),
+      React.createElement("input", {
+        className: "iterate-filter-search",
+        type: "search",
+        placeholder: "\u641C\u7D22\u6587\u4EF6 / \u6458\u8981\u2026",
+        "aria-label": "\u641C\u7D22\u6587\u4EF6\u6216\u6458\u8981",
+        value: filter.search,
+        onChange: (e) => setSearchFilter(e.target.value)
+      }),
+      React.createElement(
+        "span",
+        { className: "iterate-filter-count" },
+        isFilterActive ? React.createElement("button", { className: "iterate-batch-btn", onClick: clearFilter }, `\u6E05\u9664\u7B5B\u9009\uFF08\u663E\u793A ${filtered.length}\uFF09`) : `\u5171 ${findings.length} \u9879`
+      )
+    ),
+    React.createElement(
+      "div",
+      { className: "iterate-batch" },
+      React.createElement("span", { className: "iterate-batch-label" }, "\u6279\u91CF\u4F5C\u7528\u4E8E\uFF1A"),
+      React.createElement("button", {
+        className: selectAll ? "iterate-batch-btn iterate-batch-scope" : "iterate-batch-btn iterate-batch-scope iterate-batch-scope-on",
+        onClick: () => setSelectAll(false),
+        title: "\u6279\u91CF\u6309\u94AE\u4EC5\u4F5C\u7528\u4E8E\u5F53\u524D\u7B5B\u9009\u53EF\u89C1\u7684 findings"
+      }, `\u53EF\u89C1 ${indices.length}`),
+      React.createElement("button", {
+        className: selectAll ? "iterate-batch-btn iterate-batch-scope iterate-batch-scope-on" : "iterate-batch-btn iterate-batch-scope",
+        onClick: () => setSelectAll(true),
+        title: "\u6279\u91CF\u6309\u94AE\u4F5C\u7528\u4E8E\u5168\u90E8 findings"
+      }, `\u5168\u90E8 ${allIndices.length}`),
+      React.createElement("button", { className: "iterate-batch-btn", onClick: () => applyBatch("keep") }, "y"),
+      React.createElement("button", { className: "iterate-batch-btn", onClick: () => applyBatch("skip") }, "n"),
+      React.createElement("button", { className: "iterate-batch-btn", onClick: () => applyBatch("ignore") }, "a"),
+      React.createElement("button", { className: "iterate-batch-btn", onClick: doResetVerdicts, title: "\u628A\u6240\u6709\u5224\u5B9A\u6062\u590D\u4E3A\u9ED8\u8BA4 y\uFF08\u4FEE\u590D\uFF09" }, "\u91CD\u7F6E")
+    ),
+    ...rows,
+    React.createElement(
+      "div",
+      { className: "iterate-triage-foot" },
+      React.createElement("span", {}, `y ${counts.keep} \xB7 n ${counts.skip} \xB7 a ${counts.ignore} \xB7 \u5F85\u5199\u56DE known_intentional\uFF1A${ignoredCount} \u6761`),
+      React.createElement(
+        "span",
+        { style: { display: "flex", gap: 6 } },
+        React.createElement("button", {
+          className: "iterate-btn",
+          "data-primary": "",
+          "data-copied": copied ? "" : void 0,
+          onClick: doCopyYaml,
+          disabled: ignoredCount === 0,
+          title: ignoredCount === 0 ? "\u5F53\u524D\u6CA1\u6709\u6807\u8BB0\u4E3A\u300C\u5DF2\u77E5\u6709\u610F\u300D\u7684 finding" : "\u590D\u5236 known_intentional YAML"
+        }, copied ? "\u5DF2\u590D\u5236" : `\u590D\u5236 known_intentional${ignoredCount > 0 ? `\uFF08${ignoredCount}\uFF09` : ""}`),
+        React.createElement("button", {
+          className: "iterate-btn",
+          onClick: doBuildInstruction,
+          disabled: ignoredCount === 0,
+          title: ignoredCount === 0 ? "\u5F53\u524D\u6CA1\u6709\u6807\u8BB0\u4E3A\u300C\u5DF2\u77E5\u6709\u610F\u300D\u7684 finding" : "\u751F\u6210 iterate_triage \u5E94\u7528\u6307\u4EE4"
+        }, "\u751F\u6210\u5E94\u7528\u6307\u4EE4")
+      )
+    ),
+    // v3.0: Command buttons for native actions (§8)
+    React.createElement(
+      "div",
+      { className: "iterate-triage-foot", style: { borderTop: "1px solid var(--dsw-alias-border-l1)" } },
+      React.createElement("span", { style: { fontSize: 11, fontWeight: 600, color: "var(--dsw-alias-label-secondary)" } }, "\u6307\u6325\u64CD\u4F5C"),
+      React.createElement(
+        "span",
+        { style: { display: "flex", gap: 6 } },
+        React.createElement("button", {
+          className: "iterate-cmd",
+          "data-primary": "",
+          "data-copied": cmdCopied === "approve-arch" ? "" : void 0,
+          onClick: doApproveArchitecturalFix,
+          title: "\u6279\u51C6\u67B6\u6784\u4FEE\u590D\uFF08\u590D\u5236\u6307\u4EE4\u6587\u672C\uFF09"
+        }, cmdCopied === "approve-arch" ? "\u5DF2\u590D\u5236" : "\u6279\u51C6\u67B6\u6784\u4FEE\u590D"),
+        React.createElement("button", {
+          className: "iterate-cmd",
+          "data-copied": cmdCopied === "new-round" ? "" : void 0,
+          onClick: doTriggerNewRound,
+          title: "\u89E6\u53D1\u65B0\u4E00\u8F6E\u8FED\u4EE3\u5BA1\u67E5"
+        }, cmdCopied === "new-round" ? "\u5DF2\u590D\u5236" : "\u89E6\u53D1\u65B0\u4E00\u8F6E"),
+        React.createElement("button", {
+          className: "iterate-cmd",
+          "data-danger": "",
+          "data-copied": cmdCopied === "rollback" ? "" : void 0,
+          onClick: doRollbackToCheckpoint,
+          title: "\u56DE\u6EDA\u5230\u4E0A\u4E00\u4E2A\u68C0\u67E5\u70B9"
+        }, cmdCopied === "rollback" ? "\u5DF2\u590D\u5236" : "\u56DE\u6EDA\u68C0\u67E5\u70B9")
+      )
+    ),
+    payload ? React.createElement("div", { className: "iterate-payload" }, payload) : null
+  );
+}
+function VerdictBanner(props) {
+  const verdict = props.verdict;
+  if (!verdict) return null;
+  const ok = verdict.verdict === "approved";
+  const item = (num, unit) => React.createElement(
+    "span",
+    { className: "iterate-verdict-item" },
+    React.createElement("b", {}, String(num)),
+    ` ${unit}`
+  );
+  const phrase = (text) => React.createElement("span", { className: "iterate-verdict-item" }, text);
+  return React.createElement(
+    "div",
+    { "data-iterate-root": "", "data-iterate": "verdict", className: "iterate-verdict" },
+    React.createElement(
+      "span",
+      { className: "iterate-verdict-tag", "data-ok": ok ? "" : void 0, "data-warn": ok ? void 0 : "" },
+      ok ? "\u62A5\u544A\u5DF2\u6279\u51C6" : "\u62A5\u544A\u9700\u4FEE\u8BA2"
+    ),
+    React.createElement(
+      "span",
+      { className: "iterate-verdict-detail" },
+      item(verdict.totalFindings, "\u9879\u53D1\u73B0"),
+      item(verdict.totalRounds, "\u8F6E"),
+      item(verdict.checksRun, "\u9879\u5BA1\u67E5"),
+      ok ? phrase("\u62A5\u544A\u901A\u8FC7\u5168\u90E8\u4E00\u81F4\u6027\u68C0\u67E5") : item(verdict.reportIssues, "\u5904\u62A5\u544A\u7F3A\u9677"),
+      phrase(verdict.converged ? "\u5DF2\u6536\u655B" : "\u672A\u6536\u655B")
+    )
+  );
+}
+function TurnTailEntry(props) {
+  const candidates = [];
+  if (props && props.turn) candidates.push(props.turn);
+  if (props && props.matched) candidates.push(props.matched);
+  if (props && props.data) candidates.push(props.data);
+  candidates.push(props);
+  let verdict = null;
+  for (const c of candidates) {
+    const run = scanSessionForRunSummary(c);
+    if (run) {
+      verdict = extractVerdict(run);
+      break;
+    }
+  }
+  let report = null;
+  for (const c of candidates) {
+    const raw = findReportInObject(c, void 0, 24) || scanSessionForReport(c);
+    if (raw) {
+      report = normalizeReport(raw);
+      break;
+    }
+  }
+  const blocks = [];
+  if (verdict) blocks.push(React.createElement(VerdictBanner, { key: "verdict", verdict }));
+  if (report) {
+    const panel = !report.findings || report.findings.length === 0 ? React.createElement(StatsCard, { report }) : React.createElement(TriagePanel, { report });
+    blocks.push(React.createElement("div", { key: "report" }, panel));
+  }
+  if (blocks.length === 0) return null;
+  return React.createElement("div", { "data-iterate-root": "", className: "iterate-turn-tail-root" }, ...blocks);
+}
+function ProgressCapsule() {
+  const [info, setInfo] = React.useState(null);
+  React.useEffect(() => {
+    let timer = null;
+    const listener = (payload) => {
+      const converged = payload && payload.converged === true;
+      const round = payload && typeof payload.round === "number" ? payload.round : "?";
+      setInfo({ text: converged ? `Round ${round} \u5B8C\u6210 \xB7 \u5DF2\u6536\u655B` : `Round ${round} \u5B8C\u6210`, ok: converged });
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setInfo(null), converged ? 3600 : 2400);
+    };
+    roundPulseListeners.push(listener);
+    return () => {
+      const i = roundPulseListeners.indexOf(listener);
+      if (i >= 0) roundPulseListeners.splice(i, 1);
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+  if (!info) return null;
+  return React.createElement("div", { "data-iterate-root": "", className: "iterate-capsule", "data-ok": info.ok ? "" : void 0 }, info.text);
+}
+function SettingsPanel(_props) {
+  const [enabled, setEnabled] = React.useState(themeEnabled);
+  const [guideCopied, setGuideCopied] = React.useState(false);
+  const [statusCopied, setStatusCopied] = React.useState(false);
+  const [showGuide, setShowGuide] = React.useState(false);
+  const [showStatus, setShowStatus] = React.useState(false);
+  const [confirming, setConfirming] = React.useState(false);
+  const [clearedInfo, setClearedInfo] = React.useState(null);
+  const guide = buildConfigEditGuide();
+  const statusGuide = buildRuntimeStatusGuide();
+  const toggleTheme = () => {
+    const next = !enabled;
+    setEnabled(next);
+    setThemeEnabled(next);
+  };
+  const flashCopied = (slot) => {
+    const setter = slot === "guide" ? setGuideCopied : setStatusCopied;
+    setter(true);
+    setTimeout(() => setter(false), 1600);
+  };
+  const doCopy = (text, slot) => {
+    copyText(text).then((ok) => {
+      if (ok) flashCopied(slot);
+    });
+  };
+  const requestClear = () => {
+    if (confirming) {
+      const count = removeStorageByPrefix(TRIAGE_STORAGE_PREFIX);
+      setClearedInfo(count);
+      setConfirming(false);
+      setTimeout(() => setClearedInfo(null), 3e3);
+      return;
+    }
+    setConfirming(true);
+    setTimeout(() => setConfirming(false), 3e3);
+  };
+  const clearButton = clearedInfo !== null ? React.createElement("button", { className: "iterate-btn", "data-copied": "", disabled: true }, `\u5DF2\u6E05\u9664 ${clearedInfo} \u6761`) : React.createElement("button", {
+    className: "iterate-btn",
+    "data-danger": confirming ? void 0 : "",
+    "data-confirm": confirming ? "" : void 0,
+    onClick: requestClear,
+    title: confirming ? "\u518D\u6B21\u70B9\u51FB\u4EE5\u786E\u8BA4\u6E05\u9664\u5168\u90E8\u5224\u5B9A" : "\u6E05\u9664\u6240\u6709\u5206\u8BCA\u5224\u5B9A\u8BB0\u5F55\uFF08\u9700\u8981\u4E8C\u6B21\u786E\u8BA4\uFF09"
+  }, confirming ? "\u786E\u8BA4\u6E05\u9664\uFF1F" : "\u6E05\u9664\u5206\u8BCA");
+  const themeCard = React.createElement(
+    "div",
+    { key: "theme", className: "iterate-scard" },
+    React.createElement(
+      "div",
+      { className: "iterate-scard-head" },
+      React.createElement(
+        "div",
+        {},
+        React.createElement("div", { className: "iterate-settings-title" }, "\u8FED\u4EE3\u4E3B\u9898"),
+        React.createElement("div", { className: "iterate-settings-desc" }, "\u542F\u7528\u6696\u7425\u73C0\u914D\u8272\u7684 iterate \u4E13\u5C5E\u76AE\u80A4\uFF0C\u8986\u76D6 dsh \u9ED8\u8BA4\u4E3B\u9898\u4EE4\u724C\u3002")
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-scard-actions" },
+        React.createElement("span", { className: "iterate-chip", "data-ok": enabled ? "" : void 0 }, enabled ? "\u5DF2\u542F\u7528" : "\u5DF2\u5173\u95ED"),
+        React.createElement("button", {
+          role: "switch",
+          "aria-checked": enabled,
+          "aria-label": "\u5F00\u5173 iterate \u4E3B\u9898",
+          className: "iterate-switch",
+          "data-on": enabled ? "" : void 0,
+          onClick: toggleTheme
+        }, React.createElement("span", { className: "iterate-switch-knob" }))
+      )
+    )
+  );
+  const dataCard = React.createElement(
+    "div",
+    { key: "data", className: "iterate-scard" },
+    React.createElement(
+      "div",
+      { className: "iterate-scard-head" },
+      React.createElement(
+        "div",
+        {},
+        React.createElement("div", { className: "iterate-settings-title" }, "\u5206\u8BCA\u6301\u4E45\u5316"),
+        React.createElement("div", { className: "iterate-settings-desc" }, "y / n / a \u5224\u5B9A\u4FDD\u5B58\u5728\u672C\u5730\u6D4F\u89C8\u5668\uFF08localStorage\uFF09\uFF0C\u5237\u65B0\u4F1A\u8BDD\u540E\u4ECD\u4FDD\u7559\u3002")
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-scard-actions" },
+        React.createElement("span", { className: "iterate-chip" }, "\u672C\u5730\u4FDD\u5B58"),
+        clearButton
+      )
+    )
+  );
+  const guideCard = React.createElement(
+    "div",
+    { key: "guide", className: "iterate-scard" },
+    React.createElement(
+      "div",
+      { className: "iterate-scard-head" },
+      React.createElement(
+        "div",
+        {},
+        React.createElement("div", { className: "iterate-settings-title" }, "\u914D\u7F6E\u7BA1\u7406"),
+        React.createElement("div", { className: "iterate-settings-desc" }, "\u76EE\u6807 / \u7EF4\u5EA6 / \u6700\u5927\u8F6E\u6570\u5199\u5728\u9879\u76EE\u7684 iterate.config.yaml\uFF0C\u590D\u5236\u6307\u5F15\u53EF\u8BA9\u6A21\u578B\u6309\u9700\u8C03\u6574\u3002")
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-scard-actions" },
+        React.createElement("button", { className: "iterate-btn", "data-primary": "", "data-copied": guideCopied ? "" : void 0, onClick: () => doCopy(guide, "guide") }, guideCopied ? "\u5DF2\u590D\u5236" : "\u590D\u5236\u6307\u5F15"),
+        React.createElement("button", { className: "iterate-btn", "data-ghost": "", onClick: () => setShowGuide((v) => !v) }, showGuide ? "\u6536\u8D77" : "\u5C55\u5F00")
+      )
+    ),
+    showGuide ? React.createElement(
+      "div",
+      { className: "iterate-guide" },
+      React.createElement(
+        "div",
+        { className: "iterate-guide-bar" },
+        React.createElement("span", {}, "iterate.config.yaml \u53EF\u7F16\u8F91\u5B57\u6BB5"),
+        React.createElement("button", { className: "iterate-btn", "data-ghost": "", onClick: () => doCopy(guide, "guide") }, "\u590D\u5236")
+      ),
+      React.createElement("div", { className: "iterate-guide-body" }, guide)
+    ) : null
+  );
+  const statusCard = React.createElement(
+    "div",
+    { key: "status", className: "iterate-scard" },
+    React.createElement(
+      "div",
+      { className: "iterate-scard-head" },
+      React.createElement(
+        "div",
+        {},
+        React.createElement("div", { className: "iterate-settings-title" }, "\u72B6\u6001\u6982\u89C8"),
+        React.createElement("div", { className: "iterate-settings-desc" }, "\u67E5\u770B\u8FD0\u884C\u65F6\u4EA7\u7269\u5E03\u5C40\u4E0E\u6E05\u7406\u6307\u5F15\u3002iterate_status / iterate_history / iterate_prune \u5DE5\u5177\u7528\u4E8E\u67E5\u770B\u548C\u7BA1\u7406\u3002")
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-scard-actions" },
+        React.createElement("button", { className: "iterate-btn", "data-primary": "", "data-copied": statusCopied ? "" : void 0, onClick: () => doCopy(statusGuide, "status") }, statusCopied ? "\u5DF2\u590D\u5236" : "\u590D\u5236\u6307\u5F15"),
+        React.createElement("button", { className: "iterate-btn", "data-ghost": "", onClick: () => setShowStatus((v) => !v) }, showStatus ? "\u6536\u8D77" : "\u5C55\u5F00")
+      )
+    ),
+    showStatus ? React.createElement(
+      "div",
+      { className: "iterate-guide" },
+      React.createElement(
+        "div",
+        { className: "iterate-guide-bar" },
+        React.createElement("span", {}, "\u8FD0\u884C\u65F6\u5E03\u5C40\u4E0E\u6E05\u7406"),
+        React.createElement("button", { className: "iterate-btn", "data-ghost": "", onClick: () => doCopy(statusGuide, "status") }, "\u590D\u5236")
+      ),
+      React.createElement("div", { className: "iterate-guide-body" }, statusGuide)
+    ) : null
+  );
+  const banner = React.createElement(
+    "div",
+    { key: "banner", className: "iterate-scard" },
+    React.createElement(
+      "div",
+      { className: "iterate-scard-head" },
+      React.createElement(
+        "div",
+        {},
+        React.createElement("div", { className: "iterate-settings-title" }, "iterate"),
+        React.createElement("div", { className: "iterate-settings-desc" }, "\u4E3A\u6BCF\u6B21\u4EE3\u7801\u8BC4\u5BA1\u751F\u6210 Review \u62A5\u544A\u4E0E\u4EA4\u4E92\u5F0F\u5206\u8BCA\u89C6\u56FE\uFF0C\u4E13\u6CE8 AI \u81EA\u6211\u5BA1\u67E5\u4E0E\u4FEE\u6B63\u3002")
+      ),
+      React.createElement(
+        "span",
+        { className: "iterate-pill" },
+        React.createElement("span", { className: "iterate-pill-dot" }),
+        "\u5C31\u7EEA"
+      )
+    )
+  );
+  return React.createElement(
+    "div",
+    { "data-iterate-root": "", "data-iterate": "settings", className: "iterate-settings" },
+    React.createElement("div", { className: "iterate-settings-title", style: { fontSize: 15, fontWeight: 700 } }, "iterate \u8BBE\u7F6E"),
+    banner,
+    themeCard,
+    dataCard,
+    guideCard,
+    statusCard
+  );
+}
+var OBS_TABS = [
+  { key: "live", label: "\u5B9E\u65F6\u6D3B\u52A8\u6D41" },
+  { key: "f1", label: "\u5BA1\u67E5\u7EBF\u7A0B" },
+  { key: "f2", label: "\u6536\u655B\u8D8B\u52BF" },
+  { key: "f3", label: "\u53D1\u73B0\u5B9A\u4F4D" },
+  { key: "f4", label: "\u4FEE\u590D\u4E0E\u56DE\u6EDA" },
+  { key: "f5", label: "\u65AD\u70B9\u6062\u590D" },
+  { key: "f6", label: "\u8FD0\u884C\u63A7\u5236\u53F0" },
+  { key: "f7", label: "\u51B3\u7B56\u65F6\u95F4\u7EBF" },
+  // v3.0: Quality Command Center tabs
+  { key: "f8", label: "\u8D28\u91CF\u95E8\u7981" },
+  { key: "f9", label: "\u7ECF\u9A8C\u94F6\u884C" },
+  { key: "f10", label: "\u9632\u5FA1\u4E8B\u4EF6" }
+];
+var OBS_LIVE_META = {
+  read: { label: "\u9605\u8BFB", color: "var(--dsw-alias-brand-primary)" },
+  fix: { label: "\u4FEE\u590D", color: "var(--dsw-alias-state-success-primary)" },
+  rollback: { label: "\u56DE\u6EDA", color: "var(--dsw-alias-state-error-primary)" },
+  diff: { label: "\u5DEE\u5F02", color: "var(--dsw-alias-state-warn-primary)" },
+  review: { label: "\u5BA1\u67E5", color: "var(--dsw-alias-brand-primary)" },
+  triage: { label: "\u5206\u6D41", color: "var(--dsw-alias-state-warn-primary)" },
+  checkpoint: { label: "\u65AD\u70B9", color: "var(--dsw-alias-brand-primary)" },
+  validate: { label: "\u6821\u9A8C", color: "var(--dsw-alias-state-success-primary)" },
+  log: { label: "\u8BB0\u5F55", color: "var(--dsw-alias-label-secondary)" },
+  prune: { label: "\u6E05\u7406", color: "var(--dsw-alias-state-warn-primary)" },
+  info: { label: "\u4FE1\u606F", color: "var(--dsw-alias-label-secondary)" }
+};
+var OBS_LIVE_FALLBACK_COLOR = "var(--dsw-alias-label-secondary)";
+function formatObsLiveTime(ts) {
+  if (!ts) return "";
+  let date = null;
+  const num = Number(ts);
+  if (typeof ts === "string" && ts !== "" && !Number.isNaN(num) && /^\d+$/.test(ts)) {
+    date = new Date(num);
+  } else {
+    const d = new Date(ts);
+    date = Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (!date) return String(ts);
+  const p = (n) => String(n).padStart(2, "0");
+  const h = p(date.getHours());
+  const mi = p(date.getMinutes());
+  const s = p(date.getSeconds());
+  return `${p(date.getDate())}/${p(date.getMonth() + 1)} ${h}:${mi}:${s}`;
+}
+function latestTranscript(session) {
+  if (!session) return null;
+  const raw = scanSessionForTranscript(session);
+  return raw ? normalizeTranscript(raw) : null;
+}
+function buildObsFixInstruction(f) {
+  const payload = JSON.stringify({
+    file: String(f.file || ""),
+    ...typeof f.line === "number" && f.line > 0 ? { line: f.line } : {},
+    dimension: String(f.dimension || ""),
+    summary: String(f.summary || ""),
+    ...f.suggested_fix ? { suggested_fix: String(f.suggested_fix) } : {}
+  }, null, 2);
+  return `\u8BF7\u8C03\u7528 \`iterate_fix\` \u4FEE\u590D\u4EE5\u4E0B finding\uFF1A
+
+\`\`\`json
+${payload}
+\`\`\``;
+}
+function ObservatoryPanel(props) {
+  const session = props && props.session ? props.session : null;
+  const manifest = latestTranscript(session);
+  const [open, setOpen] = React.useState(false);
+  const [tab, setTab] = React.useState("live");
+  const [expandedThreads, setExpandedThreads] = React.useState(/* @__PURE__ */ new Set());
+  const [threadMode, setThreadMode] = React.useState("auto");
+  const [copiedKey, setCopiedKey] = React.useState(null);
+  const [copyFailText, setCopyFailText] = React.useState(null);
+  const [nudgeText, setNudgeText] = React.useState("");
+  const [timelineType, setTimelineType] = React.useState("");
+  const [timelineRound, setTimelineRound] = React.useState("");
+  const [timelineSearch, setTimelineSearch] = React.useState("");
+  const [liveType, setLiveType] = React.useState("");
+  const [f3Filter, setF3Filter] = React.useState(
+    { severities: [], dimensions: [], search: "" }
+  );
+  const [expSearch, setExpSearch] = React.useState("");
+  const [expResults, setExpResults] = React.useState([]);
+  const [defenseFilter, setDefenseFilter] = React.useState("");
+  const copyTimer = React.useRef(null);
+  React.useEffect(() => () => {
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+  }, []);
+  const copyInstruction = (key, text) => {
+    if (!text) return;
+    copyText(text).then((ok) => {
+      if (!ok) {
+        setCopyFailText(text);
+        return;
+      }
+      setCopiedKey(key);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopiedKey((cur) => cur === key ? null : cur), 1600);
+    });
+  };
+  const toggleThread = (key) => {
+    setThreadMode("auto");
+    setExpandedThreads((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const exportObservatory = () => {
+    if (!manifest) return;
+    const json = serializeObservatoryExport(manifest, manifest.live || []);
+    const filename = `iterate-observatory-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.json`;
+    const flash = () => {
+      setCopiedKey("export");
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopiedKey((cur) => cur === "export" ? null : cur), 1600);
+    };
+    if (downloadTextFile(filename, json)) {
+      flash();
+      return;
+    }
+    copyText(json).then((ok) => {
+      if (!ok) {
+        setCopyFailText(json);
+        return;
+      }
+      flash();
+    });
+  };
+  const setAllThreads = (mode) => {
+    setThreadMode(mode);
+    setExpandedThreads(/* @__PURE__ */ new Set());
+  };
+  const isThreadExpanded = (key) => {
+    if (threadMode === "all") return true;
+    if (threadMode === "none") return false;
+    return expandedThreads.has(key);
+  };
+  if (!manifest) {
+    return React.createElement(
+      "div",
+      { "data-iterate-root": "", "data-iterate": "obs", className: "iterate-obs" },
+      React.createElement(
+        "div",
+        { className: "iterate-obs-head", "data-closed": "" },
+        React.createElement("span", { className: "iterate-obs-title" }, "iterate \u89C2\u6D4B\u53F0"),
+        React.createElement("span", { className: "iterate-obs-head-meta" }, "\u6682\u65E0\u8FD0\u884C\u65F6\u89C2\u6D4B\u6570\u636E")
+      )
+    );
+  }
+  const live = manifest.active === true;
+  const roundMeta = typeof manifest.round === "number" ? typeof manifest.maxRounds === "number" ? `Round ${manifest.round}/${manifest.maxRounds}` : `Round ${manifest.round}` : "";
+  const headMeta = [manifest.mode || "", roundMeta, manifest.updatedAt || ""].filter(Boolean).join(" \xB7 ");
+  const threadFindingPill = (f, keyBase) => {
+    const loc = `${String(f.file || "?")}${typeof f.line === "number" && f.line > 0 ? `:${f.line}` : ""}`;
+    return React.createElement(
+      "div",
+      { key: keyBase, className: "iterate-obs-row" },
+      React.createElement("span", { className: "iterate-sev-dot", style: { background: severityColor(f.severity) } }),
+      React.createElement("span", {}, severityLabel(f.severity)),
+      React.createElement("span", { className: "iterate-obs-file" }, loc),
+      React.createElement("span", {}, String(f.dimension || "")),
+      React.createElement("span", { className: "iterate-obs-msg" }, String(f.summary || ""))
+    );
+  };
+  const renderThreads = () => {
+    const rounds = manifest.rounds || [];
+    if (rounds.length === 0) {
+      return React.createElement("div", { className: "iterate-obs-empty" }, "\u6682\u65E0\u5BA1\u67E5\u7EBF\u7A0B");
+    }
+    return React.createElement(
+      "div",
+      {},
+      React.createElement(
+        "div",
+        { className: "iterate-obs-bar", style: { marginBottom: 8, flexWrap: "wrap" } },
+        React.createElement("b", {}, "\u5BA1\u67E5\u7EBF\u7A0B"),
+        React.createElement("button", { className: "iterate-btn", onClick: () => setAllThreads("all"), title: "\u5C55\u5F00\u5168\u90E8\u7EBF\u7A0B" }, "\u5168\u90E8\u5C55\u5F00"),
+        React.createElement("button", { className: "iterate-btn", onClick: () => setAllThreads("none"), title: "\u6536\u8D77\u5168\u90E8\u7EBF\u7A0B" }, "\u5168\u90E8\u6536\u8D77"),
+        React.createElement(
+          "span",
+          { className: "iterate-filter-count" },
+          `${threadMode === "all" ? "\u5168\u90E8\u5C55\u5F00" : threadMode === "none" ? "\u5168\u90E8\u6536\u8D77" : "\u81EA\u7531\u5207\u6362"} \xB7 ${rounds.length} \u8F6E`
+        )
+      ),
+      ...rounds.map((r, ri) => {
+        const threads = r.threads || [];
+        const fCount = threads.reduce((sum, t) => sum + (t.findings ? t.findings.length : 0), 0);
+        const threadBlocks = threads.length === 0 ? [React.createElement("div", { key: "none", className: "iterate-obs-empty" }, "\u672C\u8F6E\u65E0\u7EBF\u7A0B")] : threads.map((t, ti) => {
+          const key = `${ri}-${ti}`;
+          const expanded = isThreadExpanded(key);
+          const dim = t.dimension || "\u672A\u547D\u540D\u7EF4\u5EA6";
+          const tFindings = t.findings || [];
+          const files = t.readFiles || [];
+          const msgs = t.messages || [];
+          return React.createElement(
+            "div",
+            { key, className: "iterate-obs-block" },
+            React.createElement(
+              "div",
+              { className: "iterate-obs-block-head", "data-click": "", onClick: () => toggleThread(key), title: expanded ? "\u6536\u8D77\u7EBF\u7A0B" : "\u5C55\u5F00\u7EBF\u7A0B" },
+              React.createElement("span", {}, expanded ? "\u2212" : "+"),
+              React.createElement("b", {}, dim),
+              React.createElement("span", { className: "iterate-obs-chip" }, `attempt ${typeof t.attempt === "number" ? t.attempt : "?"}`),
+              React.createElement("span", { className: "iterate-obs-chip" }, `${tFindings.length} findings`)
+            ),
+            expanded ? React.createElement(
+              "div",
+              { className: "iterate-obs-block-body" },
+              React.createElement(
+                "div",
+                { className: "iterate-obs-bar" },
+                React.createElement("b", {}, "\u53D9\u8FF0"),
+                React.createElement("span", { className: "iterate-obs-head-meta" }, `${msgs.length} \u6761`)
+              ),
+              ...msgs.length === 0 ? [React.createElement("div", { key: "msg-none", className: "iterate-obs-empty" }, "\u65E0\u7EBF\u7D22\u53D9\u8FF0")] : msgs.map((m, mi) => React.createElement("div", { key: mi, className: "iterate-obs-msg" }, String(m))),
+              ...files.length > 0 ? [
+                React.createElement(
+                  "div",
+                  { key: "files-h", className: "iterate-obs-bar", style: { marginTop: 6 } },
+                  React.createElement("b", {}, "\u8BFB\u53D6\u6587\u4EF6")
+                ),
+                ...files.map(
+                  (f, fi) => React.createElement("div", { key: `f${fi}`, className: "iterate-obs-file" }, String(f))
+                )
+              ] : [],
+              React.createElement(
+                "div",
+                { className: "iterate-obs-bar", style: { marginTop: 6 } },
+                React.createElement("b", {}, "\u53D1\u73B0")
+              ),
+              ...tFindings.length === 0 ? [React.createElement("div", { key: "finding-none", className: "iterate-obs-empty" }, "\u672C\u7EBF\u7A0B\u65E0\u53D1\u73B0")] : tFindings.map((f, fi) => threadFindingPill(f, `tf${fi}`))
+            ) : null
+          );
+        });
+        return React.createElement(
+          "div",
+          { key: ri, className: "iterate-obs-block" },
+          React.createElement(
+            "div",
+            { className: "iterate-obs-block-head" },
+            React.createElement("b", {}, `Round ${typeof r.round === "number" ? r.round : ri + 1}`),
+            React.createElement("span", { className: "iterate-obs-chip" }, `${threads.length} \u7EBF\u7A0B`),
+            React.createElement("span", { className: "iterate-obs-head-meta" }, `${fCount} findings`)
+          ),
+          React.createElement("div", { className: "iterate-obs-block-body" }, ...threadBlocks)
+        );
+      })
+    );
+  };
+  const renderTrend = () => {
+    const conv = manifest.convergence || [];
+    if (conv.length === 0) {
+      return React.createElement("div", { className: "iterate-obs-empty" }, "\u6682\u65E0\u6536\u655B\u6570\u636E");
+    }
+    const points = conv.map((n, i) => ({ round: i + 1, count: n }));
+    return React.createElement(
+      "div",
+      {},
+      React.createElement(TrendChart, { points }),
+      React.createElement(
+        "div",
+        { className: "iterate-obs-bar", style: { marginTop: 6 } },
+        `\u5404\u8F6E\u53D1\u73B0\u6570\u91CF\uFF1A${conv.join(" \u2192 ")}${typeof manifest.round === "number" ? ` \xB7 \u5F53\u524D Round ${manifest.round}` : ""}`
+      )
+    );
+  };
+  const renderFindings = () => {
+    const findings = manifest.findings || [];
+    if (findings.length === 0) {
+      return React.createElement("div", { className: "iterate-obs-empty" }, "\u6682\u65E0\u53D1\u73B0");
+    }
+    const opts = buildFilterOptions(findings);
+    const { filtered } = filterFindingsWithIndices(findings, f3Filter);
+    const filterActive = f3Filter.severities.length > 0 || f3Filter.dimensions.length > 0 || f3Filter.search.trim() !== "";
+    const toggleSeverity = (sev) => {
+      setF3Filter((prev) => ({
+        ...prev,
+        severities: prev.severities.includes(sev) ? prev.severities.filter((s) => s !== sev) : [...prev.severities, sev]
+      }));
+    };
+    const filterBar = React.createElement(
+      "div",
+      { className: "iterate-obs-bar", style: { marginBottom: 8, flexWrap: "wrap" } },
+      React.createElement("b", {}, "\u53D1\u73B0"),
+      ...opts.severities.map(
+        (s) => React.createElement("button", {
+          key: `sev-${s.value}`,
+          className: "iterate-filter-chip",
+          "data-active": f3Filter.severities.includes(s.value) ? "" : void 0,
+          title: `${s.value}\uFF08${s.count} \u9879\uFF09`,
+          onClick: () => toggleSeverity(s.value)
+        }, `${s.value} ${s.count}`)
+      ),
+      React.createElement(
+        "select",
+        {
+          className: "iterate-filter-select",
+          value: f3Filter.dimensions[0] || "",
+          "aria-label": "\u6309\u7EF4\u5EA6\u7B5B\u9009",
+          onChange: (e) => {
+            const v = e.target.value;
+            setF3Filter((prev) => ({ ...prev, dimensions: v ? [v] : [] }));
+          }
+        },
+        React.createElement("option", { value: "" }, "\u5168\u90E8\u7EF4\u5EA6"),
+        ...opts.dimensions.map(
+          (d) => React.createElement("option", { key: d.value, value: d.value }, `${d.value} (${d.count})`)
+        )
+      ),
+      React.createElement("input", {
+        className: "iterate-filter-search",
+        type: "search",
+        placeholder: "\u641C\u7D22\u53D1\u73B0\u2026",
+        "aria-label": "\u641C\u7D22\u53D1\u73B0",
+        value: f3Filter.search,
+        onChange: (e) => setF3Filter((prev) => ({ ...prev, search: e.target.value }))
+      }),
+      filterActive ? React.createElement("button", {
+        className: "iterate-filter-clear",
+        onClick: () => setF3Filter({ severities: [], dimensions: [], search: "" }),
+        title: "\u6E05\u9664\u5168\u90E8\u7B5B\u9009"
+      }, "\u6E05\u9664\u7B5B\u9009") : null,
+      React.createElement("span", { className: "iterate-filter-count" }, `${filtered.length}/${findings.length}`)
+    );
+    const findingBlocks = filtered.map((f, i) => {
+      const k = `f3-${i}`;
+      const finding = f;
+      const loc = `${String(finding.file || "?")}${typeof finding.line === "number" && finding.line > 0 ? `:${finding.line}` : ""}`;
+      const entry = {
+        file: String(finding.file || ""),
+        ...typeof finding.line === "number" && finding.line > 0 ? { line: finding.line } : {},
+        dimension: String(finding.dimension || ""),
+        reason: String(finding.summary || "")
+      };
+      const knownInstruction = buildApplyInstruction([entry]);
+      const fixInstruction = buildObsFixInstruction(finding);
+      return React.createElement(
+        "div",
+        { key: k, className: "iterate-obs-block" },
+        React.createElement(
+          "div",
+          { className: "iterate-obs-block-head" },
+          React.createElement("span", { className: "iterate-sev-dot", style: { background: severityColor(finding.severity) } }),
+          React.createElement("span", {}, severityLabel(finding.severity)),
+          React.createElement("span", { className: "iterate-obs-file" }, loc),
+          React.createElement("span", {}, String(finding.dimension || "")),
+          finding.acknowledged === true ? React.createElement("span", { className: "iterate-obs-chip" }, "\u5DF2\u786E\u8BA4") : null
+        ),
+        React.createElement(
+          "div",
+          { className: "iterate-obs-block-body" },
+          React.createElement("div", { className: "iterate-obs-msg" }, String(finding.summary || "")),
+          React.createElement(
+            "div",
+            { className: "iterate-obs-bar", style: { marginTop: 8 } },
+            React.createElement("button", {
+              className: "iterate-btn",
+              "data-copied": copiedKey === `${k}-fix` ? "" : void 0,
+              onClick: () => copyInstruction(`${k}-fix`, String(finding.suggested_fix || "")),
+              title: "\u590D\u5236\u8BE5 finding \u7684\u5EFA\u8BAE\u4FEE\u590D\u6587\u672C"
+            }, copiedKey === `${k}-fix` ? "\u5DF2\u590D\u5236" : "\u590D\u5236 suggested_fix"),
+            React.createElement("button", {
+              className: "iterate-btn",
+              "data-copied": copiedKey === `${k}-known` ? "" : void 0,
+              onClick: () => copyInstruction(`${k}-known`, knownInstruction),
+              title: "\u590D\u5236 iterate_triage \u6307\u4EE4\u6587\u672C\uFF08\u6807\u8BB0\u4E3A known_intentional\uFF09"
+            }, copiedKey === `${k}-known` ? "\u5DF2\u590D\u5236" : "known_intentional"),
+            React.createElement("button", {
+              className: "iterate-btn",
+              "data-primary": "",
+              "data-copied": copiedKey === `${k}-repair` ? "" : void 0,
+              onClick: () => copyInstruction(`${k}-repair`, fixInstruction),
+              title: "\u590D\u5236 iterate_fix \u6307\u4EE4\u6587\u672C"
+            }, copiedKey === `${k}-repair` ? "\u5DF2\u590D\u5236" : "\u590D\u5236\u4FEE\u590D\u6307\u4EE4")
+          )
+        )
+      );
+    });
+    if (filtered.length === 0) {
+      return React.createElement(
+        "div",
+        {},
+        filterBar,
+        React.createElement("div", { className: "iterate-obs-empty" }, "\u65E0\u5339\u914D\u7684\u53D1\u73B0")
+      );
+    }
+    return React.createElement("div", {}, filterBar, ...findingBlocks);
+  };
+  const renderFixes = () => {
+    const fixes = manifest.fixes || [];
+    if (fixes.length === 0) {
+      return React.createElement("div", { className: "iterate-obs-empty" }, "\u6682\u65E0\u4FEE\u590D\u8BB0\u5F55");
+    }
+    return React.createElement("div", {}, ...fixes.map((f, i) => {
+      const k = `f4-${i}`;
+      const id = String(f.id || `fix#${i + 1}`);
+      const rollbackText = `\u8BF7\u8C03\u7528 \`iterate_rollback\` \u56DE\u6EDA\u4EE5\u4E0B\u4FEE\u590D\uFF1A
+
+\`\`\`json
+${JSON.stringify({ id }, null, 2)}
+\`\`\``;
+      const added = typeof f.linesAdded === "number" ? f.linesAdded : 0;
+      const removed = typeof f.linesRemoved === "number" ? f.linesRemoved : 0;
+      return React.createElement(
+        "div",
+        { key: k, className: "iterate-obs-block" },
+        React.createElement(
+          "div",
+          { className: "iterate-obs-block-head" },
+          React.createElement("b", {}, id),
+          React.createElement("span", { className: "iterate-obs-file" }, String(f.file || "?")),
+          React.createElement("span", { className: "iterate-obs-chip" }, f.success === true ? "\u6210\u529F" : "\u5931\u8D25"),
+          typeof f.round === "number" ? React.createElement("span", { className: "iterate-obs-head-meta" }, `Round ${f.round}`) : null
+        ),
+        React.createElement(
+          "div",
+          { className: "iterate-obs-block-body" },
+          React.createElement("div", { className: "iterate-obs-msg" }, String(f.summary || "")),
+          React.createElement(
+            "div",
+            { className: "iterate-obs-bar", style: { marginTop: 8 } },
+            React.createElement("span", { className: "iterate-obs-chip" }, `+${added}`),
+            React.createElement("span", { className: "iterate-obs-chip" }, `\u2212${removed}`),
+            React.createElement("button", {
+              className: "iterate-btn",
+              "data-danger": "",
+              "data-copied": copiedKey === `${k}-rb` ? "" : void 0,
+              onClick: () => copyInstruction(`${k}-rb`, rollbackText),
+              title: "\u590D\u5236 iterate_rollback \u6307\u4EE4\u6587\u672C"
+            }, copiedKey === `${k}-rb` ? "\u5DF2\u590D\u5236" : "\u56DE\u6EDA")
+          )
+        )
+      );
+    }));
+  };
+  const renderCheckpoint = () => {
+    const cp = manifest.checkpoint;
+    if (!cp) {
+      return React.createElement("div", { className: "iterate-obs-empty" }, "\u6682\u65E0\u65AD\u70B9");
+    }
+    const resumeText = `\u8BF7\u8C03\u7528 \`iterate_checkpoint\` \u4ECE\u65AD\u70B9\u6062\u590D\u8FED\u4EE3\uFF1A
+
+\`\`\`json
+${JSON.stringify({
+      operation: "resume",
+      mode: String(cp.mode || "normal"),
+      maxRounds: typeof cp.maxRounds === "number" ? cp.maxRounds : null
+    }, null, 2)}
+\`\`\``;
+    const item = (label, value) => React.createElement("span", { className: "iterate-obs-chip" }, `${label} ${String(value ?? "?")}`);
+    return React.createElement(
+      "div",
+      { className: "iterate-obs-block" },
+      React.createElement(
+        "div",
+        { className: "iterate-obs-block-head" },
+        React.createElement("b", {}, "\u65AD\u70B9"),
+        React.createElement("span", { className: "iterate-obs-head-meta" }, String(cp.updatedAt || ""))
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-obs-block-body" },
+        React.createElement(
+          "div",
+          { className: "iterate-obs-bar", style: { marginBottom: 8 } },
+          item("mode", cp.mode || "normal"),
+          item("round", cp.round),
+          item("maxRounds", cp.maxRounds),
+          item("fixed", cp.fixedCount),
+          item("resume", cp.resumeCount)
+        ),
+        React.createElement("button", {
+          className: "iterate-btn",
+          "data-primary": "",
+          "data-copied": copiedKey === "cp-resume" ? "" : void 0,
+          onClick: () => copyInstruction("cp-resume", resumeText),
+          title: "\u590D\u5236 iterate_checkpoint \u7EFC/\u6062\u590D\u6307\u4EE4\u6587\u672C"
+        }, copiedKey === "cp-resume" ? "\u5DF2\u590D\u5236" : "\u590D\u5236\u6062\u590D\u6307\u4EE4")
+      )
+    );
+  };
+  const renderConsole = () => {
+    const approval = manifest.approval || { policy: "ask" };
+    const policyLabelMap = { ask: "\u8BE2\u95EE\u7528\u6237", deny: "\u62D2\u7EDD", allow: "\u76F4\u63A5\u6267\u884C" };
+    const policyLabel = policyLabelMap[String(approval.policy || "ask")] || String(approval.policy || "ask");
+    const nudge = manifest.nudge || null;
+    const present = Boolean(nudge && nudge.text);
+    const activeNudgeText = nudge && nudge.text ? nudge.text : "";
+    const nudgeInstruction = `\u8BF7\u8C03\u7528 \`iterate_transcript\` \u5199\u5165 nudge \u6307\u4EE4\uFF1A
+
+\`\`\`json
+${JSON.stringify({ operation: "nudge", text: nudgeText }, null, 2)}
+\`\`\``;
+    const activeClearInstruction = `\u8BF7\u8C03\u7528 \`iterate_transcript\` \u6E05\u9664\u5F53\u524D nudge\uFF1A
+
+\`\`\`json
+${JSON.stringify({ operation: "nudge", text: null }, null, 2)}
+\`\`\``;
+    return React.createElement(
+      "div",
+      { className: "iterate-obs-block" },
+      React.createElement(
+        "div",
+        { className: "iterate-obs-block-head" },
+        React.createElement("span", {}, "\u8FD0\u884C\u63A7\u5236\u53F0"),
+        React.createElement("span", { className: "iterate-obs-badge", "data-live": live ? "" : void 0 }, live ? "\u8FD0\u884C\u4E2D" : "\u5DF2\u7ED3\u675F"),
+        React.createElement("span", { className: "iterate-obs-head-meta" }, `\u6279\u51C6\u7B56\u7565\uFF1A${policyLabel}`)
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-obs-block-body" },
+        present ? React.createElement(
+          "div",
+          { className: "iterate-obs-bar", style: { marginBottom: 6 } },
+          React.createElement("b", {}, "\u5F53\u524D nudge"),
+          React.createElement("span", { className: "iterate-obs-msg" }, activeNudgeText),
+          React.createElement("button", {
+            className: "iterate-btn",
+            "data-copied": copiedKey === "nudge-clear" ? "" : void 0,
+            onClick: () => copyInstruction("nudge-clear", activeClearInstruction),
+            title: "\u590D\u5236\u6E05\u9664 nudge \u6307\u4EE4\uFF08\u5199 text:null\uFF09\uFF0C\u5728\u8FD0\u884C\u63A7\u5236\u53F0\u63D0\u793A\u6E05\u9664\u5DF2\u6301\u4E45\u5316\u7684 nudge"
+          }, copiedKey === "nudge-clear" ? "\u5DF2\u590D\u5236\u6E05\u9664\u6307\u4EE4" : "\u590D\u5236\u6E05\u9664\u6307\u4EE4")
+        ) : null,
+        React.createElement("textarea", {
+          className: "iterate-obs-input iterate-obs-mono",
+          rows: 3,
+          placeholder: "\u8D77\u8349\u4E00\u6761 nudge \u65B9\u5411\u6307\u4EE4\u2026",
+          value: nudgeText,
+          "aria-label": "nudge \u8349\u7A3F",
+          onChange: (e) => setNudgeText(e.target.value)
+        }),
+        React.createElement(
+          "div",
+          { className: "iterate-obs-bar", style: { marginTop: 6 } },
+          React.createElement("button", {
+            className: "iterate-btn",
+            "data-primary": "",
+            "data-copied": copiedKey === "nudge" ? "" : void 0,
+            disabled: !nudgeText,
+            onClick: () => copyInstruction("nudge", nudgeInstruction),
+            title: "\u590D\u5236 iterate_transcript nudge \u6307\u4EE4\u6587\u672C"
+          }, copiedKey === "nudge" ? "\u5DF2\u590D\u5236" : "\u590D\u5236 nudge \u6307\u4EE4")
+        )
+      )
+    );
+  };
+  const renderTimeline = () => {
+    const entries = manifest.timeline || [];
+    if (entries.length === 0) {
+      return React.createElement("div", { className: "iterate-obs-empty" }, "\u6682\u65E0\u65F6\u95F4\u7EBF\u6761\u76EE");
+    }
+    const types = Array.from(new Set(entries.map((t) => String(t.type || "unknown")).filter(Boolean))).sort();
+    const rounds = Array.from(
+      new Set(entries.map((t) => typeof t.round === "number" ? String(t.round) : "").filter(Boolean))
+    ).sort((a, b) => Number(a) - Number(b));
+    const filtered = filterTimelineEntries(entries, {
+      type: timelineType,
+      round: timelineRound,
+      search: timelineSearch
+    });
+    const filterActive = Boolean(timelineType || timelineRound || timelineSearch.trim());
+    const clearTimelineFilter = () => {
+      setTimelineType("");
+      setTimelineRound("");
+      setTimelineSearch("");
+    };
+    const sorted = filtered.slice();
+    const rows = sorted.map((t, i) => {
+      const k = `f7-${i}`;
+      const dataText = t.data && typeof t.data === "object" ? JSON.stringify(t.data) : "";
+      return React.createElement(
+        "div",
+        { key: k, className: "iterate-obs-row", style: { flexDirection: "column", alignItems: "flex-start" } },
+        React.createElement(
+          "div",
+          { className: "iterate-obs-bar", style: { width: "100%" } },
+          React.createElement("span", { className: "iterate-obs-chip" }, String(t.type || "?")),
+          React.createElement(
+            "span",
+            { className: "iterate-obs-head-meta" },
+            `${typeof t.round === "number" ? `Round ${t.round} \xB7 ` : ""}${String(t.timestamp || "")}`
+          )
+        ),
+        dataText ? React.createElement("div", { className: "iterate-obs-code" }, dataText) : null
+      );
+    });
+    const filterBar = React.createElement(
+      "div",
+      { className: "iterate-obs-bar", style: { marginBottom: 8 } },
+      React.createElement("b", {}, "\u65F6\u95F4\u7EBF"),
+      React.createElement(
+        "select",
+        {
+          className: "iterate-filter-select",
+          value: timelineType,
+          "aria-label": "\u6309\u65F6\u95F4\u7EBF\u7C7B\u578B\u7B5B\u9009",
+          onChange: (e) => setTimelineType(e.target.value)
+        },
+        React.createElement("option", { value: "" }, "\u5168\u90E8\u7C7B\u578B"),
+        ...types.map((t) => React.createElement("option", { key: t, value: t }, t))
+      ),
+      React.createElement(
+        "select",
+        {
+          className: "iterate-filter-select",
+          value: timelineRound,
+          "aria-label": "\u6309\u8F6E\u6B21\u7B5B\u9009",
+          onChange: (e) => setTimelineRound(e.target.value)
+        },
+        React.createElement("option", { value: "" }, "\u5168\u90E8\u8F6E\u6B21"),
+        ...rounds.map((r) => React.createElement("option", { key: r, value: r }, `Round ${r}`))
+      ),
+      React.createElement("input", {
+        className: "iterate-filter-search",
+        type: "search",
+        placeholder: "\u641C\u7D22\u65F6\u95F4\u7EBF\u2026",
+        "aria-label": "\u641C\u7D22\u65F6\u95F4\u7EBF",
+        value: timelineSearch,
+        onChange: (e) => setTimelineSearch(e.target.value)
+      }),
+      filterActive ? React.createElement("button", {
+        className: "iterate-filter-clear",
+        onClick: clearTimelineFilter,
+        title: "\u6E05\u9664\u5168\u90E8\u7B5B\u9009"
+      }, "\u6E05\u9664") : null,
+      React.createElement("span", { className: "iterate-filter-count" }, `${filtered.length}/${entries.length}`)
+    );
+    if (rows.length === 0) {
+      return React.createElement(
+        "div",
+        {},
+        filterBar,
+        React.createElement("div", { className: "iterate-obs-empty" }, "\u65E0\u5339\u914D\u7684\u65F6\u95F4\u7EBF\u6761\u76EE")
+      );
+    }
+    return React.createElement("div", {}, filterBar, ...rows);
+  };
+  const renderQualityGate = () => {
+    const qualityGateInstruction = "\u8BF7\u8C03\u7528 `iterate_quality_gate` \u67E5\u8BE2\u5F53\u524D\u8D28\u91CF\u95E8\u7981\u72B6\u6001";
+    return React.createElement(
+      "div",
+      {},
+      React.createElement(
+        "div",
+        { className: "iterate-obs-bar", style: { marginBottom: 8 } },
+        React.createElement("b", {}, "\u8D28\u91CF\u95E8\u7981"),
+        React.createElement("button", {
+          className: "iterate-btn",
+          "data-primary": "",
+          "data-copied": copiedKey === "qgate" ? "" : void 0,
+          onClick: () => copyInstruction("qgate", qualityGateInstruction),
+          title: "\u590D\u5236 iterate_quality_gate \u67E5\u8BE2\u6307\u4EE4"
+        }, copiedKey === "qgate" ? "\u5DF2\u590D\u5236" : "\u67E5\u8BE2\u95E8\u7981")
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-obs-block" },
+        React.createElement(
+          "div",
+          { className: "iterate-obs-block-head" },
+          React.createElement("span", {}, "\u8D28\u91CF\u95E8\u7981\u89C6\u56FE"),
+          React.createElement("span", { className: "iterate-obs-badge" }, "v3.0")
+        ),
+        React.createElement(
+          "div",
+          { className: "iterate-obs-block-body" },
+          React.createElement("div", { className: "iterate-obs-msg" }, "\u8D28\u91CF\u95E8\u7981\u663E\u793A\u5404\u7EF4\u5EA6\u6536\u655B\u5EA6\u3001\u9A8C\u8BC1\u901A\u8FC7\u7387\u548C\u6574\u4F53 PASS/FAIL \u72B6\u6001\u3002"),
+          React.createElement(
+            "div",
+            { className: "iterate-obs-bar", style: { marginTop: 8 } },
+            React.createElement("button", {
+              className: "iterate-btn",
+              "data-copied": copiedKey === "qgate-instr" ? "" : void 0,
+              onClick: () => copyInstruction("qgate-instr", qualityGateInstruction),
+              title: "\u590D\u5236\u67E5\u8BE2\u6307\u4EE4"
+            }, copiedKey === "qgate-instr" ? "\u5DF2\u590D\u5236" : "\u590D\u5236\u67E5\u8BE2\u6307\u4EE4")
+          )
+        )
+      )
+    );
+  };
+  const renderExperienceBank = () => {
+    const expInstruction = expSearch ? `\u8BF7\u8C03\u7528 \`iterate_experience\` \u641C\u7D22\u7ECF\u9A8C\uFF1A
+
+\`\`\`json
+${JSON.stringify({ operation: "search", query: expSearch }, null, 2)}
+\`\`\`` : "\u8BF7\u8C03\u7528 `iterate_experience` \u5217\u51FA\u6240\u6709\u7ECF\u9A8C";
+    const resultRows = expResults.map((entry, i) => {
+      const e = entry;
+      return React.createElement(
+        "div",
+        { key: `exp-${i}`, className: "iterate-obs-row" },
+        React.createElement("span", { className: "iterate-obs-chip" }, String(e.dimension || "")),
+        React.createElement("span", { className: "iterate-obs-msg" }, String(e.pattern || "")),
+        React.createElement("span", { className: "iterate-exp-hit" }, `\u547D\u4E2D ${e.hitCount ?? 0} \u6B21`)
+      );
+    });
+    return React.createElement(
+      "div",
+      {},
+      React.createElement(
+        "div",
+        { className: "iterate-obs-bar", style: { marginBottom: 8 } },
+        React.createElement("b", {}, "\u7ECF\u9A8C\u94F6\u884C"),
+        React.createElement("button", {
+          className: "iterate-btn",
+          "data-primary": "",
+          "data-copied": copiedKey === "exp-list" ? "" : void 0,
+          onClick: () => copyInstruction("exp-list", "\u8BF7\u8C03\u7528 `iterate_experience` \u5217\u51FA\u6240\u6709\u7ECF\u9A8C"),
+          title: "\u590D\u5236\u5217\u51FA\u7ECF\u9A8C\u6307\u4EE4"
+        }, copiedKey === "exp-list" ? "\u5DF2\u590D\u5236" : "\u5217\u51FA\u7ECF\u9A8C")
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-obs-bar", style: { marginBottom: 8 } },
+        React.createElement("input", {
+          className: "iterate-filter-search",
+          type: "search",
+          placeholder: "\u641C\u7D22\u7ECF\u9A8C\u6A21\u5F0F\u2026",
+          "aria-label": "\u641C\u7D22\u7ECF\u9A8C",
+          value: expSearch,
+          onChange: (e) => setExpSearch(e.target.value)
+        }),
+        React.createElement("button", {
+          className: "iterate-btn",
+          "data-copied": copiedKey === "exp-search" ? "" : void 0,
+          disabled: !expSearch,
+          onClick: () => copyInstruction("exp-search", expInstruction),
+          title: "\u590D\u5236\u641C\u7D22\u6307\u4EE4"
+        }, copiedKey === "exp-search" ? "\u5DF2\u590D\u5236" : "\u641C\u7D22")
+      ),
+      resultRows.length > 0 ? React.createElement("div", {}, ...resultRows) : React.createElement("div", { className: "iterate-obs-empty" }, "\u8F93\u5165\u5173\u952E\u8BCD\u641C\u7D22\u5386\u53F2\u7ECF\u9A8C\uFF0C\u6216\u70B9\u51FB\u300C\u5217\u51FA\u7ECF\u9A8C\u300D\u67E5\u770B\u5168\u90E8")
+    );
+  };
+  const renderDefenseEvents = () => {
+    const defenseInstruction = defenseFilter ? `\u8BF7\u8C03\u7528 \`iterate_defense_events\` \u67E5\u8BE2\u9632\u5FA1\u4E8B\u4EF6\uFF1A
+
+\`\`\`json
+${JSON.stringify({ operation: "list", type: defenseFilter || void 0 }, null, 2)}
+\`\`\`` : "\u8BF7\u8C03\u7528 `iterate_defense_events` \u5217\u51FA\u6240\u6709\u9632\u5FA1\u4E8B\u4EF6";
+    const typeOptions = [
+      { value: "", label: "\u5168\u90E8\u7C7B\u578B" },
+      { value: "precondition_failed", label: "\u524D\u7F6E\u6821\u9A8C\u5931\u8D25" },
+      { value: "rollback", label: "\u56DE\u6EDA" },
+      { value: "invariant_violated", label: "\u4E0D\u53D8\u91CF\u8FDD\u53CD" },
+      { value: "assumption_falsified", label: "\u5047\u8BBE\u88AB\u8BC1\u4F2A" }
+    ];
+    return React.createElement(
+      "div",
+      {},
+      React.createElement(
+        "div",
+        { className: "iterate-obs-bar", style: { marginBottom: 8 } },
+        React.createElement("b", {}, "\u9632\u5FA1\u4E8B\u4EF6"),
+        React.createElement("button", {
+          className: "iterate-btn",
+          "data-primary": "",
+          "data-copied": copiedKey === "defense-list" ? "" : void 0,
+          onClick: () => copyInstruction("defense-list", "\u8BF7\u8C03\u7528 `iterate_defense_events` \u5217\u51FA\u6240\u6709\u9632\u5FA1\u4E8B\u4EF6"),
+          title: "\u590D\u5236\u5217\u51FA\u9632\u5FA1\u4E8B\u4EF6\u6307\u4EE4"
+        }, copiedKey === "defense-list" ? "\u5DF2\u590D\u5236" : "\u5217\u51FA\u4E8B\u4EF6"),
+        React.createElement("button", {
+          className: "iterate-btn",
+          "data-copied": copiedKey === "defense-counts" ? "" : void 0,
+          onClick: () => copyInstruction("defense-counts", "\u8BF7\u8C03\u7528 `iterate_defense_events` \u67E5\u8BE2\u4E8B\u4EF6\u7EDF\u8BA1"),
+          title: "\u590D\u5236\u7EDF\u8BA1\u6307\u4EE4"
+        }, copiedKey === "defense-counts" ? "\u5DF2\u590D\u5236" : "\u7EDF\u8BA1")
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-obs-bar", style: { marginBottom: 8 } },
+        React.createElement(
+          "select",
+          {
+            className: "iterate-filter-select",
+            value: defenseFilter,
+            "aria-label": "\u6309\u4E8B\u4EF6\u7C7B\u578B\u7B5B\u9009",
+            onChange: (e) => setDefenseFilter(e.target.value)
+          },
+          ...typeOptions.map((opt) => React.createElement("option", { key: opt.value, value: opt.value }, opt.label))
+        ),
+        defenseFilter ? React.createElement("button", {
+          className: "iterate-filter-clear",
+          onClick: () => setDefenseFilter(""),
+          title: "\u6E05\u9664\u7C7B\u578B\u7B5B\u9009"
+        }, "\u6E05\u9664") : null
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-obs-block" },
+        React.createElement(
+          "div",
+          { className: "iterate-obs-block-head" },
+          React.createElement("span", {}, "\u9632\u5FA1\u4E8B\u4EF6\u6D41"),
+          React.createElement("span", { className: "iterate-obs-badge" }, "v3.0")
+        ),
+        React.createElement(
+          "div",
+          { className: "iterate-obs-block-body" },
+          React.createElement("div", { className: "iterate-obs-msg" }, "\u9632\u5FA1\u4E8B\u4EF6\u5305\u62EC\uFF1A\u524D\u7F6E\u6821\u9A8C\u5931\u8D25\u3001\u56DE\u6EDA\u3001\u4E0D\u53D8\u91CF\u8FDD\u53CD\u3001\u5047\u8BBE\u88AB\u8BC1\u4F2A\u3002"),
+          React.createElement(
+            "div",
+            { className: "iterate-obs-bar", style: { marginTop: 8 } },
+            React.createElement("button", {
+              className: "iterate-btn",
+              "data-copied": copiedKey === "defense-instr" ? "" : void 0,
+              onClick: () => copyInstruction("defense-instr", defenseInstruction),
+              title: "\u590D\u5236\u67E5\u8BE2\u6307\u4EE4"
+            }, copiedKey === "defense-instr" ? "\u5DF2\u590D\u5236" : "\u590D\u5236\u67E5\u8BE2\u6307\u4EE4")
+          )
+        )
+      )
+    );
+  };
+  const renderLive = () => {
+    const liveEntries = manifest.live || [];
+    if (liveEntries.length === 0) {
+      const hasThreads = (manifest.rounds || []).length > 0;
+      const hasFindings = (manifest.findings || []).length > 0;
+      if (hasThreads || hasFindings) {
+        return React.createElement(
+          "div",
+          { className: "iterate-obs-empty" },
+          React.createElement("div", {}, "\u5B9E\u65F6\u6D3B\u52A8\u6D41\u4EC5\u5728\u8FD0\u884C\u671F\u95F4\u8BB0\u5F55\uFF0C\u5F53\u524D\u5DF2\u5B8C\u6210\u3002"),
+          React.createElement(
+            "div",
+            { className: "iterate-obs-bar", style: { marginTop: 8 } },
+            React.createElement("button", { className: "iterate-btn", onClick: () => setTab("f1") }, "\u67E5\u770B\u5BA1\u67E5\u7EBF\u7A0B"),
+            React.createElement("button", { className: "iterate-btn", onClick: () => setTab("f3") }, "\u67E5\u770B\u53D1\u73B0")
+          )
+        );
+      }
+      return React.createElement("div", { className: "iterate-obs-empty" }, "\u6682\u65E0\u5B9E\u65F6\u6D3B\u52A8");
+    }
+    const types = Array.from(new Set(liveEntries.map((e) => String(e.type || "unknown")).filter(Boolean))).sort();
+    const filtered = filterLiveEntries(liveEntries, liveType);
+    const rows = filtered.map((e, i) => {
+      const type = String(e.type || "unknown");
+      const meta = OBS_LIVE_META[type] || { label: String(e.type || "?"), color: OBS_LIVE_FALLBACK_COLOR };
+      const tool = String(e.tool || "");
+      const target = String(e.target || "");
+      const time = formatObsLiveTime(String(e.ts || ""));
+      return React.createElement(
+        "div",
+        { key: `live-${i}`, className: "iterate-obs-row" },
+        React.createElement("span", { className: "iterate-obs-livebadge", style: { color: meta.color } }, meta.label),
+        tool ? React.createElement("span", { className: "iterate-obs-chip" }, tool) : null,
+        React.createElement("span", { className: "iterate-obs-msg" }, target || "\u2014"),
+        React.createElement("span", { className: "iterate-obs-head-meta" }, time)
+      );
+    });
+    const filterBar = React.createElement(
+      "div",
+      { className: "iterate-obs-bar", style: { marginBottom: 8 } },
+      React.createElement("b", {}, "\u5B9E\u65F6\u6D3B\u52A8"),
+      React.createElement(
+        "select",
+        {
+          className: "iterate-filter-select",
+          value: liveType,
+          "aria-label": "\u6309\u6D3B\u52A8\u7C7B\u578B\u7B5B\u9009",
+          onChange: (e) => setLiveType(e.target.value)
+        },
+        React.createElement("option", { value: "" }, "\u5168\u90E8\u6D3B\u52A8"),
+        ...types.map((t) => React.createElement("option", { key: t, value: t }, t))
+      ),
+      liveType ? React.createElement("button", {
+        className: "iterate-filter-clear",
+        onClick: () => setLiveType(""),
+        title: "\u6E05\u9664\u7C7B\u578B\u7B5B\u9009"
+      }, "\u6E05\u9664") : null,
+      React.createElement("span", { className: "iterate-filter-count" }, `${filtered.length}/${liveEntries.length}`)
+    );
+    if (rows.length === 0) {
+      return React.createElement(
+        "div",
+        {},
+        filterBar,
+        React.createElement("div", { className: "iterate-obs-empty" }, "\u65E0\u5339\u914D\u7684\u5B9E\u65F6\u6D3B\u52A8")
+      );
+    }
+    return React.createElement("div", {}, filterBar, ...rows);
+  };
+  const renderBody = () => {
+    switch (tab) {
+      case "live":
+        return renderLive();
+      case "f1":
+        return renderThreads();
+      case "f2":
+        return renderTrend();
+      case "f3":
+        return renderFindings();
+      case "f4":
+        return renderFixes();
+      case "f5":
+        return renderCheckpoint();
+      case "f6":
+        return renderConsole();
+      case "f7":
+        return renderTimeline();
+      // v3.0: Quality Command Center tabs
+      case "f8":
+        return renderQualityGate();
+      case "f9":
+        return renderExperienceBank();
+      case "f10":
+        return renderDefenseEvents();
+      default:
+        return null;
+    }
+  };
+  return React.createElement(
+    "div",
+    { "data-iterate-root": "", "data-iterate": "obs", className: "iterate-obs" },
+    React.createElement(
+      "div",
+      { className: "iterate-obs-head", "data-closed": open ? void 0 : "", onClick: () => setOpen((v) => !v) },
+      React.createElement("span", { className: "iterate-obs-title" }, "iterate \u89C2\u6D4B\u53F0"),
+      React.createElement("span", { className: "iterate-obs-badge", "data-live": live ? "" : void 0 }, live ? "\u8FD0\u884C\u4E2D" : "\u5DF2\u7ED3\u675F"),
+      React.createElement("span", { className: "iterate-obs-head-meta" }, headMeta || "runtime"),
+      React.createElement("button", {
+        className: "iterate-btn",
+        "data-ghost": "",
+        onClick: (e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }
+      }, open ? "\u6536\u8D77" : "\u5C55\u5F00")
+    ),
+    open ? React.createElement(
+      "div",
+      {},
+      copyFailText ? React.createElement(
+        "div",
+        { className: "iterate-obs-block" },
+        React.createElement(
+          "div",
+          { className: "iterate-obs-block-head" },
+          React.createElement("b", {}, "\u590D\u5236\u672A\u6210\u529F"),
+          React.createElement("span", { className: "iterate-obs-head-meta" }, "\u526A\u8D34\u677F\u5199\u5165\u88AB\u62D2\u7EDD\uFF0C\u8BF7\u624B\u52A8\u9009\u4E2D\u4E0B\u65B9\u6307\u4EE4\u590D\u5236"),
+          React.createElement("button", {
+            className: "iterate-btn",
+            "data-ghost": "",
+            "aria-label": "\u5173\u95ED\u590D\u5236\u5931\u8D25\u63D0\u793A",
+            onClick: () => setCopyFailText(null)
+          }, "\u5173\u95ED")
+        ),
+        React.createElement("div", { className: "iterate-obs-code" }, copyFailText)
+      ) : null,
+      React.createElement(
+        "div",
+        { className: "iterate-obs-bar", style: { marginBottom: 8, flexWrap: "wrap" } },
+        React.createElement(
+          "span",
+          { className: "iterate-obs-head-meta" },
+          `${manifest.mode || "runtime"} \xB7 ${String(manifest.updatedAt || "")}`
+        ),
+        React.createElement("button", {
+          className: "iterate-btn",
+          "data-primary": "",
+          "data-copied": copiedKey === "export" ? "" : void 0,
+          onClick: exportObservatory,
+          title: "\u5C06\u89C2\u6D4B\u53F0\u5168\u90E8\u6570\u636E\u5BFC\u51FA\u4E3A JSON\uFF08\u4F18\u5148\u4E0B\u8F7D\uFF0C\u5931\u8D25\u5219\u590D\u5236\uFF09"
+        }, copiedKey === "export" ? "\u5DF2\u5BFC\u51FA" : "\u5BFC\u51FA JSON")
+      ),
+      React.createElement(
+        "div",
+        { className: "iterate-obs-tabs" },
+        ...OBS_TABS.map(
+          (t) => React.createElement("button", {
+            key: t.key,
+            className: "iterate-obs-tab",
+            "data-active": tab === t.key ? "" : void 0,
+            onClick: () => setTab(t.key)
+          }, t.label)
+        )
+      ),
+      React.createElement("div", { className: "iterate-obs-body" }, renderBody())
+    ) : null
+  );
+}
+function selectTurnTail(owner) {
+  if (!owner) return null;
+  if (findReportInObject(owner.turn, void 0, 24) || scanSessionForReport(owner.turn)) return { matched: true };
+  if (scanSessionForRunSummary(owner.turn)) return { matched: true };
+  return null;
+}
+function apply(ctx) {
+  slotsSvc = readSlots(ctx);
+  themeSvc = readTheme(ctx);
+  storage = createStorage();
+  const savedTheme = storage.get(THEME_STORAGE_KEY);
+  themeEnabled = savedTheme === null ? true : savedTheme === "1";
+  if (themeEnabled) applyThemeSkin();
+  if (typeof document !== "undefined" && document.createElement && document.head) {
+    const style = document.createElement("style");
+    style.dataset.plugin = PLUGIN_TAG;
+    style.dataset.pluginCss = "iterate-main";
+    style.textContent = ITERATE_CSS;
+    document.head.appendChild(style);
+    if (typeof ctx.effect === "function") {
+      ctx.effect(() => {
+        try {
+          style.remove();
+        } catch {
+        }
+      });
+    }
+  }
+  if (slotsSvc === void 0) {
+    log("slots service unavailable \u2014 slot UI disabled");
+    return;
+  }
+  if (typeof slotsSvc.inject === "function") {
+    slotsSvc.inject(
+      "conversation.input.dock",
+      () => slotsSvc?.register(
+        { name: "conversation.input.dock", id: "iterate-dashboard", order: 90 },
+        (props) => React.createElement(ConvergenceDashboard, props)
+      )
+    );
+    slotsSvc.inject(
+      "conversation.input.dock",
+      () => slotsSvc?.register(
+        { name: "conversation.input.dock", id: "iterate-observatory", order: 91 },
+        (props) => React.createElement(ObservatoryPanel, props)
+      )
+    );
+    slotsSvc.inject(
+      "conversation.chat.turnTail",
+      () => slotsSvc?.register(
+        { name: "conversation.chat.turnTail", id: "iterate-turn-tail", select: selectTurnTail },
+        (props) => React.createElement(TurnTailEntry, props)
+      )
+    );
+    slotsSvc.inject(
+      "shell.overlay",
+      () => slotsSvc?.register(
+        { name: "shell.overlay", id: "iterate-progress", order: 0 },
+        (props) => React.createElement(ProgressCapsule, props)
+      )
+    );
+    slotsSvc.inject(
+      "settings.section",
+      () => slotsSvc?.register(
+        { name: "settings.section", id: "iterate-settings", order: 30, label: () => "iterate" },
+        (props) => React.createElement(SettingsPanel, props)
+      )
+    );
+  }
+  if (typeof ctx.on === "function") {
+    ctx.on("theme/change", () => {
+      if (themeEnabled) applyThemeSkin();
+    });
+  }
+}
+return module.exports; } });
+

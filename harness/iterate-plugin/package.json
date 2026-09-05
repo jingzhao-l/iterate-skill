@@ -1,0 +1,81 @@
+{
+  "name": "iterate-plugin",
+  "version": "3.2.0",
+  "description": "dsh plugin that turns the iterate skill into an autonomous closed-loop harness with quality command center and experience bank (v3.2). Features: plan -> parallel review xN -> atomic fixes -> validate -> loop -> auto-stop, plus dry-run pure-review mode, quality gate compute/persist, writable experience bank, defense events stream (record + bilingual labels), and native command buttons.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jingzhao-l/iterate-plugin.git"
+  },
+  "homepage": "https://github.com/jingzhao-l/iterate-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/jingzhao-l/iterate-plugin/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "iterate",
+    "code-review",
+    "autonomous",
+    "dry-run",
+    "cordis"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    }
+  },
+  "files": [
+    "src",
+    "lib",
+    "dist",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:client": "node scripts/build-client.mjs",
+    "prepublishOnly": "npm run build && npm run build:client",
+    "typecheck": "tsc --noEmit",
+    "typecheck:client": "tsc --noEmit -p tsconfig.client.json",
+    "test": "tsx --test test/*.test.ts",
+    "test:validate": "tsx --test test/validate.test.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-util-values": "0.1.2-rc.1",
+    "js-yaml": "4.3.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-jobs": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.2-rc.1",
+    "@types/js-yaml": "4.0.9",
+    "@types/node": "22.15.0",
+    "@types/react": "19.2.2",
+    "esbuild": "0.25.12",
+    "tsx": "4.20.3",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
