@@ -435,9 +435,9 @@ stamp 不匹配会自动重装到新 tag。
 
 ### 发布清单
 
-- [ ] **1. 同步版本号**：编辑 `package.json`（含 `package-lock.json` 若已提交）。
-- [ ] **2. 本地验证**：`cd harness/iterate-plugin && npm install && npm run typecheck && npm test`。
-- [ ] **3. 提交并推送主仓库**：`git commit && git push origin main`。
+- [x] **1. 同步版本号**：编辑 `package.json`（含 `package-lock.json` 若已提交）。
+- [x] **2. 本地验证**：`cd harness/iterate-plugin && npm install && npm run typecheck && npm test`。
+- [x] **3. 提交并推送主仓库**：`git commit && git push origin main`。
 - [ ] **4. subtree 拆分到独立发布仓**：
       ```bash
       # 若尚未配置 plugin 独立仓 remote（主仓库默认只有 origin / harness-origin）：
@@ -474,18 +474,29 @@ stamp 不匹配会自动重装到新 tag。
       > 426 个单元测试；独立仓 main `3377f91..0e745f9`（含重建 dist/jobs.js 与 client bundle，
       > 修复 git-clone 安装 dist 与 src 不一致问题）；npm `iterate-plugin@2.12.3` latest
       > 已生效（64 文件 / 254.0 kB）。
-      > **3.2.1 发布记录（2026-09-05）**：approval-gate fail-safe fix + hardening；提交
-      > `de8116e`（`chore: release iterate-plugin v3.2.1`），独立仓 main 已含（其上前置
-      > `4096c92`/`67e1092` 为 README 重构，vs skill 子树仅 README 差异、src 完全一致）；
-      > 补打 `v3.2.1` tag 并推送远端（`a7c4ff1`）；npm `iterate-plugin@3.2.1` latest 已生效。
-- [ ] **5. 同步发布工作区 + npm publish**：
+       > **3.2.1 发布记录（2026-09-05）**：approval-gate fail-safe fix + hardening；提交
+       > `de8116e`（`chore: release iterate-plugin v3.2.1`），独立仓 main 已含（其上前置
+       > `4096c92`/`67e1092` 为 README 重构，vs skill 子树仅 README 差异、src 完全一致）；
+       > 补打 `v3.2.1` tag 并推送远端（`a7c4ff1`）；npm `iterate-plugin@3.2.1` latest 已生效。
+- [x] **5. 同步发布工作区 + npm publish**：
       ```bash
       cd .release/iterate-plugin
       git pull origin main
       npm publish
       ```
       验证：npm 上 `iterate-plugin` 版本为 `<X.Y.Z>`。
-      > npm `repository` 元数据指向主仓库 `jingzhao-l/iterate-skill`（目录 `harness/iterate-plugin`）。
+       > npm `repository` 元数据指向主仓库 `jingzhao-l/iterate-skill`（目录 `harness/iterate-plugin`）。
+       >
+       > **3.3.0 发布记录（2026-09-06）**：质量指挥中心 F8/F9/F10 实渲染（`lib/parse.js`
+       > 新增 `scanSessionForQualityGate` / `scanSessionForExperienceBank` / `scanSessionForDefenseEvents`
+       > 反向时序会话扫描，`get/add` 单条折叠、`record/counts` 折入计数+事件流）、TriagePanel §8
+       > 指派修复按钮（按批量作用域复制 `iterate_fix` 指令）、task_mode 端到端打通（`iterate_transcript
+       > capture` 接受 `taskMode`、builder 持久化、`iterate_status` 经 `readTranscriptTaskMode` 输出）；
+       > 另含 3.2.2 的 store 写失败结构化报错透出与 toolGate 死代码移除。主仓库提交 `71bd6a2`（release）
+       > + `3b57336`（DESIGN v3.1 记录）；subtree split push 再遇 non-fast-forward，走 `.release/
+       > iterate-plugin` 替代路径（reset 至 origin/main 后 rsync 插件目录，提交 `038d6c1` 快进推送
+       > `4096c92..038d6c1`）；npm `iterate-plugin@3.3.0` 已发布（latest=3.3.0，76 文件 / 292.3 kB，
+       > 已复核 tarball 含 `lib/parse.js` 新扫描器）。验证 483 测试全过、server/client typecheck 干净。
 
 ---
 
