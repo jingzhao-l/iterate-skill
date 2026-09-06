@@ -119,6 +119,27 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.2.0 状态（2026-09-06）**：综合评审修复批次 + B1–B6 特性（minor）。GitHub Release
+      > v3.2.0 已发布（tag `v3.2.0`，CI 自动生成 `iterate-skill.tar.gz` 491,552 字节 +
+      > `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，本地 `sha256sum -c` 通过、
+      > `tar -tzf | grep harness/` 与 `unzip -l | grep harness/` 均为 0）；
+      > npm `iterate-skill-installer@3.2.0` 已发布（`npm view` latest=3.2.0）；ClawHub（skillId
+      > `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py` + stage
+      > clawhub-stage-3.2.0（82 文件归档，发布 77 文件、1,736,372 字节）发布 3.2.0（`ok:true`，
+      > versionId `k97bybandn8f1v4777289vbjes8dxkag`，status pending=normal，resolve 已显示
+      > latestVersion=3.2.0）；ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_320.py` 重建精简
+      > zip 503,261 字节、77 文件、harness 0；`.dist_tmp/verify_update_320.py` `update_skill_settings`
+      > success，file_id `7e80df35-d27b-4c0e-8827-296aa1a5464f`；`get_skill.last_modified` =
+      > `2026-09-06T03:07:59Z`；下载 `archive/zip/master` 复核 `SKILL.md version: 3.2.0`、`/harness/`
+      > 条目 0）；SkillHub（skillId `104490`）经 `.dist_tmp/rebuild_skillhub_320.py` 精简包
+      >（73 文件、500,929 字节、harness 0、剔除 LICENSE）.`skillhub publish` 成功（`ok:true`，
+      > versionId `292200`，`tags.latest=3.2.0`，`reviewStatus/securityScanStatus=pending` 为平台
+      > 异步审核）。发版前全量 pytest 970 + ruff + mypy 通过。3.2.0 内容：
+      > B1 `refresh --json`、B2 `doctor --strict`、B3 `doctor --fix` 指纹补录、B4 `status --json`
+      > 漂移明细、B5 `config` 点号别名、B6 doctor markers/invariants 检查；另修复 doctor 白名单
+      > 合规 fail-open、漂移三原因、guard 全量上报、refresh 空白名单/`_diff_stats`、installer/install.py
+      > 常量时间校验和+PAT 作用域+字节上限等。主仓库提交 `9ae7e2a`。
+      >
       > **3.1.0 状态（2026-09-05）**：GitHub Release v3.1.0 已发布（tag `v3.1.0`，CI 自动生成
       > `iterate-skill.tar.gz` 475,872 字节 + `SHA256SUMS.txt` + `iterate-qoder.zip` 517,636 字节，
       > `:!harness` 剔除 harness，复核 harness 条目 0）；npm `iterate-skill-installer@3.1.0` 已发布
