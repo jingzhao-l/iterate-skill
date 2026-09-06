@@ -508,6 +508,24 @@ stamp 不匹配会自动重装到新 tag。
        > 推送新固定 Commit 后商店自动化重建基线。主仓库 `c3bd961`（manifest 修复）+ `0679925`
        > （3.3.1 bump）；独立仓 `2e090ee` + `1cbf51d`；npm `iterate-plugin@3.3.1` 已发布
        > （latest=3.3.1，76 文件，已复核 tarball manifest 含修复）。验证 483 测试全过。
+       >
+       > **3.4.0 发布记录（2026-09-06）**：综合审查 + 硬化批次——`iterate_checkpoint` 新增 `resume`
+       > 操作（加载断点 + 累加 resumeCount 原子写回，观测台 F5 复制指令由死指令变为可用）；
+       > `iterate_status` 补齐类型早已声明却从未填充的 `qualityGate`/`experienceBank`/`defenseEvents`
+       > 快照输出；安全硬化（`applyConfigUpdates` 原型污染防护；`iterate_config` 写操作对
+       > `observatory.approval` fail-closed，模型不可翻审批策略绕过人审门禁）；defense/quality 存储
+       > 读取规范化防 NaN/崩溃；`buildReviewReport` 轮次排序修复无序 rounds 收敛误判；
+       > `collectScopeFiles` 改 `path.relative` 修复 Windows 绝对路径泄漏；transcript fixes 上限、
+       > history 渲染守卫、defense record 负行拒绝；空态 dashboard 新增 `/iterate` 与
+       > `/iterate review-only` 启动按钮。**上游 dsh 检查**：`dsh-v0.1.3-alpha.1` tag 已发布但其 npm
+       > 包尚未发布（最高仍 `0.1.2-rc.1`），且本版含破坏性 SessionHandle 变更 + 已知性能回退——
+       > 插件未使用任何受影响 API，依赖声明保持不变，`dshReleases` 兼容声明待 npm 包发布后再评估。
+       > 重建 dist：既有 `dist/` 自 3.2.2 起与 `src/` 漂移（toolGate 死代码移除、store 写失败透出
+       > 未入包），本次重构建使 tarball 与 src 完全一致。主仓库 `3e04d59`；subtree split push 再遇
+       > non-fast-forward，走 `.release/iterate-plugin` 替代路径（rsync 同步后提交 `58d14e5` 快进
+       > 推送 `1cbf51d..58d14e5`）；npm `iterate-plugin@3.4.0` 已发布（latest=3.4.0，76 文件 /
+       > 300.1 kB，tarball 复核含 resume op / client launcher / 原型防护）。验证 typecheck +
+       > typecheck:client + build + build:client 干净，503 测试全过。
 
 ---
 
