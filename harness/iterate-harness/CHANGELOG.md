@@ -38,11 +38,24 @@ All notable changes to iterate-harness should be recorded in this file.
   suite 并行负载下的偶发失败。
 - **WebUI 冗余收敛条件**（`frontend/web/src/store.ts`）：`notifyRunEnd` 的
   `converged || converged === true` 恒等于 `converged`，简化。
+- **agent shell 执行不再加载用户 rc（login-hook 秒级开销，极端负载下
+  直接打穿 5s 任务超时）**（`utils/shell.py`）：`bash` 分支默认改传
+  `--noprofile --norc`，子进程直接继承父进程（ih 启动时已解析）的完整
+  环境——`~/.bash_profile`/`~/.bashrc` 里的 conda init / nvm / pyenv 等
+  hook 不再为**每一条** agent 命令（bash 工具、task manager、hook、cron、
+  bridge、remote trigger）重复付费。实测本机单条命令从 **9.9s 降到 0.009s**
+  （~1000×）。需要旧行为可用 `ITERATE_HARNESS_SHELL_LOAD_RC=1` 逃生阀
+  恢复 `-lc`。同步收紧 `script` PTY 包装、`_bash_is_usable` 探测与 Windows
+  git-bash 分支，新增逃生阀测试。
+- **真实子进程测试预算过紧**（`test_manager.py` / `test_task_tools.py`）：
+  task 等待统一从 5s/2s 放宽到 30s，消除高负载 CI 上的偶发超时失败
+  （修复后这些文件 **40 passed in 5.5s**）。
 
 ### Verification
 
-- 全量 pytest **2064 passed, 6 skipped**；ruff clean；mypy strict clean
-  （246 源文件）；npm 包装器 45 passed；前端 `tsc --noEmit` + vitest 13 passed。
+- 全量 pytest **2065 passed, 6 skipped**；ruff clean；mypy strict clean
+  （246 源文件）；npm 包装器 `bootstrap.test.js` 36 passed；前端
+  `tsc --noEmit` + vitest 13 passed。
 - 版本号在 `__init__.py` / `npm/package.json` / `frontend/web/package.json` /
   `CHANGELOG.md` 同步至 2.2.0。
 
