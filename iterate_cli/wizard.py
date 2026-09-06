@@ -357,6 +357,9 @@ def _run_basic_wizard(
         language=existing.language if existing else "en",
         goal=existing.goal if existing else DEFAULT_GOAL,
         max_rounds=existing.max_rounds if existing else DEFAULT_MAX_ROUNDS,
+        reasoning_effort=(
+            existing.reasoning_effort if existing else DEFAULT_REASONING_EFFORT
+        ),
         atomic_max_lines=(
             existing.atomic_max_lines if existing else DEFAULT_ATOMIC_MAX_LINES
         ),
@@ -761,12 +764,17 @@ def _collect_dimension_sets(
 def _parse_dimension_selection(raw: str) -> list[str]:
     """Parse a comma-separated number string into a dimension list.
 
+    Invalid tokens are dropped individually instead of discarding the whole
+    selection: an input like ``"1, x"`` keeps dimension 1 (the user clearly
+    meant it) and ignores only the malformed token. The result is empty only
+    when no valid dimension number was entered at all.
+
     Args:
         raw: User input like "1,2,5,7".
 
     Returns:
         List of dimension keys (deduplicated, order preserved), or empty
-        list if parsing fails.
+        list if no valid number was entered.
     """
     nums: list[int] = []
     for part in raw.split(","):
@@ -776,10 +784,13 @@ def _parse_dimension_selection(raw: str) -> list[str]:
         try:
             num = int(part)
         except ValueError:
-            return []
+            continue
         if num < 1 or num > len(ALL_DIMENSIONS):
-            return []
+            continue
         nums.append(num)
+
+    if not nums:
+        return []
 
     # Deduplicate while preserving order (schema requires uniqueItems).
     seen: set[str] = set()

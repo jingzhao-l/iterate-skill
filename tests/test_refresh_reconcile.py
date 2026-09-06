@@ -15,6 +15,7 @@ import yaml
 from iterate_cli.refresh import (
     _build_refresh_data,
     _build_refreshed_config,
+    _diff_stats,
     _reconcile_validation_suggestions,
     incremental_refresh,
     load_onboarding_config,
@@ -216,3 +217,69 @@ class TestIncrementalRefreshPersistsReconciledData:
         assert new_config is not None
         # Customised command is preserved verbatim, not overwritten.
         assert new_config["validation"]["commands"]["python"] == ["pytest --custom"]
+
+
+class TestDiffStats:
+    """_diff_stats must count changed lines without diff-header false positives."""
+
+    def test_no_change_returns_zeroes(self) -> None:
+        assert _diff_stats("same\nbody\n", "same\nbody\n") == {
+            "added": 0,
+            "removed": 0,
+            "changed": 0,
+        }
+
+    def test_counts_content_lines_mistaken_for_headers(self) -> None:
+        """Content lines that start with '--'/'++' collided with the '--- ' /
+        '+++ ' file-header skip in the old unified-diff parser and were dropped
+        from the counts. SequenceMatcher length arithmetic has no such
+        ambiguity."""
+        before = "start\n-- book keeping\nend\n"
+        after = "start\nend\n++ added note\n"
+        stats = _diff_stats(before, after)
+        assert stats["removed"] == 1  # the '-- book keeping' line
+        assert stats["added"] == 1  # the '++ added note' line
+        assert stats["changed"] == 2
+
+    def test_totals_match_actual_delta(self) -> None:
+        before = "\n".join(f"line{n}" for n in range(10))
+        after = "\n".join(f"line{n}" for n in range(7)) + "\nbrand new"
+        stats = _diff_stats(before, after)
+        assert stats["added"] == 1
+        assert stats["removed"] == 3
+        assert stats["changed"] == 4
+
+
+class TestBuildRefreshedConfigEmptyWhitelist:
+    """A cleared command_whitelist is dropped, not persisted as [].
+
+    The schema requires command_whitelist to be non-empty when present
+    (minItems 1), so writing ``command_whitelist: []`` would keep the refreshed
+    config schema-invalid. An operator-cleared whitelist is expressed by
+    omitting the key (mirroring personalize's merge)."""
+
+    def test_empty_whitelist_drops_key(self, tmp_path: Path) -> None:
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+        }
+        data = _build_refresh_data(
+            tmp_path, ScanResult(detected_languages=[], manifests=[]), config
+        )
+        assert data.command_whitelist == []
+        new_config = _build_refreshed_config(config, data)
+        assert "command_whitelist" not in new_config["validation"]
+
+    def test_non_empty_whitelist_kept(self, tmp_path: Path) -> None:
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {
+                "commands": {"python": ["pytest -q"]},
+                "command_whitelist": ["pytest", "ruff"],
+            },
+        }
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        new_config = _build_refreshed_config(config, data)
+        assert "ruff" in new_config["validation"]["command_whitelist"]

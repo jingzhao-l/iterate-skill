@@ -5,6 +5,48 @@
 
 ---
 
+## [3.2.0] — 2026-09-06
+
+### 新增 / Features
+
+- **`iterate refresh --json` / `--dry-run --json`**（B1）：refresh 增加结构化 JSON 输出——`--dry-run --json` 预览而不写盘，`--json` 先预览后写入；负载含 `ok`/`dry_run`/`changed`/`config_changed`/`md_changed_lines`/`stats` 与失败时的 `error`，供脚本/CI 消费。
+- **`iterate doctor --strict`**（B2）：新增 `--strict` 标志，将 warning 一并视为失败（退出码 1），供 CI 在"非全绿即失败"的门禁场景使用；默认仍仅 error 阻塞，`--json` 下同样生效。
+- **`iterate status --json` 漂移明细**（B4）：结构化输出新增 `drift_detected`（布尔或 null）及 `drifted_added`/`drifted_removed`/`drifted_changed` 明细列表，脚本不再需要解析人类可读的 summary 字符串。
+- **`iterate config` 点号路径别名**（B5）：`set`/`get` 支持嵌套点号键（如 `config set git.use_worktree true`、`reviewer.coverage_validation false`），与 `iterate show` 的路径表达及手写配置习惯保持一致；JSON 输出统一以规范扁平键返回。
+- **doctor 新增 ITERATE.md USER-OWNED 标记检查**（B6）：`iterate refresh` 会在标记缺失时拒绝覆盖（防手写内容丢失），此前只在 refresh 时才暴露；doctor 新增 `iterate.md.markers` 检查在诊断阶段提前告警，建议 `iterate reonboard` 恢复标记。同步新增 `invariants` 结构 + `invariants.commands` 元字符安全检查。
+
+### 修复 / Fixes
+
+- **doctor 白名单合规检查 fail-open**：`_check_whitelist_compliance` 此前遇到不安全白名单条目即提前返回，跳过命令级 shell 元字符扫描（`pytest; rm -rf /` 可借坏条目绕过）；现元字符扫描无条件执行，两个问题都如实上报；白名单条目先 `.strip()` 再参与匹配（`" pytest "` 不再产生误导性 "not in whitelist" 警告）。
+- **doctor manifest 漂移三原因区分**：无 drift 检查时按"配置不可读 / drift_check 已禁用 / 尚未录制指纹（建议 `iterate refresh`）"分别说明，不再笼统报"不适用"。
+- **`doctor --fix` 补录缺失指纹（B3）**：对已 onboarded（录音含 skill_version）但 `fingerprints` 为空的配置，`--fix` 现在补录当前 manifest 指纹，恢复漂移检测；已有指纹原样保留。`--fix` 失败时给出明确原因（缺配置/配置损坏），`--json` 下输出与 DoctorReport 同构的失败负载。
+- **`doctor --fix --json`、`--json-out`、`fingerprint --json` 输出修正**：`--fix` 失败改输出 DoctorReport 形状 JSON；`--json-out` 与 TUI 模式结合时也保留 `fixes`；`fingerprint verify --json` 的 `reason` 精确到未 onboarding / 已禁用 / 无指纹三类。
+- **CLI 语义修正**：裸 `iterate`（无子命令）退出码由 0 改为 2（使用错误）；`iterate --version` 在非 TTY（管道）下输出纯 `iterate X.Y.Z` 便于解析；`--json` 对交互式命令（`onboard`/`personalize`/`reonboard`）改为明确拒绝（退出码 2）而非静默吞掉。
+- **健壮性兜底（防手写配置崩溃）**：`check_drift` 对脏指纹条目加 `isinstance(dict)` 守卫；`personalize` 加载 `risk_areas`/`known_intentional`/`dimension_focus` 时对非 list 标量不再逐字符迭代；`guard pre-check` 对多个缺失 manifest 全部上报而非只报第一个。
+- **refresh 配置与 diff 统计**：空 `command_whitelist` 不再写为 `command_whitelist: []`（schema minItems 1 违例）而是删除该键；`_diff_stats` 改用 `SequenceMatcher` opcode 长度统计，内容行恰好以 `--`/`++` 开头时不再被误吞为 `--- `/`+++ ` 文件头。
+- **wizard**：`_run_basic_wizard` 保留既有 `reasoning_effort`（不再重设默认）；`_parse_dimension_selection` 逐项丢弃非法选择而非整组回退（仍保证全非法输入返回 `[]`）。
+- **configcmd 非 mapping 拒绝覆盖**：顶层 YAML 为列表/标量（如手写 `- a`）时 `config set` 明确拒绝并原样保留，不再静默回填成 `{}` 后再写入覆盖。
+- **publish_qoder.py**：未传 `--out` 时 zip 默认落到当前目录（此前落在临时目录随上下文退出被删除，构建结果凭空消失）；`_copy_tree` 与 git-archive 路径在 dotfile 上保持一致（只排除 `.git` 与显式 excludes；支持顶层文件），zip 条目排序确定化（同源重复构建产生字节一致的产物）。
+- **下载/校验安全**：`update_downloads_badge._read_bounded` 改为按 EOF 循环读取（单次 `read` 可能回不足量，此前可绕过字节上限）；`install.py` 与 `installer.js` 的校验和比较改用常量时间比较（`hmac.compare_digest` / `crypto.timingSafeEqual`）；`installer.js` 增加 `--max-filesize` 字节上限、PAT 仅附加给 `api.github.com`（release-asset 公开下载不再携带令牌）、`--fail-with-body` 按 curl 版本回退为 `--fail`。
+
+### 测试 / Tests
+
+- 新增 35 例，全量 Python 测试 970 个全部通过，`ruff check .` 通过，npm 安装器测试通过：
+  - `test_doctor.py`：白名单 fail-open / 空白条目匹配 / 条目字符网（3）、drift 禁用与无指纹原因（2）、invariants 结构/命令/ensure（4）、ITERATE.md 标记（2）、`render_report` strict（3）、`run_doctor_fix` 补录指纹（2）。
+  - `test_guard.py`：多缺失 manifest 全量上报与混合场景（2）。
+  - `test_refresh_reconcile.py`：`_diff_stats` 头部伪鉴别/变更总数（3）、空白名单删键（2）。
+  - `test_config.py`：点号别名 set/get（4）、非 mapping 拒绝覆盖（2）、CLI 别名（1）。
+  - `test_onboarding.py`：`_parse_dimension_selection` 部分非法保留/去重/空白（3）。
+  - `test_publish_qoder.py`：默认 out 存活 / 确定性 zip / dotfile 一致性 + 顶层文件复制（3）。
+  - `npm-installer/test/mode.test.js`：`isGithubApiUrl` 令牌作用域（5）。
+- 更新既有断言以匹配新语义：裸 `iterate` 退出码 0→2；badge `_FAKE_RESP` 与 SkillHub `FakeResp` 改为位置感知 + EOF 语义（真实 `read()` 行为）。
+
+### 内部 / Internal
+
+- `version` 升至 3.2.0（minor：新增 B1/B2/B4/B5/B6 特性 + 修复批次）。
+
+---
+
 ## [3.1.0] — 2026-09-05
 
 ### 新增 / Features

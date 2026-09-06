@@ -222,6 +222,61 @@ class TestConfigSet:
         assert raw == ": not: valid: [yaml\n"
 
 
+class TestConfigDottedAliases:
+    """``iterate config set``/``get`` dotted-path aliases (B5)."""
+
+    def _css(self):
+        return {
+            "dimensions": ["correctness", "security"],
+            "onboarding": {
+                "skill_version": SKILL_VERSION,
+                "channel": "cli",
+                "completed_at": "2026-08-15T00:00:00Z",
+                "drift_check": False,
+            },
+        }
+
+    def test_set_dotted_alias_writes_nested(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, self._css())
+        assert run_config_set(project, "git.use_worktree", "true") == 0
+        config = _read_config(project)
+        assert config["git"]["use_worktree"] is True
+
+    def test_set_dotted_alias_reviewer(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, self._css())
+        assert run_config_set(project, "reviewer.coverage_validation", "false") == 0
+        config = _read_config(project)
+        assert config["reviewer"]["coverage_validation"] is False
+
+    def test_get_dotted_alias_reads_value(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = self._css()
+        config["git"] = {"use_worktree": True}
+        _write_config(project, config)
+        assert run_config_get(project, "git.use_worktree") == 0
+        assert capsys.readouterr().out.strip() == "yes"
+
+
+class TestConfigNonMappingProtection:
+    """A top-level YAML that is not a mapping must never be clobbered."""
+
+    def test_refuses_to_overwrite_list_config(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("- just\n- a\n- list\n", encoding="utf-8")
+        assert run_config_set(project, "goal", "x") == 1
+        raw = (project / CONFIG_YAML).read_text(encoding="utf-8")
+        assert raw == "- just\n- a\n- list\n"
+
+    def test_refuses_to_overwrite_scalar_config(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("just-a-string\n", encoding="utf-8")
+        assert run_config_set(project, "goal", "x") == 1
+        assert (project / CONFIG_YAML).read_text(encoding="utf-8") == "just-a-string\n"
+
+
+
 # ---------------------------------------------------------------------------
 # CLI dispatch
 # ---------------------------------------------------------------------------
@@ -246,6 +301,15 @@ class TestConfigCli:
         assert code == 0
         config = _read_config(project)
         assert config["max_rounds"] == 12
+
+    def test_cli_set_dotted_alias(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            ["config", "set", "git.use_worktree", "true", "-p", str(project), "--no-banner"]
+        )
+        assert code == 0
+        assert _read_config(project)["git"]["use_worktree"] is True
 
     def test_cli_set_missing_value(self, tmp_path, capsys) -> None:
         project = _make_project(tmp_path)

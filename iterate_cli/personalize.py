@@ -540,7 +540,10 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     protected = [str(p) for p in raw_protected]
 
     risk_areas: list[RiskArea] = []
-    for item in raw.get("risk_areas") or []:
+    raw_risk_areas = raw.get("risk_areas") or []
+    if not isinstance(raw_risk_areas, list):
+        raw_risk_areas = []
+    for item in raw_risk_areas:
         if isinstance(item, dict) and "path" in item:
             risk_areas.append(
                 RiskArea(
@@ -550,7 +553,10 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
             )
 
     known: list[KnownIntentional] = []
-    for item in raw.get("known_intentional") or []:
+    raw_known = raw.get("known_intentional") or []
+    if not isinstance(raw_known, list):
+        raw_known = []
+    for item in raw_known:
         if isinstance(item, dict) and "file" in item:
             # Defensive parse of line: YAML may contain non-integer strings
             # if manually edited. Fall back to 0 (whole-file suppression).
@@ -565,7 +571,10 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
             )
 
     dim_focus: list[DimensionFocusOverride] = []
-    for item in raw.get("dimension_focus") or []:
+    raw_dim_focus = raw.get("dimension_focus") or []
+    if not isinstance(raw_dim_focus, list):
+        raw_dim_focus = []
+    for item in raw_dim_focus:
         if isinstance(item, dict) and "dimension" in item:
             dim_focus.append(
                 DimensionFocusOverride(

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -1344,7 +1345,10 @@ def _download_release_source(
         return None
 
     actual_hash = hashlib.sha256(data).hexdigest()
-    if actual_hash.lower() != expected_hash.lower():
+    # Constant-time compare: the expected hash is attacker-influenced (it
+    # travels over the network with the tarball), so early-exit string !=
+    # would leak prefix information usable to forge a checksum.
+    if not hmac.compare_digest(actual_hash.lower(), expected_hash.lower()):
         _error(f"Checksum mismatch for release tarball: expected {expected_hash}, got {actual_hash}")
         return None
     _success("Release tarball checksum verified.")

@@ -170,13 +170,18 @@ class TestReadBounded:
     class _FakeResp:
         def __init__(self, body: bytes) -> None:
             self._body = body
+            self._pos = 0
 
         def read(self, amt: int) -> bytes:
-            # Mimic urllib: read() without an argument or with a huge amt returns
-            # the whole body; with a small amt returns up to that many bytes.
+            # Mimic urllib: read() advances a position and returns b"" at EOF
+            # (a position-less stub would make a bounded read-loop spin until
+            # the byte cap fires, so the fake must honor amt + EOF).
             if amt is None or amt < 0:
-                return self._body
-            return self._body[:amt]
+                chunk = self._body[self._pos :]
+            else:
+                chunk = self._body[self._pos : self._pos + amt]
+            self._pos += len(chunk)
+            return chunk
 
     def test_within_cap_returns_full_body(self) -> None:
         body = b"x" * (udb._MAX_RESPONSE_BYTES // 2)
@@ -212,6 +217,8 @@ class TestIsSkillhubUrl:
         captured: dict[str, object] = {}
 
         class FakeResp:
+            _sent = False
+
             def __enter__(self):
                 return self
 
@@ -219,6 +226,11 @@ class TestIsSkillhubUrl:
                 return False
 
             def read(self, amt: int = -1) -> bytes:
+                # Deliver the body once, then EOF (faithful to
+                # http.client read semantics the bounded reader relies on).
+                if self._sent:
+                    return b""
+                self._sent = True
                 return b"{}"
 
         def fake_urlopen(request, timeout, context):

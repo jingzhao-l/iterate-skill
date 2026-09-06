@@ -19,7 +19,9 @@ All user-facing output is routed through the unified TUI layer
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -37,7 +39,6 @@ from iterate_cli.refresh import (
     REONBOARD_NO_CHANGES,
     check_onboarding_drift,
     full_reonboard,
-    incremental_refresh,
     is_onboarding_complete,
     load_onboarding_config,
 )
@@ -73,11 +74,27 @@ def main(argv: list[str] | None = None) -> int:
         # matching the subcommand paths below.
         if _should_show_banner(args) and not getattr(args, "json", False):
             tui.banner()
-        tui.info(f"iterate {__version__}")
-        tui.empty_line()
-        tui.hint("Install the skill across AI assistants: npx iterate-skill-installer")
-        tui.hint("Initialize a project: iterate onboard")
+        # A bare "iterate <version>" line is emitted on non-TTY (piped) stdout
+        # so scripts can parse `iterate --version` without ANSI/prompt noise.
+        if sys.stdout.isatty():
+            tui.info(f"iterate {__version__}")
+            tui.empty_line()
+            tui.hint("Install the skill across AI assistants: npx iterate-skill-installer")
+            tui.hint("Initialize a project: iterate onboard")
+        else:
+            print(f"iterate {__version__}")
         return 0
+
+    # Interactive commands never produce structured output; a caller passing
+    # --json to them has a misunderstanding, not a silent success.
+    non_json_commands = {"onboard", "personalize", "reonboard"}
+    if getattr(args, "json", False) and args.command in non_json_commands:
+        tui.error(
+            f"--json is not supported for '{args.command}' (interactive command). "
+            "Use `iterate status/show/doctor --json` for structured output, or "
+            "`iterate config get KEY --json` for single values."
+        )
+        return 2
 
     project_root = Path(args.project).resolve()
 
@@ -133,7 +150,11 @@ def _dispatch_command(
     if args.command == "refresh":
         if show_banner:
             tui.banner()
-        return _cmd_refresh(project_root, dry_run=getattr(args, "dry_run", False))
+        return _cmd_refresh(
+            project_root,
+            dry_run=getattr(args, "dry_run", False),
+            json_output=getattr(args, "json", False),
+        )
     if args.command == "reonboard":
         if show_banner:
             tui.banner()
@@ -153,6 +174,7 @@ def _dispatch_command(
             project_root,
             json_output=getattr(args, "json", False),
             fix=getattr(args, "fix", False),
+            strict=getattr(args, "strict", False),
             json_out=getattr(args, "json_out", None),
         )
     if args.command == "config":
@@ -191,7 +213,8 @@ def _dispatch_command(
             json_output=getattr(args, "json", False),
         )
     parser.print_help()
-    return 0
+    # No subcommand given (bare `iterate`): this is a usage error, not success.
+    return 2
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -216,7 +239,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         default=False,
-        help="Emit structured JSON for status/show/doctor instead of TUI output.",
+        help="Emit structured JSON for status/show/doctor/refresh/config instead "
+        "of TUI output (interactive commands reject it).",
     )
     parser.add_argument(
         "-p", "--project",
@@ -284,6 +308,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Preview what would change without writing any files.",
     )
+    refresh_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON report instead of TUI output.",
+    )
     subparsers.add_parser(
         "reonboard",
         parents=[parent],
@@ -344,6 +374,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Apply safe, non-destructive fixes to iterate.config.yaml "
         "(backup written first) before running diagnostics.",
+    )
+    doctor_parser.add_argument(
+        "--strict",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Treat warnings as failures too: exit 1 when any warning is "
+        "present (default: only errors are blocking). Useful for CI gating.",
     )
     config_parser = subparsers.add_parser(
         "config",
@@ -690,30 +727,71 @@ def _cmd_show(project_root: Path, json_output: bool = False) -> int:
     return run_show(project_root, json_output=json_output)
 
 
-def _cmd_refresh(project_root: Path, dry_run: bool = False) -> int:
+def _cmd_refresh(
+    project_root: Path, dry_run: bool = False, json_output: bool = False
+) -> int:
     """Handle the 'refresh' subcommand.
 
     Args:
         project_root: Project root directory.
         dry_run: When True, only preview what would change without writing.
+        json_output: When True, emit a structured JSON report instead of TUI
+            lines. With ``--dry-run --json`` the preview is reported without
+            writing; with ``--json`` alone the refresh runs and reports what
+            changed.
 
     Returns:
         Exit code: 0 on success, 1 on failure.
     """
+    from iterate_cli.refresh import incremental_refresh, preview_refresh
+
+    def _json(error: str = "") -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project": str(project_root),
+            "ok": error == "",
+            "dry_run": dry_run,
+            "changed": False,
+            "config_changed": False,
+            "md_changed_lines": 0,
+            "stats": {},
+        }
+        if error:
+            payload["error"] = error
+        return payload
+
     if not is_onboarding_complete(project_root):
         tui.warning("Onboarding not yet completed. Run 'iterate onboard' first.")
+        if json_output:
+            print(json.dumps(_json("onboarding not completed"), ensure_ascii=False))
         return 1
 
     if dry_run:
-        from iterate_cli.refresh import preview_refresh
-
         preview = preview_refresh(project_root)
         if not preview["ok"]:
-            tui.error(
-                f"Refresh preview failed. Could not read ITERATE.md / iterate.config.yaml: "
-                f"{preview['error']}"
-            )
+            if json_output:
+                print(json.dumps(_json(preview["error"]), ensure_ascii=False))
+            else:
+                tui.error(
+                    f"Refresh preview failed. Could not read ITERATE.md / iterate.config.yaml: "
+                    f"{preview['error']}"
+                )
             return 1
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "project": str(project_root),
+                        "ok": True,
+                        "dry_run": True,
+                        "changed": preview["changed"],
+                        "config_changed": preview["config_changed"],
+                        "md_changed_lines": preview["md_changed_lines"],
+                        "stats": preview["stats"],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
         if preview["changed"]:
             stats = preview["stats"]
             tui.warning("Refresh would make the following changes:")
@@ -730,6 +808,32 @@ def _cmd_refresh(project_root: Path, dry_run: bool = False) -> int:
             tui.hint("Run 'iterate refresh' (without --dry-run) to apply these changes.", indent=2)
         else:
             tui.success("No changes needed — ITERATE.md and iterate.config.yaml are already up to date.")
+        return 0
+
+    if json_output:
+        # Preview first to report accurate changed/line statistics, then apply.
+        preview = preview_refresh(project_root)
+        if not preview["ok"]:
+            print(json.dumps(_json(preview["error"]), ensure_ascii=False))
+            return 1
+        success = incremental_refresh(project_root)
+        if not success:
+            print(json.dumps(_json("refresh failed (see stderr)"), ensure_ascii=False))
+            return 1
+        print(
+            json.dumps(
+                {
+                    "project": str(project_root),
+                    "ok": True,
+                    "dry_run": False,
+                    "changed": preview["changed"],
+                    "config_changed": preview["config_changed"],
+                    "md_changed_lines": preview["md_changed_lines"],
+                    "stats": preview["stats"],
+                },
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     success = incremental_refresh(project_root)
@@ -843,6 +947,19 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
 
         drift = check_onboarding_drift(project_root)
         data["drift"] = drift_summary(drift)
+        # Machine-readable drift detail (B4): scripts can key off
+        # drift_detected plus the concrete added/removed/changed lists
+        # instead of parsing the human summary string.
+        if drift is None:
+            data["drift_detected"] = None
+            data["drifted_added"] = []
+            data["drifted_removed"] = []
+            data["drifted_changed"] = []
+        else:
+            data["drift_detected"] = drift.has_drift
+            data["drifted_added"] = list(drift.added)
+            data["drifted_removed"] = list(drift.removed)
+            data["drifted_changed"] = list(drift.changed)
 
     if json_output:
         import json
@@ -912,6 +1029,7 @@ def _cmd_doctor(
     project_root: Path,
     json_output: bool = False,
     fix: bool = False,
+    strict: bool = False,
     json_out: str | None = None,
 ) -> int:
     """Handle the 'doctor' subcommand — project health diagnostics.
@@ -922,14 +1040,19 @@ def _cmd_doctor(
     When ``json_out`` is set, the structured report is additionally written
     to that file (its parent directory is created as needed).
 
+    When ``strict`` is True, warnings flip the exit code to 1 (errors are
+    always blocking); this lets CI gate on any non-clean state.
+
     Args:
         project_root: Project root directory.
         json_output: When True, emit a structured JSON report.
         fix: When True, apply safe config fixes before running diagnostics.
+        strict: When True, warnings are treated as failures.
         json_out: When set, export the JSON report to this path.
 
     Returns:
-        Exit code: 0 when healthy, 1 when errors are found.
+        Exit code: 0 when healthy, 1 when errors are found (or warnings too
+        under --strict).
     """
     from iterate_cli.doctor import (
         export_report_json,
@@ -943,16 +1066,35 @@ def _cmd_doctor(
         ok, fixes = run_doctor_fix(project_root)
         if not ok:
             if json_output:
-                import json
-
+                # Match the DoctorReport JSON contract (project/skill_version/
+                # healthy/fixes/findings) so consumers can decode a failed
+                # --fix the same shape as a successful run.
                 print(
                     json.dumps(
-                        {"error": "doctor --fix: could not apply fixes"},
+                        {
+                            "project": str(project_root),
+                            "skill_version": __version__,
+                            "healthy": False,
+                            "fixes": [],
+                            "findings": [
+                                {
+                                    "severity": "error",
+                                    "check": "config",
+                                    "message": (
+                                        "doctor --fix failed: could not read or safely "
+                                        "fix iterate.config.yaml (run `iterate doctor` "
+                                        "without --fix for details)."
+                                    ),
+                                    "detail": "",
+                                }
+                            ],
+                        },
                         ensure_ascii=False,
+                        indent=2,
                     )
                 )
                 return 1
-            tui.error("doctor --fix: could not apply fixes (see stderr).")
+            tui.error("doctor --fix: could not read or safely fix iterate.config.yaml (see stderr).")
             return 1
         if not json_output:
             if fixes:
@@ -965,11 +1107,11 @@ def _cmd_doctor(
                 tui.empty_line()
 
     report = run_doctor(project_root)
-    if json_output:
-        # Attach applied fixes to the structured report so JSON consumers
-        # see them without the JSON blob being polluted by TUI text.
-        report.fixes = fixes
-    code = render_report(report, json_output=json_output)
+    # Attach applied fixes to the structured report so JSON consumers (both
+    # --json and --json-out) see them without the report being polluted by
+    # TUI text or the fixes list being dropped from the exported file.
+    report.fixes = fixes
+    code = render_report(report, json_output=json_output, strict=strict)
 
     if json_out:
         try:
@@ -1100,15 +1242,28 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
     drift = check_onboarding_drift(project_root)
 
     if json_output:
-        import json
-
         if drift is None:
+            # Distinguish the three reasons drift checking is unavailable
+            # (mirroring doctor's drift check) so a JSON consumer can tell
+            # "not onboarded" from "check disabled" from "no fingerprints yet".
+            reason = "onboarding not completed"
+            config = load_onboarding_config(project_root)
+            if config is not None:
+                onboarding = config.get("onboarding") or {}
+                if not onboarding.get("drift_check", True):
+                    reason = "drift check is disabled (drift_check: false)"
+                else:
+                    stored = onboarding.get("fingerprints") or []
+                    if not isinstance(stored, list) or not stored:
+                        reason = "no fingerprints recorded yet (run `iterate refresh` to capture them)"
+                    else:
+                        reason = "drift check unavailable"
             print(
                 json.dumps(
                     {
                         "project": str(project_root),
                         "available": False,
-                        "reason": "Onboarding incomplete or drift check disabled.",
+                        "reason": reason,
                         "drift": False,
                     },
                     ensure_ascii=False,

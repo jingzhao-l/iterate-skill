@@ -115,15 +115,24 @@ def _read_bounded(resp: _FileLikeRead) -> bytes:
     """Read a bounded-size response body to avoid unbounded memory use.
 
     ``resp`` must expose a ``read(amt: int) -> bytes``-style interface (any
-    ``urllib``/``http.client`` response object). Raises ``ValueError`` when the
-    payload exceeds the cap.
+    ``urllib``/``http.client`` response object). Reads repeatedly until EOF so
+    a response that delivers less than the requested amount per ``read()``
+    call is still fully capped (a single fixed-size read is not enough to
+    enforce the limit). Raises ``ValueError`` when the payload exceeds the cap.
     """
-    chunk = resp.read(_MAX_RESPONSE_BYTES + 1)
-    if len(chunk) > _MAX_RESPONSE_BYTES:
-        raise ValueError(
-            f"response body exceeds {_MAX_RESPONSE_BYTES} byte safety cap"
-        )
-    return chunk
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        if total > _MAX_RESPONSE_BYTES:
+            raise ValueError(
+                f"response body exceeds {_MAX_RESPONSE_BYTES} byte safety cap"
+            )
+        chunk = resp.read(min(_MAX_RESPONSE_BYTES + 1 - total, 1 << 16))
+        if not chunk:
+            break
+        total += len(chunk)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def fetch_json(url: str) -> object:

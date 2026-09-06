@@ -38,7 +38,6 @@ from iterate_cli.generator import (
     REASONING_EFFORT_VALUES,
     atomic_write,
 )
-from iterate_cli.personalize import CorruptConfigError, load_config_strict
 from iterate_cli.refresh import CONFIG_YAML, load_onboarding_config
 from iterate_cli.tui import tui
 
@@ -215,6 +214,29 @@ def _format_value(value: Any) -> str:
     return str(value)
 
 
+def _resolve_key(key: str) -> ConfigKeySpec | None:
+    """Resolve a key to its ConfigKeySpec, supporting dotted-path aliases.
+
+    ``iterate config set git.use_worktree true`` is equivalent to
+    ``iterate config set use_worktree true``: each nested settable key also
+    accepts its ``".".join(path)`` form (B5), matching the section paths used
+    by ``iterate show`` and hand-edited configs.
+
+    Args:
+        key: Flat key name, or a dotted section path like ``atomic.max_lines``.
+
+    Returns:
+        The matching ConfigKeySpec, or None when the key is unknown.
+    """
+    spec = SETTABLE_KEYS.get(key)
+    if spec is not None:
+        return spec
+    for candidate in SETTABLE_KEYS.values():
+        if candidate.path and ".".join(candidate.path) == key:
+            return candidate
+    return None
+
+
 def run_config_get(
     project_root: Path, key: str | None, json_output: bool = False
 ) -> int:
@@ -247,13 +269,15 @@ def run_config_get(
         return section
 
     if key is not None:
-        spec = SETTABLE_KEYS.get(key)
+        spec = _resolve_key(key)
         if spec is None:
             tui.error(f"Unknown config key {key!r}. Use `iterate config` to list keys.")
             return 1
         value = _read(spec)
         if json_output:
-            print(json.dumps({key: value}, ensure_ascii=False))
+            # Key always the canonical flat name, even when the user typed
+            # the dotted alias, so JSON consumers can map it back reliably.
+            print(json.dumps({spec.name: value}, ensure_ascii=False))
         else:
             print(_format_value(value))
         return 0
@@ -291,7 +315,7 @@ def run_config_set(
         Exit code: 0 on success, 1 on unknown key / invalid value / write
         failure.
     """
-    spec = SETTABLE_KEYS.get(key)
+    spec = _resolve_key(key)
     if spec is None:
         tui.error(
             f"Unknown config key {key!r}. Settable keys: {', '.join(SETTABLE_KEYS)}."
@@ -308,10 +332,31 @@ def run_config_set(
     if not config_path.is_file():
         tui.error("iterate.config.yaml not found. Run 'iterate onboard' first.")
         return 1
+
+    # Single read/parse so the "is this a mapping?" check and the merge use
+    # the exact same snapshot. load_config_strict collapses a malformed
+    # top-level (list/scalar) to {}, which would make the write below quietly
+    # clobber the operator's non-mapping YAML — refuse instead.
     try:
-        config = load_config_strict(config_path)
-    except (CorruptConfigError, OSError, UnicodeDecodeError) as exc:
-        tui.error(f"Cannot read iterate.config.yaml: {exc}")
+        raw_text = config_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        tui.error(f"Cannot read {CONFIG_YAML}: {exc}")
+        return 1
+    try:
+        parsed_doc = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        tui.error(f"{CONFIG_YAML} is not valid YAML; refusing to write over it: {exc}")
+        return 1
+    if parsed_doc is None:
+        config: dict[str, Any] = {}
+    elif isinstance(parsed_doc, dict):
+        config = parsed_doc
+    else:
+        tui.error(
+            f"{CONFIG_YAML} top-level must be a mapping (dict), got "
+            f"{type(parsed_doc).__name__}. Refusing to overwrite non-mapping "
+            "content; fix the file manually, then retry."
+        )
         return 1
 
     section: Any = config

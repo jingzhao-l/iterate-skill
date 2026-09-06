@@ -382,6 +382,12 @@ def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: s
 def _diff_stats(before: str, after: str) -> dict[str, int]:
     """Count added/removed lines between two text blobs.
 
+    Uses ``difflib.SequenceMatcher`` opcodes instead of parsing unified-diff
+    markers: a content line that itself starts with ``+``/``-`` (e.g. an
+    added ``++ comment`` line) previously collided with the ``+++ `` file
+    header and was dropped from the counts. Opcode length arithmetic has no
+    such ambiguity.
+
     Args:
         before: Original text.
         after: New text.
@@ -394,17 +400,17 @@ def _diff_stats(before: str, after: str) -> dict[str, int]:
 
     added = 0
     removed = 0
-    for line in difflib.unified_diff(
-        before.splitlines(), after.splitlines(), lineterm=""
-    ):
-        # Skip the "--- old"/"+++ new" file header rows; only actual diff
-        # lines count toward the changed-line total.
-        if line.startswith(("--- ", "+++ ")):
-            continue
-        if line.startswith("+"):
-            added += 1
-        elif line.startswith("-"):
-            removed += 1
+    matcher = difflib.SequenceMatcher(
+        None, before.splitlines(), after.splitlines()
+    )
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "insert":
+            added += j2 - j1
+        elif tag == "delete":
+            removed += i2 - i1
+        elif tag == "replace":
+            added += j2 - j1
+            removed += i2 - i1
     return {"added": added, "removed": removed, "changed": added + removed}
 
 
@@ -457,7 +463,15 @@ def _build_refreshed_config(
     git_cfg["push_per_round"] = data.push_per_round
     config["git"] = git_cfg
     validation = _as_dict_list(existing_config.get("validation"))
-    validation["command_whitelist"] = _as_list(data.command_whitelist)
+    # Schema requires command_whitelist to be non-empty when present (minItems
+    # 1); an operator-cleared whitelist is expressed by dropping the key
+    # (mirroring personalize.merge_personalization_into_config) so the
+    # refreshed config stays schema-valid instead of persisting an invalid
+    # ``command_whitelist: []`` that doctor/refresh would keep flagging.
+    if data.command_whitelist:
+        validation["command_whitelist"] = _as_list(data.command_whitelist)
+    else:
+        validation.pop("command_whitelist", None)
     validation["commands"] = _as_dict_list(data.validation_commands)
     config["validation"] = validation
 

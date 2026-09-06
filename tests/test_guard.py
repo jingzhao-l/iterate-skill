@@ -155,6 +155,43 @@ class TestGuardPrecheck:
         assert result.passed is False
         assert any(label == "validation commands" and not ok for label, ok, _ in result.items)
 
+    def test_all_missing_manifests_reported_not_just_first(self, tmp_path) -> None:
+        """Every missing module manifest produces its own failure item.
+
+        Previously the loop ``break``-ed on the first missing manifest, hiding
+        the remaining failures (a host AI would only ever see one of several
+        broken manifests). All must be reported, and no false all-clear line."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"]["commands"] = {
+            "python": ["true"],
+            "typescript": ["true"],
+        }
+        _write_config(project, config)
+        result = run_guard_precheck(project, [])
+        assert result.passed is False
+        failed = [label for label, ok, _ in result.items if label.startswith("manifest[")]
+        assert len(failed) == 2
+        assert "manifest[python]" in failed
+        assert "manifest[typescript]" in failed
+        assert not any(label == "manifests ready" for label, _, _ in result.items)
+
+    def test_mixed_missing_present_manifests(self, tmp_path) -> None:
+        """One present + one missing manifest: the missing one is reported and
+        no all-clear line is printed."""
+        project = _make_project(tmp_path)
+        (project / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+        config = _base_config()
+        config["validation"]["commands"] = {
+            "python": ["true"],
+            "typescript": ["true"],
+        }
+        _write_config(project, config)
+        result = run_guard_precheck(project, [])
+        assert result.passed is False
+        assert any(label == "manifest[typescript]" and not ok for label, ok, _ in result.items)
+        assert not any(label == "manifests ready" and ok for label, ok, _ in result.items)
+
 
 # ---------------------------------------------------------------------------
 # run_guard_postcheck

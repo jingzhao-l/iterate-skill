@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode, parseChecksums, parseArgs, buildPythonInstallArgs } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums, parseArgs, buildPythonInstallArgs, isGithubApiUrl } = require('../lib/installer');
 
 const originalCwd = process.cwd();
 const originalHome = os.homedir;
@@ -212,6 +212,17 @@ async function run() {
   assert.deepStrictEqual(buildPythonInstallArgs({ ai: null, target: null, force: false, globalInstall: false }), [], 'no flags -> empty argv');
 
   console.log('mode.test.js: all buildPythonInstallArgs tests passed');
+
+  // isGithubApiUrl: the caller's PAT must only ever be attached to the
+  // api.github.com host — never to public release-asset / other URLs
+  // (credential surface minimalism, mirroring scripts/install.py).
+  assert.strictEqual(isGithubApiUrl('https://api.github.com/repos/jingzhao-l/iterate-skill/releases/latest'), true, 'api host should match');
+  assert.strictEqual(isGithubApiUrl('https://api.github.com.evil.com/x'), false, 'lookalike host must not match');
+  assert.strictEqual(isGithubApiUrl('https://release-assets.githubusercontent.com/foo.tar.gz'), false, 'asset host must not receive the token');
+  assert.strictEqual(isGithubApiUrl('https://github.com/x'), false, 'github.com is not the API host');
+  assert.strictEqual(isGithubApiUrl('not a url'), false, 'malformed url must not match');
+
+  console.log('mode.test.js: all isGithubApiUrl tests passed');
 }
 
 run().catch((err) => {

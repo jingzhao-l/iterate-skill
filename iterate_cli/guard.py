@@ -337,14 +337,19 @@ def run_guard_precheck(project_root: Path, paths: list[str], dry_run: bool = Fal
         )
     else:
         ready = []
+        any_missing = False
         for module in modules:
             ok, detail = _manifest_ready(project_root, module)
             if not ok:
+                # Report every missing manifest, not just the first: a host AI
+                # that lists multiple modules must see each failure instead of
+                # a silently truncated report.
+                any_missing = True
                 result.items.append((f"manifest[{module}]", False, detail))
                 result.passed = False
-                break
+                continue
             ready.append(detail)
-        else:
+        if not any_missing:
             result.items.append(
                 ("manifests ready", True, "; ".join(ready) or "no manifests defined")
             )

@@ -883,3 +883,200 @@ class TestDoctorPersonalizationTolerance:
         assert match is not None
         assert match.severity == "ok"
         assert "No recorded" in match.message
+
+
+# ---------------------------------------------------------------------------
+# Fail-open regression: an unsafe whitelist entry must not disable the scan
+# ---------------------------------------------------------------------------
+
+
+class TestWhitelistFailOpen:
+    def _config_with_commands(self, commands, whitelist) -> dict:
+        config = _base_config()
+        config["validation"] = {
+            "commands": {"python": commands},
+            "command_whitelist": whitelist,
+        }
+        return config
+
+    def test_unsafe_entry_does_not_mask_command_metachars(self, tmp_path) -> None:
+        """A metachar whitelist entry must not make ``pytest; rm -rf /`` pass.
+
+        Before the fix, ``_check_whitelist_compliance`` returned early on the
+        first unsafe entry, silently skipping the command-level metachar scan
+        (fail-open). Both problems must now be reported.
+        """
+        project = _make_project(tmp_path)
+        _write_config(
+            project,
+            self._config_with_commands(["pytest; rm -rf /"], ["pytest; oops"]),
+        )
+        report = run_doctor(project)
+        assert report.has_errors()
+        assert any(
+            f.check == "validation.whitelist" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_whitespace_padded_entry_matches_command(self) -> None:
+        """Whitespace-padded whitelist entries must still prefix-match."""
+        from iterate_cli.doctor import DoctorReport, _check_whitelist_compliance
+
+        report = DoctorReport("x")
+        _check_whitelist_compliance(
+            report, [" pytest "], {"python": ["pytest tests/ -q"]}
+        )
+        assert not report.has_warnings()
+
+    def test_entry_chars_net_runs_without_commands(self, tmp_path) -> None:
+        """Metachar whitelist entries are flagged even with no commands."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {"command_whitelist": ["pytest; rm"]}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "validation.whitelist" and f.severity == "warn"
+            for f in report.findings
+        )
+
+
+class TestDoctorManifestDriftReasons:
+    def test_disabled_drift_check_reason(self, tmp_path) -> None:
+        """Drift disabled → message says so (not the generic 'not applicable')."""
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())  # drift_check: False
+        report = run_doctor(project)
+        match = next((f for f in report.findings if f.check == "drift"), None)
+        assert match is not None
+        assert match.severity == "ok"
+        assert "drift check is disabled" in match.message
+
+    def test_no_fingerprints_reason(self, tmp_path) -> None:
+        """Drift enabled but nothing recorded → 'no fingerprints recorded'."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["onboarding"]["drift_check"] = True
+        _write_config(project, config)
+        report = run_doctor(project)
+        match = next((f for f in report.findings if f.check == "drift"), None)
+        assert match is not None
+        assert "no fingerprints recorded" in match.message
+
+
+class TestDoctorInvariants:
+    def test_non_mapping_invariants_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["invariants"] = ["nope"]
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "invariants" and f.severity == "error" for f in report.findings
+        )
+
+    def test_empty_ensure_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["invariants"] = {"ensure": []}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "invariants.ensure" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_metachar_invariant_command_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["invariants"] = {"commands": {"python": ["pytest; rm -rf /"]}}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "invariants.commands" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_clean_invariants_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["invariants"] = {
+            "ensure": ["src/main.py"],
+            "commands": {"python": ["pytest -q"]},
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert not report.has_errors()
+        assert any(
+            f.check == "invariants.commands" and f.severity == "ok"
+            for f in report.findings
+        )
+
+
+class TestDoctorIterateMdMarkers:
+    def test_missing_markers_warn(self, tmp_path) -> None:
+        project = _make_project(tmp_path)  # ITERATE.md is just "# Project\n"
+        _write_config(project, _base_config())
+        report = run_doctor(project)
+        assert any(
+            f.check == "iterate.md.markers" and f.severity == "warn"
+            for f in report.findings
+        )
+
+    def test_present_markers_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        (project / ITERATE_MD).write_text(
+            "# Project\n\n"
+            "<!-- ITERATE:USER-OWNED:START -->\nmanual\n"
+            "<!-- ITERATE:USER-OWNED:END -->\n",
+            encoding="utf-8",
+        )
+        _write_config(project, _base_config())
+        report = run_doctor(project)
+        assert any(
+            f.check == "iterate.md.markers" and f.severity == "ok"
+            for f in report.findings
+        )
+
+
+class TestRenderReportStrict:
+    """``--strict`` makes warnings blocking for CI gating."""
+
+    def test_warnings_only_non_strict_returns_zero(self, capsys) -> None:
+        assert render_report(_report_with("ok", "warn"), json_output=True, strict=False) == 0
+
+    def test_warnings_only_strict_returns_one(self, capsys) -> None:
+        assert render_report(_report_with("ok", "warn"), json_output=True, strict=True) == 1
+
+    def test_errors_always_return_one(self, capsys) -> None:
+        assert render_report(_report_with("error"), json_output=True, strict=False) == 1
+
+
+class TestRunDoctorFixFingerprintCaptures:
+    """B3: doctor --fix restores missing fingerprints for an onboarded project."""
+
+    def test_captures_missing_fingerprints(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        # Onboarding record with skill_version but no fingerprints (e.g. an
+        # AI-channel/hand-edited onboarding) — drift detection was silently off.
+        _write_config(project, _base_config())
+        ok, fixes = run_doctor_fix(project)
+        assert ok
+        assert any("onboarding.fingerprints" in f for f in fixes)
+        config = load_onboarding_config(project)
+        assert config is not None
+        stamps = config["onboarding"]["fingerprints"]
+        assert any(entry["path"] == "pyproject.toml" for entry in stamps)
+
+    def test_leaves_existing_fingerprints_untouched(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        config = _base_config()
+        config["onboarding"]["fingerprints"] = [
+            {"path": "pyproject.toml", "sha256": "a" * 64}
+        ]
+        _write_config(project, config)
+        ok, fixes = run_doctor_fix(project)
+        assert ok
+        assert not any("onboarding.fingerprints" in f for f in fixes)

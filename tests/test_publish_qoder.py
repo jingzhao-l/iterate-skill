@@ -121,3 +121,81 @@ class TestSafeMembers:
                 m.filename for m in publish_qoder._safe_members(archive, str(tmp_path))
             ]
         assert names == ["iterate/link"]
+
+
+def _minimal_source(tmp_path: Path) -> Path:
+    """A minimal publishable skill tree (SKILL.md + one file)."""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "SKILL.md").write_text(
+        "---\nname: iterate\ndescription: d\nversion: 9.9.9\n---\n# body\n",
+        encoding="utf-8",
+    )
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    (source / "b").mkdir(parents=True)
+    (source / "b" / "nested.txt").write_text("b", encoding="utf-8")
+    return source
+
+
+class TestBuildPackageDefaultOut:
+    def test_build_without_out_survives(self, tmp_path: Path) -> None:
+        """Building without --out must leave the zip on disk.
+
+        Regression: the default zip path lived inside the temp staging dir and
+        was deleted when the context manager exited — a build with no --out
+        silently produced nothing.
+        """
+        source = _minimal_source(tmp_path)
+        zip_path, _warnings, meta = publish_qoder.build_package(
+            "9.9.9", source=str(source), out=None
+        )
+        assert zip_path == meta["zip"]
+        assert Path(zip_path).is_file()
+        assert Path(zip_path).stat().st_size > 0
+
+    def test_deterministic_zip_bytes(self, tmp_path: Path) -> None:
+        """Two builds of the same tree produce byte-identical zips.
+
+        Regression: the zip walk did not sort file entries, so ordering (and
+        therefore the archive bytes) was filesystem-dependent, breaking
+        checksum-and-upload flows.
+        """
+        source = _minimal_source(tmp_path)
+        first, _w1, _m1 = publish_qoder.build_package(
+            "9.9.9", source=str(source), out=str(tmp_path / "one.zip")
+        )
+        second, _w2, _m2 = publish_qoder.build_package(
+            "9.9.9", source=str(source), out=str(tmp_path / "two.zip")
+        )
+        assert Path(first).read_bytes() == Path(second).read_bytes()
+
+
+class TestCopyTreeDotfiles:
+    def test_copy_tree_keeps_dotfiles_drops_only_git_and_excludes(
+        self, tmp_path: Path
+    ) -> None:
+        """--source builds must match git-archive output on dotfiles.
+
+        Regression: _copy_tree skipped every top-level dotfile, so --source
+        trees dropped .gitignore / CI files that the canonical git-archive path
+        ships — the fleet of distributions disagreed on the same skill body.
+        """
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / ".gitignore").write_text("x", encoding="utf-8")
+        (src / ".someconfig").write_text("y", encoding="utf-8")
+        (src / ".git").mkdir(parents=True)
+        (src / ".git" / "HEAD").write_text("ref", encoding="utf-8")
+        (src / "harness").mkdir()
+        (src / "harness" / "x.txt").write_text("h", encoding="utf-8")
+        (src / "plain.txt").write_text("z", encoding="utf-8")
+
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        publish_qoder._copy_tree(str(src), str(dst), ("harness",))
+        names = sorted(p.name for p in dst.iterdir())
+        assert ".gitignore" in names
+        assert ".someconfig" in names
+        assert "plain.txt" in names
+        assert ".git" not in names
+        assert "harness" not in names

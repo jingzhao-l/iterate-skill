@@ -147,14 +147,28 @@ def frontmatter_version(text: str) -> str | None:
 # Package building                                                             #
 # --------------------------------------------------------------------------- #
 def _copy_tree(src: str, dst: str, excludes: Iterable[str]) -> None:
-    """Recursively copy ``src`` into ``dst``, skipping excluded top fields."""
+    """Recursively copy ``src`` into ``dst``, skipping excluded top fields.
+
+    Only ``.git`` and the explicit ``excludes`` are skipped. Earlier versions
+    dropped *every* dotfile here, which made ``--source`` trees disagree with
+    the canonical ``git archive`` extraction (that path includes tracked
+    dotfiles such as ``.gitignore`` / CI files) — the two inputs must produce
+    the same skill body. Files (as well as directories) are copied, so a
+    ``--source`` given a repo root with top-level files produces the same
+    body as the git-archive path.
+    """
     for entry in os.listdir(src):
-        if entry in excludes or entry.startswith("."):
+        if entry == ".git":
             continue
-        shutil.copytree(
-            os.path.join(src, entry),
-            os.path.join(dst, entry),
-        )
+        if entry in excludes:
+            continue
+        src_path = os.path.join(src, entry)
+        dst_path = os.path.join(dst, entry)
+        if os.path.isdir(src_path):
+            shutil.copytree(src_path, dst_path)
+        else:
+            os.makedirs(dst, exist_ok=True)
+            shutil.copy2(src_path, dst_path)
 
 
 def _git_archive_extract(dst: str, excludes: Iterable[str]) -> list[str]:
@@ -289,13 +303,19 @@ def build_package(
 
         if not version:
             version = meta["version"] or "local"
-        zip_path = out or os.path.join(tmp, f"iterate-{version}-qoder.zip")
+        # Default output survives the temp staging dir: writing into tmp and
+        # then moving to abspath(zip_path) inside the same tmp dir produced a
+        # deleted zip when --out was omitted. Default to the current directory.
+        final_path = os.path.abspath(
+            out or os.path.join(os.getcwd(), f"iterate-{version}-qoder.zip")
+        )
+        zip_path = os.path.join(tmp, f"iterate-{version}-qoder.zip")
         _zip_dir(stage, zip_path)
         meta["size"] = os.path.getsize(zip_path)
-        meta["zip"] = zip_path
+        meta["zip"] = final_path
         meta["top_level"] = os.path.basename(stage)
-        shutil.move(zip_path, os.path.abspath(zip_path))
-        return os.path.abspath(zip_path), warnings, meta
+        shutil.move(zip_path, final_path)
+        return final_path, warnings, meta
 
 
 def detect_frontmatter_keys(text: str) -> list[str]:
@@ -366,11 +386,17 @@ def _gen_references_index(stage: str) -> list[str]:
 
 
 def _zip_dir(directory: str, zip_path: str) -> None:
-    """Zip ``directory`` so its basename is the single top-level entry."""
+    """Zip ``directory`` so its basename is the single top-level entry.
+
+    Both directory and file lists are sorted so repeated builds of the same
+    tree produce byte-identical zips (deterministic ordering for checksummed
+    uploads instead of filesystem-dependent walks).
+    """
     base = os.path.basename(directory.rstrip(os.sep))
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for root, dirs, files in os.walk(directory):
             dirs.sort()
+            files.sort()
             for name in files:
                 full = os.path.join(root, name)
                 rel = os.path.relpath(full, directory)

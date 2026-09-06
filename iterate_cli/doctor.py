@@ -34,11 +34,14 @@ from typing import Any
 import yaml
 
 from iterate_cli import __version__ as SKILL_VERSION
-from iterate_cli.generator import REASONING_EFFORT_VALUES
+from iterate_cli.fingerprint import capture_fingerprints, fingerprints_to_dict
+from iterate_cli.generator import REASONING_EFFORT_VALUES, USER_END_MARKER, USER_START_MARKER
 from iterate_cli.personalize import FORBIDDEN_COMMAND_CHARS
 from iterate_cli.refresh import (
     CONFIG_YAML,
+    ITERATE_MD,
     check_onboarding_drift,
+    get_drift_ignore,
     is_onboarding_complete,
     load_onboarding_config,
 )
@@ -266,10 +269,12 @@ def run_doctor(project_root: Path) -> DoctorReport:
     _check_git_branch(report, config)
     _check_validation_commands(report, config)
     _check_validation_whitelist(report, config)
+    _check_invariants(report, config)
     _check_skill_version(report, config)
     _check_manifest_drift(report, project_root)
     _check_personalization(report, config)
     _check_dimension_sets(report, config)
+    _check_iterate_md_markers(report, project_root)
 
     return report
 
@@ -571,9 +576,15 @@ def _check_validation_whitelist(report: DoctorReport, config: dict[str, Any]) ->
         return
     _ok(report, "validation.command_whitelist", "command_whitelist is a valid non-empty list.")
 
-    # 6c. Compliance only applies when commands are also configured.
+    # 6c. Compliance (prefix matching) only applies when commands are also
+    # configured, but the whitelist *entry* character safety net always runs:
+    # scripts/validate.py rejects metachar whitelist entries regardless of
+    # validation.commands, and a metachar entry is a latent chaining risk the
+    # moment commands are added later.
     if commands is not None:
         _check_whitelist_compliance(report, whitelist, commands)
+    else:
+        _check_whitelist_entry_chars(report, whitelist)
 
 
 def _check_commands_metachars(report: DoctorReport, commands: Any) -> None:
@@ -605,6 +616,31 @@ def _check_commands_metachars(report: DoctorReport, commands: Any) -> None:
         )
 
 
+def _check_whitelist_entry_chars(report: DoctorReport, whitelist: Any) -> None:
+    """Whitelist entries must be free of shell metacharacters (no commands case).
+
+    Runs when ``validation.commands`` is absent. Entry-level safety must not
+    depend on commands being configured: ``scripts/validate.py`` rejects
+    metachar whitelist entries unconditionally, so a latent chaining risk is
+    surfaced now rather than silently waiting for commands to be added.
+    """
+    if not isinstance(whitelist, list):
+        return
+    safe_prefix = re.compile(r"^[A-Za-z0-9_. -]+$")
+    bad = [
+        entry
+        for entry in whitelist
+        if not (isinstance(entry, str) and safe_prefix.match(entry.strip()))
+    ]
+    if bad:
+        _warn(
+            report,
+            "validation.whitelist",
+            "command_whitelist contains entry(ies) with unsafe shell characters.",
+            "Allowed in a whitelist entry: letters, digits, underscore, dash, dot and space.",
+        )
+
+
 def _check_whitelist_compliance(
     report: DoctorReport, whitelist: Any, commands: Any
 ) -> None:
@@ -616,11 +652,16 @@ def _check_whitelist_compliance(
     if not isinstance(whitelist, list) or not isinstance(commands, dict):
         return
     safe_prefix = re.compile(r"^[A-Za-z0-9_. -]+$")
+    # Strip leading/trailing whitespace before both the syntax check and the
+    # prefix match: an entry like " pytest " is syntactically valid but would
+    # never match a real command, producing misleading "not in whitelist"
+    # warnings.
     bad_entries = [
         entry
         for entry in whitelist
-        if not (isinstance(entry, str) and safe_prefix.match(entry))
+        if not (isinstance(entry, str) and safe_prefix.match(entry.strip()))
     ]
+    stripped_whitelist = [w.strip() for w in whitelist if isinstance(w, str)]
     if bad_entries:
         _warn(
             report,
@@ -628,7 +669,6 @@ def _check_whitelist_compliance(
             "command_whitelist contains entry(ies) with unsafe shell characters.",
             "Allowed in a whitelist entry: letters, digits, underscore, dash, dot and space.",
         )
-        return
     non_whitelisted: list[str] = []
     unsafe: list[str] = []
     for module, cmds in commands.items():
@@ -640,10 +680,12 @@ def _check_whitelist_compliance(
             # Shell metacharacters are a hard security error regardless of the
             # whitelist (matching the standalone safety net for configs without
             # a command_whitelist). Everything else falls back to prefix
-            # compliance, which is a non-blocking warning.
+            # compliance, which is a non-blocking warning. The metachar scan
+            # runs even when some whitelist entries are themselves unsafe: a
+            # bad entry must never disable the command-level safety net.
             if any(ch in COMMAND_METACHARS for ch in command):
                 unsafe.append(f"{module}[{idx}] {command!r}")
-            elif not _command_is_whitelisted(command, whitelist):
+            elif not _command_is_whitelisted(command, stripped_whitelist):
                 non_whitelisted.append(f"{module}[{idx}] {command!r}")
     if unsafe:
         _err(
@@ -661,7 +703,8 @@ def _check_whitelist_compliance(
             "; ".join(non_whitelisted[:SCHEMA_MAX_ERRORS]),
         )
         return
-    _ok(report, "validation.whitelist", "All configured validation commands are whitelisted.")
+    if not bad_entries:
+        _ok(report, "validation.whitelist", "All configured validation commands are whitelisted.")
 
 
 def _check_skill_version(report: DoctorReport, config: dict[str, Any]) -> None:
@@ -692,11 +735,21 @@ def _check_manifest_drift(report: DoctorReport, project_root: Path) -> None:
     """Manifest drift (tech-stack changed since onboarding)."""
     drift = check_onboarding_drift(project_root)
     if drift is None:
-        _ok(
-            report,
-            "drift",
-            "No drift check applicable (drift check disabled, no fingerprints recorded, or config unreadable).",
-        )
+        # Explain *why* drift detection did not run (three distinct causes),
+        # instead of conflating them in a single ok line.
+        config = load_onboarding_config(project_root)
+        reason = "config could not be read"
+        if config is not None:
+            onboarding = config.get("onboarding") or {}
+            if not onboarding.get("drift_check", True):
+                reason = "drift check is disabled (drift_check: false)"
+            else:
+                stored = onboarding.get("fingerprints") or []
+                if not isinstance(stored, list) or not stored:
+                    reason = "no fingerprints recorded yet (run `iterate refresh` to capture them)"
+                else:
+                    reason = "drift check unavailable"
+        _ok(report, "drift", f"No drift check applicable ({reason}).")
         return
     if drift.has_drift:
         _warn(report, "drift", f"Manifest drift detected: {drift.summary()}", drift.advice())
@@ -719,7 +772,13 @@ def _check_personalization(report: DoctorReport, config: dict[str, Any]) -> None
         for idx, item in enumerate(fix_priority):
             if isinstance(item, str) and item not in enabled:
                 broken.append(f"fix_priority_order[{idx}] {item!r}")
-    for idx, item in enumerate(personalization.get("dimension_focus") or []):
+    # Guard truthy non-list values (e.g. a hand-edited scalar) so iterating
+    # them cannot crash the whole doctor run (matching
+    # load_personalization_from_config tolerance).
+    raw_dim_focus = personalization.get("dimension_focus") or []
+    if not isinstance(raw_dim_focus, list):
+        raw_dim_focus = []
+    for idx, item in enumerate(raw_dim_focus):
         if not isinstance(item, dict):
             continue
         dimension = item.get("dimension")
@@ -729,7 +788,10 @@ def _check_personalization(report: DoctorReport, config: dict[str, Any]) -> None
         # "points to disabled dimension None".
         if dimension and dimension not in enabled:
             broken.append(f"dimension_focus[{idx}] {dimension!r}")
-    for idx, item in enumerate(personalization.get("known_intentional") or []):
+    raw_known = personalization.get("known_intentional") or []
+    if not isinstance(raw_known, list):
+        raw_known = []
+    for idx, item in enumerate(raw_known):
         if not isinstance(item, dict):
             continue
         dimension = item.get("dimension")
@@ -811,6 +873,111 @@ def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
         "dimension_sets",
         f"All {len(raw)} dimension_set(s) are well-formed and internally consistent.",
     )
+
+
+def _check_invariants(report: DoctorReport, config: dict[str, Any]) -> None:
+    """invariants section structure + invariant command metachar safety.
+
+    ``iterate invariant`` executes ``invariants.commands`` as shell commands
+    at delivery time, so a metachar command there is the same command-chaining
+    risk as an unsafe ``validation.commands`` entry — the standalone safety
+    net must cover it too.
+    """
+    invariants = config.get("invariants")
+    if invariants is not None and not isinstance(invariants, dict):
+        _err(
+            report,
+            "invariants",
+            "invariants must be a mapping (ensure + commands).",
+            f"Got {type(invariants).__name__} instead.",
+        )
+        return
+    if invariants is None:
+        _ok(
+            report,
+            "invariants",
+            "No invariants configured (iterate invariant degrades to validation.commands).",
+        )
+        return
+
+    ensure = invariants.get("ensure")
+    if ensure is None:
+        _ok(report, "invariants.ensure", "No invariants.ensure assertions configured.")
+    elif (
+        not isinstance(ensure, list)
+        or not ensure
+        or not all(isinstance(e, str) and e.strip() for e in ensure)
+    ):
+        _err(
+            report,
+            "invariants.ensure",
+            "invariants.ensure must be a non-empty list of relative path strings.",
+        )
+    elif len(set(ensure)) != len(ensure):
+        _warn(
+            report,
+            "invariants.ensure",
+            "invariants.ensure contains duplicate path entries.",
+        )
+    else:
+        _ok(report, "invariants.ensure", f"{len(ensure)} invariant file assertion(s).")
+
+    commands = invariants.get("commands")
+    if commands is None:
+        _ok(report, "invariants.commands", "No invariants.commands configured.")
+        return
+    if not isinstance(commands, dict):
+        _err(
+            report,
+            "invariants.commands",
+            "invariants.commands must be a mapping of module -> list of commands.",
+        )
+        return
+    unsafe: list[str] = []
+    for module, cmds in commands.items():
+        if not isinstance(cmds, list):
+            continue
+        for idx, command in enumerate(cmds):
+            if isinstance(command, str) and any(
+                ch in COMMAND_METACHARS for ch in command
+            ):
+                unsafe.append(f"{module}[{idx}] {command!r}")
+    if unsafe:
+        _err(
+            report,
+            "invariants.commands",
+            "invariant command(s) contain shell metacharacters (possible command chaining).",
+            "; ".join(unsafe[:SCHEMA_MAX_ERRORS]),
+        )
+        return
+    _ok(report, "invariants.commands", "invariant commands contain no shell metacharacters.")
+
+
+def _check_iterate_md_markers(report: DoctorReport, project_root: Path) -> None:
+    """ITERATE.md must carry the USER-OWNED markers that refresh preserves.
+
+    ``iterate refresh`` refuses to overwrite an ITERATE.md missing either
+    marker (it may be hand-edited), surfacing the problem only at refresh
+    time. Doctor surfaces it proactively so a project whose markers were
+    accidentally removed is flagged before the next refresh attempt.
+    """
+    iterate_md_path = project_root / ITERATE_MD
+    try:
+        content = iterate_md_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    start_idx = content.find(USER_START_MARKER)
+    end_idx = content.find(USER_END_MARKER)
+    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx + len(USER_START_MARKER):
+        _warn(
+            report,
+            "iterate.md.markers",
+            "ITERATE.md is missing the USER-OWNED section markers.",
+            "Run `iterate reonboard` to restore markers, or re-add "
+            f"{USER_START_MARKER} / {USER_END_MARKER} around your manual edits.",
+        )
+        return
+    _ok(report, "iterate.md.markers", "ITERATE.md USER-OWNED section markers are present.")
 
 
 def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -908,13 +1075,40 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
     """
     config_path = project_root / CONFIG_YAML
     if not config_path.is_file():
+        tui.error(
+            "Doctor --fix: iterate.config.yaml not found; nothing to fix. "
+            "Run `iterate onboard` to initialize the project."
+        )
         return False, []
 
     config = load_onboarding_config(project_root)
     if config is None:
+        tui.error(
+            "Doctor --fix: iterate.config.yaml exists but could not be parsed; "
+            "run `iterate doctor` without --fix for details."
+        )
         return False, []
 
     new_config, fixes = apply_safe_fixes(config)
+
+    # Capture missing fingerprints for an onboarded project so drift detection
+    # is reactivated. The most common silent drift-disable is an onboarding
+    # record (skill_version set) whose fingerprints are empty — e.g. an
+    # AI-channel/hand-edited onboarding. This is additive and safe: existing
+    # fingerprints are left untouched.
+    onboarding = new_config.get("onboarding")
+    if isinstance(onboarding, dict) and onboarding.get("skill_version"):
+        stored = onboarding.get("fingerprints")
+        if not isinstance(stored, list) or not stored:
+            captured = fingerprints_to_dict(
+                capture_fingerprints(project_root, get_drift_ignore(new_config))
+            )
+            if captured:
+                onboarding["fingerprints"] = captured
+                fixes.append(
+                    f"onboarding.fingerprints: captured {len(captured)} manifest fingerprint(s)."
+                )
+
     if not fixes:
         return True, []
 
@@ -952,21 +1146,24 @@ def export_report_json(report: DoctorReport, out_path: Path) -> None:
     out_path.write_text(payload + "\n", encoding="utf-8")
 
 
-def render_report(report: DoctorReport, json_output: bool = False) -> int:
+def render_report(report: DoctorReport, json_output: bool = False, strict: bool = False) -> int:
     """Render a DoctorReport to the terminal.
 
     Args:
         report: The report to render.
         json_output: When True, print a structured JSON blob instead of TUI.
+        strict: When True, warnings also flip the exit code to 1 (default
+            doctor exit semantics: only errors are blocking; ``--strict``
+            lets CI gate on any non-clean state, mirroring the summary line).
 
     Returns:
         Exit code: 0 when healthy (errors absent); 1 when errors are present.
-        Warnings are non-blocking and do not change the exit code, but they
-        are reported in the summary line (see ``_render_summary``).
+        With ``strict``, 1 is returned when warnings are present as well.
     """
+    blocking = report.has_errors() or (strict and report.has_warnings())
     if json_output:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
-        return 1 if report.has_errors() else 0
+        return 1 if blocking else 0
 
     tui.intro(f"Iterate Skill — Doctor / {report.project}")
 
@@ -985,7 +1182,7 @@ def render_report(report: DoctorReport, json_output: bool = False) -> int:
     _render_next_actions(tui, report)
 
     _render_summary(tui, report)
-    return 1 if report.has_errors() else 0
+    return 1 if blocking else 0
 
 
 def _render_summary(tui: Any, report: DoctorReport) -> None:
@@ -1043,6 +1240,8 @@ def _render_next_actions(tui: Any, report: DoctorReport) -> None:
         actions.append(
             ("命令白名单/验证命令含非法字符", "运行 `iterate personalize` 重新配置验证命令，或在配置中修正白名单")
         )
+    if "invariants" in checks or "invariants.commands" in checks:
+        actions.append(("invariants 命令含非法字符", "在 iterate.config.yaml 中修正 invariants.commands"))
     if "skill_version" in checks:
         actions.append(("录制的技能版本过旧", "运行 `iterate refresh` 更新录制版本"))
     if "dimensions" in checks or "review.scope" in checks:

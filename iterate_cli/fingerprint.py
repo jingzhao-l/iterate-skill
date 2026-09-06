@@ -332,9 +332,15 @@ def check_drift(
         capture_fingerprints(project_root, ignore_patterns)
     )
     if ignore_patterns:
+        # Guard non-dict entries so a hand-edited config with junk stored
+        # entries degrades to "not ignored" instead of crashing with an
+        # AttributeError (consistent with fingerprints_from_dict tolerance).
         stored_fingerprints = [
             entry
             for entry in stored_fingerprints
-            if not _matches_ignore(str(entry.get("path", "")), ignore_patterns)
+            if not (
+                isinstance(entry, dict)
+                and _matches_ignore(str(entry.get("path", "")), ignore_patterns)
+            )
         ]
     return compare_fingerprints(stored_fingerprints, current)

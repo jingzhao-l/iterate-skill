@@ -47,6 +47,18 @@ const CHECKSUMS_ASSET_NAME = 'SHA256SUMS.txt';
 // must never hang the installer forever.
 const CURL_MAX_TIME_SECONDS = '120';
 
+// Byte caps so a misbehaving upstream can never exhaust disk or memory:
+// JSON API responses are tiny, checksums are a few KB, and the release
+// tarball is far smaller than the generous ceiling below.
+const JSON_MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
+const CHECKSUMS_MAX_BYTES = 1 * 1024 * 1024; // 1 MiB
+const TARBALL_MAX_BYTES = 100 * 1024 * 1024; // 100 MiB
+
+// Curl added --fail-with-body in 7.76. On older curl the installer must fall
+// back to plain --fail so the flag is never rejected by the system curl.
+const CURL_FAIL_WITH_BODY_MIN = { major: 7, minor: 76 };
+let CURL_SUPPORTS_FAIL_WITH_BODY = null; // lazily probed once
+
 // Package version read from package.json at runtime so the --version/-v flag
 // and the published npm version always stay in sync.
 const VERSION = require('../package.json').version;
@@ -133,11 +145,50 @@ function commandExists(bin) {
   return result.status === 0;
 }
 
+async function supportsCurlFailWithBody() {
+  // Lazily probe ``curl --version`` once; the result is cached for the rest
+  // of the run. Falls back to the plain ``--fail`` flag (no probing) when
+  // curl itself cannot be invoked or its output is unexpected.
+  if (CURL_SUPPORTS_FAIL_WITH_BODY === null) {
+    try {
+      const versionOut = await runCommand('curl', ['--version']);
+      const match = versionOut.match(/curl (\d+)\.(\d+)\.\d+/);
+      if (!match) {
+        CURL_SUPPORTS_FAIL_WITH_BODY = false;
+      } else {
+        const major = Number(match[1]);
+        const minor = Number(match[2]);
+        CURL_SUPPORTS_FAIL_WITH_BODY =
+          major > CURL_FAIL_WITH_BODY_MIN.major ||
+          (major === CURL_FAIL_WITH_BODY_MIN.major &&
+            minor >= CURL_FAIL_WITH_BODY_MIN.minor);
+      }
+    } catch {
+      CURL_SUPPORTS_FAIL_WITH_BODY = false;
+    }
+  }
+  return CURL_SUPPORTS_FAIL_WITH_BODY;
+}
+
+function isGithubApiUrl(url) {
+  // True only for the GitHub API host. Release-asset and other URLs are
+  // public and must never receive the caller's PAT (credential surface
+  // minimalism) — mirrors scripts/install.py::_is_github_api_url.
+  let hostname = null;
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return hostname === 'api.github.com' || hostname.endsWith('.api.github.com');
+}
+
 async function fetchJson(url, token) {
   // Prefer curl over Node.js fetch because curl uses the system CA store
   // and avoids Node-specific certificate issues in some environments.
-  const args = ['-sSL', '--fail-with-body', '--max-time', CURL_MAX_TIME_SECONDS, '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'User-Agent: iterate-skill-installer'];
-  if (token) {
+  const failFlag = (await supportsCurlFailWithBody()) ? '--fail-with-body' : '--fail';
+  const args = ['-sSL', failFlag, '--max-time', CURL_MAX_TIME_SECONDS, '--max-filesize', String(JSON_MAX_BYTES), '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'User-Agent: iterate-skill-installer'];
+  if (token && isGithubApiUrl(url)) {
     args.push('-H', `Authorization: Bearer ${token}`);
   }
   args.push(url);
@@ -152,14 +203,20 @@ async function fetchJson(url, token) {
 /**
  * Download a file with curl.
  *
+ * The caller's PAT is only attached for GitHub API hosts; release assets are
+ * public downloads and must not receive it. ``maxBytes`` is enforced with
+ * curl's ``--max-filesize`` so a misbehaving upstream is aborted rather than
+ * exhausting disk.
+ *
  * When ``progress`` is enabled (used for the tarball), curl's ``--progress-bar``
  * writes a live percentage bar straight to the terminal (stderr is inherited so
  * the bar is visible; stdout stays captured for non-progress downloads).
  */
-async function downloadFile(url, destPath, token, { progress = false } = {}) {
-  const args = ['-sSL', '--fail-with-body', '--max-time', CURL_MAX_TIME_SECONDS, '-o', destPath, '-H', 'User-Agent: iterate-skill-installer'];
+async function downloadFile(url, destPath, token, { progress = false, maxBytes = TARBALL_MAX_BYTES } = {}) {
+  const failFlag = (await supportsCurlFailWithBody()) ? '--fail-with-body' : '--fail';
+  const args = ['-sSL', failFlag, '--max-time', CURL_MAX_TIME_SECONDS, '--max-filesize', String(maxBytes), '-o', destPath, '-H', 'User-Agent: iterate-skill-installer'];
   if (progress) args.push('--progress-bar');
-  if (token) {
+  if (token && isGithubApiUrl(url)) {
     args.push('-H', `Authorization: Bearer ${token}`);
   }
   args.push(url);
@@ -651,7 +708,9 @@ async function main(options = {}) {
     await downloadFile(tarballAsset.browser_download_url, tarballPath, token, { progress: true });
 
     info('Downloading checksums...');
-    await downloadFile(checksumAsset.browser_download_url, checksumPath, token);
+    await downloadFile(checksumAsset.browser_download_url, checksumPath, token, {
+      maxBytes: CHECKSUMS_MAX_BYTES,
+    });
 
     info('Verifying checksum...');
     const checksums = parseChecksums(fs.readFileSync(checksumPath, 'utf8'));
@@ -661,7 +720,17 @@ async function main(options = {}) {
       return 1;
     }
     const actualHash = await sha256File(tarballPath);
-    if (actualHash.toLowerCase() !== expectedHash.toLowerCase()) {
+    // Constant-time compare (timingSafeEqual): the expected hash travels
+    // over the network with the tarball, so an early-exit string inequality
+    // would leak prefix information usable to forge a checksum. The length
+    // guard keeps timingSafeEqual from throwing on mismatched lengths.
+    const actualBuf = Buffer.from(actualHash.toLowerCase(), 'utf8');
+    const expectedBuf = Buffer.from(expectedHash.toLowerCase(), 'utf8');
+    const hashMatches =
+      actualBuf.length === expectedBuf.length &&
+      actualBuf.length > 0 &&
+      crypto.timingSafeEqual(actualBuf, expectedBuf);
+    if (!hashMatches) {
       error('Checksum mismatch — refusing to install.');
       return 1;
     }
@@ -752,4 +821,6 @@ module.exports = {
   parseChecksums,
   extractTarball,
   rejectLinkEntries,
+  isGithubApiUrl,
+  supportsCurlFailWithBody,
 };

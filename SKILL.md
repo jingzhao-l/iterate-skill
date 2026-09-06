@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.1.0
+version: 3.2.0
 permissions:
   file_read: true
   file_write: true
@@ -311,9 +311,11 @@ iterate personalize  # 个性化配置（项目中途追加约束，9 步向导�
 iterate personalize --clear [--yes]  # 清空所有个性化配置（结构化规则 + ITERATE.md 相关段落）
 iterate status       # 查看 onboarding 状态和漂移检测
 iterate show         # 只读查看合并后的配置与个性化详情（支持 --json）
-iterate refresh      # 增量刷新（保留用户手写区）
+iterate refresh      # 增量刷新（保留用户手写区；支持 --json / --dry-run --json 结构化报告）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
-iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查）
+iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查；--strict 将 warning 一并判失败；--fix 安全修复；--json / --json-out 结构化输出）
+iterate status       # 查看 onboarding 状态和漂移检测（--json 含 drift_detected 与明细列表）
+iterate fingerprint verify  # 校验 manifest 指纹漂移（--json）
 iterate config       # 非交互式查看全部可设配置值（支持 --json）
 iterate config get <key>   # 读取单个配置项的解析值（支持 --json，输出 {"key": value}）
 iterate config set <key> <value>  # 校验并写回单个配置项（自动备份；--json 输出确认对象）
@@ -324,6 +326,8 @@ CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适
 **多路引导 / Multi-Path Flow**：
 - **首次 onboarding**（无 ITERATE.md）：确认手动配置 → 基础 onboarding → 询问是否需要个性化配置。
 - **非首次 onboarding**（已有 ITERATE.md）：询问是否更新基础配置（不建议手动改）→ 询问是否进行个性化配置。
+
+`iterate config set <key> <value>` 的 `<key>`（扁平键，与 `iterate show` 输出的键一致）与点号路径别名（如 `git.use_worktree`、`reviewer.coverage_validation`）均可使用。
 
 **个性化配置 / Personalization**：捕获 AI 扫描不到的项目专属约束（禁区、风险区、已知意图、维度定制等 9 类）。运行 `iterate personalize` 可在项目中途随时追加，无需重做 onboarding。`iterate personalize --clear` 可一次清空所有个性化（结构化规则 + `ITERATE.md` 用户区中的相关段落，需确认或加 `--yes` 跳过）。`iterate show` 可只读查看合并后的配置与个性化详情（`--json` 输出结构化数据供脚本/CI 使用）。详见 README。
 

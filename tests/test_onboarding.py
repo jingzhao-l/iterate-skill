@@ -684,6 +684,20 @@ class TestParseDimensionSelection:
     def test_non_numeric(self) -> None:
         assert _parse_dimension_selection("abc") == []
 
+    def test_partial_valid_kept_invalid_dropped(self) -> None:
+        """Invalid tokens are dropped individually, not the whole selection:
+        ``"1, x, 99"`` keeps dimension 1 instead of returning [] (which would
+        silently discard a valid choice the user clearly meant)."""
+        result = _parse_dimension_selection("1, x, 99")
+        assert result == ["correctness"]
+
+    def test_mixed_deduplicates_preserving_order(self) -> None:
+        result = _parse_dimension_selection("2, 2, x, 5")
+        assert result == ["security", "style-tests"]
+
+    def test_whitespace_and_empty_tokens_ignored(self) -> None:
+        assert _parse_dimension_selection(" 3 , , 7 ") == ["performance", "spec-compliance"]
+
 
 class TestAskYesNo:
     def test_yes(self) -> None:
@@ -1991,8 +2005,10 @@ class TestCLIGracefulInterrupt:
 
 class TestCLINoCommand:
     def test_no_command_prints_help(self, capsys) -> None:
+        # A bare `iterate` (no subcommand) is a usage error: print help and
+        # exit non-zero (2) rather than falsely reporting success.
         ret = cli_main(["-p", "."])
-        assert ret == 0
+        assert ret == 2
 
 
 # ---------------------------------------------------------------------------
