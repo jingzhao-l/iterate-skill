@@ -1,7 +1,7 @@
-# iterate-plugin 设计文档 v3.0
+# iterate-plugin 设计文档 v3.1
 
 > 目标：把 iterate-plugin 从「收敛看板 / 分诊 / 审查闭环的被动观察面板」升级为「质量指挥中心 + 经验银行」。
-> 状态：v2 稳定期已实现（当前 2.12.3）；**v3.0 设计启动：质量指挥中心 + 经验银行可视化**；设计文档迭代至 v3.0。
+> 状态：v3.0 设计已落地（plugin 3.3.0）；**v3.1 记录 F8/F9/F10 数据化与 task_mode 通道打通**；设计文档迭代至 v3.1。
 > 版本记录：见文末。
 
 > **v3.0 设计主线（新增，保留 v2 全部内容不变）**：见 §5-§11。核心变化——① 定位从"被动观察面板"升级为"主动指挥中心 + 知识库"；② 新增质量门禁视图（各维度收敛度 / 验证通过率 / PASS-FAIL）；③ 新增经验银行（浏览 / 搜索 / 命中高亮 / 一键采纳）；④ 新增防御事件流（前置失败 / 回滚 / 不变量违反 / 假设被证伪）；⑤ 指挥操作原生按钮化（审批 / 指派 / 回滚 / 触发新一轮，底层仍走主工作流）；⑥ 与 harness 2.0 task_mode 打通，dsh UI 同步显示 code/iterate 指示灯。
@@ -166,3 +166,4 @@
 ## 14. 版本记录
 - v1.0-v2.12.3：v2 系列设计随主仓库插件迭代（README/CHANGELOG 逐版本记录，本文档自 v3.0 起独立承载设计演进）。
 - v3.0（2026-09-02）：**大版本方向：质量指挥中心 + 经验银行（本文档首版）**——v2 功能趋于做尽，确立 v3.0 升级方向。核心决策：① 定位从"被动观察面板"升级为"主动指挥中心 + 知识库"（§4）；② 新增质量门禁视图（§5）与经验银行（§6，方向 1 在 UI 的落地）；③ 新增防御事件流（§7）与 task_mode 指示灯（§10），与 harness 2.0 防御式内核 / skill 3.0 guard-invariant 打通；④ 指挥操作原生按钮化（§8），底层仍走 iterate 主工作流，不绕过审查/审批/日志；⑤ 跨会话趋势从质量账本读取（§9）。**本版为纯设计细化，不修改 plugin 源文件**。头部状态行更新至 v3.0。
+- v3.1（2026-09-06）：**v3.0 设计落地（plugin 3.3.0）**——F8/F9/F10 从复制指令占位升级为**会话流数据实渲染**：新增 `lib/parse.js` 的 `scanSessionForQualityGate` / `scanSessionForExperienceBank` / `scanSessionForDefenseEvents`（反向时序、代理安全、深度/环保护），`get/add` 单条折叠为列表、`record/counts` 折入计数+事件流；§8 新增「指派修复」按钮（按批量作用域复制 `iterate_fix` 指令，携带 file/line/dimension/severity/summary）。task_mode 通道修正：harness status 推送只达 harness 自有前端、不通 dsh 插件，故改由插件服务器端透传——`iterate_transcript capture` 接受显式 `taskMode`，builder 持久化（review-loop 缺省 derive `iterate`），`rehydrateBuilder` 透传，`iterate_status` 经 `readTranscriptTaskMode` 读取持久化 transcript 输出并渲染；客户端 chip 由 `normalizeTranscript` 的 taskMode 透传点亮。
