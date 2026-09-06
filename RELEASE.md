@@ -497,6 +497,17 @@ stamp 不匹配会自动重装到新 tag。
        > iterate-plugin` 替代路径（reset 至 origin/main 后 rsync 插件目录，提交 `038d6c1` 快进推送
        > `4096c92..038d6c1`）；npm `iterate-plugin@3.3.0` 已发布（latest=3.3.0，76 文件 / 292.3 kB，
        > 已复核 tarball 含 `lib/parse.js` 新扫描器）。验证 483 测试全过、server/client typecheck 干净。
+       >
+       > **3.3.1 发布记录（2026-09-06）**：DSH STORE manifest 合规修复（回应
+       > AI-Scarlett/DSH-Store#504）——`package.json` `repository` 指向 canonical 主仓库
+       > `jingzhao-l/iterate-skill`（`directory: harness/iterate-plugin`，homepage/bugs 同步），
+       > 声明 `dsh.compatibility.dshReleases`（`0.1.2-alpha.4/.5/rc.1` = compatible），
+       > README（EN+ZH）新增「权限、依赖与兼容性」披露段（files/commands/credentials/network、
+       > 精确锁版依赖、无安装期生命周期脚本、失败边界）。纯元数据 + 文档变更，无运行时代码改动。
+       > "update deferred" 根因：目录固定 Commit `4422104f` 因 2026-09-05 主仓库历史重写已不存在，
+       > 推送新固定 Commit 后商店自动化重建基线。主仓库 `c3bd961`（manifest 修复）+ `0679925`
+       > （3.3.1 bump）；独立仓 `2e090ee` + `1cbf51d`；npm `iterate-plugin@3.3.1` 已发布
+       > （latest=3.3.1，76 文件，已复核 tarball manifest 含修复）。验证 483 测试全过。
 
 ---
 
