@@ -370,6 +370,27 @@ stamp 不匹配会自动重装到新 tag。
       验证：`npm install -g iterate-harness && ih --version` 输出新版本。
       > npm `repository` 元数据指向独立仓 `jingzhao-l/iterate-harness`。
       >
+      > **2.2.0 发布记录（2026-09-06）**：例行审查 + 修复 + 发版迭代。主要变更：
+      > in-process 队友从「日志 + sleep」stub 变为真实引擎执行
+      > （`build_teammate_query_context` 组装完整接线，`code` 模式随 `task_mode` 继承防御
+      > 内核，缺 auth 才降级为可诊断的 no-op）；changed-only 审查修复非 ASCII 文件名
+      > （强制 `core.quotepath=false`）与历史 report 形状（`findings_from_report` 兼容
+      > `topFindings`/`notableFindings`/嵌套 `summary`）；`--branch` 隔离 worktree 用完即
+      > 清（`_BranchSwitch.restore()`，绝不 `--force` 丢弃未提交改动）；agent shell 不再
+      > 加载用户 rc（`bash --noprofile --norc`，conda/nvm 等 login hook 不再为每条命令
+      > 重复付费，实测 9.9s → 0.009s，`ITERATE_HARNESS_SHELL_LOAD_RC=1` 逃生阀保留旧
+      > 行为）。版本号在 `__init__.py` / `npm/package.json` / `frontend/web/package.json` /
+      > `CHANGELOG.md` 同步至 2.2.0；校验 **2065 pytest + 6 skip**、ruff / mypy strict（246
+      > 源文件）clean、`bootstrap.test.js` 36 passed、前端 `tsc --noEmit` + vitest 13
+      > passed。**subtree split push 仍被拒（non-fast-forward，且 split 产物 head 停在
+      > v2.1.0，未带上 rebase 后的 v2.2.0 commits）**，继续走 `.release/iterate-harness`
+      > 替代路径（与公开 main 共享历史）提交并快进推送（`4a4eab7..e7f09c8`）。GitHub
+      > Release v2.2.0 已建，release event 自动触发 release.yml 构建
+      > `iterate_harness-2.2.0-py3-none-any.whl`（770,727 字节）上传 release + 自动发布
+      > PyPI 2.2.0（已验证 PyPI latest=2.2.0，走 pypi.org 官方源）；npm
+      > `iterate-harness@2.2.0` 已发布（registry 传播约 90s，latest=2.2.0）。端到端验证：
+      > `npm install -g iterate-harness && ih --version` = `iterate_harness 2.2.0`。
+      >
       > **2.0.1 发布记录（2026-09-04）**：v2.0 后首个补丁版——修复 `config_loader.py`
       > `invariants` 配置段未被解析的关键 bug（此前 `effective.config.invariants` 恒为 `None`，
       > code 模式防御式内核收不到项目不变量、只能回退 `validation.commands`；现已正确解析
