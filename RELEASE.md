@@ -622,7 +622,7 @@ stamp 不匹配会自动重装到新 tag。
        >（rsync 同步后提交 `cb1ef85` 快进推送 `58d14e5..cb1ef85`）；npm `iterate-plugin@3.4.1`
        > 已发布（latest=3.4.1，76 文件 / 302.8 kB，tarball 复核含 `0.1.3-alpha.1` 兼容声明、
        > skill-prompt `schemaInvalid` 收敛守卫、parse.js `consumed` 去重）。验证 typecheck +
-       > typecheck:client + build + build:client 干净，513 测试全过。
+       > typecheck:client + build + build:client 干净，515 测试全过。
 
 ---
 
