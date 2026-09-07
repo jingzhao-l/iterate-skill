@@ -54,6 +54,16 @@ const JSON_MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
 const CHECKSUMS_MAX_BYTES = 1 * 1024 * 1024; // 1 MiB
 const TARBALL_MAX_BYTES = 100 * 1024 * 1024; // 100 MiB
 
+// A strict upper bound for an interactive yes/no prompt. On EOF (piped stdin
+// that ends) or a TTY that stops responding, the prompt must fall back to the
+// default rather than hang the installer forever.
+const ASK_YES_NO_TIMEOUT_MS = 30_000;
+
+// SHA256 digests are exactly 64 lowercase/uppercase hex characters. Any other
+// value in a checksum file is corrupt or tampered and must fail closed rather
+// than feed a garbage hash into the integrity comparison.
+const SHA256_HEX_RE = /^[0-9a-fA-F]{64}$/;
+
 // Curl added --fail-with-body in 7.76. On older curl the installer must fall
 // back to plain --fail so the flag is never rejected by the system curl.
 const CURL_FAIL_WITH_BODY_MIN = { major: 7, minor: 76 };
@@ -242,20 +252,32 @@ function parseChecksums(text) {
   const map = new Map();
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed || trimmed.startsWith('#')) continue;
     const parts = trimmed.split(/\s+/);
-    if (parts.length >= 2) {
-      // Normalize the filename the same way scripts/install.py does
-      // (_parse_checksum): strip all leading GNU tar binary-mode markers a la
-      // Python's name.lstrip("*") (ONE '*', or several in a malformed entry —
-      // strip them all so the two parsers can never disagree), then strip the
-      // './' prefix, then match on the basename so entries with a subpath or
-      // versioned component (e.g. "dist/iterate-skill.tar.gz" or
-      // "./iterate-skill.tar.gz") still resolve to the expected asset.
-      const normalized = parts[1].replace(/^\*+/, '').replace(/^\.\//, '');
-      const basename = normalized.split('/').pop();
-      map.set(basename, parts[0]);
+    if (parts.length < 2) continue;
+    // Reject any entry whose digest is not a 64-char hex string so a corrupt
+    // or tampered checksum file fails closed: a missing asset ("not found")
+    // aborts the install, whereas a garbage digest would masquerade as a
+    // valid expected hash.
+    if (!SHA256_HEX_RE.test(parts[0])) continue;
+    // Normalize the filename the same way scripts/install.py does
+    // (_parse_checksum): strip all leading GNU tar binary-mode markers a la
+    // Python's name.lstrip("*") (ONE '*', or several in a malformed entry —
+    // strip them all so the two parsers can never disagree), then strip the
+    // './' prefix, then match on the basename so entries with a subpath or
+    // versioned component (e.g. "dist/iterate-skill.tar.gz" or
+    // "./iterate-skill.tar.gz") still resolve to the expected asset.
+    const normalized = parts[1].replace(/^\*+/, '').replace(/^\.\//, '');
+    const basename = normalized.split('/').pop();
+    // A duplicate basename carrying a *different* digest is a red flag (the
+    // file is hand-corrupted or two sources disagree); refuse the whole file
+    // instead of silently letting one value win.
+    if (map.has(basename) && map.get(basename) !== parts[0]) {
+      throw new InstallerError(
+        `Duplicate checksum entry for ${basename} with a different value — refusing to proceed.`,
+      );
     }
+    map.set(basename, parts[0]);
   }
   return map;
 }
@@ -463,18 +485,32 @@ async function installCli(pythonBin, sourceDir) {
  *
  * Used to decide whether the current directory should be treated as the
  * target project when the installer is launched from a non-home directory.
- * Falls back to ``defaultNo`` if the input is unrecognized.
+ * Falls back to ``defaultNo`` if the input is unrecognized, on EOF (piped
+ * stdin that ends without an answer) or after a timeout, so a non-interactive
+ * or hung invocation resolves instead of blocking forever.
  */
 function askYesNo(question, defaultNo = false) {
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const hint = defaultNo ? '[y/N]' : '[Y/n]';
-    rl.question(`\x1b[36m◆\x1b[0m  ${question} ${hint} `, (answer) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       rl.close();
+      resolve(value);
+    };
+    // EOF (stdin is a closed pipe, or the terminal disappears) never invokes
+    // rl.question's callback; the interface 'close' event is the signal that
+    // no answer is coming, so fall back to the default instead of hanging.
+    rl.on('close', () => finish(defaultNo));
+    const timer = setTimeout(() => finish(defaultNo), ASK_YES_NO_TIMEOUT_MS);
+    rl.question(`\x1b[36m◆\x1b[0m  ${question} ${hint} `, (answer) => {
       const a = answer.trim().toLowerCase();
-      if (a === 'y' || a === 'yes') resolve(true);
-      else if (a === 'n' || a === 'no') resolve(false);
-      else resolve(defaultNo);
+      if (a === 'y' || a === 'yes') finish(true);
+      else if (a === 'n' || a === 'no') finish(false);
+      else finish(defaultNo);
     });
   });
 }
@@ -569,6 +605,18 @@ function parseArgs(argv) {
     const arg = argv[i];
     const next = argv[i + 1];
 
+    // -h/--help and -v/--version short-circuit parsing: later arguments (even
+    // malformed or value-consuming flags) must not turn `--help`/`--version`
+    // into an error exit. bin/cli.js exits 0 on these modes before installing.
+    if (arg === '--help' || arg === '-h') {
+      options.mode = 'help';
+      break;
+    }
+    if (arg === '--version' || arg === '-v') {
+      options.mode = 'version';
+      break;
+    }
+
     switch (arg) {
       case '--ai':
         if (!next || next.startsWith('-')) {
@@ -606,16 +654,6 @@ function parseArgs(argv) {
         // Skill-only install: skip the automated `iterate` CLI install so a
         // user who only wants the skill is not surprised by a global install.
         options.noCli = true;
-        break;
-      case '--help':
-      case '-h':
-        // Show usage and exit 0 (handled by bin/cli.js).
-        options.mode = 'help';
-        break;
-      case '--version':
-      case '-v':
-        // Print the package version and exit 0 (handled by bin/cli.js).
-        options.mode = 'version';
         break;
       case '--token':
         if (!next || next.startsWith('-')) {
