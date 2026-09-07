@@ -931,7 +931,11 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
 
     drift = None
     if config:
-        onboarding = config.get("onboarding") or {}
+        onboarding = (
+            config.get("onboarding")
+            if isinstance(config.get("onboarding"), dict)
+            else {}
+        )
         data["completed_at"] = onboarding.get("completed_at", "unknown")
         data["channel"] = onboarding.get("channel", "unknown")
         data["skill_version"] = onboarding.get("skill_version", "unknown")
@@ -1249,7 +1253,11 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
             reason = "onboarding not completed"
             config = load_onboarding_config(project_root)
             if config is not None:
-                onboarding = config.get("onboarding") or {}
+                onboarding = (
+                    config.get("onboarding")
+                    if isinstance(config.get("onboarding"), dict)
+                    else {}
+                )
                 if not onboarding.get("drift_check", True):
                     reason = "drift check is disabled (drift_check: false)"
                 else:

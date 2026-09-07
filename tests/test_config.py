@@ -275,6 +275,34 @@ class TestConfigNonMappingProtection:
         assert run_config_set(project, "goal", "x") == 1
         assert (project / CONFIG_YAML).read_text(encoding="utf-8") == "just-a-string\n"
 
+    def test_refuses_to_clobber_intermediate_scalar(self, tmp_path) -> None:
+        """A dotted set whose intermediate path segment is a hand-edited
+        scalar (e.g. `git: legacy`) must refuse instead of replacing it with a
+        mapping (which would silently destroy the scalar value)."""
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text(
+            "git: legacy\nreview: full\n", encoding="utf-8"
+        )
+        assert run_config_set(project, "git.use_worktree", "true") == 1
+        raw = (project / CONFIG_YAML).read_text(encoding="utf-8")
+        assert "legacy" in raw
+        assert "use_worktree" not in raw
+
+    def test_backup_names_never_collide(self, tmp_path) -> None:
+        """Two config edits within the same second must not overwrite each
+        other's backup: the backup name carries a per-write salt."""
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        assert run_config_set(project, "language", "zh") == 0
+        assert run_config_set(project, "language", "en") == 0
+        backups = sorted(project.glob(f"{CONFIG_YAML}.configset-*"))
+        assert len(backups) == 2
+        first = yaml.safe_load(backups[0].read_text(encoding="utf-8"))
+        second = yaml.safe_load(backups[1].read_text(encoding="utf-8"))
+        # first backup captured the original base config; the second captured
+        # the config after the first edit (language was set)
+        assert first.get("language") != second.get("language") or first != second
+
 
 
 # ---------------------------------------------------------------------------

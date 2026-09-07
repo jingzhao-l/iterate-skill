@@ -254,6 +254,52 @@ class TestRefreshIgnore:
 # ---------------------------------------------------------------------------
 
 class TestStatusAdvice:
+    def test_scalar_onboarding_degrades_without_crash(
+        self, js_project: Path, capsys
+    ) -> None:
+        """A hand-edited config with a scalar `onboarding:` value (e.g.
+        `onboarding: foo`) must not crash status/drift checking — the loader
+        guards the non-dict case and degrades to 'no fingerprints'."""
+        (js_project / "iterate.config.yaml").write_text(
+            yaml.safe_dump({"dimensions": ["correctness"], "onboarding": "oops"}),
+            encoding="utf-8",
+        )
+        (js_project / "ITERATE.md").write_text(
+            "# ITERATE.md\n\n"
+            "<!-- ITERATE:USER-OWNED:START -->\nuser\n<!-- ITERATE:USER-OWNED:END -->\n",
+            encoding="utf-8",
+        )
+        code = cli_main(["status", "-p", str(js_project), "--json"])
+        assert code == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["onboarded"] is True
+        # Non-dict onboarding degrades instead of crashing (not a list of fps).
+        assert data["fingerprints"] == 0
+
+    def test_get_stored_fingerprints_non_dict_onboarding(self, js_project: Path) -> None:
+        from iterate_cli.refresh import get_stored_fingerprints
+
+        assert get_stored_fingerprints({"onboarding": "oops"}) == []
+        assert get_stored_fingerprints({"onboarding": ["x"]}) == []
+        assert get_stored_fingerprints({"onboarding": None}) == []
+
+    def test_get_drift_ignore_non_dict_onboarding(self) -> None:
+        assert get_drift_ignore({"onboarding": "oops"}) == []
+        assert get_drift_ignore({"onboarding": {"drift_ignore": "not-a-list"}}) == []
+
+    def test_check_onboarding_drift_scalar_onboarding(self, js_project: Path) -> None:
+        """check_onboarding_drift must treat a scalar onboarding as 'no stored
+        fingerprints' instead of raising AttributeError on .get()."""
+        (js_project / "iterate.config.yaml").write_text(
+            yaml.safe_dump({"dimensions": ["correctness"], "onboarding": 123}),
+            encoding="utf-8",
+        )
+        (js_project / "ITERATE.md").write_text(
+            "# ITERATE.md\n\n"
+            "<!-- ITERATE:USER-OWNED:START -->\nuser\n<!-- ITERATE:USER-OWNED:END -->\n",
+            encoding="utf-8",
+        )
+        assert check_onboarding_drift(js_project) is None
     def test_status_shows_advice_on_drift(self, py_project: Path, capsys) -> None:
         write_onboarding_outputs(_build_onboarding_data(py_project), py_project)
         (py_project / "pyproject.toml").write_text(

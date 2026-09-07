@@ -40,6 +40,7 @@ from typing import Any
 from iterate_cli.personalize import (
     FORBIDDEN_COMMAND_CHARS,
     CorruptConfigError,
+    _is_known_safe_command,
     load_config_strict,
 )
 from iterate_cli.refresh import CONFIG_YAML
@@ -60,12 +61,20 @@ COMMAND_METACHARS: frozenset[str] = frozenset(FORBIDDEN_COMMAND_CHARS)
 
 
 def _command_is_safe(command: str) -> bool:
-    """True when ``command`` may be executed: non-empty and free of metachars.
+    """True when ``command`` may be executed: non-empty, metachar-free, and
+    starting with a known-safe tool prefix.
 
     Empty/whitespace-only commands are rejected too, so a stray blank entry
-    cannot yield a false "exit 0 = validated" green light.
+    cannot yield a false "exit 0 = validated" green light. The known-safe
+    prefix re-check mirrors the persist-time validator
+    (``personalize._is_known_safe_command``), so a hand-edited or
+    drift-polluted config that bypasses the wizard cannot smuggle
+    metachar-free but arbitrary executables (``rm -rf .``, ``curl ...``) into
+    ``subprocess.run(..., shell=True)``.
     """
-    return bool(command.strip()) and not any(ch in COMMAND_METACHARS for ch in command)
+    if not command.strip() or any(ch in COMMAND_METACHARS for ch in command):
+        return False
+    return _is_known_safe_command(command)
 
 #: Dependency manifests that indicate "this module's toolchain is ready".
 _KNOWN_MANIFESTS: dict[str, tuple[str, ...]] = {
@@ -127,6 +136,7 @@ def _git_root(project_root: Path) -> Path | None:
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=10,
             check=False,
         )
@@ -154,6 +164,7 @@ def _git_worktree_is_clean(git_root: Path) -> tuple[bool, str]:
             cwd=str(git_root),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=10,
             check=False,
         )
@@ -264,6 +275,8 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
             shell=True,
             capture_output=True,
             text=True,
+            errors="replace",
+            stdin=subprocess.DEVNULL,
             timeout=600,
             check=False,
         )

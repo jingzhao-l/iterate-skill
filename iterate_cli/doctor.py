@@ -833,7 +833,10 @@ def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
     name_re = re.compile(r"^[A-Za-z0-9_.-]+$")
     problems: list[str] = []
     for name, spec in raw.items():
-        if not name_re.match(name):
+        # YAML allows non-string keys; the regex `match` would raise TypeError
+        # on an int key, turning the diagnostic into a traceback. Normalize to
+        # str for analysis (reporting the original key in the message).
+        if not isinstance(name, str) or not name_re.match(str(name)):
             problems.append(f"set name {name!r} has invalid characters")
             continue
         if not isinstance(spec, dict):
@@ -843,9 +846,11 @@ def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
         if not isinstance(dims, list) or not dims:
             problems.append(f"{name}: dimensions must be a non-empty list")
             dims = []
-        unknown = [d for d in dims if d not in canonical_set]
+        # Coerce entries to str before membership/sorting: a hand-edited config
+        # mixing ints and strings would otherwise make sorted() raise TypeError.
+        unknown = [d for d in dims if str(d) not in canonical_set]
         if unknown:
-            problems.append(f"{name}: unknown dimension(s): {', '.join(sorted(set(unknown)))}")
+            problems.append(f"{name}: unknown dimension(s): {', '.join(sorted(set(map(str, unknown))))}")
         seen: set[str] = set()
         for d in dims:
             if d in seen:

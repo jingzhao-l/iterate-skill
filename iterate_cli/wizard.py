@@ -338,6 +338,10 @@ def _run_basic_wizard(
 
     fingerprints = capture_fingerprints(project_root)
 
+    existing_language = existing.language if existing else DEFAULT_LANGUAGE
+    if existing_language not in ("zh", "en"):
+        existing_language = DEFAULT_LANGUAGE
+
     data = OnboardingData(
         project_root=project_root,
         channel="cli",
@@ -354,7 +358,7 @@ def _run_basic_wizard(
         fingerprints=fingerprints,
         # Preserve advanced/derived settings from a prior onboarding instead of
         # silently resetting them when a returning user updates basic config.
-        language=existing.language if existing else "en",
+        language=existing_language,
         goal=existing.goal if existing else DEFAULT_GOAL,
         max_rounds=existing.max_rounds if existing else DEFAULT_MAX_ROUNDS,
         reasoning_effort=(
@@ -465,11 +469,31 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         dimensions = (
             [str(d) for d in raw_dimensions] if isinstance(raw_dimensions, list) else []
         )
+        # Normalize validation.commands: a hand-edited config with a non-dict
+        # value (list/scalar) would otherwise propagate into OnboardingData (a
+        # dict-typed field) and be re-serialized as a broken structure.
+        raw_commands = validation.get("commands")
+        raw_commands = raw_commands if isinstance(raw_commands, dict) else {}
+        validation_commands = {
+            str(module): [str(c) for c in cmds if isinstance(c, str)]
+            for module, cmds in raw_commands.items()
+            if isinstance(cmds, list)
+        }
+        command_whitelist = [
+            str(w) for w in (validation.get("command_whitelist") or []) if isinstance(w, str)
+        ]
         # Preserve scope-specific dimension sets so a returning user who
         # declines a basic-config update does not silently lose them.
         from iterate_cli.dimension_sets import normalize_dimension_sets
 
         dimension_sets = normalize_dimension_sets(config.get("dimension_sets"))
+
+        # A hand-edited `language:` with an empty/null value parses to None and
+        # would be re-emitted as `language: null`, violating the schema enum.
+        existing_language = config.get("language", DEFAULT_LANGUAGE)
+        if existing_language not in ("zh", "en"):
+            existing_language = DEFAULT_LANGUAGE
+
         return OnboardingData(
             project_root=project_root,
             channel=channel,
@@ -481,10 +505,10 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             target_branch=git.get("target_branch", DEFAULT_TARGET_BRANCH),
             review_scope=review.get("scope", DEFAULT_REVIEW_SCOPE),
             push_per_round=git.get("push_per_round", False),
-            validation_commands=validation.get("commands") or {},
-            command_whitelist=validation.get("command_whitelist") or [],
+            validation_commands=validation_commands,
+            command_whitelist=command_whitelist,
             fingerprints=capture_fingerprints(project_root),
-            language=config.get("language", DEFAULT_LANGUAGE),
+            language=existing_language,
             goal=config.get("goal", DEFAULT_GOAL),
             max_rounds=config.get("max_rounds", DEFAULT_MAX_ROUNDS),
             reasoning_effort=normalize_reasoning_effort(

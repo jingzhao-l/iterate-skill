@@ -142,7 +142,8 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
 
     config = raw_config
 
-    onboarding = config.get("onboarding") or {}
+    onboarding = config.get("onboarding")
+    onboarding = onboarding if isinstance(onboarding, dict) else {}
     drift_enabled = onboarding.get("drift_check", True)
     raw_fingerprints = onboarding.get("fingerprints") or []
     data["onboarding"] = {

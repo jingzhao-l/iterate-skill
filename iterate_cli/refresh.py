@@ -137,7 +137,8 @@ def get_stored_fingerprints(config: dict[str, Any]) -> list[dict[str, str]]:
     Returns:
         List of fingerprint dicts, or empty list if not present.
     """
-    onboarding = config.get("onboarding") or {}
+    onboarding = config.get("onboarding")
+    onboarding = onboarding if isinstance(onboarding, dict) else {}
     raw = onboarding.get("fingerprints") or []
     if not isinstance(raw, list):
         return []
@@ -157,7 +158,8 @@ def get_drift_ignore(config: dict[str, Any]) -> list[str]:
     Returns:
         List of fnmatch patterns, or empty list if not present.
     """
-    onboarding = config.get("onboarding") or {}
+    onboarding = config.get("onboarding")
+    onboarding = onboarding if isinstance(onboarding, dict) else {}
     raw = onboarding.get("drift_ignore") or []
     if not isinstance(raw, list):
         return []
@@ -192,7 +194,8 @@ def check_onboarding_drift(project_root: Path) -> DriftResult | None:
     if config is None:
         return None
 
-    onboarding = config.get("onboarding") or {}
+    onboarding = config.get("onboarding")
+    onboarding = onboarding if isinstance(onboarding, dict) else {}
     if not onboarding.get("drift_check", True):
         return None
 
@@ -446,7 +449,10 @@ def _build_refreshed_config(
         return list(value) if isinstance(value, list) else []
 
     config = dict(existing_config)
-    onboarding = dict(config.get("onboarding") or {})
+    onboarding_section = config.get("onboarding")
+    onboarding = (
+        dict(onboarding_section) if isinstance(onboarding_section, dict) else {}
+    )
 
     # Persist the reconciled fields from _build_refresh_data. These preserve
     # existing (possibly customised) values and additively append suggestions

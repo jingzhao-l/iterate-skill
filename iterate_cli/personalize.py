@@ -97,8 +97,15 @@ KNOWN_SAFE_COMMAND_PREFIXES: tuple[str, ...] = (
     "make", "cmake",
     "gradle", "mvn", "java",
     "dotnet",
+    "dart", "flutter",
+    "mix",
+    "bundle", "ruby",
     "shellcheck", "shfmt",
     "pre-commit",
+    # Trivial shell no-ops: legitimate "validation out of the box" stubs and
+    # test fixtures (they cannot read files, write files, or touch the
+    # network on their own).
+    "true", "false", "exit",
 )
 
 # Characters that should not appear in validation commands at all.
@@ -162,10 +169,16 @@ def _is_known_safe_command(cmd: str) -> bool:
     # *effective* tool (after -m) is whitelisted.
     if first_token in ("python", "python3", "py"):
         rest = stripped.split(None, 1)
-        # "python -m <tool> ..." — the tool after -m governs.
-        if len(rest) > 1 and " -m " in stripped:
-            inner = stripped.split(" -m ", 1)[1].strip().split(None, 1)[0]
-            return inner in KNOWN_SAFE_COMMAND_PREFIXES or inner in operator_prefixes
+        # "python -m <tool> ..." — the tool after -m governs. The token
+        # immediately following the interpreter MUST be "-m"; anything in
+        # between (e.g. "python <script> -m pytest") would execute the
+        # intermediate token first, so it is NOT a module invocation and
+        # must be handled by the plain-script-path check below instead.
+        if len(rest) > 1:
+            second = rest[1].strip().split(None, 1)
+            if second and second[0] == "-m":
+                inner = (second[1].strip().split(None, 1)[0] if len(second) > 1 else "")
+                return inner in KNOWN_SAFE_COMMAND_PREFIXES or inner in operator_prefixes
         # "python <script>.py ..." — a plain script invocation is legitimate
         # (e.g. `python manage.py test`). Reject anything that is not a
         # simple script path so a bare `python` can't be persisted.
@@ -763,10 +776,14 @@ def merge_personalization_into_config(
     if not old_extra and not new_extra:
         return result
 
-    validation = dict(result.get("validation") or {})
+    validation = result.get("validation")
+    validation = validation if isinstance(validation, dict) else {}
+    validation = dict(validation)
+    raw_commands = validation.get("commands")
+    raw_commands = raw_commands if isinstance(raw_commands, dict) else {}
     commands = {
         str(module): list(cmds) if isinstance(cmds, list) else []
-        for module, cmds in (validation.get("commands") or {}).items()
+        for module, cmds in raw_commands.items()
     }
     whitelist = list(validation.get("command_whitelist") or [])
 
@@ -1044,10 +1061,14 @@ def remove_personalization_from_config(config: dict[str, Any]) -> dict[str, Any]
     if not old_extra:
         return result
 
-    validation = dict(result.get("validation") or {})
+    validation = result.get("validation")
+    validation = validation if isinstance(validation, dict) else {}
+    validation = dict(validation)
+    raw_commands = validation.get("commands")
+    raw_commands = raw_commands if isinstance(raw_commands, dict) else {}
     commands = {
         str(module): list(cmds) if isinstance(cmds, list) else []
-        for module, cmds in (validation.get("commands") or {}).items()
+        for module, cmds in raw_commands.items()
     }
     for module, owned in old_extra.items():
         if module not in commands:

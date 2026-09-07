@@ -37,6 +37,7 @@ from iterate_cli.generator import (
     DEFAULT_ATOMIC_MAX_ADJACENT_METHODS,
     DEFAULT_ATOMIC_MAX_LINES,
     DEFAULT_GOAL,
+    DEFAULT_LANGUAGE,
     DEFAULT_MAX_ROUNDS,
     USER_END_MARKER,
     USER_START_MARKER,
@@ -1574,6 +1575,34 @@ class TestLoadExistingOnboardingDataNonDictSections:
         assert result.target_branch == "main"
         assert result.review_scope == "full"
         assert result.push_per_round is False
+
+    def test_validation_commands_non_dict_value_is_nulled(self, fake_project: Path) -> None:
+        """A hand-edited `validation.commands` holding a list/scalar (instead of
+        a module→commands mapping) must compile to {} instead of propagating a
+        broken structure or crashing."""
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "goal: test\nvalidation:\n  commands:\n    - pip\n  command_whitelist:\n    - 42\n    - pip\n",
+            encoding="utf-8",
+        )
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.validation_commands == {}
+        assert result.command_whitelist == ["pip"]
+
+    def test_invalid_language_coerces_to_default(self, fake_project: Path) -> None:
+        """A hand-edited `language: null`/`language: fr` must be coerced to the
+        DEFAULT_LANGUAGE instead of persisting null or an out-of-enum value."""
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("goal: test\nlanguage: null\n", encoding="utf-8")
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.language == DEFAULT_LANGUAGE
+
+        config_path.write_text("goal: test\nlanguage: fr\n", encoding="utf-8")
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.language == DEFAULT_LANGUAGE
 
 
 class TestMergePersonalizationFiltersEmptyCommands:
@@ -4481,6 +4510,48 @@ class TestValidateExtraCommand:
         is_valid, reason = validate_extra_command("python -m evil_module")
         assert is_valid is False
         assert "known-safe" in reason or "pre-approved" in reason
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A metachar-free but arbitrary EXECUTABLE before "-m" must not
+            # pass because the token after "-m" happens to be whitelisted.
+            # Non-.py executables bypass the plain-script-path check too, so
+            # these are the real smuggling vector.
+            "python scripts/deploy.sh -m pytest",
+            "python evil.pyc -m ruff",
+            "py evil -m pytest",
+            "python ./scripts/.hidden -m mypy",
+        ],
+    )
+    def test_python_non_m_executable_before_m_rejected(self, cmd: str) -> None:
+        """Regression: `python <arbitrary-executable> -m <safe>` must be rejected.
+
+        The old fast-path checked only the token after '-m'; a token placed
+        between the interpreter and '-m' that is NOT a plain ``.py`` script
+        (e.g. ``deploy.sh``) was silently trusted as a module invocation and
+        would have been executed. Only a literal 'python -m <tool>' or a
+        plain ``.py`` script path may be approved.
+        """
+        is_valid, reason = validate_extra_command(cmd)
+        assert is_valid is False, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "python -m pytest",
+            "python3 -m mypy iterate_cli/",
+            "python -m pytest -x",
+            "python manage.py test",
+            "python tests/run_all.py",
+        ],
+    )
+    def test_python_direct_module_and_plain_script_accepted(self, cmd: str) -> None:
+        """'python -m <whitelisted>' and plain '.py' script invocations are
+        unaffected and remain accepted."""
+        is_valid, reason = validate_extra_command(cmd)
+        assert is_valid is True, cmd
+        assert reason == ""
 
     def test_python_m_with_metacharacter_rejected(self) -> None:
         is_valid, reason = validate_extra_command("python -m pytest; rm -rf /")

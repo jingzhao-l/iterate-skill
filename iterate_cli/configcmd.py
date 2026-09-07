@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import yaml
 
@@ -361,8 +362,19 @@ def run_config_set(
 
     section: Any = config
     for part in spec.path[:-1]:
-        if not isinstance(section.get(part), dict):
+        existing_part = section.get(part)
+        if existing_part is None:
             section[part] = {}
+        elif not isinstance(existing_part, dict):
+            # A hand-edited scalar/list at an intermediate path segment (e.g.
+            # `git: legacy`) would be silently clobbered to {} if we replaced
+            # it here. Refuse instead so the operator fixes the file manually.
+            tui.error(
+                f"Cannot set {key!r}: intermediate field {part!r} is "
+                f"{type(existing_part).__name__}, not a mapping. Fix "
+                f"{CONFIG_YAML} manually, then retry."
+            )
+            return 1
         section = section[part]
     if spec.path:
         section[spec.path[-1]] = parsed
@@ -370,7 +382,8 @@ def run_config_set(
         config[spec.name] = parsed
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = config_path.with_name(f"{CONFIG_YAML}.configset-{timestamp}")
+    salt = uuid4().hex[:6]
+    backup_path = config_path.with_name(f"{CONFIG_YAML}.configset-{timestamp}-{salt}")
     try:
         shutil.copy2(config_path, backup_path)
         atomic_write(
