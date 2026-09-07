@@ -21,6 +21,9 @@ logs/
 .iterate-worktree/
 /iterate-*/
 
+# Published skill archives produced when building without an explicit --out
+iterate-*.zip
+
 # Local publishing workspace (clone of jingzhao-l/iterate-plugin, npm publish source)
 .release/
 

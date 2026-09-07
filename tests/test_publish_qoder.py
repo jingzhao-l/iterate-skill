@@ -138,13 +138,16 @@ def _minimal_source(tmp_path: Path) -> Path:
 
 
 class TestBuildPackageDefaultOut:
-    def test_build_without_out_survives(self, tmp_path: Path) -> None:
+    def test_build_without_out_survives(self, tmp_path: Path, monkeypatch) -> None:
         """Building without --out must leave the zip on disk.
 
         Regression: the default zip path lived inside the temp staging dir and
         was deleted when the context manager exited — a build with no --out
         silently produced nothing.
         """
+        # `out=None` writes the zip to the process CWD; pin that to a temp dir
+        # so the artifact never leaks into the repo working tree.
+        monkeypatch.chdir(tmp_path)
         source = _minimal_source(tmp_path)
         zip_path, _warnings, meta = publish_qoder.build_package(
             "9.9.9", source=str(source), out=None
