@@ -5,6 +5,32 @@
 
 ---
 
+## [3.2.1] — 2026-09-07
+
+### 修复 / Fixes
+
+- **命令白名单运行时二次校验（防绕过）**：`iterate guard` 运行时执行校验命令前，除了外壳元字符检查，再次校验命令以已知安全工具前缀开头（与 `personalize` 落盘时同一套判定）。`rm -rf .`、`curl …` 这类"无元字符但任意可执行文件"以及 `python <任意可执行文件> -m <安全工具>`（中间夹带脚本）都不再通过；`python -m` 仅当 `-m` 为解释器之后的第二个 token 才被识别为模块调用。安全前缀新增 `dart`/`flutter`/`mix`/`bundle`/`ruby`/`true`/`false`/`exit`。
+- **手写配置不再触发崩溃**：`onboarding:` 为标量/列表、`personalization` 非 dict、`validation.commands` 非 dict、`language: null` 或非 `zh`/`en` 等手写/漂移污染的配置，在 `status`/`fingerprint`/`refresh`/`show`/`wizard`/`config set` 中一律安全降级或显式拒绝，不再抛 `AttributeError`/写坏结构。
+- **install.py 供应链加固**：跨主机重定向时剥离 `Authorization` 头（`_SafeRedirectHandler`/`_urlopen`）；GitHub API 响应按块读取并加字节上限；`_safe_extractall` 在解压前校验单成员 ≤256MiB、总量 ≤500MiB（解压炸弹防护）；`copy_skill_files` 拒绝经符号链接祖先目录写入，并修复文件/目录类型冲突（过期文件挡住目录、过期目录挡住文件）。
+- **install 无操作不再报成功**：非交互 stdin、所有目标均已存在且未给 `--force` 时返回退出码 1（与 uninstall 无操作契约一致），npx 包装层可据此区分"已安装/已刷新"与"什么都没发生"；uninstall 在非交互 stdin 下拒绝未经确认的删除。
+- **npm 安装器**：`askYesNo` 在 stdin EOF 或 30s 超时后回落到默认值（不再挂死）；`parseChecksums` 跳过非 64 位十六进制摘要、拒绝同一 basename 的冲突摘要（防篡改）、兼容 `#` 注释行；`-h`/`--help`/`-v`/`--version` 短路解析（后面跟坏参数也不再报错）；`package.json` 增加 `files` 白名单并移除全局 `iterate` bin（避免与真实 CLI 冲突）。
+- **validate.py**：JSON Schema 文件本身结构损坏（坏 `$ref`/`$defs`、类型错误）时报出 "Invalid JSON Schema" 诊断而不是未捕获 traceback 崩溃。
+- **config set 嵌套保护**：点号路径的中间段为标量/列表时明确拒绝写入（不静默替换成 mapping）；`.configset` 备份文件名追加随机盐，同一秒内多次 `config set` 不再互相覆盖备份。
+- **doctor dimension_sets**：非字符串的集合名与混合类型 dimension 条目不再让 `sorted()`/正则崩溃，统一归一化后上报。
+
+### 测试 / Tests
+
+- 全量 Python 测试 1001 个全部通过，`ruff check .` 通过，npm 安装器测试通过：
+  - `test_install_script.py`：符号链接祖先拒绝 / 类型冲突 / 超大成员 / 总量超限 / 非交互无操作返回 1。
+  - `test_guard.py`：未知前缀命令拒绝 / 已知安全命令放行。
+  - `test_onboarding.py`：`validation.commands` 非 dict 归零、`language` 非法值回退默认。
+  - `test_drift_ignore.py`：标量 `onboarding` 在 status/refresh 路径安全降级。
+  - `test_config.py`：中间段标量拒绝覆盖、备份名加盐不冲突。
+  - `test_validate.py`：损坏 JSON Schema 本身被诊断而非崩溃。
+  - `test_publish_qoder.py`：默认 `--out` 构建不再向仓库工作树泄漏 zip。
+
+---
+
 ## [3.2.0] — 2026-09-06
 
 ### 新增 / Features
