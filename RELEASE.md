@@ -119,6 +119,34 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.2.1 状态（2026-09-07）**：配置硬化 + 供应链防御批次（patch）。GitHub Release
+      > v3.2.1 已发布（tag `v3.2.1`，主仓库提交 `8325395`，CI 自动生成 `iterate-skill.tar.gz`
+      > + `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，本地 `sha256sum -c`
+      > 通过、`tar -tzf | grep harness/` 为 0、`SKILL.md version: 3.2.1`）；
+      > npm `iterate-skill-installer@3.2.1` 已发布（`npm view` latest=3.2.1，tar 6 文件含
+      > bin/lib/README/LICENSE，`files` 白名单生效、移除全局 `iterate-skill` bin）；
+      > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
+      > + stage `.dist_tmp/clawhub-stage-3.2.1`（82 文件归档，发布 77 文件、1,785,336 字节）发布
+      > 3.2.1（`ok:true`，versionId `k9770nr8c0tm2v51dt7zq9szz18dz7vm`，`publicationStatus` pending，
+      > resolve `latestVersion` 异步传播后确认 =3.2.1）；
+      > ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_321.py` 重建精简 zip 518,620 字节、77 文件、
+      > harness 0；`.dist_tmp/verify_update_321.py` `update_skill_settings` success，file_id
+      > `40de4a18-b80b-4f76-8b5c-63c0cc7f4760`；`get_skill.last_modified`=`2026-09-07T12:54:29Z`；
+      > 下载 `archive/zip/master` 复核 `SKILL.md version: 3.2.1`、`/harness/` 条目 0）；
+      > SkillHub（skillId `104490`）经 `.dist_tmp/rebuild_skillhub_321.py` 精简包（73 文件、516,237
+      > 字节、harness 0、剔除 LICENSE/.gitignore/.gitmodules/npm-installer/LICENSE）`.skillhub publish`
+      > 成功（`ok:true`，versionId `296866`，`tags.latest=3.2.1`，`reviewStatus/securityScanStatus`
+      > =pending 为平台异步审核）。发版前全量 pytest 1001 + ruff 通过、npm 安装器测试通过。
+      > 3.2.1 内容：guard/personalize 命令白名单运行时二次校验（堵 `rm -rf .`、`curl`、
+      > `python <脚本> -m <安全工具>` 绕过，扩展 dart/flutter/mix/bundle/ruby/true/false/exit）；
+      > 手写配置防崩溃（onboarding/personalization/validation.commands/language 非 dict 或非法值
+      > 在 status/fingerprint/refresh/show/wizard/config set 安全降级或拒绝）；install.py 供应链加固
+      >（跨主机重定向剥 Authorization、API 响应字节上限、`_safe_extractall` 解压炸弹防护、符号链接
+      > 祖先目录写入拒绝、文件/目录类型冲突）；install 非交互无操作返回 1；uninstall 非交互拒绝；
+      > validate.py 坏 schema 诊断而非崩溃；config set 中间段标量拒绝覆盖 + 备份名加盐；doctor
+      > dimension_sets 归一化；npm 安装器 askYesNo EOF/超时、校验和 hex+重复冲突拒绝、-h/-v 短路、
+      > files 打包白名单。
+      >
       > **3.2.0 状态（2026-09-06）**：综合评审修复批次 + B1–B6 特性（minor）。GitHub Release
       > v3.2.0 已发布（tag `v3.2.0`，CI 自动生成 `iterate-skill.tar.gz` 491,552 字节 +
       > `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，本地 `sha256sum -c` 通过、
