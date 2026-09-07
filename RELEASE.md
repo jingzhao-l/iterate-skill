@@ -602,6 +602,23 @@ stamp 不匹配会自动重装到新 tag。
        > 推送 `1cbf51d..58d14e5`）；npm `iterate-plugin@3.4.0` 已发布（latest=3.4.0，76 文件 /
        > 300.1 kB，tarball 复核含 resume op / client launcher / 原型防护）。验证 typecheck +
        > typecheck:client + build + build:client 干净，503 测试全过。
+       >
+       > **3.4.1 发布记录（2026-09-07）**：DSH STORE 契约对齐（回应 AI-Scarlett/DSH-Store#504
+       > 的"上游固定 Commit 已变化，阻断条件未清除"复检消息）——`dsh.compatibility.dshReleases`
+       > 精确声明扩到 `0.1.1-rc.1` / `0.1.2-alpha.4/5` / `0.1.2-rc.1` / `0.1.3-alpha.1`（覆盖商店
+       > 当前"最新三版本"窗口 alpha.5/rc.1/0.1.3-alpha.1，防候选库因兼容覆盖不足被剔除；
+       > `0.1.1-rc.1` 附带真实一次性 Profile 证据，`0.1.3-alpha.1` 为源码声明）；README（EN+ZH）
+       > 权限披露修正 `commands` 描述（`iterate_validate` 确经 `node:child_process` 执行配置内
+       > 精确白名单命令、超时 ≤600s；`git diff` 仅 changed-only 范围；此前"由宿主执行、非本插件"
+       > 措辞不准确）。（同批并入工作区已存在的健壮性修复：git-scope `sep` 前缀、skill-prompt
+       > 收敛/无效轮次守卫、parse.js 图片计数去重与循环防护，均带测试。）**一次性 Profile 证据
+       > （真实）**：临时 `$DSH_HOME` 下 `dsh plugin --profile dshstore-ev add <repo>` 449ms 安装
+       > → `--dump-config` 合成含 `# == iterate-plugin` 的 bundle → `remove` 602ms 卸载且合成配置
+       > 零残留；start/rollback 因一次性 Profile 无模型提供方按 `unknown`/`partial` 如实记录。
+       > **结论**：剩余固定门禁失败（files/commands/credentials 权限信号 + 运行依赖需独立供应链
+       > 审查）为插件固有高权限能力，按商店契约保持 `user-reviewed`/守卫（仍可 GitHub 手动安装），
+       > 属设计预期而非可经 manifest 修复；商店每八小时从新固定 Commit 自动复检。主仓库与独立仓
+       > 提交、npm 版本见下方（本记录在发版完成的 docs 提交补全）。
 
 ---
 
