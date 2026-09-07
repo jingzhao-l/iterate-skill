@@ -378,7 +378,10 @@ stamp 不匹配会自动重装到新 tag。
 - [x] **2. 本地验证**：跑通 harness 测试（`cd harness/iterate-harness && pytest tests/ -q`）
       与 npm 包装器测试（`cd harness/iterate-harness/npm && node --test test/bootstrap.test.js`）。
 - [x] **3. 提交并推送主仓库**：`git commit && git push origin main`。
-- [ ] **4. subtree 拆分到独立发布仓**：
+- [x] **4. subtree 拆分到独立发布仓**（`git subtree split` push 连续多版被
+      non-fast-forward 拒绝且 split 产物 head 滞后于已发布内容，按 2.1.0 起
+      各版发布记录改走下方 `.release/iterate-harness` 替代路径提交并快进推送，
+      与公开 main 共享历史）：
       ```bash
       git subtree split --prefix=harness/iterate-harness -b subtree-harness
       git push harness-origin subtree-harness:main
