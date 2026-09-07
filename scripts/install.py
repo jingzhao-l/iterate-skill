@@ -260,6 +260,13 @@ VALIDATE_SUBPROCESS_TIMEOUT_SECONDS = 30
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB
 _DOWNLOAD_CHUNK_SIZE = 64 * 1024  # 64 KiB read chunks while streaming
 
+# Decompression-bomb bounds enforced in _safe_extractall BEFORE extracting:
+# a compressed payload can expand far beyond its transport size, so the
+# uncompressed budget is (deliberately) a few times the download cap rather
+# than derived from it. A member exceeding the per-member cap is also refused.
+MAX_EXTRACT_BYTES = 500 * 1024 * 1024  # 500 MiB total uncompressed
+MAX_EXTRACT_MEMBER_BYTES = 256 * 1024 * 1024  # 256 MiB per member
+
 
 def _validate_github_token(token: str | None) -> str | None:
     """Return an error message when ``token`` is malformed, else None.
@@ -430,6 +437,20 @@ def copy_skill_files(
                 f"Refusing to copy outside destination: {relative!r} resolves to {normalized_dst}"
             )
 
+        # Symlinked *ancestor* guard: a committed symlink at an intermediate
+        # directory (e.g. ``.claude -> /home/victim/.config``) would otherwise
+        # have every write routed through it and placed outside the
+        # user-selected destination — the leaf-symlink replacement below does
+        # not cover that. Compare the REAL paths (symlinks resolved), raising
+        # only when an existing ancestor component escapes the base.
+        parent_real = Path(os.path.realpath(dst.parent))
+        base_real = Path(os.path.realpath(destination_base))
+        if not (parent_real == base_real or parent_real.is_relative_to(base_real)):
+            raise ValueError(
+                f"Refusing to copy through symlinked directory: {relative!r} "
+                f"resolves to {parent_real}"
+            )
+
         if dry_run:
             copied.append(str(dst))
             _hint(f"[dry-run] Would copy: {relative} -> {dst}")
@@ -445,13 +466,22 @@ def copy_skill_files(
             # Python shutil.rmtree raises OSError when asked to walk a symlink.
             if dst.is_symlink():
                 dst.unlink()
-            elif dst.exists() and force:
+            elif dst.exists() and dst.is_dir() and force:
                 shutil.rmtree(dst)
+            elif dst.exists() and not dst.is_dir() and force:
+                # Type collision: a stale regular file where a directory is
+                # needed. rmtree would raise NotADirectoryError; unlink the file
+                # first so copytree can create the real directory.
+                dst.unlink()
             shutil.copytree(src, dst, dirs_exist_ok=True)
         else:
             # Replace a symlinked destination instead of writing through it.
             if dst.is_symlink():
                 dst.unlink()
+            elif dst.exists() and dst.is_dir() and force:
+                # Type collision: a stale directory where a file is needed.
+                # copy2(src, dst) would silently write dst/<basename> instead.
+                shutil.rmtree(dst)
             shutil.copy2(src, dst)
         copied.append(str(dst))
 
@@ -904,6 +934,33 @@ def _effective_target_and_mode_label(target: Path, global_install: bool) -> tupl
     return effective_target, mode_label
 
 
+def _safe_confirm(prompt: str, input_func: InputFunc, *, default: bool = False) -> bool | None:
+    """Ask a yes/no confirmation safely, even on a non-interactive stdin.
+
+    Mirrors the :func:`install_command` upgrade-prompt guard: on a non-TTY
+    stdin (CI, ``</dev/null``, piped job) the builtin ``input()`` would raise
+    ``EOFError`` and crash mid-flow. In that case ``None`` is returned so the
+    caller can skip the prompt (refusing to act by default is the safe choice).
+
+    Returns:
+        - ``True`` — user answered yes ("y"/"yes").
+        - ``False`` — user answered no ("n"/"no") or any other input.
+        - ``None`` — stdin is not interactive (EOF/TTY), caller should treat
+          the confirmation as declined without crashing.
+    """
+    if not sys.stdin.isatty():
+        return None
+    try:
+        answer = input_func(prompt).strip().lower()
+    except EOFError:
+        return None
+    if answer in ("y", "yes"):
+        return True
+    if answer in ("n", "no"):
+        return False
+    return default
+
+
 def _ask_upgrade_confirmation(
     assistant: str, destination: Path, display_name: str, input_func: InputFunc
 ) -> bool:
@@ -977,6 +1034,8 @@ def install_command(
 
     installed: list[tuple[str, str, Path]] = []
     seen_destinations: set[Path] = set()
+    user_declined = 0
+    auto_skipped = 0
     for assistant in targets:
         relative_dir = SUPPORTED_AI[assistant]
         destination = effective_target / relative_dir
@@ -1001,6 +1060,7 @@ def install_command(
             # keep the existing copy and warn, rather than silently skipping.
             if sys.stdin.isatty():
                 if not _ask_upgrade_confirmation(assistant, destination, display_name, input_func):
+                    user_declined += 1
                     continue
                 overwrite = True
             else:
@@ -1008,6 +1068,7 @@ def install_command(
                     f"{display_name} 已存在 iterate-skill 安装；非交互模式保留现有拷贝，"
                     f"如需覆盖请使用 --force。{destination}"
                 )
+                auto_skipped += 1
 
         copied = copy_skill_files(source, destination, dry_run, overwrite)
         for item in copied:
@@ -1020,6 +1081,20 @@ def install_command(
     if dry_run:
         _success("Dry run complete; no files were copied.")
         return 0
+
+    if not installed and user_declined == 0 and auto_skipped > 0:
+        # Auto-skip no-op: every target already existed on a non-interactive
+        # stdin and no copy happened for *any* target. Report this explicitly
+        # instead of a misleading "complete": a caller (e.g. the npx wrapper)
+        # must be able to distinguish "installed/refreshed" from "nothing
+        # happened". A deliberate user decline of an upgrade prompt (or a
+        # mixed run that installed at least one assistant) is still a valid
+        # outcome and keeps exit 0.
+        _warning(
+            "Nothing was installed: every target already existed and --force "
+            "was not given (non-interactive stdin). Use --force to overwrite."
+        )
+        return 1
 
     _success("Installation complete.")
     if installed:
@@ -1093,8 +1168,13 @@ def uninstall_command(
         _tui_print("The following installations will be removed:", style="iterate.primary")
         for assistant, destination in existing:
             _hint(f"- {assistant}{mode_label}: {destination}")
-        answer = input_func("  \u2514 Proceed? [y/N]: ").strip().lower()
-        if answer not in ("y", "yes"):
+        confirmed = _safe_confirm("  \u2514 Proceed? [y/N]: ", input_func, default=False)
+        if confirmed is not True:
+            if confirmed is None:
+                # Non-interactive stdin: refuse to delete anything without a
+                # confirmed yes (same fail-closed stance as --force).
+                _warning("Non-interactive stdin — refusing to uninstall without confirmation. Pass --yes to auto-confirm.")
+                return 1
             _hint("Uninstall cancelled.")
             # User declined the confirmation: report non-zero so callers do not
             # mistake the cancellation for a completed uninstall.
@@ -1135,8 +1215,24 @@ def _fetch_latest_release_info(
         request.add_header("Authorization", f"Bearer {token}")
 
     try:
-        with urllib.request.urlopen(request, timeout=GITHUB_API_TIMEOUT_SECONDS) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        with _urlopen(request, GITHUB_API_TIMEOUT_SECONDS) as response:
+            # Read the API payload through the same bounded-loop discipline
+            # used by _download_bytes: an API response that exceeds the cap is
+            # rejected instead of exhausting memory on an unbounded read().
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(_DOWNLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    return None, (
+                        f"GitHub API response body exceeds {MAX_DOWNLOAD_BYTES} "
+                        f"byte safety cap (downloaded {total} bytes)"
+                    )
+                chunks.append(chunk)
+            data = json.loads(b"".join(chunks).decode("utf-8"))
     except urllib.error.HTTPError as exc:
         reason = f"GitHub API returned HTTP {exc.code}"
         if exc.code == 401:
@@ -1186,7 +1282,33 @@ def _fetch_latest_release_info(
 
 
 def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
-    """Extract a tarball safely, preventing path traversal outside ``path``."""
+    """Extract a tarball safely, preventing path traversal and decompression bombs.
+
+    Enforces three guarantees over the full member list BEFORE extracting:
+      1. no member path escapes ``path`` (traversal / zip-slip),
+      2. no symlink/hard-link target escapes ``path``,
+      3. the total *uncompressed* size stays under ``MAX_EXTRACT_BYTES`` and
+         every individual member under it too (a tiny compressed tarball must
+         not decompress into hundreds of GiB on disk).
+
+    Python 3.12+'s built-in ``filter="data"`` handles (1) and (2) but NOT the
+    size caps, so the caps are applied on both code paths.
+    """
+    members = tar.getmembers()
+    total_uncompressed = 0
+    for member in members:
+        if member.size > MAX_EXTRACT_MEMBER_BYTES:
+            raise tarfile.TarError(
+                f"Suspicious member size: {member.name} is {member.size} bytes "
+                f"(> {MAX_EXTRACT_MEMBER_BYTES})"
+            )
+        total_uncompressed += member.size
+        if total_uncompressed > MAX_EXTRACT_BYTES:
+            raise tarfile.TarError(
+                f"Archive expands to > {MAX_EXTRACT_BYTES} bytes uncompressed "
+                f"(decompression-bomb guard)"
+            )
+
     if hasattr(tarfile, "data_filter"):
         tar.extractall(path=path, filter="data")
         return
@@ -1195,7 +1317,7 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
     # Uses is_relative_to (platform-agnostic) instead of a hardcoded "/" join,
     # which would break on Windows backslash separators.
     base = path.resolve()
-    for member in tar.getmembers():
+    for member in members:
         member_path = (path / member.name).resolve()
         if not member_path.is_relative_to(base):
             raise tarfile.TarError(f"Suspicious member path: {member.name}")
@@ -1245,7 +1367,7 @@ def _download_bytes(
         request.add_header("Authorization", f"Bearer {token}")
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _urlopen(request, timeout) as response:
             chunks: list[bytes] = []
             total = 0
             while True:
@@ -1286,6 +1408,47 @@ def _is_github_api_url(url: str) -> bool:
     except ValueError:
         return False
     return host.lower() == "api.github.com" or host.lower().endswith(".api.github.com")
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """HTTP redirect handler that strips credentials on cross-host redirects.
+
+    urllib's default redirect handler forwards custom headers (including
+    ``Authorization: Bearer <PAT>``) verbatim to a 301/302/307 Location even
+    when that target is a different origin. If a GitHub response — or an
+    on-path proxy — ever redirects cross-host, the PAT would be transmitted to
+    the third party. This handler drops ``Authorization`` whenever the request
+    host changes, so a token attached to ``api.github.com`` can never leak to
+    another origin.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is None:
+            return None
+        old_host = (urllib.parse.urlsplit(req.full_url).hostname or "").lower()
+        new_host = (urllib.parse.urlsplit(newurl).hostname or "").lower()
+        if old_host != new_host:
+            new_req.remove_header("Authorization")
+        return new_req
+
+
+def _safe_opener() -> urllib.request.OpenerDirector:
+    """Build an opener whose cross-host redirects never carry credentials.
+
+    Used by every network request in this module so the PAT is stripped on any
+    redirect that leaves the GitHub host (see ``_SafeRedirectHandler``).
+    """
+    return urllib.request.build_opener(_SafeRedirectHandler())
+
+
+def _urlopen(request: urllib.request.Request, timeout: int | None = None):
+    """Open ``request`` through the credential-safe opener.
+
+    Module-level seam so tests can patch ``install._urlopen`` without losing
+    the real cross-host redirect protection in production.
+    """
+    return _safe_opener().open(request, timeout=timeout)
 
 
 def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
@@ -1441,8 +1604,10 @@ def update_command(
             release_source = None
         else:
             if not yes:
-                answer = input_func("Continue? [y/N]: ").strip().lower()
-                if answer not in ("y", "yes"):
+                confirmed = _safe_confirm("Continue? [y/N]: ", input_func, default=False)
+                if confirmed is not True:
+                    # Declined, or non-interactive stdin (CI/pipe) where asking
+                    # would have hit EOFError — treat as declined and stop.
                     _hint("Update cancelled.")
                     return 1
             _hint("Downloading release source...")
@@ -1485,7 +1650,7 @@ def update_command(
                 code = _update_one_assistant(
                     assistant, target, update_source, global_install, input_func
                 )
-            except (FileNotFoundError, OSError) as exc:
+            except (OSError, ValueError, tarfile.TarError) as exc:
                 failed.append((assistant, str(exc)))
                 continue
             if code != 0:

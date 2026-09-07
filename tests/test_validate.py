@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -423,6 +424,30 @@ class TestValidateConfig:
         path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
         errors = validate.validate_config(path, schema_path)
         assert any("Schema error" in e for e in errors)
+
+    def test_broken_schema_itself_is_reported_not_crash(
+        self, tmp_path: Path, valid_config: dict[str, Any]
+    ) -> None:
+        """A structurally invalid JSON Schema (e.g. a bad $ref/type) must be
+        caught and reported instead of raising an uncaught SchemaError."""
+        broken = tmp_path / "broken.schema.json"
+        broken.write_text(
+            json.dumps(
+                {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object",
+                    "properties": {"dimensions": {"$ref": "#/$broken"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        path = tmp_path / "iterate.config.yaml"
+        path.write_text(yaml.safe_dump(valid_config), encoding="utf-8")
+        errors = validate.validate_config_against_schema(
+            yaml.safe_load(path.read_text(encoding="utf-8")),
+            json.loads(broken.read_text(encoding="utf-8")),
+        )
+        assert any("Invalid JSON Schema" in e for e in errors)
 
     def test_command_not_in_whitelist(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:
         valid_config["validation"]["commands"]["python"].append("rm -rf src/")
@@ -1359,11 +1384,16 @@ class TestForceAndGlobal:
         (target / ".trae" / "skills" / "iterate" / "SKILL.md").write_text(
             "modified", encoding="utf-8"
         )
+        # Re-run without --force: every file already exists and stdin is
+        # non-interactive, so nothing is copied. The no-op must NOT report
+        # success (a caller such as the npx wrapper needs to distinguish
+        # "installed/refreshed" from "nothing happened"); exit 1 mirrors the
+        # sibling uninstall_command no-op contract.
         assert (
-            install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0
+            install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 1
         )
         captured = capsys.readouterr()
-        assert "Skipped (already exists, use --force)" in captured.out
+        assert "already existed" in captured.out or "Skipped (already exists" in captured.out
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").read_text(
             encoding="utf-8"
         ) == "modified"

@@ -195,6 +195,53 @@ class TestCopySkillFiles:
         with pytest.raises(ValueError):
             install.copy_skill_files(source, dst, dry_run=False, force=False)
 
+    def test_rejects_copy_through_symlinked_ancestor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A file entry whose PARENT path contains a symlinked intermediate
+        directory must be refused (fix: leaf-only unlink missed ancestors)."""
+        source = tmp_path / "src"
+        (source / ".trae" / "skills" / "iterate").mkdir(parents=True)
+        (source / ".trae" / "skills" / "iterate" / "SKILL.md").write_text("skill", encoding="utf-8")
+        monkeypatch.setattr(install, "REQUIRED_FILES", [".trae/skills/iterate/SKILL.md"])
+        monkeypatch.setattr(install, "OPTIONAL_FILES", [])
+
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        # .trae -> victim: any write "through" .trae lands outside dst.
+        (dst / ".trae").symlink_to(victim, target_is_directory=True)
+
+        with pytest.raises(ValueError):
+            install.copy_skill_files(source, dst, dry_run=True, force=False)
+
+    def test_force_fixes_dir_over_file_collision(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """A stale regular file where a directory is needed must be replaced
+        (previously shutil.rmtree raised NotADirectoryError)."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        (dst / "config").mkdir()
+        # config/dimensions is a regular FILE in the stale install.
+        (dst / "config" / "dimensions").write_text("oops, not a dir", encoding="utf-8")
+        install.copy_skill_files(source, dst, dry_run=False, force=True)
+        assert (dst / "config" / "dimensions").is_dir()
+        assert not (dst / "config" / "dimensions").is_file()
+
+    def test_force_fixes_file_over_dir_collision(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """A stale directory where a file is needed must be replaced
+        (previously copy2 silently wrote dst/<basename> inside it)."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        # tools/note.md source is a file but stale install has it as a dir.
+        (dst / "tools").mkdir()
+        (dst / "tools" / "note.md").mkdir()
+        install.copy_skill_files(source, dst, dry_run=False, force=True)
+        assert (dst / "tools" / "note.md").is_file()
+        assert not (dst / "tools" / "note.md").is_dir()
+
 
 # --------------------------------------------------------------------------- #
 # detect_installed_assistants
@@ -473,7 +520,7 @@ class TestFetchReleaseInfo:
         def fake_urlopen(request, timeout=None):
             return resp
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         info, error = install._fetch_latest_release_info(None)
         assert error is None
         assert info is not None
@@ -484,7 +531,7 @@ class TestFetchReleaseInfo:
         def fake_urlopen(request, timeout=None):
             raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", None, None)
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         info, error = install._fetch_latest_release_info("ghp_badtoken")
         assert info is None
         assert error and "401" in error and "token" in error
@@ -493,7 +540,7 @@ class TestFetchReleaseInfo:
         def fake_urlopen(request, timeout=None):
             raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         info, error = install._fetch_latest_release_info(None)
         assert info is None
         assert error and "403" in error
@@ -502,7 +549,7 @@ class TestFetchReleaseInfo:
         def fake_urlopen(request, timeout=None):
             raise urllib.error.URLError("Name or service not known")
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         info, error = install._fetch_latest_release_info(None)
         assert info is None
         assert error and "network error" in error
@@ -511,7 +558,7 @@ class TestFetchReleaseInfo:
         def fake_urlopen(request, timeout=None):
             raise TimeoutError()
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         info, error = install._fetch_latest_release_info(None)
         assert info is None
         assert error and "timed out" in error
@@ -523,7 +570,7 @@ class TestFetchReleaseInfo:
         def fake_urlopen(request, timeout=None):
             return resp
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         info, error = install._fetch_latest_release_info(None)
         assert info is None
         assert error and "iterate-skill.tar.gz" in error
@@ -537,7 +584,7 @@ class TestDownloadBytes:
         def fake_urlopen(request, timeout=None):
             return resp
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         data, error = install._download_bytes("https://example.com/x", None)
         assert error is None
         assert data == body
@@ -549,7 +596,7 @@ class TestDownloadBytes:
         def fake_urlopen(request, timeout=None):
             return resp
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         data, error = install._download_bytes("https://example.com/x", None)
         assert data is None
         assert error and "safety cap" in error
@@ -558,7 +605,7 @@ class TestDownloadBytes:
         def fake_urlopen(request, timeout=None):
             raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", None, None)
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         data, error = install._download_bytes("https://api.github.com/x", "ghp_bad")
         assert data is None
         assert error and "401" in error and "token" in error
@@ -567,7 +614,7 @@ class TestDownloadBytes:
         def fake_urlopen(request, timeout=None):
             raise TimeoutError()
 
-        monkeypatch.setattr(install.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
         data, error = install._download_bytes("https://example.com/x", None, timeout=5)
         assert data is None
         assert error and "timed out" in error
@@ -842,6 +889,39 @@ class TestSafeExtractall:
             install._safe_extractall(tar, dest)
         assert (dest / "evil-hl").exists()
 
+    def test_rejects_oversized_member(self, tmp_path: Path, monkeypatch):
+        """A single member larger than the per-member cap is a decompression
+        bomb symptom and must be refused before extraction."""
+        monkeypatch.setattr(install, "MAX_EXTRACT_MEMBER_BYTES", 4)
+        tar_path = tmp_path / "big.tar"
+        with tarfile.open(tar_path, "w") as tar:
+            info = tarfile.TarInfo("huge.bin")
+            info.size = 5
+            tar.addfile(info, io.BytesIO(b"12345"))  # 5 real bytes > 4 cap
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+        assert not (dest / "huge.bin").exists()
+
+    def test_rejects_total_expansion_over_cap(self, tmp_path: Path, monkeypatch):
+        """Many members whose sum of sizes exceeds the total cap must be
+        refused even when each fits the per-member cap (bomb guard runs over
+        the member headers before any bytes hit disk)."""
+        monkeypatch.setattr(install, "MAX_EXTRACT_MEMBER_BYTES", 100)
+        monkeypatch.setattr(install, "MAX_EXTRACT_BYTES", 15)
+        tar_path = tmp_path / "many.tar"
+        with tarfile.open(tar_path, "w") as tar:
+            for i in range(3):
+                info = tarfile.TarInfo(f"f{i}.bin")
+                info.size = 8
+                tar.addfile(info, io.BytesIO(b"\0" * 8))  # each 8 bytes, 24 total > 15 cap
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+        assert not list(dest.iterdir())
+
 
 class TestDownloadReleaseSource:
     """_download_release_source must pick the unique top-level dir that carries
@@ -969,6 +1049,22 @@ class TestInstallCommand:
         assert install.install_command("trae", target, dry_run=False, source=source, force=False, global_install=False, input_func=seq) == 0
         # User declined the upgrade -> existing install is left untouched.
         assert (dest / "SKILL.md").read_text(encoding="utf-8") == "old stale version"
+
+    def test_noninteractive_all_existing_noop_returns_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A non-interactive install where every target already existed and was
+        auto-skipped is a no-op, not a success: return exit 1 so a caller (the
+        npx wrapper) can distinguish 'installed' from 'nothing happened'."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        # First perform a full install so every file exists.
+        assert install.install_command("trae", target, dry_run=False, source=source, force=True, global_install=False) == 0
+        # Now re-run non-interactively without --force: nothing new to copy.
+        monkeypatch.setattr(install.sys.stdin, "isatty", lambda: False)
+        assert install.install_command("trae", target, dry_run=False, source=source, force=False, global_install=False) == 1
+        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
 
 
 # --------------------------------------------------------------------------- #

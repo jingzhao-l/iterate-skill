@@ -223,14 +223,25 @@ def validate_config_against_schema(
     """使用 jsonschema 校验配置。"""
     try:
         from jsonschema import Draft202012Validator
+        from jsonschema.exceptions import SchemaError
     except ImportError as exc:  # pragma: no cover - dependency guard
         return [f"jsonschema is required for schema validation: {exc}"]
 
     errors: list[str] = []
-    validator = Draft202012Validator(schema)
-    for error in validator.iter_errors(config):
-        path = "/".join(str(part) for part in error.path) or "<root>"
-        errors.append(f"Schema error at {path}: {error.message}")
+    try:
+        validator = Draft202012Validator(schema)
+        for error in validator.iter_errors(config):
+            path = "/".join(str(part) for part in error.path) or "<root>"
+            errors.append(f"Schema error at {path}: {error.message}")
+    except SchemaError as exc:
+        # A structurally invalid schema (bad $defs/$ref or wrong types in the
+        # schema itself) would otherwise crash with an uncaught traceback.
+        errors.append(f"Invalid JSON Schema (schema file itself is broken): {exc}")
+    except Exception as exc:
+        # jsonschema raises unresolvable $ref/$def references as a wrapping
+        # (non-SchemaError) error, surfaced lazily *during* iteration — the
+        # broken-schema diagnostic must swallow those too, not crash.
+        errors.append(f"Invalid JSON Schema (schema file itself is broken): {exc}")
     return errors
 
 
