@@ -617,8 +617,12 @@ stamp 不匹配会自动重装到新 tag。
        > 零残留；start/rollback 因一次性 Profile 无模型提供方按 `unknown`/`partial` 如实记录。
        > **结论**：剩余固定门禁失败（files/commands/credentials 权限信号 + 运行依赖需独立供应链
        > 审查）为插件固有高权限能力，按商店契约保持 `user-reviewed`/守卫（仍可 GitHub 手动安装），
-       > 属设计预期而非可经 manifest 修复；商店每八小时从新固定 Commit 自动复检。主仓库与独立仓
-       > 提交、npm 版本见下方（本记录在发版完成的 docs 提交补全）。
+       > 属设计预期而非可经 manifest 修复；商店每八小时从新固定 Commit 自动复检。主仓库
+       > `c8235d7`；subtree split 再次 non-fast-forward，走 `.release/iterate-plugin` 替代路径
+       >（rsync 同步后提交 `cb1ef85` 快进推送 `58d14e5..cb1ef85`）；npm `iterate-plugin@3.4.1`
+       > 已发布（latest=3.4.1，76 文件 / 302.8 kB，tarball 复核含 `0.1.3-alpha.1` 兼容声明、
+       > skill-prompt `schemaInvalid` 收敛守卫、parse.js `consumed` 去重）。验证 typecheck +
+       > typecheck:client + build + build:client 干净，513 测试全过。
 
 ---
 
