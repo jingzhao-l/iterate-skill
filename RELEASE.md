@@ -370,6 +370,33 @@ stamp 不匹配会自动重装到新 tag。
       验证：`npm install -g iterate-harness && ih --version` 输出新版本。
       > npm `repository` 元数据指向独立仓 `jingzhao-l/iterate-harness`。
       >
+      > **2.2.2 发布记录（2026-09-07）**：例行审查 + 修复发版。**Python 3.10
+      > import 回归**（`state/store.py` 的 `typing.Unpack` 需 3.11+，而
+      > `requires-python = ">=3.10"`，3.10 安装导入期崩溃，CI 3.10 矩阵已连续失败）
+      > 改版本守卫导入（3.11+ `typing.Unpack`，3.10 回退 `typing_extensions.Unpack`），
+      > `typing-extensions==4.16.0` 显式加入运行时依赖；本机 Python 3.10.10 实测通过。
+      > 版本号在 `__init__.py` / `npm/package.json` / `frontend/web/package.json` /
+      > `CHANGELOG.md` 同步至 2.2.2；校验 **2070 pytest + 6 skip**、ruff / mypy strict
+      > clean、前端构建正常（本地 `uv build --wheel` 成功，286 个包文件）。继续走
+      > `.release/iterate-harness` 替代路径（与公开 main 共享历史）提交并快进推送
+      >（`b2068dc..c69f854`）。GitHub Release v2.2.2 已建，release.yml 自动构建
+      > `iterate_harness-2.2.2-py3-none-any.whl` 上传 release + 自动发布 PyPI 2.2.2
+      >（已验证 PyPI latest=2.2.2）；npm `iterate-harness@2.2.2` 已发布（latest=2.2.2）。
+      > 端到端验证：`npm install -g --prefix ~/.npm-global iterate-harness` 后
+      > `ih --version` = `iterate_harness 2.2.2`（npm 装到用户前缀，postinstall 被
+      > allow-scripts 门控也不影响——包装器首次运行惰性 bootstrap）。
+      >
+      > **2.2.1 发布记录（2026-09-07）**：例行审查 + 修复发版（patch）。WebUI 干预
+      > 通道无人值守挂死修复（`web/run_manager._ask_user_prompt` / `_ask_user_select`
+      > 与 `_permission_prompt` / `backend_host` 的 300s 有界等待对齐，超时落入安全
+      > 默认并推送可见状态消息）；`ih iterate sessions` 对损坏 `created_at` 的崩溃
+      > 修复（`cli.py` 捕获扩展 + `session_storage._coerce_mtime` 排序前规整）；
+      > `ui/runtime.py` 冗余 `except (ValueError, Exception)` 消除。校验 2069 pytest +
+      > 6 skip、ruff / mypy strict clean。subtree split 再遇 non-fast-forward（split
+      > 产物 head 停在 v2.1.0），走 `.release/iterate-harness` 替代路径提交并快进
+      > 推送（`0e03e26..b2068dc`）；GitHub Release v2.2.1 已建（release.yml 自动构建
+      > wheel 上传 + 自动发布 PyPI 2.2.1），npm 包装器最终随 2.2.2 一起发布。
+      >
       > **2.2.0 发布记录（2026-09-06）**：例行审查 + 修复 + 发版迭代。主要变更：
       > in-process 队友从「日志 + sleep」stub 变为真实引擎执行
       > （`build_teammate_query_context` 组装完整接线，`code` 模式随 `task_mode` 继承防御
