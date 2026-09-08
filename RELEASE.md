@@ -399,9 +399,35 @@ stamp 不匹配会自动重装到新 tag。
       npm publish
       ```
       验证：`npm install -g iterate-harness && ih --version` 输出新版本。
-      > npm `repository` 元数据指向独立仓 `jingzhao-l/iterate-harness`。
-      >
-      > **2.2.2 发布记录（2026-09-07）**：例行审查 + 修复发版。**Python 3.10
+> npm `repository` 元数据指向独立仓 `jingzhao-l/iterate-harness`。
+       >
+       > **2.2.3 发布记录（2026-09-08）**：例行审查 + 修复发版（patch）。主要变更：
+       > WebUI 停止确认消息取消竞态修复（`web/run_manager.py` `CancelledError` 分支
+       > 用 `asyncio.shield` 包裹 `_publish_chat`/`_set_state`，停止后确认可靠送达，
+       > 二次取消落位 `_stopping` + warning）；空 `invariants:` 段降级为 `None`
+       >（此前产出「已配置但什么都不做」的空 `InvariantConfig`，防御内核不再回退
+       > `validation.commands`，新增 2 个回归用例）；`dimension_resources` /
+       > `token_budget` / `budget_usd` / `max_turns_per_minute` / `worktree_isolation` /
+       > `thresholds` 解析错误逐一 `log.warning`；`ITERATE_LOG_LEVEL` 非法值 stderr
+       > 警告后回退 WARNING；`assert chosen is not None` 改显式 `RuntimeError` 守卫；
+       > CLI 帮助补全（iterate 18 子命令 + 移除 web_app 内部 "design §17"引用）；
+       > `--theme` 持久化 stderr 提示；`IterateAssumptionTool` 补入 `__all__`；
+       > npm 包装器 `packageVersion()` 损坏 manifest 回退 `0.0.0-unknown`、
+       > SIGINT/SIGTERM 转发器 `removeListener` 清理防累积、`ITERATE_HARNESS_SKIP_INSTALL`
+       > 识别 `1/true/yes/on`。版本号在 `__init__.py` / `npm/package.json` /
+       > `frontend/web/package.json` / `CHANGELOG.md` 同步至 2.2.3；校验 **2072 pytest
+       > + 6 skip**、ruff / mypy strict clean、npm 包装器 45 tests passed、前端
+       > `tsc --noEmit` + vitest 13 passed。继续走 `.release/iterate-harness` 替代路径
+       >（与公开 main 共享历史）提交并快进推送（`c69f854..55aeac3`）。GitHub Release
+       > v2.2.3 已建，release.yml 自动构建 `iterate_harness-2.2.3-py3-none-any.whl`
+       >（772,342 字节）上传 release + 自动发布 PyPI 2.2.3（已验证 PyPI latest=2.2.3）；
+       > npm `iterate-harness@2.2.3` 已发布（PUT 202 staged 延迟约 3 分钟后 registry
+       > latest=2.2.3，与 2.0.1 记录一致）。端到端验证：`npm install -g --prefix
+       > ~/.npm-global iterate-harness@2.2.3` 后 `ih --version` = `iterate_harness 2.2.3`
+       >（用户前缀 + postinstall 被 allow-scripts 门控不影响，包装器首次运行惰性
+       > bootstrap 命中 GitHub release 锚点 tarball）。主仓库 push 提交 `9c156b5`。
+       >
+       > **2.2.2 发布记录（2026-09-07）**：例行审查 + 修复发版。**Python 3.10
       > import 回归**（`state/store.py` 的 `typing.Unpack` 需 3.11+，而
       > `requires-python = ">=3.10"`，3.10 安装导入期崩溃，CI 3.10 矩阵已连续失败）
       > 改版本守卫导入（3.11+ `typing.Unpack`，3.10 回退 `typing_extensions.Unpack`），
