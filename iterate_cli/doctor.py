@@ -35,7 +35,11 @@ import yaml
 
 from iterate_cli import __version__ as SKILL_VERSION
 from iterate_cli.fingerprint import capture_fingerprints, fingerprints_to_dict
-from iterate_cli.generator import REASONING_EFFORT_VALUES, USER_END_MARKER, USER_START_MARKER
+from iterate_cli.generator import (
+    REASONING_EFFORT_VALUES,
+    USER_END_MARKER,
+    USER_START_MARKER,
+)
 from iterate_cli.personalize import FORBIDDEN_COMMAND_CHARS
 from iterate_cli.refresh import (
     CONFIG_YAML,

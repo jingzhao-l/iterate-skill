@@ -4533,7 +4533,7 @@ class TestValidateExtraCommand:
         would have been executed. Only a literal 'python -m <tool>' or a
         plain ``.py`` script path may be approved.
         """
-        is_valid, reason = validate_extra_command(cmd)
+        is_valid, _ = validate_extra_command(cmd)
         assert is_valid is False, cmd
 
     @pytest.mark.parametrize(

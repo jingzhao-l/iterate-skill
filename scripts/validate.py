@@ -237,7 +237,7 @@ def validate_config_against_schema(
         # A structurally invalid schema (bad $defs/$ref or wrong types in the
         # schema itself) would otherwise crash with an uncaught traceback.
         errors.append(f"Invalid JSON Schema (schema file itself is broken): {exc}")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - jsonschema wraps unresolved $ref lazily in non-SchemaError types
         # jsonschema raises unresolvable $ref/$def references as a wrapping
         # (non-SchemaError) error, surfaced lazily *during* iteration — the
         # broken-schema diagnostic must swallow those too, not crash.
