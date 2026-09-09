@@ -744,7 +744,8 @@ def _check_manifest_drift(report: DoctorReport, project_root: Path) -> None:
         config = load_onboarding_config(project_root)
         reason = "config could not be read"
         if config is not None:
-            onboarding = config.get("onboarding") or {}
+            onboarding = config.get("onboarding")
+            onboarding = onboarding if isinstance(onboarding, dict) else {}
             if not onboarding.get("drift_check", True):
                 reason = "drift check is disabled (drift_check: false)"
             else:

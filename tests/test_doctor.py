@@ -1080,3 +1080,20 @@ class TestRunDoctorFixFingerprintCaptures:
         ok, fixes = run_doctor_fix(project)
         assert ok
         assert not any("onboarding.fingerprints" in f for f in fixes)
+
+
+class TestScalarOnboardingConfig:
+    """Regression: scalar onboarding value must not crash doctor."""
+
+    def test_doctor_survives_scalar_onboarding(self, tmp_path) -> None:
+        """A hand-edited config with ``onboarding: scalar-string`` must not
+        raise AttributeError in _check_manifest_drift."""
+        project = _make_project(tmp_path)
+        # Write a raw YAML with a scalar onboarding value (not a mapping).
+        (project / CONFIG_YAML).write_text(
+            "onboarding: scalar-string\ndimensions: [correctness]\n",
+            encoding="utf-8",
+        )
+        # Must not raise AttributeError.
+        report = run_doctor(project)
+        assert not report.has_errors()
