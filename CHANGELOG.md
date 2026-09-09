@@ -5,6 +5,19 @@
 
 ---
 
+## [3.2.2] — 2026-09-09
+
+### 修复 / Fixes
+
+- **doctor 标量 onboarding 配置崩溃**：`onboarding:` 为标量字符串（手写配置常见）时，`_check_manifest_drift` 调用 `.get()` 抛出 `AttributeError`。改用 `isinstance` 守卫，与 `refresh.py`/`wizard.py` 同一模式。
+- **ruff 代码质量**：修复 `I001`（import 排序）、`BLE001`（盲捕异常）、`RUF059`（未使用解包变量）。
+
+### 测试 / Tests
+
+- 新增 `TestScalarOnboardingConfig` 回归测试，确保标量 onboarding 配置不再让 doctor 崩溃。
+
+---
+
 ## [3.2.1] — 2026-09-07
 
 ### 修复 / Fixes
