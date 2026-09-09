@@ -694,6 +694,27 @@ stamp 不匹配会自动重装到新 tag。
        > 已发布（latest=3.4.1，76 文件 / 302.8 kB，tarball 复核含 `0.1.3-alpha.1` 兼容声明、
        > skill-prompt `schemaInvalid` 收敛守卫、parse.js `consumed` 去重）。验证 typecheck +
        > typecheck:client + build + build:client 干净，515 测试全过。
+       >
+       > **3.5.0 发布记录（2026-09-09）**：全面审查 + 硬化批次——新增 `src/atomic-fs.ts` 共享
+       > 原子写助手（tmp+rename），fix/prune/checkpoint/triage/config-write/experience-store/
+       > defense-store/quality-store/transcript 十处持久化全部切换为崩溃安全写入，三个 store
+       > 统一走 `iterateDir()`；`iterate_prune` 新增 `.iterate` 陈旧临时文件清扫（matcher 覆盖
+       > `X.tmp-*` 与 `.tmp-*` 两种命名约定，dry-run 报告、逐文件删错不中断）；`iterate_validate`
+       > 经 `exec.signal` 观察取消并声明 `timeoutMs` 契约（异步工具取消传播）；读类工具补
+       > per-args `isConcurrencySafe` 并发注解（history/context/status/quality-gate/diff/
+       > decision-log/transcript/defense-events/experience/config/triage/prune），fix/rollback/
+       > validate/config 四个写/执行类工具新增 `presentCall` 终态视图（fix 为纯 diff 视图，
+       > validate 展示 exitCode/failed 命令/invalidLines），validate 输出新增 per-command
+       > `invalidLines` 解析失败明细。**上游 dsh 检查**：`dsh-v0.1.3-alpha.1` npm 包仍未发布
+       > （最高仍 `0.1.2-rc.1`，跳过升级）；`dsh-v0.1.5-alpha.1`（含 ctx.agent 移除 / Inbox
+       > 类型化 / Session V3 破坏性变更）四包已可安装——沙盒实测插件在 0.1.5-alpha.1 上
+       > typecheck + 523 测试全绿，破坏性变更不触及本插件（仅用 defineTool/JsonValue/exec.*），
+       > 依赖声明维持 `0.1.2-rc.1` 精确锁版，`dshReleases` 兼容声明不变。+8 单元测试
+       > （523 总）。主仓库 `71f704f`（先 rebase 上游 badges 数据提交 `ac703a8`）；subtree
+       > split merge-base 为空（历史不相关），照例走 `.release/iterate-plugin` 替代路径
+       > （rsync 同步后提交 `f99098b` 快进推送 `8d034f6..f99098b`）；npm `iterate-plugin@3.5.0`
+       > 已发布（latest=3.5.0，78 文件 / 309.8 kB，tarball 复核含 `dist/atomic-fs.js`）。验证
+       > typecheck + typecheck:client + build + build:client 干净，523 测试全过。
 
 ---
 
