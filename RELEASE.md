@@ -426,6 +426,48 @@ stamp 不匹配会自动重装到新 tag。
        > ~/.npm-global iterate-harness@2.2.3` 后 `ih --version` = `iterate_harness 2.2.3`
        >（用户前缀 + postinstall 被 allow-scripts 门控不影响，包装器首次运行惰性
        > bootstrap 命中 GitHub release 锚点 tarball）。主仓库 push 提交 `9c156b5`。
+        >
+        > **2.2.4 发布记录（2026-09-09）**：例行审查 + 修复发版（patch）。主要变更：
+        > 防御内核在工具**抛异常**时从未回滚（`engine/query.py`）：变更类工具
+        > `kernel.snapshot()` 后若 `tool.execute` 中途 raise（而非返回错误结果），
+        > `after_mutation` 不执行——部分写入留在磁盘、原子事务 + fail-fast 回滚
+        >（design §20.3.2）被异常路径静默击穿。现以 try/except 包裹执行：异常路径先
+        > `kernel.after_mutation(..., success=False)` 回滚快照再上抛（回滚失败仅
+        > warning），新增回归用例 `test_mutating_tool_that_raises_rolls_back_snapshot`；
+        > coordinator 模式上下文消息破坏 provider 的 tool_use/tool_result 顺序
+        >（`engine/query.py`）：纯文本 `# Coordinator User Context` 每次回合插入在
+        > tool_use 与 tool_result 之间，provider 要求 tool_result 必须紧跟在对应
+        > tool_use 之后，乱序会 400 拒绝——现改为 tool result 之后回落为尾消息，
+        > 并新增顺序断言；`ui/backend_host.py` 8 处 `assert self._bundle is not None`
+        > 依赖断言做控制流（`python -O` 下被剥离静默失效）改显式 `RuntimeError` 守卫；
+        > `config set timeout` 误入 `_INT_KEYS` 而 `Settings.timeout` 实为 float——
+        > 小数触发 `int()` 抛错、原串写进浮点字段，新增 `_FLOAT_KEYS` 独立强转；
+        > meta-review `ROUND_GAP` 对续跑片段（如 `[4,5,6,7]`）误报缺口，改为只校验
+        > 片段内相邻缺口不再要求从 1 起连续；glob 沙箱校验误用进程 cwd 作边界
+        >（docker 沙箱激活时）改传 `context.cwd` 项目根；bash 工具 stdout 无上限
+        > 缓冲改按 10MB 分块读取（防 `cat`/构建日志撑爆内存）；
+        > `IterateLoopPolicy.cost_meter` 消除 `field(default=None) + type: ignore`，
+        > 改私有 `_cost_meter` + 类型化只读属性；`Mailbox.mark_read` 不再吞掉
+        > 「消息不存在」结果——返回是否标记成功；死 `TYPE_CHECKING: pass` 脚手块清理；
+        > 非交互 `run_print_mode._clear_output` no-op 修复（text 清屏、stream-json
+        > 发 `clear_screen` 事件）；npm 包装器 postinstall `SKIP_INSTALL` 值识别与
+        > `bootstrap.ensureRuntime`（`1/true/yes/on` 忽略大小写）对齐；CI 新增
+        > `npm-wrapper` job（此前 npm 包装器测试从未在 CI 执行），`test` 脚本补入
+        > 一直存在却未运行过的 `test/ui.test.js`、`files` 白名单纳入 `README.zh-CN.md`。
+        > 版本号在 `__init__.py` / `npm/package.json` / `frontend/web/package.json` /
+        > `CHANGELOG.md` 同步至 2.2.4；校验 **2073 pytest + 6 skip**（新增 1 个防御
+        > 内核回滚回归用例）、ruff / mypy strict clean（246 源文件）、npm 包装器
+        > 45 tests passed（现含此前未执行的 ui 用例）、前端 `tsc --noEmit` + vitest
+        > 13 passed。走 `.release/iterate-harness` 替代路径（与公开 main 共享历史）
+        > rsync 同步提交并快进推送（`55aeac3..0acd1f4`）；主仓库 push 提交 `d62cfde`
+        >（rebase 至 `a38a9b4` 后）。GitHub Release v2.2.4 已建（`.release` 工作区
+        > `gh release create`），release.yml 自动构建 `iterate_harness-2.2.4-py3-none-any.whl`
+        > 上传 release + 自动发布 PyPI 2.2.4（官方 pypi.org latest=2.2.4 已验证；
+        > tuna 镜像联动延迟属正常）。npm `iterate-harness@2.2.4` 已发布（PUT staged
+        > 延迟约 1 分钟后 registry latest=2.2.4）。端到端验证：`npm install -g
+        > --prefix ~/.npm-global iterate-harness@2.2.4` 后 `ih --version` =
+        > `iterate_harness 2.2.4`。独立仓 CI 5 个 job（Python 3.10/3.11 + quality +
+        > 新 npm-wrapper + frontend typecheck）全绿。
        >
        > **2.2.2 发布记录（2026-09-07）**：例行审查 + 修复发版。**Python 3.10
       > import 回归**（`state/store.py` 的 `typing.Unpack` 需 3.11+，而
