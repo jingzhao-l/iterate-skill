@@ -427,6 +427,27 @@ stamp 不匹配会自动重装到新 tag。
        >（用户前缀 + postinstall 被 allow-scripts 门控不影响，包装器首次运行惰性
        > bootstrap 命中 GitHub release 锚点 tarball）。主仓库 push 提交 `9c156b5`。
         >
+        > **2.2.5 发布记录（2026-09-10）**：例行审查 + 修复发版（patch）。主要变更：
+        > npm 包装器在无人值守/非 TTY 环境下首次运行会永久挂死（`npm/lib/ui.js`
+        > 的 `askYesNo` + `npm/lib/bootstrap.js` 的 `runHarness`）：`askYesNo` 只
+        > 监听 `rl.question` 回调，从不处理 EOF（`readline` 在 stdin 关闭/管道化/
+        > 重定向 `< /dev/null` 时发出 `close`）或无人应答的超时；而 `runHarness`
+        > 无条件 `{ interactive: true }`——CI/cron/`npx` 管道等场景首次运行（stamp
+        > 不匹配）会卡死在安装向导 y/n 提示直到外层超时。现 `askYesNo` 在 EOF 与
+        > 超时（默认 120s，`options.timeoutMs` 可覆盖，`0` 关闭）回落默认值并明确
+        > 提示，支持注入 `input`/`output`，`timer.unref()` 不阻塞退出；新增
+        > `interactiveSession()`（stdin+stderr 均为 TTY）并令 `runHarness` 仅在真
+        > 终端下请求交互向导；导出 `DEFAULT_PROMPT_TIMEOUT_MS`/`interactiveSession`
+        > 并新增 5 个回归用例。校验 **2073 pytest + 6 skip**、ruff / mypy strict
+        > clean（246 源文件）、npm 包装器 **50 passed**。走 `.release/iterate-harness`
+        > 替代路径（与公开 main 共享历史）rsync 同步提交并快进推送
+        >（`0acd1f4..84e641b`）；主仓库 push 提交 `e0c05e0`（rebase 至 `377e2ff`）。
+        > GitHub Release v2.2.5 已建，npm `iterate-harness@2.2.5` 已发布
+        >（registry `latest=2.2.5`）。端到端验证：`npm install -g --prefix
+        > ~/.npm-global iterate-harness@2.2.5` 后 `ih --version` = `iterate_harness
+        > 2.2.5`。版本号在 `__init__.py` / `npm/package.json` /
+        > `frontend/web/package.json` / `CHANGELOG.md` 同步至 2.2.5。
+        >
         > **2.2.4 发布记录（2026-09-09）**：例行审查 + 修复发版（patch）。主要变更：
         > 防御内核在工具**抛异常**时从未回滚（`engine/query.py`）：变更类工具
         > `kernel.snapshot()` 后若 `tool.execute` 中途 raise（而非返回错误结果），
