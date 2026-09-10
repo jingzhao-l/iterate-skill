@@ -119,6 +119,23 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.2.3 状态（2026-09-10）**：日常审查维护发版（patch）。GitHub Release
+      > v3.2.3 已发布（tag `v3.2.3`，CI 自动生成 `iterate-skill.tar.gz` 512,874 字节 +
+      > `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，`tar -tzf | grep harness/`
+      > 为 0、`SKILL.md version: 3.2.3`）；
+      > npm `iterate-skill-installer@3.2.3` 已发布（`npm view` latest=3.2.3）；
+      > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
+      > + stage `.dist_tmp/clawhub-stage-3.2.3`（82 文件归档，发布 77 文件、1,801,931 字节）发布
+      > 3.2.3（`ok:true`，versionId `k97b0fqd5nkyfq9n0q01ka9bks8e5mkp`，`publicationStatus` pending）；
+      > ModelScope 已 PATCH 生效（精简 zip 483,604 字节、67 文件、
+      > harness 0；`update_skill_settings` success，file_id
+      > `873f1995-951b-4ebd-a370-ce1609d56b3c`）；
+      > SkillHub（skillId `104490`）精简包（63 文件、481,221
+      > 字节、harness 0、剔除 LICENSE/.gitignore/.gitmodules/npm-installer/LICENSE）`.skillhub publish`
+      > 成功（`ok:true`，versionId `304286`，`tags.latest=3.2.3`，`reviewStatus/securityScanStatus`
+      > =pending 为平台异步审核）。发版前全量 pytest 1002 + ruff 通过、npm 安装器测试通过。
+      > 3.2.3 内容：日常审查维护，全部 1002 测试通过，ruff 检查通过，无新增功能变更。
+      >
       > **3.2.1 状态（2026-09-07）**：配置硬化 + 供应链防御批次（patch）。GitHub Release
       > v3.2.1 已发布（tag `v3.2.1`，主仓库提交 `8325395`，CI 自动生成 `iterate-skill.tar.gz`
       > + `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，本地 `sha256sum -c`
