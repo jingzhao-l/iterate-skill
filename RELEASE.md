@@ -749,10 +749,36 @@ stamp 不匹配会自动重装到新 tag。
        > typecheck + 523 测试全绿，破坏性变更不触及本插件（仅用 defineTool/JsonValue/exec.*），
        > 依赖声明维持 `0.1.2-rc.1` 精确锁版，`dshReleases` 兼容声明不变。+8 单元测试
        > （523 总）。主仓库 `71f704f`（先 rebase 上游 badges 数据提交 `ac703a8`）；subtree
-       > split merge-base 为空（历史不相关），照例走 `.release/iterate-plugin` 替代路径
-       > （rsync 同步后提交 `f99098b` 快进推送 `8d034f6..f99098b`）；npm `iterate-plugin@3.5.0`
-       > 已发布（latest=3.5.0，78 文件 / 309.8 kB，tarball 复核含 `dist/atomic-fs.js`）。验证
-       > typecheck + typecheck:client + build + build:client 干净，523 测试全过。
+>        split merge-base 为空（历史不相关），照例走 `.release/iterate-plugin` 替代路径
+>        （rsync 同步后提交 `f99098b` 快进推送 `8d034f6..f99098b`）；npm `iterate-plugin@3.5.0`
+>       已发布（latest=3.5.0，78 文件 / 309.8 kB，tarball 复核含 `dist/atomic-fs.js`）。验证
+>       typecheck + typecheck:client + build + build:client 干净，523 测试全过。
+>
+>        **3.5.1 发布记录（2026-09-12）**：上游兼容窗口扩展 + 审查闭环补齐批次——**上游
+>        dsh 检查**：`dsh-v0.1.5-rc.1` 已发布（2026-09-10），四包 npm 版 `0.1.5-rc.1` 可用；
+>        0.1.5 破坏性变更（`ctx.agent` 移除 / Inbox 类型化 / Session V3 / Web slot
+>        `conversation.*`→`main.*`）经一次性 Profile 沙盒实测不影响本插件（仅用
+>        `exec.agent`/`defineTool`/`JsonValue`，slot 名不变），`dsh.compatibility.dshReleases`
+>        兼容声明扩到 `0.1.5-alpha.1` / `0.1.5-alpha.2` / `0.1.5-rc.1`（0.1.5-rc.1 带真实
+>        一次性 Profile 证据：typecheck + 全量测试绿）；构建期依赖维持 `0.1.2-rc.1` 精确锁版
+>        （0.1.5 pins 干净 install 会 ERESOLVE——dsh-jobs peer 需 dsh-agent，harness 安装期
+>        对 `@deepseek-ai/*` 去重）。**审查缺口 G1-G5 补齐**：① `iterate_experience` 新增
+>        `remove` 操作（按 id 删除过时/错误经验条目，store 层 `removeExperience` 纯函数，
+>        未知 id 报 `ok:false` 不改库）；② `iterate_quality_gate` 新增 `clear` 操作
+>        （`clearQualityGate` 删除持久化质量凭证，读回退 pending，陈旧 FAIL 证书可重置）；
+>        ③ `iterate_rollback` 经 fail-safe `markFixRolledBackInTranscript` 把回滚镜像进
+>        `.iterate/transcript.json`（F4 不再把已回滚修复仍显示为成功；缺失/损坏 transcript
+>        忽略且不回滚失败）；④ `iterate_status` 文本渲染补全 JSON 已含的质量门禁
+>        （PASS/FAIL+分数+验证通过率）/经验银行（条目+命中）/防御事件（类型计数）摘要；
+>        ⑤ 活动流 `classifyTool` 覆盖三个 v3.0 指挥中心工具（experience/quality_gate/
+>        defense_events → info）。README（EN+ZH）/ skill-prompt / CHANGELOG / DESIGN v3.4
+>        随改。主仓库 `34bc3e5`（先 rebase 上游 badges 数据提交到 `05edc05`）；subtree split
+>        产物（`6d2bebf`）与 plugin-origin/main 存在公共祖先但双边推进非快进，照例走
+>        `.release/iterate-plugin` 替代路径（rsync 同步后提交 `27058b5` 快进推送
+>        `f99098b..27058b5`）；npm `iterate-plugin@3.5.1` 已发布（latest=3.5.1，78 文件 /
+>        313.4 kB，tarball 复核含 `dist/live.js` 新分类器、`clearQualityGate`、
+>        `markFixRolledBackInTranscript`，compat 含 `0.1.5-rc.1`）。验证 typecheck +
+>        build + build:client 干净，541 测试全过。
 
 ---
 
