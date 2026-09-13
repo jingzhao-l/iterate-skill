@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import http.client
 import io
 import json
 import os
@@ -1246,6 +1247,8 @@ def _fetch_latest_release_info(
         return None, (
             f"GitHub API request timed out after {GITHUB_API_TIMEOUT_SECONDS}s"
         )
+    except http.client.HTTPException as exc:
+        return None, f"GitHub API connection error: {exc}"
     except json.JSONDecodeError as exc:
         return None, f"GitHub API returned invalid JSON: {exc}"
 
@@ -1307,6 +1310,15 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
             raise tarfile.TarError(
                 f"Archive expands to > {MAX_EXTRACT_BYTES} bytes uncompressed "
                 f"(decompression-bomb guard)"
+            )
+        # Device/fifo members must never be created on disk: creating them
+        # usually requires privileges and they are never legitimate content of
+        # a skill release. Enforced on every Python version (the 3.12+
+        # ``filter="data"`` path drops them silently; here they are refused
+        # outright so the policy and its test are version-independent).
+        if member.isdev() or member.isfifo():
+            raise tarfile.TarError(
+                f"Refusing device/fifo member in archive: {member.name}"
             )
 
     if hasattr(tarfile, "data_filter"):
@@ -1393,6 +1405,8 @@ def _download_bytes(
         return None, f"network error: {exc.reason}"
     except TimeoutError:
         return None, f"request timed out after {timeout}s"
+    except http.client.HTTPException as exc:
+        return None, f"connection error: {exc}"
     except ValueError as exc:
         return None, f"invalid response: {exc}"
 
@@ -1452,7 +1466,13 @@ def _urlopen(request: urllib.request.Request, timeout: int | None = None):
 
 
 def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
-    """Parse a SHA256SUMS-style file and return the hash for ``filename``."""
+    """Parse a SHA256SUMS-style file and return the hash for ``filename``.
+
+    Only a full SHA-256 digest (exactly 64 hex characters) is accepted: any
+    other value can never be the output of ``hashlib.sha256(data).hexdigest()``
+    used by the verifier, so a non-hex or truncated digest is treated as a
+    malformed entry (skipped) rather than compared as if it were a real hash.
+    """
     text = checksum_text.decode("utf-8")
     for line in text.splitlines():
         line = line.strip()
@@ -1462,6 +1482,12 @@ def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
         if len(parts) != 2:
             continue
         digest, name = parts
+        try:
+            int(digest, 16)
+        except ValueError:
+            continue
+        if len(digest) != 64:
+            continue
         # Handle "HASH  filename", "HASH *filename" and "HASH ./filename"
         # formats (the ``./`` prefix is common for tarballs stored at repo root).
         # Match on the basename so checksum entries with a subpath prefix or a
@@ -1471,7 +1497,7 @@ def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
         name = name.lstrip("*").strip()
         name = name.removeprefix("./")
         if os.path.basename(name) == filename:
-            return digest.strip()
+            return digest.lower()
     return None
 
 
@@ -1766,24 +1792,25 @@ YAML_BOOLEAN_ALIASES = {"true", "false", "True", "False", "TRUE", "FALSE"}
 
 
 def parse_value(raw: str) -> object:
-    """Parse a config value from CLI string using YAML/JSON semantics.
+    """Parse a config value from CLI string using JSON, then YAML semantics.
 
-    YAML 1.1 treats yes/no/on/off as booleans; we keep only explicit
-    true/false as bool to avoid surprising behavior in free-form strings.
+    JSON is tried first so a value that is a valid JSON literal takes strict
+    JSON semantics (e.g. ``{"a": 1}``); constructs that only exist in YAML
+    (bare lists like ``[correctness, security]``, block mappings, dates)
+    then fall back to YAML. YAML 1.1 treats yes/no/on/off as booleans; we keep
+    only explicit true/false as bool to avoid surprising behavior in free-form
+    strings.
     """
     stripped = raw.strip()
     if not stripped:
         return ""
 
     try:
-        parsed = yaml.safe_load(stripped)
-    except yaml.YAMLError:
-        parsed = None
-
-    if parsed is None:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
         try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
+            parsed = yaml.safe_load(stripped)
+        except yaml.YAMLError:
             parsed = stripped
 
     if isinstance(parsed, bool) and stripped not in YAML_BOOLEAN_ALIASES:
@@ -1793,8 +1820,16 @@ def parse_value(raw: str) -> object:
 
 
 def set_nested_value(config: dict[str, object], key: str, value: object) -> None:
-    """Set a possibly nested config key, creating intermediate mappings."""
+    """Set a possibly nested config key, creating intermediate mappings.
+
+    Raises:
+        ValueError: When ``key`` is empty, or contains an empty segment
+            (e.g. ``a..b`` or ``dimensions.``), which would otherwise create a
+            phantom empty-string mapping level.
+    """
     parts = key.split(".")
+    if not key or any(not part for part in parts):
+        raise ValueError(f"nested key must not contain empty segments: {key!r}")
     current = config
     for part in parts[:-1]:
         if part not in current or not isinstance(current[part], dict):
@@ -1856,7 +1891,19 @@ def init_config(target: Path, source: Path) -> int:
         _error(f"Master config not found: {master_path}")
         return 1
 
-    project_path.write_text(master_path.read_text(encoding="utf-8"), encoding="utf-8")
+    content = master_path.read_text(encoding="utf-8")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=target, prefix=".iterate.config.yaml.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp_name, project_path)
+    except BaseException:
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+        raise
     _success(f"Initialized project config: {project_path}")
     return 0
 
@@ -1891,7 +1938,11 @@ def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) ->
             if not key:
                 _error(f"Empty key in --set argument: {pair}")
                 return 1
-            set_nested_value(config, key, parse_value(value))
+            try:
+                set_nested_value(config, key, parse_value(value))
+            except ValueError as exc:
+                _error(f"{exc}")
+                return 1
 
     save_config(project_path, config)
 

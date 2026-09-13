@@ -15,6 +15,7 @@ on failed validation) are verified deterministically.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import shutil
@@ -457,24 +458,59 @@ class TestPromptMultiSelect:
 # --------------------------------------------------------------------------- #
 
 class TestParseChecksum:
+    # Real SHA-256 digests are exactly 64 hex chars; the parser must only
+    # accept those (hex-validity is a hard requirement).
+    _SHA_A = "a" * 64
+    _SHA_B = "b" * 64
+    _SHA_C = "c" * 64
+
     def test_plain(self):
-        assert install._parse_checksum(b"abc123  iterate-skill.tar.gz\n", "iterate-skill.tar.gz") == "abc123"
+        assert install._parse_checksum(
+            f"{self._SHA_A}  iterate-skill.tar.gz\n".encode(), "iterate-skill.tar.gz"
+        ) == self._SHA_A
 
     def test_starred(self):
-        assert install._parse_checksum(b"def456 *iterate-skill.tar.gz\n", "iterate-skill.tar.gz") == "def456"
+        assert install._parse_checksum(
+            f"{self._SHA_B} *iterate-skill.tar.gz\n".encode(), "iterate-skill.tar.gz"
+        ) == self._SHA_B
 
     def test_dot_slash_prefix(self):
-        assert install._parse_checksum(b"abc123  ./iterate-skill.tar.gz\n", "iterate-skill.tar.gz") == "abc123"
+        assert install._parse_checksum(
+            f"{self._SHA_A}  ./iterate-skill.tar.gz\n".encode(), "iterate-skill.tar.gz"
+        ) == self._SHA_A
 
     def test_crlf(self):
-        assert install._parse_checksum(b"abc123  iterate-skill.tar.gz\r\n", "iterate-skill.tar.gz") == "abc123"
+        assert install._parse_checksum(
+            f"{self._SHA_A}  iterate-skill.tar.gz\r\n".encode(), "iterate-skill.tar.gz"
+        ) == self._SHA_A
 
     def test_comments_and_blanks_ignored(self):
-        text = b"# comment\n\nabc  file1\n"
-        assert install._parse_checksum(text, "file1") == "abc"
+        text = f"# comment\n\n{self._SHA_C}  file1\n".encode()
+        assert install._parse_checksum(text, "file1") == self._SHA_C
 
     def test_missing_filename(self):
-        assert install._parse_checksum(b"abc  other.txt\n", "iterate-skill.tar.gz") is None
+        assert install._parse_checksum(
+            f"{self._SHA_A}  other.txt\n".encode(), "iterate-skill.tar.gz"
+        ) is None
+
+    def test_non_hex_digest_ignored(self):
+        """A digest that is not valid hex must be skipped, not returned."""
+        assert install._parse_checksum(
+            b"zzzz " + b"0" * 60 + b"  iterate-skill.tar.gz\n", "iterate-skill.tar.gz"
+        ) is None
+
+    def test_truncated_digest_ignored(self):
+        """A shorter-than-64 hex digest (wrong algorithm/length) must be skipped."""
+        assert install._parse_checksum(
+            b"abc123  iterate-skill.tar.gz\n", "iterate-skill.tar.gz"
+        ) is None
+
+    def test_uppercase_hex_normalised(self):
+        digest = "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        got = install._parse_checksum(
+            f"{digest}  iterate-skill.tar.gz\n".encode(), "iterate-skill.tar.gz"
+        )
+        assert got == digest.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -563,6 +599,18 @@ class TestFetchReleaseInfo:
         assert info is None
         assert error and "timed out" in error
 
+    def test_connection_error_reports_reason(self, monkeypatch):
+        """A mid-body connection drop (RemoteDisconnected) must be reported
+        cleanly instead of propagating a raw http.client.HTTPException."""
+
+        def fake_urlopen(request, timeout=None):
+            raise http.client.RemoteDisconnected("connection dropped")
+
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
+        info, error = install._fetch_latest_release_info(None)
+        assert info is None
+        assert error and "connection error" in error
+
     def test_missing_tarball_asset_reports_reason(self, monkeypatch):
         payload = {"tag_name": "v1", "assets": [{"name": "other.tar.gz", "browser_download_url": "x"}]}
         resp = _FakeResp(json.dumps(payload).encode("utf-8"))
@@ -619,6 +667,15 @@ class TestDownloadBytes:
         assert data is None
         assert error and "timed out" in error
 
+    def test_connection_error_reports_reason(self, monkeypatch):
+        def fake_urlopen(request, timeout=None):
+            raise http.client.RemoteDisconnected("connection dropped")
+
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
+        data, error = install._download_bytes("https://example.com/x", None)
+        assert data is None
+        assert error and "connection error" in error
+
 
 # --------------------------------------------------------------------------- #
 # parse_value / set_nested_value / load_config / save_config
@@ -651,6 +708,15 @@ class TestParseValue:
         # YAML 1.1 treats yes as bool; we deliberately keep it a string.
         assert install.parse_value("yes") == "yes"
 
+    def test_json_literal_takes_json_semantics(self):
+        # JSON is tried first: valid JSON keeps strict JSON semantics even
+        # when YAML would interpret it differently.
+        assert install.parse_value('"7"') == "7"
+
+    def test_yaml_only_list_still_parses(self):
+        # Bare-word lists are invalid JSON but valid YAML (fallback path).
+        assert install.parse_value("[correctness, security]") == ["correctness", "security"]
+
 
 class TestSetNestedValue:
     def test_flat(self):
@@ -662,6 +728,16 @@ class TestSetNestedValue:
         cfg: dict[str, object] = {}
         install.set_nested_value(cfg, "validation.commands.python", ["ruff check"])
         assert cfg["validation"]["commands"]["python"] == ["ruff check"]  # type: ignore[index]
+
+    def test_empty_key_rejected(self):
+        with pytest.raises(ValueError):
+            install.set_nested_value({}, "", "x")
+
+    def test_empty_segment_rejected(self):
+        with pytest.raises(ValueError):
+            install.set_nested_value({}, "a..b", "x")
+        with pytest.raises(ValueError):
+            install.set_nested_value({}, "dimensions.", "x")
 
 
 class TestLoadSaveConfig:
@@ -727,6 +803,23 @@ class TestInitConfig:
         target = tmp_path / "proj"
         target.mkdir()
         assert install.init_config(target, tmp_path / "empty-src") == 1
+
+    def test_init_atomic_on_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """A failing final rename must leave no target file and no temp litter."""
+        source = tmp_path / "src"
+        (source / "config").mkdir(parents=True)
+        (source / "config" / "iterate.config.yaml").write_text("goal: master\n", encoding="utf-8")
+        target = tmp_path / "proj"
+        target.mkdir()
+
+        def boom(src, dst):
+            raise OSError("rename failed")
+
+        monkeypatch.setattr(install.os, "replace", boom)
+        with pytest.raises(OSError):
+            install.init_config(target, source)
+        assert not (target / "iterate.config.yaml").exists()
+        assert list(target.glob(".iterate.config.yaml.*.tmp")) == []
 
 
 class TestListConfig:
@@ -826,6 +919,30 @@ class TestSafeExtractall:
             link.linkname = linkname
             tar.addfile(link)
         return str(tar_path)
+
+    def _build_special_tar(self, tmp_path: Path, type_: int) -> str:
+        """A tarball containing a character-device or fifo member."""
+        tar_path = tmp_path / "special.tar"
+        with tarfile.open(tar_path, "w") as tar:
+            info = tarfile.TarInfo("evil-dev")
+            info.type = type_
+            tar.addfile(info)
+        return str(tar_path)
+
+    def test_rejects_device_node_member(self, tmp_path: Path):
+        """Character-device members must never be created on disk."""
+        tar_path = self._build_special_tar(tmp_path, tarfile.CHRTYPE)
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+
+    def test_rejects_fifo_member(self, tmp_path: Path):
+        tar_path = self._build_special_tar(tmp_path, tarfile.FIFOTYPE)
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
 
     def test_extracts_safe_members(self, tmp_path: Path):
         tar_path = self._build_tar(tmp_path, ["SKILL.md"])
