@@ -5,7 +5,28 @@
 
 ---
 
-## [3.2.3] — 2026-09-10
+## [3.3.0] — 2026-09-12
+
+### 新增 / Features
+
+- **guard pre-check 工具可用性检查**：`guard pre-check` 对每条配置的验证命令检查其首 token 对应的可执行文件是否在 PATH 上（shell 内建如 `true` 除外）；缺失时判定 `FAIL` 并列出缺失工具，防止"命令配置了但环境里根本没有该工具"的假绿灯。
+- **`invariants.ensure` 路径安全**：`iterate invariant` 的 file-existence 断言只接受项目根目录内的相对路径——绝对路径与 `../` 越出项目根的逃逸一律 `FAIL`（拒绝在交付门禁里让断言指向项目外文件）。
+- **`iterate status` 区分损坏与缺失配置**：`iterate.config.yaml` 存在但无法解析时，status 退出码 1 并提示"could not be parsed → 运行 `iterate doctor`";缺失时保持退出码 0 并提示仅存在 ITERATE.md。`--json` 新增 `config_exists` / `config_ok` 字段供脚本区分。
+- **doctor 标量 section 硬错误**：`review:` / `git:` / `validation:` 为标量（非 mapping）时如实上报 error 而非含糊跳过。
+- **install.py / npm 安装器加固**：GitHub API 请求增加连接错误（`http.client.HTTPException`）分类提示；`_parse_checksum` 强制 64 位十六进制摘要（非 hex / 截断一律忽略，大写归一化）；`_safe_extractall` 在所有 Python 版本上拒绝 device/fifo 归档成员；`parse_value` 改为 JSON 优先、YAML 兜底；`set_nested_value` 拒绝空段；`init_config` 原子写入。npm 安装器 token 自动 trim 空白（`GITHUB_TOKEN` 常带尾随换行），并在携带 `Authorization` 的 API 请求上禁用跨主机重定向（curl 会把自定义 `-H` 头原样转发到重定向链上的每个主机）。
+- **publish_qoder.py 校验加固**：`_git_archive_extract` 显式以仓库根为 cwd 运行 `git archive`（否则从子目录调用时 pathspec `:!harness` 相对当前目录匹配，可能把 `harness/` 打包进去）；zip 顶层目录检查改为校验**每个**条目（此前只查 `names[0]`，可被排序在后的外来顶层目录绕过）；`_find_harness` 同时覆盖名为 `harness` 的文件与目录。
+
+### 修复 / Fixes
+
+- **tui 用户文本富文本转义（F24）**：tui 渲染用户输入的文本（如 `[module]`）前统一 `rich.markup.escape`，避免把用户文本误当 markup 标签。
+- **doctor C2/C3/C4/C5**：metachar 报错与无白名单校验不再打印自相矛盾的成功行；`run_doctor_fix` 改用原子写入并捕获 `OSError`/`YAMLError`；`_render_next_actions` 覆盖 `invariants.ensure` 异常的动作建议。
+- **install.py**：`_download_bytes` / `_fetch_latest_release_info` 分类网络连接错误；`set_config_values` 捕获 `set_nested_value` 的空段 ValueError 并清晰报错。
+
+### 测试 / Tests
+
+- 全量 1040 个 Python 测试通过、`ruff check` 通过、npm 安装器测试通过；新增覆盖：MissingCommandTool / shell 内建免二进制、ensure 绝对路径与项目外逃逸拒绝、status 损坏配置 TUI/JSON、doctor 标量 section / YAML 序列化错误 / next-actions、checksum 64-hex 策略、device/fifo 归档成员拒绝、init_config 原子失败不回滚脏文件、zip 外来顶层目录与嵌套 harness 文件。
+
+---
 
 ### 维护 / Maintenance
 
