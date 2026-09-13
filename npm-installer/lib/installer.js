@@ -193,14 +193,43 @@ function isGithubApiUrl(url) {
   return hostname === 'api.github.com' || hostname.endsWith('.api.github.com');
 }
 
+/**
+ * Normalize a caller-supplied GitHub token.
+ *
+ * Tokens frequently arrive with surrounding whitespace (a trailing newline
+ * from `export GITHUB_TOKEN=$(cat secret)` or a shell alias that echoes the
+ * value); an untrimmed token makes every authenticated call fail with 401
+ * while silently burning the user's GitHub API rate limit. An empty result is
+ * treated as "no token".
+ */
+function normalizeToken(raw) {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * Compose the curl flags that attach the caller's PAT — and only those. The
+ * token is never attached to a non-API host; and marking it up differently
+ * from install.py would let the two installers disagree about credentials.
+ *
+ * Critically, a custom `-H "Authorization: Bearer ..."` header is echoed by
+ * curl onto EVERY host in a `-L` redirect chain (unlike `--user`, curl has no
+ * notion of stripping auth on a host change for raw headers). When the token
+ * is attached we therefore forbid redirects outright: a redirect then fails
+ * loudly instead of leaking the PAT to a foreign host.
+ */
+function buildAuthFlags(url, token) {
+  if (!token) return [];
+  if (!isGithubApiUrl(url)) return [];
+  return ['-H', `Authorization: Bearer ${token}`, '--max-redirs', '0'];
+}
+
 async function fetchJson(url, token) {
   // Prefer curl over Node.js fetch because curl uses the system CA store
   // and avoids Node-specific certificate issues in some environments.
   const failFlag = (await supportsCurlFailWithBody()) ? '--fail-with-body' : '--fail';
-  const args = ['-sSL', failFlag, '--max-time', CURL_MAX_TIME_SECONDS, '--max-filesize', String(JSON_MAX_BYTES), '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'User-Agent: iterate-skill-installer'];
-  if (token && isGithubApiUrl(url)) {
-    args.push('-H', `Authorization: Bearer ${token}`);
-  }
+  const args = ['-sSL', failFlag, '--max-time', CURL_MAX_TIME_SECONDS, '--max-filesize', String(JSON_MAX_BYTES), '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'User-Agent: iterate-skill-installer', ...buildAuthFlags(url, token)];
   args.push(url);
   const stdout = await runCommand('curl', args);
   try {
@@ -224,11 +253,8 @@ async function fetchJson(url, token) {
  */
 async function downloadFile(url, destPath, token, { progress = false, maxBytes = TARBALL_MAX_BYTES } = {}) {
   const failFlag = (await supportsCurlFailWithBody()) ? '--fail-with-body' : '--fail';
-  const args = ['-sSL', failFlag, '--max-time', CURL_MAX_TIME_SECONDS, '--max-filesize', String(maxBytes), '-o', destPath, '-H', 'User-Agent: iterate-skill-installer'];
+  const args = ['-sSL', failFlag, '--max-time', CURL_MAX_TIME_SECONDS, '--max-filesize', String(maxBytes), '-o', destPath, '-H', 'User-Agent: iterate-skill-installer', ...buildAuthFlags(url, token)];
   if (progress) args.push('--progress-bar');
-  if (token && isGithubApiUrl(url)) {
-    args.push('-H', `Authorization: Bearer ${token}`);
-  }
   args.push(url);
   if (progress) {
     // Let curl write its progress bar directly to the terminal.
@@ -592,6 +618,7 @@ function parseArgs(argv) {
     force: false,
     noCli: false,
     token: process.env.GITHUB_TOKEN || null,
+    token: normalizeToken(process.env.GITHUB_TOKEN),
     // Non-install action requested via -h/--help/-v/--version. bin/cli.js
     // inspects this before running main() and exits 0 without installing.
     mode: null,
@@ -660,7 +687,7 @@ function parseArgs(argv) {
           console.error('Error: --token requires a value (a flag was found instead)');
           process.exit(1);
         }
-        options.token = next;
+        options.token = normalizeToken(next);
         i++;
         break;
       default:
@@ -860,5 +887,7 @@ module.exports = {
   extractTarball,
   rejectLinkEntries,
   isGithubApiUrl,
+  normalizeToken,
+  buildAuthFlags,
   supportsCurlFailWithBody,
 };

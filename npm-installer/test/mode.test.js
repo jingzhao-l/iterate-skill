@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode, parseChecksums, parseArgs, buildPythonInstallArgs, isGithubApiUrl, InstallerError } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, buildAuthFlags, InstallerError } = require('../lib/installer');
 
 // 64-char lowercase hex digest, as sha256 actually produces.
 const H = 'a'.repeat(64);
@@ -276,6 +276,34 @@ async function run() {
   assert.strictEqual(isGithubApiUrl('not a url'), false, 'malformed url must not match');
 
   console.log('mode.test.js: all isGithubApiUrl tests passed');
+
+  // normalizeToken: a token smuggled in with whitespace (e.g. a trailing
+  // newline from `$(cat secret)`) must be trimmed; an all-whitespace or empty
+  // value is treated as "no token" instead of a 401-baiting credential.
+  assert.strictEqual(normalizeToken('  gh_abc  '), 'gh_abc', 'token should be trimmed');
+  assert.strictEqual(normalizeToken('gh_abc\n'), 'gh_abc', 'trailing newline should be trimmed');
+  assert.strictEqual(normalizeToken('   '), null, 'blank token should become null');
+  assert.strictEqual(normalizeToken(''), null, 'empty token should become null');
+  assert.strictEqual(normalizeToken(null), null, 'null token should stay null');
+  assert.strictEqual(normalizeToken(undefined), null, 'undefined token should become null');
+  assert.strictEqual(parseArgs(['--token', '  gh_xyz ']).token, 'gh_xyz', '--token value should be trimmed');
+
+  console.log('mode.test.js: all normalizeToken tests passed');
+
+  // buildAuthFlags: the PAT must only ride on api.github.com requests, and
+  // even there redirects must be forbidden so the raw -H Authorization header
+  // cannot be echoed onto a foreign host in a -L redirect chain.
+  const api = 'https://api.github.com/repos/jingzhao-l/iterate-skill/releases/latest';
+  assert.deepStrictEqual(
+    buildAuthFlags(api, 'tok'),
+    ['-H', 'Authorization: Bearer tok', '--max-redirs', '0'],
+    'api request with a token must attach auth and forbid redirects',
+  );
+  assert.deepStrictEqual(buildAuthFlags('https://release-assets.githubusercontent.com/x', 'tok'), [], 'asset URL must never carry the token');
+  assert.deepStrictEqual(buildAuthFlags(api, null), [], 'no token means no auth flags');
+  assert.deepStrictEqual(buildAuthFlags(api, ''), [], 'blank token means no auth flags');
+
+  console.log('mode.test.js: all buildAuthFlags tests passed');
 }
 
 run().catch((err) => {
