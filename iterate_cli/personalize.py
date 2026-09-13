@@ -49,8 +49,9 @@ def load_config_strict(config_path: Path) -> dict[str, Any]:
     """Parse iterate.config.yaml, refusing to proceed on corrupted YAML.
 
     Returns an empty dict only when the file is missing/empty. When the file
-    exists but is not valid YAML, raises :class:`CorruptConfigError` so callers
-    do not merge into — or write over — a damaged configuration.
+    exists but is not valid YAML — or parses to something other than a mapping
+    (e.g. a bare list or scalar) — raises :class:`CorruptConfigError` so
+    callers do not merge into — or write over — a damaged configuration.
 
     Args:
         config_path: Path to iterate.config.yaml.
@@ -59,7 +60,8 @@ def load_config_strict(config_path: Path) -> dict[str, Any]:
         Parsed config as a dict (``{}`` when the file is absent or empty).
 
     Raises:
-        CorruptConfigError: If the file exists but is not valid YAML.
+        CorruptConfigError: If the file exists but is not valid YAML, or is
+            not a YAML mapping.
         OSError: If the file cannot be read.
     """
     if not config_path.is_file():
@@ -71,7 +73,14 @@ def load_config_strict(config_path: Path) -> dict[str, Any]:
         raise CorruptConfigError(
             f"iterate.config.yaml 不是合法 YAML，已拒绝写入以免覆盖损坏配置：{exc}"
         ) from exc
-    return parsed if isinstance(parsed, dict) else {}
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise CorruptConfigError(
+            "iterate.config.yaml 不是 YAML 映射（"
+            f"got {type(parsed).__name__}），已拒绝写入以免覆盖损坏配置"
+        )
+    return parsed
 
 # Module name pattern for extra_validation_commands keys.
 # Only allow alphanumeric, dash, underscore, dot — prevents shell
@@ -918,6 +927,7 @@ def build_updated_iterate_md(
         USER_END_MARKER,
         USER_START_MARKER,
         extract_user_owned_section,
+        has_valid_user_owned_markers,
     )
 
     iterate_md_path = project_root / "ITERATE.md"
@@ -931,7 +941,7 @@ def build_updated_iterate_md(
 
     start_idx = content.find(USER_START_MARKER)
     end_idx = content.find(USER_END_MARKER)
-    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+    if not has_valid_user_owned_markers(content):
         return None
 
     new_personalization_md = data.to_user_md_sections()

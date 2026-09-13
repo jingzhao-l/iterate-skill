@@ -158,6 +158,30 @@ class TestConfigGet:
         for name in SETTABLE_KEYS:
             assert name.replace("_", " ").title() in captured.out
 
+    def test_scalar_intermediate_section_errors(self, tmp_path) -> None:
+        """A hand-edited scalar intermediate (e.g. ``git: legacy``) must be
+        reported, not silently shown as 'default' (B2)."""
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("git: legacy\n", encoding="utf-8")
+        assert run_config_get(project, "git.use_worktree") == 1
+        assert run_config_get(project, "use_worktree") == 1
+
+    def test_scalar_intermediate_section_errors_all_keys(self, tmp_path) -> None:
+        """The all-keys summary must refuse when any intermediate is malformed."""
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("git: legacy\n", encoding="utf-8")
+        assert run_config_get(project, None) == 1
+
+    def test_scalar_intermediate_section_json_error(self, tmp_path, capsys) -> None:
+        """JSON mode reports a structured error and exit 1 for a malformed
+        intermediate section."""
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("git: legacy\n", encoding="utf-8")
+        assert run_config_get(project, "auto_merge", json_output=True) == 1
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out.strip())
+        assert "error" in payload
+
 
 # ---------------------------------------------------------------------------
 # run_config_set
@@ -288,6 +312,21 @@ class TestConfigNonMappingProtection:
         assert "legacy" in raw
         assert "use_worktree" not in raw
 
+    def test_serialisation_error_returns_error(self, tmp_path, monkeypatch) -> None:
+        """A yaml.YAMLError raised while dumping (e.g. RepresenterError for an
+        unserialisable hand-edited value) must be reported cleanly with exit 1
+        instead of an uncaught traceback (B1)."""
+        import iterate_cli.configcmd as configcmd_mod
+
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+
+        def boom(*args, **kwargs):
+            raise yaml.representer.RepresenterError("cannot represent")
+
+        monkeypatch.setattr(configcmd_mod.yaml, "safe_dump", boom)
+        assert run_config_set(project, "language", "en") == 1
+
     def test_backup_names_never_collide(self, tmp_path) -> None:
         """Two config edits within the same second must not overwrite each
         other's backup: the backup name carries a per-write salt."""
@@ -357,6 +396,21 @@ class TestConfigCli:
 
 class TestConfigJson:
     """``iterate config --json`` emits a clean, parseable JSON object."""
+
+    def test_interactive_json_gate_reachable_inline(self, tmp_path, capsys) -> None:
+        """`iterate onboard --json` must hit the friendly interactive-rejection
+        gate (exit 2) instead of an argparse 'unrecognized arguments' error."""
+        for cmd in ("onboard", "personalize", "reonboard"):
+            capsys.readouterr()
+            code = cli_main([cmd, "--json", "-p", str(tmp_path)])
+            assert code == 2
+            assert "--json is not supported" in capsys.readouterr().err
+
+    def test_interactive_json_gate_reachable_global(self, tmp_path, capsys) -> None:
+        """`iterate --json onboard` also hits the friendly gate."""
+        code = cli_main(["--json", "onboard", "-p", str(tmp_path)])
+        assert code == 2
+        assert "--json is not supported" in capsys.readouterr().err
 
     def test_get_single_key_json(self, tmp_path, capsys) -> None:
         project = _make_project(tmp_path)

@@ -47,6 +47,12 @@ class ConfigValueError(ValueError):
     """Raised when a ``config set`` value fails validation."""
 
 
+#: Sentinel returned by ``_read`` when an intermediate section (a segment of
+#: ``spec.path``) exists but is not a mapping — e.g. ``git: legacy`` makes
+#: ``git.use_worktree`` unreadable. Distinct from ``None`` (missing key).
+_MALFORMED = object()
+
+
 @dataclass(frozen=True)
 class ConfigKeySpec:
     """Schema for a settable flat config key.
@@ -264,7 +270,9 @@ def run_config_get(
             return config.get(spec.name)
         section: Any = config
         for part in spec.path:
-            if not isinstance(section, dict) or part not in section:
+            if not isinstance(section, dict):
+                return _MALFORMED
+            if part not in section:
                 return None
             section = section[part]
         return section
@@ -275,6 +283,26 @@ def run_config_get(
             tui.error(f"Unknown config key {key!r}. Use `iterate config` to list keys.")
             return 1
         value = _read(spec)
+        if value is _MALFORMED:
+            # Reporting "default" here would hide a hand-edited non-mapping
+            # intermediate section; surface it so the operator fixes the file.
+            if json_output:
+                print(
+                    json.dumps(
+                        {
+                            "error": f"intermediate section for {key!r} is "
+                            f"not a mapping in {CONFIG_YAML}"
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                tui.error(
+                    f"Cannot read {key!r}: an intermediate section in "
+                    f"{CONFIG_YAML} is not a mapping. Fix the file manually, "
+                    "then retry."
+                )
+            return 1
         if json_output:
             # Key always the canonical flat name, even when the user typed
             # the dotted alias, so JSON consumers can map it back reliably.
@@ -282,6 +310,33 @@ def run_config_get(
         else:
             print(_format_value(value))
         return 0
+
+    # All-keys summary: refuse when any target intermediate section is
+    # malformed, so a broken hand-edited config is never silently reported as
+    # "default" for the affected keys.
+    malformed = [
+        name
+        for name, spec in SETTABLE_KEYS.items()
+        if _read(spec) is _MALFORMED
+    ]
+    if malformed:
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": f"intermediate section(s) not a mapping in "
+                        f"{CONFIG_YAML}: {', '.join(sorted(malformed))}"
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            tui.error(
+                f"Cannot resolve {'/'.join(sorted(malformed))} in {CONFIG_YAML}: "
+                "an intermediate section is not a mapping. Fix the file manually, "
+                "then retry."
+            )
+        return 1
 
     if json_output:
         print(
@@ -384,12 +439,19 @@ def run_config_set(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     salt = uuid4().hex[:6]
     backup_path = config_path.with_name(f"{CONFIG_YAML}.configset-{timestamp}-{salt}")
+    # safe_dump can raise yaml.YAMLError (e.g. RepresenterError) when the
+    # hand-edited config holds an unserialisable value; surface it cleanly
+    # instead of a traceback and keep the backup for manual recovery.
+    try:
+        config_yaml = yaml.safe_dump(
+            config, default_flow_style=False, allow_unicode=True, sort_keys=False
+        )
+    except yaml.YAMLError as exc:
+        tui.error(f"Cannot serialise {CONFIG_YAML}: {exc}")
+        return 1
     try:
         shutil.copy2(config_path, backup_path)
-        atomic_write(
-            config_path,
-            yaml.safe_dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False),
-        )
+        atomic_write(config_path, config_yaml)
     except OSError as exc:
         tui.error(f"Failed to write {CONFIG_YAML}: {exc}")
         return 1

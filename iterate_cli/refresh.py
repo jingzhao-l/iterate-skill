@@ -555,6 +555,21 @@ def full_reonboard(
         # files remain intact and the .bak-<timestamp> copies are harmless.
         return REONBOARD_NO_CHANGES
 
+    # Preserve existing personalization when the user did not re-personalize,
+    # so a basic-config update does not silently drop structured rules
+    # (protected paths, risk areas, extra validation commands, etc.) or
+    # free-form notes/conventions stored in ITERATE.md. Mirrors the rescue in
+    # cli._cmd_onboard (cli.py:546-556).
+    if data.personalization is None:
+        from iterate_cli.personalize import load_existing_personalization
+
+        existing_onboarding_config = load_onboarding_config(project_root) or {}
+        existing_personalization = load_existing_personalization(
+            project_root, existing_onboarding_config
+        )
+        if not existing_personalization.is_empty():
+            data.personalization = existing_personalization
+
     try:
         # Preserve the user-owned ITERATE.md section (manual edits +
         # personalization content) across a full re-onboard, keeping behaviour
@@ -645,7 +660,10 @@ def _resolve_validation_config(
     """
     validation_existing = existing_config.get("validation")
     validation_existing = validation_existing if isinstance(validation_existing, dict) else {}
-    validation_commands = validation_existing.get("commands") or {}
+    # Guard against a hand-edited scalar ``validation.commands`` value: the
+    # reconcile step does ``dict(commands)``, which would crash on a string.
+    existing_commands = validation_existing.get("commands")
+    validation_commands = existing_commands if isinstance(existing_commands, dict) else {}
     # Distinguish an explicit empty whitelist (the operator deliberately
     # configured "run no commands") from an absent key (fall back to a scan
     # suggestion so a fresh config still gets a usable whitelist).
@@ -704,7 +722,15 @@ def _build_refresh_data(
 ) -> OnboardingData:
     """Build OnboardingData for a refresh, preserving existing settings."""
     # Preserve existing dimensions, target_branch, etc.
-    dimensions = existing_config.get("dimensions") or suggest_dimensions(scan)
+    existing_dimensions = existing_config.get("dimensions")
+    # A hand-edited scalar/string dimensions value (e.g. ``dimensions:
+    # "correctness"``) must not be iterated character-by-character by the
+    # ITERATE.md renderer; fall back to scan suggestions instead.
+    dimensions = (
+        existing_dimensions
+        if isinstance(existing_dimensions, list)
+        else suggest_dimensions(scan)
+    )
     # Preserve scope-specific dimension sets, additively reconciling with a
     # freshly-detected stack (a layer added since onboarding gets its preset).
     from iterate_cli.dimension_sets import (

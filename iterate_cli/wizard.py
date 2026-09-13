@@ -421,15 +421,9 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             tui.error(str(exc))
             return None
 
-        # load_config_strict returns {} for non-mapping YAML (e.g. a bare list).
-        # Treat that as unreadable so the wizard does not silently merge into it.
-        if not config and config_path.is_file():
-            raw = config_path.read_text(encoding="utf-8").strip()
-            if raw:
-                tui.error(
-                    f"{config_path} is not a YAML mapping (got {type(config).__name__})."
-                )
-                return None
+        # load_config_strict raises CorruptConfigError for non-mapping YAML
+        # (a bare list/scalar) rather than returning {}, so the wizard never
+        # silently merges into a damaged file.
         with tui.status("正在扫描项目 / Scanning project..."):
             scan = scan_project(project_root)
 
