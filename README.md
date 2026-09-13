@@ -331,7 +331,7 @@ iterate invariant                   # at delivery: file-assertions + exact comma
 - **Hand-written `ITERATE.md` missing `USER-OWNED` markers**: `iterate refresh` (and AI refresh) **refuses to overwrite and errors** instead of destroying your hand-written content. Add `<!-- ITERATE:USER-OWNED:START/END -->` markers to refresh normally.
 - **Non-git project**: `onboard` / `status` / `refresh` / `doctor` / `personalize` don't depend on git and work directly; but the git-isolated branch/merge/push steps in `/iterate` need a git repo — without one those steps are skipped or prompted.
 - **Empty project / no manifest files**: onboarding generates the knowledge base normally; without fingerprint files like `package.json` / `pyproject.toml`, drift detection skips fingerprint comparison.
-- **Corrupted `iterate.config.yaml` (YAML error / schema violation)**: `iterate doctor` reports schema errors; `doctor --fix` only fixes safely auto-fixable items, the rest need manual fixing. If config fails schema validation, `/iterate` aborts immediately with an error rather than running with a broken config.
+- **Corrupted `iterate.config.yaml` (YAML error / schema violation)**: `iterate status` distinguishes a **present-but-unparsable** config (exit 1, "could not be parsed", suggests `iterate doctor`) from a **missing** one (exit 0, "config not found — only ITERATE.md exists" hint); `iterate doctor` reports schema errors; `doctor --fix` only fixes safely auto-fixable items, the rest need manual fixing. If config fails schema validation, `/iterate` aborts immediately with an error rather than running with a broken config.
 - **Early convergence**: when a round returns 0 new findings, iteration ends early (Early Stop) instead of running to `max_rounds`.
 
 ---
@@ -413,14 +413,14 @@ Supports flat keys (`goal`, `max_rounds`, `reasoning_effort`, `language`, `mode`
 
 Deterministic fail-loud checks the host AI runs around every coding step in defensive mode. Contract: exit code 0 = safe to proceed / change is safe; 1 = must fix or roll back.
 
-- `iterate guard pre-check [paths...]` — runs **before editing**: targets exist, git worktree clean, manifest files ready, validation config safe (`PASS`/`FAIL`).
+- `iterate guard pre-check [paths...]` — runs **before editing**: targets exist, git worktree clean, manifest files ready, validation config safe, and each configured validation command's tool is on `PATH` (shell builtins like `true` are allowed) (`PASS`/`FAIL`).
 - `iterate guard post-check [module...]` — runs **after each change**: executes exactly the configured `validation.commands.<module>` (the runtime's single authority whitelist — no composition, no prefixing).
 
 Both support `--json` and `--dry-run` (preview exact commands without executing).
 
 ### iterate invariant (defensive-mode delivery gate, v3.0)
 
-`iterate invariant` checks the project-level `invariants` declared in config (`invariants.ensure` file-existence assertions + `invariants.commands` exact per-module command lists). When no `invariants` section is configured it **degrades to `validation.commands`**, so old configs keep working unchanged. Exit 0 = invariants hold, 1 = violations found. Supports `--json` / `--dry-run`.
+`iterate invariant` checks the project-level `invariants` declared in config (`invariants.ensure` file-existence assertions + `invariants.commands` exact per-module command lists). `ensure` entries must be **relative paths inside the project root** — absolute paths and `../` ancestors escaping the root are rejected outright. When no `invariants` section is configured it **degrades to `validation.commands`**, so old configs keep working unchanged. Exit 0 = invariants hold, 1 = violations found. Supports `--json` / `--dry-run`.
 
 ---
 

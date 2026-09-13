@@ -191,7 +191,7 @@
       "properties": {
         "ensure": {
           "type": "array",
-          "description": "File-existence assertions (relative to project root) that must hold at delivery.",
+          "description": "File-existence assertions (relative to project root) that must hold at delivery. Only relative paths inside the project root are allowed — absolute paths and ../ key escaping the root are rejected by `iterate invariant`.",
           "items": {
             "type": "string",
             "minLength": 1

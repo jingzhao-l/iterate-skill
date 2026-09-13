@@ -157,9 +157,9 @@ Do **not** use this Skill in **iterate mode** when:
 
 | 命令 / Command | 时机 / When | 输出 / Output | 契约 / Contract |
 |---|---|---|---|
-| `iterate guard pre-check [paths...]` | 动手前 | `PASS/FAIL` + 逐项结果 | 目标存在、git 干净、依赖 manifest 就绪、验证命令配置安全；退出码 0 = 可以开工，1 = 禁止开工 |
+| `iterate guard pre-check [paths...]` | 动手前 | `PASS/FAIL` + 逐项结果 | 目标存在、git 干净、依赖 manifest 就绪、验证命令配置安全、每个验证命令对应的可执行工具在 PATH 上（shell 内建除外）；退出码 0 = 可以开工，1 = 禁止开工 |
 | `iterate guard post-check [module...]` | 每次改动后 | `PASS/FAIL` + 逐项结果 | 精确执行 `validation.commands.<module>`（运行时唯一权威白名单）；退出码 0 = 本次改动安全，1 = 必须先修复或回滚 |
-| `iterate invariant` | 收尾交付前 | `PASS/FAIL` + 违反项明细 | 校验 `invariants.ensure` 文件断言 + `invariants.commands`；无 `invariants` 段时退化为 `validation.commands`；退出码 0 = 不变量成立，1 = 存在违反项 |
+| `iterate invariant` | 收尾交付前 | `PASS/FAIL` + 违反项明细 | 校验 `invariants.ensure` 文件断言 + `invariants.commands`；`ensure` 只接受项目根目录内的相对路径（拒绝绝对路径与越出项目根的 `../` 逃逸）；无 `invariants` 段时退化为 `validation.commands`；退出码 0 = 不变量成立，1 = 存在违反项 |
 
 ### 交付门禁 / Delivery Gate
 
@@ -314,7 +314,7 @@ iterate show         # 只读查看合并后的配置与个性化详情（支持
 iterate refresh      # 增量刷新（保留用户手写区；支持 --json / --dry-run --json 结构化报告）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
 iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查；--strict 将 warning 一并判失败；--fix 安全修复；--json / --json-out 结构化输出）
-iterate status       # 查看 onboarding 状态和漂移检测（--json 含 drift_detected 与明细列表）
+iterate status       # 查看 onboarding 状态和漂移检测（--json 含 onboarded、config_exists/config_ok、drift_detected 与明细列表）
 iterate fingerprint verify  # 校验 manifest 指纹漂移（--json）
 iterate config       # 非交互式查看全部可设配置值（支持 --json）
 iterate config get <key>   # 读取单个配置项的解析值（支持 --json，输出 {"key": value}）
