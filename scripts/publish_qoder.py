@@ -180,8 +180,12 @@ def _git_archive_extract(dst: str, excludes: Iterable[str]) -> list[str]:
     warnings: list[str] = []
     tmp_zip = os.path.join(dst, ".archive-src.zip")
     cmd = ["git", "archive", "--format=zip", "-o", tmp_zip, "HEAD", *specs]
+    # Run against the repo root explicitly: `git archive` pathspecs (the
+    # `:!exclude` specs above) are matched relative to the current directory,
+    # so invoking this script from a subdirectory would silently fail to
+    # exclude `harness/` and ship it in the package.
     proc = subprocess.run(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False
+        cmd, cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False
     )
     if proc.returncode != 0:
         raise RuntimeError("git archive failed; are you in the repo root?")
@@ -448,8 +452,8 @@ def validate_tree(tree_root: str) -> tuple[list[str], list[str]]:
 
 def _find_harness(tree_root: str) -> list[str]:
     hits: list[str] = []
-    for root, dirs, _files in os.walk(tree_root):
-        for name in dirs:
+    for root, dirs, files in os.walk(tree_root):
+        for name in [*dirs, *files]:
             if name == "harness":
                 hits.append(os.path.relpath(os.path.join(root, name), tree_root))
     return hits
@@ -485,9 +489,15 @@ def validate_zip(zip_path: str) -> tuple[list[str], list[str], int]:
     if not names:
         errors.append("empty zip")
         return errors, warnings, zip_size
-    top = names[0].split("/")[0]
-    if top != "iterate":
-        errors.append(f"top-level entry {top!r}; must be 'iterate'")
+    # Every entry must live under a single 'iterate' top-level component. A
+    # check on names[0] alone can be fooled by a hand-built zip whose sorted
+    # first entry happens to be iterate/ while later entries smuggle in a rival
+    # top-level directory (e.g. "z-pwn/file").
+    foreign_tops = sorted({entry.split("/")[0] for entry in names} - {"iterate"})
+    if foreign_tops:
+        errors.append(
+            "top-level entries must all be 'iterate'; found: " + ", ".join(foreign_tops)
+        )
     return errors, warnings, zip_size
 
 

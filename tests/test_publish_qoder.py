@@ -10,6 +10,7 @@ previous unsafe ``os.system`` + bare ``extract`` path.
 from __future__ import annotations
 
 import io
+import os
 import sys
 import zipfile
 from pathlib import Path
@@ -135,6 +136,70 @@ def _minimal_source(tmp_path: Path) -> Path:
     (source / "b").mkdir(parents=True)
     (source / "b" / "nested.txt").write_text("b", encoding="utf-8")
     return source
+
+
+class TestFindHarness:
+    def test_finds_harness_dir_at_any_depth(self, tmp_path: Path) -> None:
+        tree = tmp_path / "iterate"
+        (tree / "nested").mkdir(parents=True)
+        (tree / "nested" / "harness").mkdir()
+        (tree / "nested" / "harness" / "x").write_text("x", encoding="utf-8")
+        hits = publish_qoder._find_harness(str(tree))
+        assert hits == [os.path.join("nested", "harness")]
+
+    def test_finds_file_named_harness(self, tmp_path: Path) -> None:
+        tree = tmp_path / "iterate"
+        tree.mkdir()
+        (tree / "harness").write_text("x", encoding="utf-8")
+        hits = publish_qoder._find_harness(str(tree))
+        assert hits == ["harness"]
+
+    def test_clean_tree_has_no_hits(self, tmp_path: Path) -> None:
+        tree = tmp_path / "iterate"
+        (tree / "scripts").mkdir(parents=True)
+        (tree / "scripts" / "harness_guard.txt").write_text("x", encoding="utf-8")
+        assert publish_qoder._find_harness(str(tree)) == []
+
+
+def _zip_path_with_members(tmp_path: Path, entries: list[tuple[str, bytes]]) -> str:
+    """Write ``entries`` into a zip file and return its path."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as archive:
+        for name, data in entries:
+            archive.writestr(name, data)
+    buf.seek(0)
+    path = tmp_path / "members.zip"
+    path.write_bytes(buf.getvalue())
+    return str(path)
+
+
+class TestValidateZipTopLevel:
+    def test_foreign_top_level_entry_rejected(self, tmp_path: Path) -> None:
+        """A zip smuggling a rival top-level dir under a sorted-later name must
+        fail: checking only names[0] would let 'z-pwn/evil' slip past."""
+        zip_path = _zip_path_with_members(
+            tmp_path,
+            [("iterate/SKILL.md", b"# skill"), ("z-pwn/evil.sh", b"pwn")],
+        )
+        errors, _warnings, _size = publish_qoder.validate_zip(zip_path)
+        assert any("z-pwn" in e and "iterate" in e for e in errors), errors
+        assert any("harness" in e for e in errors) is False
+
+    def test_only_iterate_top_passes(self, tmp_path: Path) -> None:
+        zip_path = _zip_path_with_members(
+            tmp_path,
+            [("iterate/SKILL.md", b"# skill"), ("iterate/config/iterate.config.yaml", b"goal: x")],
+        )
+        errors, _warnings, _size = publish_qoder.validate_zip(zip_path)
+        assert errors == []
+
+    def test_harness_entry_anywhere_rejected(self, tmp_path: Path) -> None:
+        zip_path = _zip_path_with_members(
+            tmp_path,
+            [("iterate/SKILL.md", b"# skill"), ("iterate/harness/x", b"x")],
+        )
+        errors, _warnings, _size = publish_qoder.validate_zip(zip_path)
+        assert any("harness" in e for e in errors), errors
 
 
 class TestBuildPackageDefaultOut:
