@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.theme import Theme
 
@@ -191,10 +192,10 @@ class TUI:
         self.console.print()
         self.console.print(
             f"[iterate.primary]{SYM_INTRO}[/] "
-            f"[iterate.title]{title}[/]"
+            f"[iterate.title]{escape(title)}[/]"
         )
         if subtitle:
-            self.console.print(f"  [iterate.subtitle]{subtitle}[/]")
+            self.console.print(f"  [iterate.subtitle]{escape(subtitle)}[/]")
         self.console.print()
 
     def section(self, title: str) -> None:
@@ -207,7 +208,7 @@ class TUI:
             title: 区块标题（通常为中英双语）
         """
         self.console.print()
-        self.console.print(f"  [iterate.label]── {title} ──[/]")
+        self.console.print(f"  [iterate.label]── {escape(title)} ──[/]")
 
     def cancel(self) -> None:
         """输出取消消息."""
@@ -229,7 +230,7 @@ class TUI:
             indent: 缩进空格数
         """
         prefix = " " * indent
-        self.console.print(f"{prefix}{message}")
+        self.console.print(f"{prefix}{escape(message)}")
 
     def hint(self, message: str, indent: int = 2) -> None:
         """输出提示信息（dim 灰色）.
@@ -239,7 +240,7 @@ class TUI:
             indent: 缩进空格数
         """
         prefix = " " * indent
-        self.console.print(f"{prefix}[iterate.dim]{message}[/]")
+        self.console.print(f"{prefix}[iterate.dim]{escape(message)}[/]")
 
     def warning(self, message: str, indent: int = 2) -> None:
         """输出警告信息.
@@ -250,7 +251,7 @@ class TUI:
         """
         prefix = " " * indent
         self.console.print(
-            f"{prefix}[iterate.warning]{SYM_WARNING} {message}[/]"
+            f"{prefix}[iterate.warning]{SYM_WARNING} {escape(message)}[/]"
         )
 
     def error(self, message: str, indent: int = 2) -> None:
@@ -262,7 +263,7 @@ class TUI:
         """
         prefix = " " * indent
         self._stderr_console.print(
-            f"{prefix}[iterate.error]{SYM_ERROR} {message}[/]",
+            f"{prefix}[iterate.error]{SYM_ERROR} {escape(message)}[/]",
             soft_wrap=True,
         )
 
@@ -275,7 +276,7 @@ class TUI:
         """
         prefix = " " * indent
         self.console.print(
-            f"{prefix}[iterate.success]{SYM_SUCCESS} {message}[/]"
+            f"{prefix}[iterate.success]{SYM_SUCCESS} {escape(message)}[/]"
         )
 
     def bullet(self, message: str, indent: int = 2) -> None:
@@ -287,7 +288,7 @@ class TUI:
         """
         prefix = " " * indent
         self.console.print(
-            f"{prefix}[iterate.dim]{SYM_BULLET}[/] {message}"
+            f"{prefix}[iterate.dim]{SYM_BULLET}[/] {escape(message)}"
         )
 
     def key_value(self, key: str, value: str, indent: int = 2) -> None:
@@ -299,11 +300,11 @@ class TUI:
             indent: 缩进空格数
         """
         # 按显示宽度（CJK 双宽）对齐 key，避免中文错位
-        label = f"{key}:"
+        label = escape(f"{key}:")
         padded_key = label + " " * max(KEY_VALUE_WIDTH - _display_width(label), 1)
         prefix = " " * indent
         self.console.print(
-            f"{prefix}[iterate.label]{padded_key}[/] [iterate.value]{value}[/]"
+            f"{prefix}[iterate.label]{padded_key}[/] [iterate.value]{escape(value)}[/]"
         )
 
     # ------------------------------------------------------------------
@@ -330,7 +331,7 @@ class TUI:
             else:
                 marker_str = ""
             self.console.print(
-                f"{prefix}[iterate.dim]{i}.[/] {marker_str}{item}"
+                f"{prefix}[iterate.dim]{i}.[/] {marker_str}{escape(item)}"
             )
 
     # ------------------------------------------------------------------
@@ -358,7 +359,7 @@ class TUI:
 
             return nullcontext()
         return self.console.status(
-            f"[iterate.primary]{SYM_SPINNER}[/] {message}",
+            f"[iterate.primary]{SYM_SPINNER}[/] {escape(message)}",
             spinner="dots",
         )
 
@@ -373,8 +374,8 @@ class TUI:
         border_style = style or "cyan"
         self.console.print(
             Panel(
-                content,
-                title=f"[iterate.title]{title}[/]" if title else None,
+                escape(content),
+                title=f"[iterate.title]{escape(title)}[/]" if title else None,
                 title_align="left",
                 border_style=border_style,
                 padding=(0, 1),
@@ -395,7 +396,7 @@ class TUI:
           ◇ 这是一个问题？
         """
         self.console.print(
-            f"  [iterate.primary]{SYM_QUESTION}[/] {message}"
+            f"  [iterate.primary]{SYM_QUESTION}[/] {escape(message)}"
         )
 
 

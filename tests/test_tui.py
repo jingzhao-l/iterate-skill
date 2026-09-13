@@ -185,6 +185,33 @@ class TestRenderMethods:
         assert "面板内容" in str(panel.renderable)
         assert "面板标题" in str(panel.title)
 
+    def test_markup_in_user_text_is_escaped(self) -> None:
+        """User-supplied text must not be parsed as rich markup (F24).
+
+        A hostile/mistyped message like ``[red]x[/]`` must be escaped to
+        ``\\[red\\]x\\[/\\]`` so rich prints it literally instead of applying
+        the style tag.
+        """
+        tui, console = _make_tui()
+        tui.info("[red]breaks[/]")
+        tui.error("[bold]oops[/]")
+        tui.hint("[italic]hint[/]")
+        tui.warning("[cyan]warn[/]")
+        tui.success("[green]ok[/]")
+        tui.bullet("[magenta]item[/]")
+        tui.key_value("k", "[blue]v[/]")
+        tui.numbered_list(["[red]first[/]"])
+        tui.question("[red]q?[/]")
+        tui.panel("[red]content[/]", title="[red]title[/]")
+        tui.intro("[red]title[/]", "[blue]sub[/]")
+        tui.section("[red]sec[/]")
+        rendered = _rendered(console)
+        assert r"\[red]breaks\[/]" in rendered
+        assert r"\[bold]oops\[/]" in rendered
+        assert r"\[green]ok\[/]" in rendered
+        # The literal bracket form must never reach the console unresolved.
+        assert "[red]breaks[/]" not in rendered
+
     def test_cancel_renders_cancelled(self) -> None:
         tui, console = _make_tui()
         tui.cancel()
