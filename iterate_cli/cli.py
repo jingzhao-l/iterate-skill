@@ -29,11 +29,11 @@ from typing import Any
 from iterate_cli import __version__
 from iterate_cli.fingerprint import drift_summary
 from iterate_cli.generator import (
-    USER_END_MARKER,
-    USER_START_MARKER,
+    has_valid_user_owned_markers,
     write_onboarding_outputs,
 )
 from iterate_cli.refresh import (
+    CONFIG_YAML,
     REONBOARD_CANCELLED,
     REONBOARD_COMPLETED,
     REONBOARD_NO_CHANGES,
@@ -266,13 +266,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable the ITERATE ASCII art banner at startup.",
     )
 
-    subparsers.add_parser(
+    onboard_parser = subparsers.add_parser(
         "onboard",
         parents=[parent],
         help="Run interactive CLI onboarding wizard (multi-path).",
         description="Run the interactive onboarding wizard. First-time projects get "
         "basic onboarding + personalization offer; existing projects get "
         "config update + personalization offer.",
+    )
+    # Declared so `iterate onboard --json` parses and hits the friendly
+    # "interactive commands reject --json" gate instead of an argparse
+    # "unrecognized arguments" error (the gate itself refuses the combo).
+    onboard_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
     personalize_parser = subparsers.add_parser(
         "personalize",
@@ -295,6 +304,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Skip the confirmation prompt (only meaningful with --clear).",
     )
+    # Same reachable-gate rationale as onboard: parse --json so the rejection
+    # above can print the friendly message instead of an argparse error.
+    personalize_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
     refresh_parser = subparsers.add_parser(
         "refresh",
         parents=[parent],
@@ -314,12 +331,19 @@ def _build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Emit a structured JSON report instead of TUI output.",
     )
-    subparsers.add_parser(
+    reonboard_parser = subparsers.add_parser(
         "reonboard",
         parents=[parent],
         help="Full re-onboarding (backup old files, run wizard).",
         description="Back up existing ITERATE.md and iterate.config.yaml, then run the "
         "full onboarding wizard from scratch.",
+    )
+    # Same reachable-gate rationale as onboard / personalize.
+    reonboard_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
     status_parser = subparsers.add_parser(
         "status",
@@ -529,9 +553,7 @@ def _cmd_onboard(project_root: Path) -> int:
         # edits — regenerating would silently replace them with the template.
         # Refuse and point the user at `iterate reonboard` (which backs the
         # file up first) instead of overwriting possibly hand-edited content.
-        start_idx = existing_md.find(USER_START_MARKER)
-        end_idx = existing_md.find(USER_END_MARKER)
-        if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+        if not has_valid_user_owned_markers(existing_md):
             tui.error(
                 "Existing ITERATE.md is missing the USER-OWNED section markers; "
                 "refusing to overwrite possibly hand-edited content."
@@ -926,7 +948,14 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     # half-loaded snapshot).
     data: dict[str, Any] = {"project": str(project_root)}
     onboarded = is_onboarding_complete(project_root)
-    config = load_onboarding_config(project_root) if onboarded else None
+    config_path = project_root / CONFIG_YAML
+    data["config_exists"] = config_path.is_file()
+    # Only load when both conditions hold: loading a config that is absent is a
+    # no-op, and a config file that exists but fails to parse must be
+    # distinguished from "no config" so the operator is not told the file is
+    # missing when it is actually corrupt.
+    config = load_onboarding_config(project_root) if onboarded and data["config_exists"] else None
+    data["config_ok"] = config is not None
     data["onboarded"] = onboarded
 
     drift = None
@@ -993,6 +1022,10 @@ def _render_status_tui(
     tui.success("Status: Onboarded")
 
     if not config:
+        if data["config_exists"]:
+            tui.error("Status: iterate.config.yaml is present but could not be parsed")
+            tui.hint("Run 'iterate doctor' for details.", indent=2)
+            return 1
         tui.hint("(iterate.config.yaml not found — only ITERATE.md exists)", indent=2)
         return 0
 

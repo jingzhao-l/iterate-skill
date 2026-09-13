@@ -7,6 +7,7 @@ normal paths, error paths, and boundary scenarios.
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -1679,6 +1680,48 @@ class TestFullReonboard:
         assert len(backups) == 1
         assert backups[0].read_text(encoding="utf-8") == "original content"
 
+    def test_declined_personalization_preserves_existing_rules(self, fake_project: Path) -> None:
+        """Declining personalization on re-onboard must not drop existing rules.
+
+        Regression: full_reonboard ran the wizard directly, and a returning
+        user who declined the personalization offer wrote the regenerated
+        config WITHOUT the previously persisted ``personalization`` section
+        (protected paths, extra validation commands, etc.), silently losing
+        them. Mirrors the rescue already present in cli._cmd_onboard.
+        """
+        data = _build_onboarding_data(fake_project)
+        data.personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            extra_validation_commands={"python": ["pytest -q"]},
+            iterate_notes=["Don't touch migrations"],
+        )
+        write_onboarding_outputs(data, fake_project)
+
+        # Returning user flow: update basic config, then decline personalization.
+        responses = iter([
+            "y",          # update basic config: yes
+            "y",          # tech stack correct
+            "y",          # use suggested commands
+            "",           # default dimensions
+            "",           # dimension sets: enable all suggested
+            "",           # default branch
+            "",           # default scope
+            "y",          # push: yes
+            "Redone",     # description
+            "",           # conventions: empty
+            "n",          # advanced config: no
+            "y",          # confirm: yes
+            "n",          # personalization offer: no
+        ])
+        result = full_reonboard(fake_project, input_func=lambda _: next(responses))
+        assert result == REONBOARD_COMPLETED
+
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert config["personalization"]["protected_paths"] == ["legacy/**"]
+        assert "pytest -q" in config["validation"]["commands"]["python"]
+
     def test_cancelled_returns_false(self, fake_project: Path) -> None:
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
@@ -1789,6 +1832,37 @@ class TestCLIStatus:
         captured = capsys.readouterr()
         # 1 protected + 2 python cmds + 1 node cmd = 4
         assert "Personalization: 4 rule(s)" in captured.out
+
+    def test_status_corrupt_config_is_reported_not_missing(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """A present-but-corrupt iterate.config.yaml must not be reported as
+        "not found" (A3): status should surface the corruption and exit 1."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        (fake_project / "iterate.config.yaml").write_text(
+            "dimensions: [broken", encoding="utf-8"
+        )
+        ret = cli_main(["status", "-p", str(fake_project)])
+        assert ret == 1
+        captured = capsys.readouterr()
+        collapsed = " ".join((captured.out + "\n" + captured.err).split())
+        assert "not found" not in collapsed
+        assert "could not be parsed" in collapsed
+
+    def test_status_corrupt_config_json_flags_it(self, fake_project: Path, capsys) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        (fake_project / "iterate.config.yaml").write_text(
+            "dimensions: [broken", encoding="utf-8"
+        )
+        ret = cli_main(["status", "-p", str(fake_project), "--json"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        assert payload["onboarded"] is True
+        assert payload["config_exists"] is True
+        assert payload["config_ok"] is False
 
     def test_count_personalization_rules_empty(self) -> None:
         from iterate_cli.cli import _count_personalization_rules
@@ -4228,7 +4302,7 @@ class TestLoadExistingOnboardingDataNonDict:
         result = _load_existing_onboarding_data(fake_project)
         assert result is None
         captured = capsys.readouterr()
-        assert "not a YAML mapping" in captured.err
+        assert "不是 YAML 映射" in captured.err
 
     def test_returns_none_on_yaml_scalar(self, fake_project: Path, capsys) -> None:
         """A YAML scalar in the config must return None, not crash (M-11-2)."""
@@ -4242,7 +4316,7 @@ class TestLoadExistingOnboardingDataNonDict:
         result = _load_existing_onboarding_data(fake_project)
         assert result is None
         captured = capsys.readouterr()
-        assert "not a YAML mapping" in captured.err
+        assert "不是 YAML 映射" in captured.err
 
 
 class TestCmdOnboardNoChangesExitCode:
