@@ -39,6 +39,8 @@ from iterate_cli.generator import (
     REASONING_EFFORT_VALUES,
     USER_END_MARKER,
     USER_START_MARKER,
+    atomic_write,
+    has_valid_user_owned_markers,
 )
 from iterate_cli.personalize import FORBIDDEN_COMMAND_CHARS
 from iterate_cli.refresh import (
@@ -484,7 +486,15 @@ def _check_language(report: DoctorReport, config: dict[str, Any]) -> None:
 
 def _check_review_scope(report: DoctorReport, config: dict[str, Any]) -> None:
     """review.scope must be one of the supported values."""
-    review = config.get("review") if isinstance(config.get("review"), dict) else None
+    review = config.get("review")
+    if review is not None and not isinstance(review, dict):
+        _err(
+            report,
+            "review.scope",
+            "review must be a mapping (dict) of review settings.",
+            f"Got {type(review).__name__} instead of a mapping.",
+        )
+        return
     scope = review.get("scope") if review else None
     if scope is not None and scope not in SUPPORTED_SCOPES:
         _warn(
@@ -499,7 +509,15 @@ def _check_review_scope(report: DoctorReport, config: dict[str, Any]) -> None:
 
 def _check_git_branch(report: DoctorReport, config: dict[str, Any]) -> None:
     """git.target_branch must be a non-empty string when configured."""
-    git_cfg = config.get("git") if isinstance(config.get("git"), dict) else None
+    git_cfg = config.get("git")
+    if git_cfg is not None and not isinstance(git_cfg, dict):
+        _err(
+            report,
+            "git.target_branch",
+            "git must be a mapping (dict) of git settings.",
+            f"Got {type(git_cfg).__name__} instead of a mapping.",
+        )
+        return
     branch = git_cfg.get("target_branch") if git_cfg else None
     if branch is not None and (not isinstance(branch, str) or not branch.strip()):
         _err(report, "git.target_branch", "git.target_branch must be a non-empty string.")
@@ -509,7 +527,15 @@ def _check_git_branch(report: DoctorReport, config: dict[str, Any]) -> None:
 
 def _check_validation_commands(report: DoctorReport, config: dict[str, Any]) -> None:
     """validation.commands values must be non-empty lists of strings."""
-    validation = config.get("validation") if isinstance(config.get("validation"), dict) else None
+    validation = config.get("validation")
+    if validation is not None and not isinstance(validation, dict):
+        _err(
+            report,
+            "validation.commands",
+            "validation must be a mapping (dict) of validation settings.",
+            f"Got {type(validation).__name__} instead of a mapping.",
+        )
+        return
     commands = validation.get("commands") if validation else None
     if commands is None:
         _ok(report, "validation.commands", "no validation.commands configured (optional).")
@@ -549,8 +575,11 @@ def _check_validation_whitelist(report: DoctorReport, config: dict[str, Any]) ->
         # No whitelist constraint → structure check is not applicable, but the
         # command metacharacter check below still applies to every configured
         # command.
-        if commands is not None:
-            _check_commands_metachars(report, commands)
+        if commands is not None and not _check_commands_metachars(report, commands):
+            # A metachar error (validation.whitelist) was already recorded
+            # above; do not also print a message claiming the commands "were
+            # checked" and passed, which would contradict the error.
+            return
         _ok(
             report,
             "validation.command_whitelist",
@@ -591,7 +620,7 @@ def _check_validation_whitelist(report: DoctorReport, config: dict[str, Any]) ->
         _check_whitelist_entry_chars(report, whitelist)
 
 
-def _check_commands_metachars(report: DoctorReport, commands: Any) -> None:
+def _check_commands_metachars(report: DoctorReport, commands: Any) -> bool:
     """Every configured validation command must be free of shell metacharacters.
 
     This is the standalone safety net for configs without a
@@ -599,9 +628,12 @@ def _check_commands_metachars(report: DoctorReport, commands: Any) -> None:
     (``;`` ``|`` ``&`` ``$`` ...) are rejected regardless of any whitelist,
     so a hand-edited config cannot smuggle side effects into the executable
     validation commands.
+
+    Returns ``True`` when all commands are safe, ``False`` when an error was
+    recorded, so callers can avoid emitting a contradictory success line.
     """
     if not isinstance(commands, dict):
-        return
+        return True
     unsafe: list[str] = []
     for module, cmds in commands.items():
         if not isinstance(cmds, list):
@@ -618,6 +650,8 @@ def _check_commands_metachars(report: DoctorReport, commands: Any) -> None:
             "validation command(s) contain shell metacharacters (possible command chaining).",
             "; ".join(unsafe[:SCHEMA_MAX_ERRORS]),
         )
+        return False
+    return True
 
 
 def _check_whitelist_entry_chars(report: DoctorReport, whitelist: Any) -> None:
@@ -976,9 +1010,7 @@ def _check_iterate_md_markers(report: DoctorReport, project_root: Path) -> None:
         content = iterate_md_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return
-    start_idx = content.find(USER_START_MARKER)
-    end_idx = content.find(USER_END_MARKER)
-    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx + len(USER_START_MARKER):
+    if not has_valid_user_owned_markers(content):
         _warn(
             report,
             "iterate.md.markers",
@@ -1126,16 +1158,16 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
     backup_path = config_path.with_name(f"{CONFIG_YAML}.doctorfix-{timestamp}")
     try:
         shutil.copy2(config_path, backup_path)
-        config_path.write_text(
+        atomic_write(
+            config_path,
             yaml.safe_dump(
                 new_config,
                 default_flow_style=False,
                 allow_unicode=True,
                 sort_keys=False,
             ),
-            encoding="utf-8",
         )
-    except OSError as exc:
+    except (OSError, yaml.YAMLError) as exc:
         tui.error(f"Doctor --fix: failed to write fixed config: {exc}")
         return False, fixes
     return True, fixes
@@ -1250,8 +1282,12 @@ def _render_next_actions(tui: Any, report: DoctorReport) -> None:
         actions.append(
             ("命令白名单/验证命令含非法字符", "运行 `iterate personalize` 重新配置验证命令，或在配置中修正白名单")
         )
-    if "invariants" in checks or "invariants.commands" in checks:
-        actions.append(("invariants 命令含非法字符", "在 iterate.config.yaml 中修正 invariants.commands"))
+    if (
+        "invariants" in checks
+        or "invariants.commands" in checks
+        or "invariants.ensure" in checks
+    ):
+        actions.append(("invariants 配置异常", "在 iterate.config.yaml 中修正 invariants.commands / invariants.ensure"))
     if "skill_version" in checks:
         actions.append(("录制的技能版本过旧", "运行 `iterate refresh` 更新录制版本"))
     if "dimensions" in checks or "review.scope" in checks:

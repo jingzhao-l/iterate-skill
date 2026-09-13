@@ -1097,3 +1097,89 @@ class TestScalarOnboardingConfig:
         # Must not raise AttributeError.
         report = run_doctor(project)
         assert not report.has_errors()
+
+
+class TestMetacharSafetyNetContradiction:
+    """C2: metachar errors must not be paired with a contradictory success line."""
+
+    def test_no_contradictory_ok_without_whitelist(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {"commands": {"python": ["pytest; rm -rf /"]}}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "validation.whitelist" and f.severity == "error"
+            for f in report.findings
+        )
+        assert not any(
+            f.check == "validation.command_whitelist" and f.severity == "ok"
+            for f in report.findings
+        )
+
+
+class TestScalarSectionsAreErrors:
+    """C3: scalar review/git/validation sections are hard errors, not silent success."""
+
+    def test_scalar_review_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, {**_base_config(), "review": "string-scope"})
+        report = run_doctor(project)
+        assert any(
+            f.check == "review.scope" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_scalar_git_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, {**_base_config(), "git": "main"})
+        report = run_doctor(project)
+        assert any(
+            f.check == "git.target_branch" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_scalar_validation_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, {**_base_config(), "validation": "commands"})
+        report = run_doctor(project)
+        assert any(
+            f.check == "validation.commands" and f.severity == "error"
+            for f in report.findings
+        )
+
+
+class TestRunDoctorFixSerializationError:
+    """C4: run_doctor_fix must catch yaml.YAMLError on the write path."""
+
+    def test_yaml_error_returns_false(self, tmp_path, monkeypatch) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["onboarding"]["skill_version"] = "99.99.99"
+        _write_config(project, config)
+
+        def _boom(data, **kwargs):
+            raise yaml.YAMLError("nope")
+
+        monkeypatch.setattr("yaml.safe_dump", _boom)
+        ok, fixes = run_doctor_fix(project)
+        assert not ok
+        assert fixes
+
+
+class TestRenderNextActionsInvariantsEnsure:
+    """C5: invariants.ensure findings map to a next action."""
+
+    def test_invariants_ensure_offers_action(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["invariants"] = {"ensure": []}
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "invariants.ensure" and f.severity == "error"
+            for f in report.findings
+        )
+        render_report(report)
+        out = capsys.readouterr().out
+        assert "invariants 配置异常" in out
