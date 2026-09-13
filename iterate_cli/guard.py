@@ -59,6 +59,72 @@ EXIT_PASS = 0
 #: ``subprocess.run(..., shell=True)``.
 COMMAND_METACHARS: frozenset[str] = frozenset(FORBIDDEN_COMMAND_CHARS)
 
+#: Commands that execute under ``shell=True`` via a shell builtin, so no
+#: external binary needs to exist on PATH. ``shutil.which`` cannot resolve
+#: these, and the pre-check must not report a tool as missing for them.
+SHELL_BUILTINS: frozenset[str] = frozenset(
+    {
+        ":",
+        ".",
+        "[",
+        "alias",
+        "bg",
+        "bind",
+        "break",
+        "builtin",
+        "caller",
+        "cd",
+        "command",
+        "compgen",
+        "complete",
+        "continue",
+        "declare",
+        "dirs",
+        "disown",
+        "echo",
+        "enable",
+        "eval",
+        "exec",
+        "exit",
+        "export",
+        "false",
+        "fc",
+        "fg",
+        "getopts",
+        "hash",
+        "help",
+        "history",
+        "jobs",
+        "kill",
+        "let",
+        "local",
+        "logout",
+        "popd",
+        "printf",
+        "pushd",
+        "pwd",
+        "read",
+        "readonly",
+        "return",
+        "set",
+        "shift",
+        "shopt",
+        "source",
+        "suspend",
+        "test",
+        "times",
+        "trap",
+        "true",
+        "type",
+        "typeset",
+        "ulimit",
+        "umask",
+        "unalias",
+        "unset",
+        "wait",
+    }
+)
+
 
 def _command_is_safe(command: str) -> bool:
     """True when ``command`` may be executed: non-empty, metachar-free, and
@@ -405,6 +471,37 @@ def run_guard_precheck(project_root: Path, paths: list[str], dry_run: bool = Fal
                 ("validation commands", True, f"{len(entries)} command(s) configured and metachar-safe (run via post-check)")
             )
 
+    # 5. Validation command tools must actually be resolvable on PATH. Commands
+    #    execute under ``shell=True``, so known shell builtins (true, test,
+    #    echo, ...) are allowed even when ``shutil.which`` finds no binary. A
+    #    genuinely missing executable (e.g. a tool uninstalled since onboarding)
+    #    means the promised post-check would fail with a non-zero exit — surface
+    #    that BEFORE the edit, not after.
+    if entries:
+        missing_tools = []
+        for module, command in entries:
+            stripped = command.strip()
+            if not stripped:
+                continue
+            first = stripped.split(maxsplit=1)[0]
+            if first in SHELL_BUILTINS:
+                continue
+            if shutil.which(first) is None:
+                missing_tools.append(f"{module}: {first!r}")
+        if missing_tools:
+            result.items.append(
+                (
+                    "tools available",
+                    False,
+                    "missing executable(s): " + "; ".join(missing_tools),
+                )
+            )
+            result.passed = False
+        else:
+            result.items.append(
+                ("tools available", True, "every configured command's tool is on PATH")
+            )
+
     return result
 
 
@@ -497,9 +594,25 @@ def run_invariant_check(project_root: Path, dry_run: bool = False) -> GuardResul
         result.passed = False
         return result
 
-    # 1. File assertions (invariants.ensure).
+    # 1. File assertions (invariants.ensure). Paths must be project-relative:
+    #    an absolute path (or one resolving outside the project root) would
+    #    assert on files the skill does not own, so it is reported as a
+    #    failure rather than checked.
+    root_resolved = project_root.resolve()
     for entry in _invariant_ensure(config):
-        target = project_root / entry
+        if Path(entry).is_absolute():
+            result.items.append(
+                (f"ensure:{entry}", False, f"absolute path not allowed: {entry}")
+            )
+            result.passed = False
+            continue
+        target = (project_root / entry).resolve()
+        if not target.is_relative_to(root_resolved):
+            result.items.append(
+                (f"ensure:{entry}", False, f"path escapes project root: {entry}")
+            )
+            result.passed = False
+            continue
         ok = target.is_file()
         result.items.append((f"ensure:{entry}", ok, "present" if ok else f"missing: {entry}"))
         if not ok:

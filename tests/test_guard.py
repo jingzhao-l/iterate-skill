@@ -8,6 +8,7 @@ output and the ``iterate guard`` / ``iterate invariant`` CLI exit codes.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -192,6 +193,38 @@ class TestGuardPrecheck:
         assert result.passed is False
         assert any(label == "manifest[typescript]" and not ok for label, ok, _ in result.items)
         assert not any(label == "manifests ready" and ok for label, ok, _ in result.items)
+
+    def test_missing_command_tool_fails(self, tmp_path, monkeypatch) -> None:
+        """A configured command whose first token is not resolvable on PATH must
+        fail pre-check: the promised post-check could not possibly run it (N1)."""
+        project = _make_project(tmp_path)
+        (project / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+        config = _base_config()
+        # bandit is a known-safe prefix, but simulate it not being installed.
+        config["validation"]["commands"] = {"python": ["bandit -r src/"]}
+        _write_config(project, config)
+
+        real_which = shutil.which
+
+        def _which_none_for_bandit(token: str):
+            return None if token == "bandit" else real_which(token)
+
+        monkeypatch.setattr("iterate_cli.guard.shutil.which", _which_none_for_bandit)
+        result = run_guard_precheck(project, [])
+        assert result.passed is False
+        assert any(label == "tools available" and not ok for label, ok, _ in result.items)
+        assert any("bandit" in detail for _, _, detail in result.items)
+
+    def test_shell_builtin_needs_no_binary(self, tmp_path, monkeypatch) -> None:
+        """true/false/echo execute under shell=True as builtins, so shutil.
+        must not flag them as missing even when which() resolves nothing."""
+        project = _make_project(tmp_path)
+        (project / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+        _write_config(project, _base_config())  # python: ["true"]
+        monkeypatch.setattr("iterate_cli.guard.shutil.which", lambda _t: None)
+        result = run_guard_precheck(project, [])
+        assert result.passed is True
+        assert any(label == "tools available" and ok for label, ok, _ in result.items)
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +425,32 @@ class TestInvariantCheck:
         result = run_invariant_check(project)
         assert result.passed is False
         assert any("refused: unsafe command" in detail for _, _, detail in result.items)
+
+    def test_absolute_ensure_path_rejected(self, tmp_path) -> None:
+        """An absolute path in invariants.ensure must be rejected, never
+        asserted against a file outside the project (F8)."""
+        project = _make_project(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("x", encoding="utf-8")
+        config = _base_config()
+        config["invariants"] = {"ensure": [str(outside)], "commands": {}}
+        _write_config(project, config)
+        result = run_invariant_check(project)
+        assert result.passed is False
+        assert any("absolute path not allowed" in detail for _, _, detail in result.items)
+
+    def test_ensure_path_escaping_project_rejected(self, tmp_path) -> None:
+        """A relative path resolving outside the project root (via ..) must be
+        rejected; only project-owned files may be asserted (F8)."""
+        project = _make_project(tmp_path)
+        outside = tmp_path / "secret.txt"
+        outside.write_text("x", encoding="utf-8")
+        config = _base_config()
+        config["invariants"] = {"ensure": [f"../{outside.name}"], "commands": {}}
+        _write_config(project, config)
+        result = run_invariant_check(project)
+        assert result.passed is False
+        assert any("escapes project root" in detail for _, _, detail in result.items)
 
 
 # ---------------------------------------------------------------------------
