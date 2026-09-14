@@ -892,9 +892,14 @@ def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
             problems.append(f"{name}: unknown dimension(s): {', '.join(sorted(set(map(str, unknown))))}")
         seen: set[str] = set()
         for d in dims:
-            if d in seen:
+            # A hand-edited config may hold non-string (even unhashable, e.g.
+            # nested list) entries; coerce to str so ``in`` can never raise
+            # TypeError on an unhashable value (mirrors the ``unknown`` pass
+            # above, which already normalises with str()).
+            key = str(d)
+            if key in seen:
                 problems.append(f"{name}: duplicate dimension {d!r}")
-            seen.add(d)
+            seen.add(key)
         focus = spec.get("focus")
         if focus is not None:
             if not isinstance(focus, dict):

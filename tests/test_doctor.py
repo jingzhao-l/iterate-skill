@@ -669,6 +669,24 @@ class TestDoctorDimensionSets:
             for f in report.findings
         )
 
+    def test_unhashable_dimension_entry_does_not_crash(self, tmp_path) -> None:
+        # Regression: a hand-edited config with a non-string (nested list)
+        # ``dimensions`` entry used to raise TypeError: unhashable type: 'list'
+        # inside the duplicate-detection pass, crashing the whole doctor run.
+        # It must degrade to a normal warning (the entry is not a canonical id).
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimension_sets"] = {
+            "frontend": {"dimensions": [[], "correctness"]},
+        }
+        _write_config(project, config)
+        report = run_doctor(project)
+        dim_set = next(
+            f for f in report.findings if f.check == "dimension_sets"
+        )
+        assert dim_set.severity == "warn"
+        assert "unknown dimension(s)" in dim_set.detail
+
 
 # ---------------------------------------------------------------------------
 # _render_summary — warning-state UX (summary must not contradict findings)
