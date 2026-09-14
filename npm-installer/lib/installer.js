@@ -617,7 +617,6 @@ function parseArgs(argv) {
     target: null,
     force: false,
     noCli: false,
-    token: process.env.GITHUB_TOKEN || null,
     token: normalizeToken(process.env.GITHUB_TOKEN),
     // Non-install action requested via -h/--help/-v/--version. bin/cli.js
     // inspects this before running main() and exits 0 without installing.

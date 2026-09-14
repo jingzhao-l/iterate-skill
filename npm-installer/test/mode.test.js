@@ -166,6 +166,21 @@ async function run() {
   assert.strictEqual(parseArgs(['--help']).mode, 'help', '--help should set help mode');
   assert.strictEqual(parseArgs(['-h']).mode, 'help', '-h should set help mode');
 
+  // parseArgs: default token comes from $GITHUB_TOKEN through normalizeToken
+  // (trimmed), and an absent/unset variable resolves to null — the object may
+  // only ever carry the normalized value.
+  const savedToken = process.env.GITHUB_TOKEN;
+  try {
+    delete process.env.GITHUB_TOKEN;
+    assert.strictEqual(parseArgs([]).token, null, 'no env token should default to null');
+    process.env.GITHUB_TOKEN = '  gh_default_token_1  ';
+    assert.strictEqual(parseArgs([]).token, 'gh_default_token_1', 'env token should be normalized into the default');
+    assert.strictEqual(parseArgs(['--token', 'gh_explicit_2']).token, 'gh_explicit_2', '--token should override the env default');
+  } finally {
+    if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = savedToken;
+  }
+
   // parseArgs: -h/--help and -v/--version must short-circuit parsing — later
   // malformed flags (unknown options or value-consuming flags missing values
   // or swallowing the next flag) must NOT turn help/version into an error.
