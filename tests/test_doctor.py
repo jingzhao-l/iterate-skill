@@ -496,6 +496,20 @@ class TestDoctorConfigSchema:
             f.check == "config.schema" and f.severity == "warn" for f in report.findings
         )
 
+    def test_empty_command_module_is_schema_violation(self, tmp_path) -> None:
+        # A module mapped to an empty command array is meaningless (the runtime
+        # drops empty modules anyway); minItems:1 makes the schema reject it.
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {"commands": {"python": []}}
+        _write_config(project, config)
+        report = run_doctor(project)
+        schema_warns = [
+            f for f in report.findings
+            if f.check == "config.schema" and f.severity == "warn"
+        ]
+        assert schema_warns and any("non-empty" in f.detail for f in schema_warns)
+
 
 # ---------------------------------------------------------------------------
 # validation.whitelist — command whitelist compliance
