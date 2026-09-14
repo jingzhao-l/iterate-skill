@@ -119,6 +119,25 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.3.1 状态（2026-09-14）**：patch（doctor unhashable 崩溃修复 + config schema minItems 加固 + installer 清理）。GitHub Release
+      > v3.3.1 已发布（tag `v3.3.1`，CI 自动生成 `iterate-skill.tar.gz` 526,844 字节 +
+      > `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，`tar -tzf | grep harness/`
+      > 为 0、`SKILL.md version: 3.3.1`，本地 `shasum -a 256` 与 SHA256SUMS 一致）；
+      > npm `iterate-skill-installer@3.3.1` 已发布（`npm view` latest=3.3.1）；
+      > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
+      > + stage `.dist_tmp/clawhub-stage-3.3.1`（82 文件归档，发布 77 文件、1,857,426 字节）发布
+      > 3.3.1（`ok:true`，versionId `k9756pw0vkh68aa6xyy2sznr998edd45`，`publicationStatus` pending）；
+      > ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_331.py` 按 3.3.0 文件集重建精简 zip
+      > 493,903 字节、67 文件、harness 0、SKILL 3.3.1；`.dist_tmp/verify_update_331.py`
+      > `update_skill_settings` success，file_id `ed8617c3-d6f3-4563-89c0-95b4f7faad9f`）；
+      > SkillHub（skillId `104490`）经 `.dist_tmp/rebuild_skillhub_331.py` 精简包（63 文件、491,520
+      > 字节、harness 0、剔除 LICENSE/.gitignore/.gitmodules/npm-installer/LICENSE）`.skillhub publish`
+      > 成功（`ok:true`，versionId `312170`，`tags.latest=3.3.1`，`reviewStatus/securityScanStatus`
+      > =pending 为平台异步审核）。发版前全量 pytest 1042 + ruff 通过、npm 安装器测试通过。
+      > 3.3.1 内容：doctor dimension_sets 不可哈希崩溃修复（非字符串条目不再触发 TypeError）；
+      > config schema 拒绝空 validation.commands/invariants.commands 模块数组（minItems:1）；
+      > npm 安装器 parseArgs 移除死亡重复 token 默认键（行为不变）。
+      >
       > **3.3.0 状态（2026-09-12）**：guard/invariant/status 行为批次（minor）。GitHub Release
       > v3.3.0 已发布（tag `v3.3.0`，CI 自动生成 `iterate-skill.tar.gz` 525,190 字节 +
       > `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，`tar -tzf | grep harness/`
