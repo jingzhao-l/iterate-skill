@@ -1,0 +1,34 @@
+{
+  "name": "@iterate/kernel",
+  "version": "0.1.0-draft.1",
+  "private": true,
+  "description": "iterate ecosystem shared kernel: schema truth source + dual-language contracts (Phase A)",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "schemas"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "26.5.1",
+    "ajv": "8.17.1",
+    "typescript": "5.9.3"
+  }
+}
