@@ -5,6 +5,26 @@
 
 ---
 
+## [3.3.1] — 2026-09-14
+
+### 修复 / Fixes
+
+- **doctor dimension_sets 不可哈希崩溃**：手写配置里 `dimensions` 含非字符串条目（如内嵌列表 `[[], "correctness"]`）时，去重检查 `d in seen` 直接抛 `TypeError: unhashable type: 'list'` 令整个 `iterate doctor` 崩溃；现先归一化为 `str` 再判定，崩溃降级为常规 unknown-dimension 警告（doctor.py `_check_dimension_sets` 去重与 `unknown` 两遍归一化逻辑统一）。
+
+### 加固 / Hardening
+
+- **config schema 拒绝空命令列表**：`validation.commands` 与 `invariants.commands` 各模块条目增加 `minItems: 1`（与 `command_whitelist` 一致）——空数组毫无意义（运行时本就自动丢弃空模块），直接在 schema 层面报出；`iterate_cli/data/config.schema.json` 打包副本同步。
+
+### 维护 / Maintenance
+
+- **npm 安装器清理**：`parseArgs` 移除重复死亡的 `token` 默认键（`normalizeToken(...)` 永远覆盖前一默认值，行为不变）；新增 `parseArgs([])` 默认 token 归一化断言。
+
+### 测试 / Tests
+
+- 全量 1041 个 Python 测试通过、`ruff check` 通过、npm 安装器测试通过；新增覆盖：不可哈希 dimension 条目不再崩溃（降级为 warn）、空命令模块触发 schema minItems 警告、加载器默认 token 归一化。
+
+---
+
 ## [3.3.0] — 2026-09-12
 
 ### 新增 / Features
