@@ -28,7 +28,7 @@
   },
   "devDependencies": {
     "@types/node": "26.5.1",
-    "ajv": "8.17.1",
+    "ajv": "8.20.0",
     "typescript": "5.9.3"
   }
 }
