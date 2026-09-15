@@ -119,6 +119,34 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.4.0 状态（2026-09-15）**：feature（`iterate update` 自更新命令）。GitHub Release
+      > v3.4.0 已发布（tag `v3.4.0`，CI 自动生成 `iterate-skill.tar.gz` 546,730 字节 +
+      > `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，`tar -tzf | grep harness/`
+      > 为 0、`SKILL.md version: 3.4.0`、pyproject 3.4.0，本地 `shasum -a 256` 与 SHA256SUMS
+      > 一致，tarball 含 `iterate_cli/updater.py`）；
+      > npm `iterate-skill-installer@3.4.0` 已发布（registry `latest=3.4.0`，E2E 实测
+      > `npx iterate-skill-installer@3.4.0 --target <tmp> --ai trae --force` 下载/校验/安装成功，
+      > SKILL.md version: 3.4.0、harness 0、updater.py present）；
+      > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
+      > + stage `.dist_tmp/clawhub-stage-3.4.0`（80 文件、1,933,945 字节）发布
+      > 3.4.0（`ok:true`，versionId `k97719j2g3ns8srag2d082xmch8eea50`，`publicationStatus` pending）；
+      > ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_340.py` 按 3.3.1 文件集重建精简 zip
+      > 529,928 字节、73 文件、harness 0、SKILL 3.4.0，并补回此前 3.3.1 缺失的
+      > iterate_cli/{configcmd,guard,dimension_sets,updater}.py + 新增 test_updater*；
+      > `.dist_tmp/verify_update_340.py` `update_skill_settings` success，
+      > file_id `c9fb069b-c433-429b-91a5-03291cc16d33`）；
+      > SkillHub（skillId `104490`）经 `.dist_tmp/rebuild_skillhub_340.py` 精简包（69 文件、527,545
+      > 字节、harness 0、剔除 LICENSE/.gitignore/.gitmodules/npm-installer/LICENSE、含 updater.py）
+      > `.skillhub publish` 成功（`ok:true`，versionId `316974`，`tags.latest=3.4.0`，
+      > `reviewStatus/securityScanStatus`=pending 为平台异步审核）。发版前全量 pytest 1089 + ruff
+      > 通过、npm 安装器测试通过。
+      > 3.4.0 内容：`iterate update`——SHA-256 校验先行（不匹配拒绝任何写入）后，刷新已安装
+      > 助手技能目录（按 install.py SUPPORTED_AI 布局，harness 永不入）+ 重装 CLI（pip
+      > `--force-reinstall --no-deps` / 源码 `git pull --ff-only` + `pip install -e`）；交互确认
+      > 默认 No、`--check` 零写入、`--json` 结构化、`--assistants` 限定范围、单助手失败不阻断；
+      > `iterate --version` 24h 缓存式升级提示（可 `ITERATE_UPDATE_CHECK=0` 关闭）。新增
+      > tests/test_updater.py（44 项，offline mock）+ tests/test_updater_sync.py（3 项 AST 锁定）。
+      >
       > **3.3.1 状态（2026-09-14）**：patch（doctor unhashable 崩溃修复 + config schema minItems 加固 + installer 清理）。GitHub Release
       > v3.3.1 已发布（tag `v3.3.1`，CI 自动生成 `iterate-skill.tar.gz` 526,844 字节 +
       > `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，`tar -tzf | grep harness/`
