@@ -10,6 +10,7 @@ Provides subcommands for onboarding and personalization management:
     iterate doctor      — Project health diagnostics (--json / --json-out / --fix)
     iterate guard       — Defensive-programming pre/post-edit checks (v3.0)
     iterate invariant   — Project-level invariant check (v3.0, defensive mode)
+    iterate update      — Self-update the CLI + installed assistant skill dirs
     iterate --version   — Print version
 
 All user-facing output is routed through the unified TUI layer
@@ -79,10 +80,14 @@ def main(argv: list[str] | None = None) -> int:
         if sys.stdout.isatty():
             tui.info(f"iterate {__version__}")
             tui.empty_line()
-            tui.hint("Install the skill across AI assistants: npx iterate-skill-installer")
+            tui.hint(
+                "Install the skill across AI assistants: npx iterate-skill-installer"
+            )
             tui.hint("Initialize a project: iterate onboard")
         else:
             print(f"iterate {__version__}")
+        # Advisory update hint (24h-cached): must never break --version.
+        _maybe_print_update_hint()
         return 0
 
     # Interactive commands never produce structured output; a caller passing
@@ -110,7 +115,9 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         # Ctrl+C mid-interaction must not surface a raw traceback.
         tui.cancel()
-        tui.hint("已中断，本次未写入任何文件 / Interrupted, nothing was written.", indent=2)
+        tui.hint(
+            "已中断，本次未写入任何文件 / Interrupted, nothing was written.", indent=2
+        )
         return 1
     except EOFError:
         # Ctrl+D / closed stdin (e.g. piped without data) mid-prompt. Show a
@@ -212,6 +219,16 @@ def _dispatch_command(
             project_root,
             json_output=getattr(args, "json", False),
         )
+    if args.command == "update":
+        if show_banner:
+            tui.banner()
+        return _cmd_update(
+            project_root,
+            check_only=getattr(args, "check", False),
+            yes=getattr(args, "yes", False),
+            json_output=getattr(args, "json", False),
+            assistants=getattr(args, "assistants", None),
+        )
     parser.print_help()
     # No subcommand given (bare `iterate`): this is a usage error, not success.
     return 2
@@ -224,7 +241,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Iterate skill onboarding and project knowledge management.",
     )
     parser.add_argument(
-        "-v", "--version",
+        "-v",
+        "--version",
         action="store_true",
         default=False,
         help="Show version and exit.",
@@ -243,7 +261,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "of TUI output (interactive commands reject it).",
     )
     parser.add_argument(
-        "-p", "--project",
+        "-p",
+        "--project",
         default=".",
         help="Project root directory (default: current directory).",
     )
@@ -255,7 +274,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # works the same as `iterate --no-banner status`.
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument(
-        "-p", "--project",
+        "-p",
+        "--project",
         default=argparse.SUPPRESS,
         help="Project root directory (default: current directory).",
     )
@@ -520,6 +540,44 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit a structured JSON object instead of TUI output.",
     )
 
+    update_parser = subparsers.add_parser(
+        "update",
+        parents=[parent],
+        help="Self-update the CLI and installed assistant skill dirs.",
+        description="Check the latest iterate-skill release, verify its SHA-256, "
+        "and apply it: refresh installed assistant skill directories (SKILL.md, "
+        "config/, iterate_cli/, scripts/, templates/, ...) and reinstall the "
+        "CLI package into the current environment. --check only compares "
+        "versions without downloading or writing anything.",
+    )
+    update_parser.add_argument(
+        "--check",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Only compare versions; never download or write.",
+    )
+    update_parser.add_argument(
+        "--yes",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Apply the update without a confirmation prompt (required for "
+        "non-interactive/CI runs).",
+    )
+    update_parser.add_argument(
+        "--assistants",
+        nargs="+",
+        default=None,
+        help="Restrict the skill-dir refresh to these assistants (default: all "
+        "detected). Omit to refresh all detected assistants.",
+    )
+    update_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON outcome instead of TUI output (implies "
+        "a write operation, so it requires --yes).",
+    )
+
     return parser
 
 
@@ -573,18 +631,24 @@ def _cmd_onboard(project_root: Path) -> int:
         from iterate_cli.personalize import load_existing_personalization
 
         existing_config = load_onboarding_config(project_root) or {}
-        existing_personalization = load_existing_personalization(project_root, existing_config)
+        existing_personalization = load_existing_personalization(
+            project_root, existing_config
+        )
         if not existing_personalization.is_empty():
             data.personalization = existing_personalization
 
     try:
-        iterate_md, config_yaml = write_onboarding_outputs(data, project_root, existing_md)
+        iterate_md, config_yaml = write_onboarding_outputs(
+            data, project_root, existing_md
+        )
     except (OSError, UnicodeDecodeError) as exc:
         # Writing either artifact failed (disk full, permissions, locked file,
         # or a corrupt template). Surface a clear message instead of a bare
         # traceback; the writer already rolled back partially-written files.
         tui.error(f"写入 onboarding 产物失败：{exc}")
-        tui.warning("未写入或已回滚 ITERATE.md / iterate.config.yaml，请检查目录权限后重试。")
+        tui.warning(
+            "未写入或已回滚 ITERATE.md / iterate.config.yaml，请检查目录权限后重试。"
+        )
         return 1
     tui.empty_line()
     tui.success("Onboarding complete!")
@@ -638,7 +702,9 @@ def _cmd_personalize(project_root: Path, clear: bool = False, yes: bool = False)
     # free-form notes/conventions from ITERATE.md) so re-running the wizard
     # preserves previously entered content instead of wiping it.
     existing_config = load_onboarding_config(project_root) or {}
-    existing_personalization = load_existing_personalization(project_root, existing_config)
+    existing_personalization = load_existing_personalization(
+        project_root, existing_config
+    )
 
     personalization = run_personalize_wizard(
         project_root,
@@ -652,7 +718,9 @@ def _cmd_personalize(project_root: Path, clear: bool = False, yes: bool = False)
     # must not be rewritten over, so the strict loader's error is surfaced
     # cleanly instead of a bare traceback.
     try:
-        config_path, iterate_md_path = save_personalization(project_root, personalization)
+        config_path, iterate_md_path = save_personalization(
+            project_root, personalization
+        )
     except CorruptConfigError as exc:
         tui.error(str(exc))
         return 1
@@ -817,7 +885,9 @@ def _cmd_refresh(
         if preview["changed"]:
             stats = preview["stats"]
             tui.warning("Refresh would make the following changes:")
-            tui.key_value("ITERATE.md", f"{preview['md_changed_lines']} line(s) changed")
+            tui.key_value(
+                "ITERATE.md", f"{preview['md_changed_lines']} line(s) changed"
+            )
             tui.bullet(
                 f"+{stats.get('added', 0)} / -{stats.get('removed', 0)}",
                 indent=4,
@@ -827,9 +897,14 @@ def _cmd_refresh(
                 "would be updated" if preview["config_changed"] else "unchanged",
             )
             tui.empty_line()
-            tui.hint("Run 'iterate refresh' (without --dry-run) to apply these changes.", indent=2)
+            tui.hint(
+                "Run 'iterate refresh' (without --dry-run) to apply these changes.",
+                indent=2,
+            )
         else:
-            tui.success("No changes needed — ITERATE.md and iterate.config.yaml are already up to date.")
+            tui.success(
+                "No changes needed — ITERATE.md and iterate.config.yaml are already up to date."
+            )
         return 0
 
     if json_output:
@@ -861,10 +936,14 @@ def _cmd_refresh(
     success = incremental_refresh(project_root)
     if success:
         tui.success("Incremental refresh complete.")
-        tui.hint("AI-maintained sections updated, user-owned sections preserved.", indent=2)
+        tui.hint(
+            "AI-maintained sections updated, user-owned sections preserved.", indent=2
+        )
         return 0
     else:
-        tui.error("Refresh failed. Could not read or write ITERATE.md / iterate.config.yaml (see stderr).")
+        tui.error(
+            "Refresh failed. Could not read or write ITERATE.md / iterate.config.yaml (see stderr)."
+        )
         return 1
 
 
@@ -887,7 +966,10 @@ def _cmd_reonboard(project_root: Path) -> int:
         # Cancelling is a normal (non-error) user decision; mirror onboarding's
         # cancel message and exit code so scripts see "not written" clearly.
         tui.cancel()
-        tui.hint("Re-onboarding cancelled. Old files are intact (a .bak snapshot was taken).", indent=2)
+        tui.hint(
+            "Re-onboarding cancelled. Old files are intact (a .bak snapshot was taken).",
+            indent=2,
+        )
         return 1
     else:
         # REONBOARD_FAILED may be a backup failure (nothing was backed up) or
@@ -954,7 +1036,11 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     # no-op, and a config file that exists but fails to parse must be
     # distinguished from "no config" so the operator is not told the file is
     # missing when it is actually corrupt.
-    config = load_onboarding_config(project_root) if onboarded and data["config_exists"] else None
+    config = (
+        load_onboarding_config(project_root)
+        if onboarded and data["config_exists"]
+        else None
+    )
     data["config_ok"] = config is not None
     data["onboarded"] = onboarded
 
@@ -1131,7 +1217,9 @@ def _cmd_doctor(
                     )
                 )
                 return 1
-            tui.error("doctor --fix: could not read or safely fix iterate.config.yaml (see stderr).")
+            tui.error(
+                "doctor --fix: could not read or safely fix iterate.config.yaml (see stderr)."
+            )
             return 1
         if not json_output:
             if fixes:
@@ -1366,3 +1454,174 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
         )
     return 0
 
+
+# ---------------------------------------------------------------------------
+# Helpers shared by subcommand handlers
+# ---------------------------------------------------------------------------
+
+
+def _stdin_is_interactive() -> bool:
+    """Return True when stdin is a real terminal (not piped/redirected)."""
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _confirm(
+    question: str,
+    input_func: Callable[[str], str] = input,
+    default: bool = False,
+) -> bool:
+    """Ask a yes/no question using the TUI question prompt (default [y/N])."""
+    hint = "[Y/n]" if default else "[y/N]"
+    if question:
+        tui.question(question)
+    while True:
+        raw = input_func(f"  └ {hint} ").strip().lower()
+        if not raw:
+            return default
+        if raw in ("y", "yes"):
+            return True
+        if raw in ("n", "no"):
+            return False
+        tui.warning("请输入 y 或 n / Please enter y or n.", indent=4)
+
+
+def _maybe_print_update_hint() -> None:
+    """Emit a one-line update hint (advisory, best-effort). Never raises."""
+    try:
+        from iterate_cli.updater import maybe_print_update_hint
+
+        maybe_print_update_hint()
+    except Exception:  # noqa: BLE001 — advisory only, must never break --version
+        pass
+
+
+# ---------------------------------------------------------------------------
+# ``iterate update`` subcommand
+# ---------------------------------------------------------------------------
+
+
+def _report_update_outcome(
+    outcome: Any,
+    *,
+    json_output: bool = False,
+    title_prefix: str = "",
+) -> int:
+    """Report the outcome of ``iterate update`` in TUI or JSON format."""
+    if json_output:
+        print(json.dumps(outcome.to_dict(), ensure_ascii=False, indent=2))
+        if not outcome.up_to_date or outcome.cancelled or outcome.unreachable:
+            return 1
+        if outcome.cli_result is not None and not outcome.cli_result.success:
+            return 1
+        if outcome.assistants_failed:
+            return 1
+        return 0
+
+    if outcome.unreachable:
+        tui.error(
+            f"{title_prefix}Could not check for updates: {outcome.download_error}"
+        )
+        return 1
+    if outcome.check_only or outcome.up_to_date:
+        tui.success(
+            f"{title_prefix}You are running the latest version ({outcome.current})."
+        )
+        return 0
+    if outcome.cancelled:
+        tui.info(f"{title_prefix}Update available but not applied.")
+        tui.hint(
+            "Run `iterate update --yes` to apply, or `iterate update --check` "
+            "to view the latest version.",
+            indent=2,
+        )
+        return 0
+
+    if outcome.cli_result is not None:
+        if outcome.cli_result.success:
+            tui.success(f"{title_prefix}CLI updated: {outcome.cli_result.message}")
+        else:
+            tui.warning(
+                f"{title_prefix}CLI update failed: {outcome.cli_result.message}"
+            )
+    if outcome.assistants_updated:
+        names = ", ".join(outcome.assistants_updated)
+        tui.success(f"{title_prefix}Assistant skill dirs updated: {names}")
+    if outcome.assistants_failed:
+        for name, reason in outcome.assistants_failed:
+            tui.warning(f"{title_prefix}Assistant {name} failed to update: {reason}")
+    if outcome.download_error:
+        tui.warning(f"{title_prefix}Download error: {outcome.download_error}")
+
+    any_failure = (
+        outcome.cli_result is not None and not outcome.cli_result.success
+    ) or bool(outcome.assistants_failed)
+    return 1 if any_failure else 0
+
+
+def _cmd_update(
+    project_root: Path,
+    *,
+    check_only: bool = False,
+    yes: bool = False,
+    json_output: bool = False,
+    assistants: list[str] | None = None,
+) -> int:
+    """Handle the 'update' subcommand — self-update the CLI and skill dirs."""
+    import iterate_cli.updater as updater_mod
+
+    # --json for a write operation requires --yes (non-interactive explicit consent).
+    if json_output and not yes and not check_only:
+        tui.error(
+            "--json for `iterate update` requires --yes (a write operation "
+            "must be explicitly confirmed). Use --check to read-only compare "
+            "versions without --yes."
+        )
+        return 2
+
+    if check_only:
+        outcome = updater_mod.run_update(
+            project_root=project_root,
+            check_only=True,
+        )
+        if json_output:
+            print(json.dumps(outcome.to_dict(), ensure_ascii=False, indent=2))
+            return 0 if not outcome.unreachable else 1
+        tui.intro("Iterate Skill — Update Check")
+        return _report_update_outcome(outcome, json_output=False, title_prefix="\n")
+
+    confirmed = yes
+    if not confirmed:
+        if not _stdin_is_interactive():
+            tui.hint(
+                "Non-interactive stdin detected. Pass --yes to apply the update "
+                "automatically, or --check to only compare versions."
+            )
+            return 1
+        # Interactive path: check first, confirm, then apply.
+        outcome = updater_mod.run_update(
+            project_root=project_root,
+            check_only=True,
+        )
+        if outcome.unreachable:
+            tui.error(f"\nCould not check for updates: {outcome.download_error}")
+            return 1
+        if outcome.up_to_date:
+            tui.success(f"\nYou are running the latest version ({outcome.current}).")
+            return 0
+        version_line = f"{outcome.current} → {outcome.latest}"
+        tui.info(f"\nUpdate available: {version_line}")
+        if not _confirm("Apply this update now?", default=False):
+            tui.cancel()
+            tui.hint("Update cancelled. Nothing was changed.", indent=2)
+            return 0
+        confirmed = True
+
+    outcome = updater_mod.run_update(
+        project_root=project_root,
+        confirmed=confirmed,
+        assistants=assistants,
+    )
+    return _report_update_outcome(outcome, json_output=json_output, title_prefix="\n")

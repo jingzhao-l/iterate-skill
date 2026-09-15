@@ -5,6 +5,22 @@
 
 ---
 
+## [3.4.0] — Unreleased
+
+### 新增 / Features
+
+- **`iterate update` 自更新命令**：一键把 CLI 与所有已安装的助手技能目录更新到最新 GitHub Release，全程不依赖 ~/.agents/skills 结构：
+  - **校验先行**：从 GitHub API 拉取 latest release（`iterate-skill.tar.gz` + `SHA256SUMS.txt`），任何写入发生前先做 50 MiB 有界下载、SHA-256 逐字节核对、安全解压（拒路径穿越/解压炸弹/设备节点）；校验不通过一律拒绝写入。
+  - **双目标更新**：(a) 按 `scripts/install.py` 的 `SUPPORTED_AI` 布局刷新已安装助手技能目录（SKILL.md / config/ / iterate_cli/ / scripts/ / templates/ ...，剔除 harness/ 并清理历史残留）；(b) 重装 CLI 包——pip 安装走 `--force-reinstall --no-deps` 已验证解压源码，源码安装走 `git pull --ff-only` + `pip install -e`。
+  - **交互语义**：默认交互式确认（默认 No，与安装器一致）；非交互 stdin 需显式 `--yes`；`--check` 只对比版本零写入；`--json` 输出结构化结果（需 `--yes`）；`--assistants` 可限定刷新范围；单一助手失败不阻断其余更新。
+  - **`iterate --version` 更新提示**：24h 缓存式一次性提示"有新版本，运行 `iterate update`"（`ITERATE_UPDATE_CHECK=0` 可关闭；任何异常静默降级，绝不破坏 `--version`）。
+
+### 测试 / Tests
+
+- 全量 1089 个 Python 测试通过、`ruff check` 通过。新增 47 项：`tests/test_updater.py` 覆盖版本比较、release 发现（mock 网络，含 403/404/网络异常/坏 JSON）、SHA-256 校验匹配/不匹配/缺条目、安全解压与顶层布局断言、安装方式检测、助手目录检测去重、技能目录复制/替换/清理/harness 剔除/符号链接祖先防护、pip/source 两种 CLI 重装（mock runner）、`run_update` 全流程（不可达/已是最新/未确认取消/校验失败拒绝/单助手失败容错）、缓存提示；`tests/test_updater_sync.py` 用 AST 锁定 `ASSISTANT_SKILL_DIRS`/`REQUIRED_RELEASE_PATHS`/`OPTIONAL_RELEASE_PATHS` 与 `scripts/install.py` 三份同名常量永不漂移。
+
+---
+
 ## [3.3.1] — 2026-09-14
 
 ### 修复 / Fixes
