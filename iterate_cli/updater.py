@@ -621,8 +621,10 @@ class UpdateResult:
     message: str
 
 
-def _default_runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True)
+def _default_runner(
+    argv: list[str], *, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
 
 
 def _run_command(
@@ -632,7 +634,14 @@ def _run_command(
     what: str,
 ) -> None:
     try:
-        result = runner(argv)
+        if runner is _default_runner:
+            result = _default_runner(argv, timeout=timeout)
+        else:
+            result = runner(argv)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"{what} timed out after {timeout:g}s for command {argv!r}"
+        ) from error
     except OSError as error:
         raise RuntimeError(f"{what} failed to start: {error}") from error
     if result.returncode != 0:
