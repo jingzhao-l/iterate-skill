@@ -1512,14 +1512,32 @@ def _report_update_outcome(
     """Report the outcome of ``iterate update`` in TUI or JSON format."""
     if json_output:
         print(json.dumps(outcome.to_dict(), ensure_ascii=False, indent=2))
-        if not outcome.up_to_date or outcome.cancelled or outcome.unreachable:
-            return 1
-        if outcome.cli_result is not None and not outcome.cli_result.success:
+        if outcome.assistants_unknown or outcome.unreachable:
             return 1
         if outcome.assistants_failed:
             return 1
+        if (
+            not outcome.cancelled
+            and not outcome.up_to_date
+            and outcome.cli_result is not None
+            and not outcome.cli_result.success
+        ):
+            return 1
         return 0
 
+    if outcome.assistants_unknown:
+        tui.error(
+            f"{title_prefix}Unknown assistant name(s): "
+            f"{', '.join(sorted(outcome.assistants_unknown))}. "
+            "Valid assistants: "
+            + (
+                ", ".join(sorted(outcome.assistants_updated))
+                if outcome.assistants_updated
+                else "see `iterate update --help`"
+            )
+            + "."
+        )
+        return 1
     if outcome.unreachable:
         tui.error(
             f"{title_prefix}Could not check for updates: {outcome.download_error}"

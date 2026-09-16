@@ -835,6 +835,7 @@ class UpdateOutcome:
     cli_result: Optional[UpdateResult] = None
     assistants_updated: list[str] = field(default_factory=list)
     assistants_failed: list[tuple[str, str]] = field(default_factory=list)
+    assistants_unknown: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Structured representation for ``--json`` output."""
@@ -860,7 +861,20 @@ class UpdateOutcome:
                 {"assistant": name, "error": reason}
                 for name, reason in self.assistants_failed
             ],
+            "assistants_unknown": self.assistants_unknown,
         }
+
+
+def validate_assistant_names(assistants: Optional[list[str]]) -> list[str]:
+    """Return the ``--assistants`` names that are not known assistant keys.
+
+    Empty list means every requested name is valid. An explicit empty list is
+    itself a valid value (it means "skip the skill-dir refresh"), so it is
+    never reported as unknown.
+    """
+    if not assistants:
+        return []
+    return [name for name in assistants if name not in ASSISTANT_SKILL_DIRS]
 
 
 def run_update(
@@ -898,6 +912,13 @@ def run_update(
         method=detect_install_method(),
         check_only=check_only,
     )
+
+    # Fail fast on unknown assistant names (before any network call): a typo
+    # like ``--assistants cluade`` must not silently update only a subset of
+    # the requested assistants or, worse, be mistaken for "no assistants".
+    outcome.assistants_unknown = validate_assistant_names(assistants)
+    if outcome.assistants_unknown:
+        return outcome
 
     release, error = fetch_latest_release(fetch=fetch)
     if release is None:
