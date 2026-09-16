@@ -5,6 +5,24 @@
 
 ---
 
+## [3.4.1] — 2026-09-16
+
+### 修复 / Fixes
+
+- **`iterate update` 子进程超时生效（F28）**：`updater._run_command` 先前只把 `timeout` 参数接住却从未传给 `subprocess.run` —— `GIT_TIMEOUT_SECONDS`（120s）与 `PIP_TIMEOUT_SECONDS`（600s）是花瓶常量，`git pull --ff-only` / `pip install` 一旦挂起，整个 `iterate update` 会无限阻塞；现生产默认 runner 真正以 `timeout=` 传给 `subprocess.run`，`subprocess.TimeoutExpired` 转成可读的 `RuntimeError`（清晰报错指令与超时时长），注入的测试 runner 保持原 `(argv)` 契约不变。
+- **安全解压覆盖目录成员与符号链接（F29）**：`updater._safe_extractall` 此前只对非目录成员做路径穿越检查，`../escape/` 这类目录成员在无 `tarfile.data_filter` 的 Python（<3.12）回退路径上可逃逸；现每个成员（含目录）统一校验为相对路径、拒绝绝对路径/`..` 段，符号链接/硬链接成员的链接目标也拒绝绝对路径与逃逸目标，设备/管道成员照旧拒绝。
+- **下载上限按字节精确执行（F30）**：`updater._urlopen_bounded` 原按"块数"近似封顶（最多可读到 ~52.4 MiB > 50 MiB），现改为累计真实字节数，超过 `MAX_DOWNLOAD_BYTES` 立即中断。
+
+### 加固 / Hardening
+
+- **`iterate update --assistants` 白名单（F31）**：`--assistants` 传入未知助手名（如 `--assistants cluade`）此前被静默忽略，只更新了命中的助手子集，极易误判为"全部未装"；`run_update` 现在**在任何网络请求前**用 `ASSISTANT_SKILL_DIRS` 校验名称，未知名字失败快返（`outcome.assistants_unknown`，CLI 列出合法名 + 退出码 1，`--json` 含 `assistants_unknown` 字段）。`--assistants` 空列表（= 跳过技能目录刷新）与缺省（= 全部）不受影响。
+
+### 测试 / Tests
+
+- 全量 1104 个 Python 测试通过、`ruff check` 通过。新增 15 项：生产 runner 超时确实传给 `subprocess.run`、注入 runner 契约不变、`TimeoutExpired` 转可读错误；目录穿越 / 绝对路径 / `..` 逃逸 / 绝对链接目标 / 逃逸链接目标 各自被拒，良性树正常解压；50 MiB 上限恰好放行、多 1 字节拒绝；`--assistants` 已知名 ok / 未知名上报 / 空列表合法 / 未知名失败快返不碰网络 / `to_dict` 含 `assistants_unknown`。
+
+---
+
 ## [3.4.0] — 2026-09-15
 
 ### 新增 / Features

@@ -319,7 +319,7 @@ iterate fingerprint verify  # 校验 manifest 指纹漂移（--json）
 iterate config       # 非交互式查看全部可设配置值（支持 --json）
 iterate config get <key>   # 读取单个配置项的解析值（支持 --json，输出 {"key": value}）
 iterate config set <key> <value>  # 校验并写回单个配置项（自动备份；--json 输出确认对象）
-iterate update       # 自更新：SHA-256 校验后刷新助手技能目录 + 重装 CLI（--check 只对比版本；--yes 跳过确认）
+iterate update       # 自更新：SHA-256 校验后刷新助手技能目录 + 重装 CLI（--check 只对比版本；--yes 跳过确认；--assistants 限定刷新范围，未知助手名报错而非静默跳过）
 ```
 
 CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适合希望手动控制 onboarding 过程的用户；AI 通道则完全由 AI 自动扫描生成。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。
