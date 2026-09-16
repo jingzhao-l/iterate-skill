@@ -233,11 +233,13 @@ def _urlopen_bounded(url: str, timeout: float, headers: dict[str, str]) -> bytes
         request.add_header(key, value)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         chunks: list[bytes] = []
+        total = 0
         while True:
             chunk = response.read(_DOWNLOAD_CHUNK_SIZE)
             if not chunk:
                 break
-            if len(chunks) >= (MAX_DOWNLOAD_BYTES // _DOWNLOAD_CHUNK_SIZE) + 1:
+            total += len(chunk)
+            if total > MAX_DOWNLOAD_BYTES:
                 raise OSError(f"payload exceeds {MAX_DOWNLOAD_BYTES} byte safety cap")
             chunks.append(chunk)
     return b"".join(chunks)
