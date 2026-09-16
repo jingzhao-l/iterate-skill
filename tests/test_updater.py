@@ -667,3 +667,284 @@ def test_update_outcome_to_dict_shape() -> None:
     assert d["assistants_failed"] == [{"assistant": "cursor", "error": "boom"}]
     assert d["cancelled"] is False
     assert d["up_to_date"] is False
+
+
+# ---------------------------------------------------------------------------
+# _run_command timeout enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_run_command_production_runner_applies_timeout(monkeypatch) -> None:
+    """The production default runner must bound git/pip work by the timeout."""
+    executed: list[dict[str, object]] = []
+
+    def fake_run(argv, **kwargs):
+        executed.append({"argv": argv, "timeout": kwargs.get("timeout")})
+        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(updater.subprocess, "run", fake_run)
+    updater._run_command(
+        ["git", "pull"], updater._default_runner, 120, "git pull"
+    )
+    assert executed, "spin: subprocess.run should have been called"
+    assert executed[0]["timeout"] == 120
+
+
+def test_run_command_injected_runner_keeps_contract() -> None:
+    """Injected test runners keep the original (argv) signature."""
+
+    def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
+
+    # Must not raise; the injected runner receives no timeout kwarg.
+    updater._run_command(["echo", "hi"], runner, 60, "test cmd")
+
+
+def test_run_command_timeout_expired_reports_runtime_error(monkeypatch) -> None:
+    """A subprocess.TimeoutExpired becomes a readable RuntimeError, not a crash."""
+
+    def hanging_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout"), output=b"", stderr=b"")
+
+    monkeypatch.setattr(updater.subprocess, "run", hanging_run)
+    with pytest.raises(RuntimeError, match="timed out after 600s"):
+        updater._run_command(
+            ["pip", "install"], updater._default_runner, 600, "pip install"
+        )
+
+
+# ---------------------------------------------------------------------------
+# _safe_extractall: traversal / symlink / bomb members
+# ---------------------------------------------------------------------------
+
+
+def _tarball_with_members(file_names: list[str]) -> bytes:
+    """Build a gzip tarball containing one empty member with each given name."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name in file_names:
+            if name.endswith("/"):
+                info = tarfile.TarInfo(name)
+                info.type = tarfile.DIRTYPE
+                tar.addfile(info)
+            else:
+                data = b"content"
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def test_safe_extractall_rejects_dir_traversal_member(tmp_path) -> None:
+    """A ``../escape/`` directory member must be refused, not just files."""
+    blob = _tarball_with_members(["../escape/"])
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        with pytest.raises(tarfile.TarError, match="traversal"):
+            updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_rejects_absolute_member(tmp_path) -> None:
+    blob = _tarball_with_members(["/etc/evil"])
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        with pytest.raises(tarfile.TarError, match="absolute"):
+            updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_rejects_escaping_relative_member(tmp_path) -> None:
+    blob = _tarball_with_members(["a/../../escape.txt"])
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        with pytest.raises(tarfile.TarError, match="traversal"):
+            updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_rejects_symlink_absolute_target(tmp_path) -> None:
+    """A symlink member whose link target is absolute must be refused."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tar.addfile(info)
+    buf.seek(0)
+    with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+        with pytest.raises(tarfile.TarError, match="absolute link target"):
+            updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_rejects_symlink_escaping_target(tmp_path) -> None:
+    """A symlink member whose link target escapes the root must be refused."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "../../outside"
+        tar.addfile(info)
+    buf.seek(0)
+    with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+        with pytest.raises(tarfile.TarError, match="escaping"):
+            updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_accepts_benign_tree(tmp_path) -> None:
+    blob = _tarball_with_members(["SKILL.md", "config/dimensions/core.yaml"])
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        updater._safe_extractall(tar, tmp_path)
+    assert (tmp_path / "SKILL.md").is_file()
+    assert (tmp_path / "config" / "dimensions" / "core.yaml").is_file()
+
+
+# ---------------------------------------------------------------------------
+# Byte-accurate download cap (_urlopen_bounded)
+# ---------------------------------------------------------------------------
+
+
+def test_urlopen_bounded_enforces_byte_cap(monkeypatch) -> None:
+    """The 50 MiB cap must be enforced on bytes, not chunk count."""
+
+    class FakeResponse:
+        def __init__(self, total: int) -> None:
+            self.remaining = total
+
+        def read(self, size: int) -> bytes:
+            if self.remaining <= 0:
+                return b""
+            chunk = min(size, self.remaining)
+            self.remaining -= chunk
+            return b"x" * chunk
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __getattr__(self, name):
+            return 200  # status used nowhere here; be permissive
+
+    class FakeRequest:
+        def add_header(self, key: str, value: str) -> None:
+            return None
+
+    _totals: list[int] = []  # assigned dynamically below via closure
+
+    def fake_request(url: str, method: str = "GET"):
+        req = FakeRequest()
+        req._total = _totals
+        return req
+
+    monkeypatch.setattr(
+        updater.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeResponse(request._total.pop(0)),
+    )
+    monkeypatch.setattr(updater.urllib.request, "Request", fake_request)
+
+    # Exactly at the cap: allowed.
+    cap = updater.MAX_DOWNLOAD_BYTES
+    _totals[:] = [cap]
+    assert len(updater._urlopen_bounded("https://x.invalid/a", 10, {})) == cap
+    # One byte over the cap: rejected.
+    _totals[:] = [cap + 1]
+    with pytest.raises(OSError, match="safety cap"):
+        updater._urlopen_bounded("https://x.invalid/a", 10, {})
+
+
+# ---------------------------------------------------------------------------
+# --assistants name validation
+# ---------------------------------------------------------------------------
+
+
+def test_validate_assistant_names_known_names_ok() -> None:
+    from iterate_cli.updater import ASSISTANT_SKILL_DIRS
+
+    known = list(ASSISTANT_SKILL_DIRS)[:2]
+    assert updater.validate_assistant_names(known) == []
+
+
+def test_validate_assistant_names_unknown_reported() -> None:
+    unknown = updater.validate_assistant_names(["claude", "not-a-real-assistant"])
+    assert unknown == ["not-a-real-assistant"]
+
+
+def test_validate_assistant_names_empty_skips_are_valid() -> None:
+    assert updater.validate_assistant_names([]) == []
+    assert updater.validate_assistant_names(None) == []
+
+
+def test_run_update_rejects_unknown_assistants_before_network(tmp_path) -> None:
+    """Unknown --assistants names fail fast with no download/apply."""
+    home, proj = _fake_home(tmp_path)
+
+    def fetch(url: str, **kw):
+        raise AssertionError("network must not be touched for unknown assistants")
+
+    outcome = run_update(
+        project_root=proj, home=home, confirmed=True, fetch=fetch,
+        assistants=["claude", "bogus"],
+    )
+    assert outcome.assistants_unknown == ["bogus"]
+    assert outcome.unreachable is False
+    assert outcome.latest is None
+
+
+def test_update_outcome_to_dict_includes_unknown_assistants() -> None:
+    outcome = UpdateOutcome(current="3.3.1", assistants_unknown=["bogus"])
+    d = outcome.to_dict()
+    assert d["assistants_unknown"] == ["bogus"]
+
+
+# ---------------------------------------------------------------------------
+# CLI exit-code semantics for `iterate update` (JSON report)
+# ---------------------------------------------------------------------------
+
+
+def _report_json(outcome: UpdateOutcome, capsys, monkeypatch) -> int:
+    from iterate_cli import cli
+
+    monkeypatch.setattr(cli, "_stdin_is_interactive", lambda: True)
+    return cli._report_update_outcome(outcome, json_output=True)
+
+
+def test_report_json_successful_update_returns_zero(capsys, monkeypatch) -> None:
+    """A successfully-applied update exits 0 in --json mode (was 1)."""
+    outcome = UpdateOutcome(
+        current="3.4.0",
+        latest="3.4.1",
+        check_only=False,
+        up_to_date=False,
+        cancelled=False,
+        cli_result=UpdateResult(True, "CLI reinstalled from verified release source"),
+        assistants_updated=["claude"],
+    )
+    code = _report_json(outcome, capsys, monkeypatch)
+    assert code == 0
+
+
+def test_report_json_failed_cli_update_returns_one(capsys, monkeypatch) -> None:
+    outcome = UpdateOutcome(
+        current="3.4.0",
+        latest="3.4.1",
+        check_only=False,
+        up_to_date=False,
+        cli_result=UpdateResult(False, "pip failed"),
+    )
+    code = _report_json(outcome, capsys, monkeypatch)
+    assert code == 1
+
+
+def test_report_json_unknown_assistants_returns_one(capsys, monkeypatch) -> None:
+    outcome = UpdateOutcome(
+        current="3.4.0",
+        latest="3.4.1",
+        check_only=False,
+        up_to_date=False,
+        assistants_unknown=["bogus"],
+    )
+    code = _report_json(outcome, capsys, monkeypatch)
+    assert code == 1
+
+
+def test_report_json_up_to_date_returns_zero(capsys, monkeypatch) -> None:
+    outcome = UpdateOutcome(current="3.4.0", latest="3.4.0", up_to_date=True)
+    code = _report_json(outcome, capsys, monkeypatch)
+    assert code == 0
