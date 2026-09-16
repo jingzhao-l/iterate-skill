@@ -396,10 +396,9 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
     """Extract ``tar`` under ``path``, refusing traversal/escape/bomb members."""
     members = tar.getmembers()
     total = 0
-    path_root = Path(path).resolve()
     for member in members:
-        if member.isdev() or member.isfifo() or member.islnk():
-            raise tarfile.TarError(f"refusing special member: {member.name!r}")
+        if member.isdev() or member.isfifo():
+            raise tarfile.TarError(f"refusing device/fifo member: {member.name!r}")
         if member.size > MAX_EXTRACT_MEMBER_BYTES:
             raise tarfile.TarError(
                 f"suspicious member size: {member.name} is {member.size} bytes"
@@ -407,11 +406,26 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
         total += member.size
         if total > MAX_EXTRACT_BYTES:
             raise tarfile.TarError("archive expands past the decompression-bomb cap")
-        if not member.isdir():
-            target = (path_root / member.name).resolve()
-            if not target.is_relative_to(path_root):
+        name = member.name.replace("\\", "/")
+        if name.startswith("/") or name.startswith("\\"):
+            raise tarfile.TarError(f"refusing absolute member path: {member.name!r}")
+        normalized = os.path.normpath(name)
+        if normalized in (".", ""):
+            continue
+        if normalized.startswith("..") or "/../" in f"/{normalized}":
+            raise tarfile.TarError(
+                f"refusing path traversal member: {member.name!r}"
+            )
+        if member.issym() or member.islnk():
+            link = member.linkname.replace("\\", "/")
+            if link.startswith("/") or link.startswith("\\"):
                 raise tarfile.TarError(
-                    f"refusing path traversal member: {member.name!r}"
+                    f"refusing absolute link target: {member.name!r} -> {member.linkname!r}"
+                )
+            norm_link = os.path.normpath(link)
+            if norm_link.startswith("..") or "/../" in f"/{norm_link}":
+                raise tarfile.TarError(
+                    f"refusing escaping link target: {member.name!r} -> {member.linkname!r}"
                 )
     if hasattr(tarfile, "data_filter"):
         tar.extractall(path=path, filter="data")
