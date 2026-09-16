@@ -119,6 +119,35 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.4.1 状态（2026-09-16）**：patch（updater 硬化批次）。GitHub Release
+      > v3.4.1 已发布（tag `v3.4.1`，CI 自动生成 `iterate-skill.tar.gz` 552,991 字节 +
+      > `SHA256SUMS.txt` + `iterate-qoder.zip` 596,002 字节，`:!harness` 剔除 harness，
+      > `tar -tzf | grep harness/` 为 0、`SKILL.md version: 3.4.1`、pyproject 3.4.1，
+      > 本地 `shasum -a 256` 与 SHA256SUMS 一致，tarball 含 `iterate_cli/updater.py`
+      > 且 `assistants_unknown` 字段已入包）；
+      > npm `iterate-skill-installer@3.4.1` 已发布（registry `latest=3.4.1`，实测
+      > `npx -y iterate-skill-installer@3.4.1 --version` 输出 3.4.1）；
+      > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
+      > + stage `.dist_tmp/clawhub-stage-3.4.1/iterate-skill`（80 文件、1,956,773 字节、harness 0）
+      > 发布 3.4.1（`ok:true`，versionId `k9707hpy803r7scvqartjp51ns8ehk7n`，`status` pending，
+      > `latestVersion` 异步传播中）；
+      > ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_341.py` 按 3.4.0 文件集重建精简 zip
+      > 535,305 字节、73 文件、harness 0、SKILL 3.4.1、updater 含 assistants_unknown；
+      > `.dist_tmp/verify_update_341.py` `update_skill_settings` success，
+      > file_id `c5e924b3-b560-4181-bbe8-ead030ec17fa`）；
+      > SkillHub（skillId `104490`）经 `.dist_tmp/rebuild_skillhub_341.py` 精简包（69 文件、532,922
+      > 字节、harness 0、剔除 LICENSE/.gitignore/.gitmodules/npm-installer/LICENSE）`.skillhub publish`
+      > 成功（`ok:true`，versionId `318659`，`tags.latest=3.4.1`，`reviewStatus/securityScanStatus`
+      > =pending 为平台异步审核）。发版前全量 pytest 1108 + ruff 通过、npm 安装器测试通过。
+      > 3.4.1 内容：`iterate update` 子进程超时真正生效（此前 GIT/PIP timeout 常量是死参数，挂死的
+      > `git pull`/`pip install` 会无限阻塞；现生产 runner 以 `timeout=` 传入 `subprocess.run`，
+      > `TimeoutExpired` 转可读错误）；`_safe_extractall` 目录成员与符号链接目标统一穿越/逃逸校验
+      > （覆盖 <py3.12 无 `data_filter` 的回退路径）；`_urlopen_bounded` 下载上限改为按字节精确
+      > （原先按块数允许 ~52.4MiB）；`--assistants` 未知名 fail-fast 白名单（JSON 含
+      > `assistants_unknown`，成功应用 `--json` 退出码由 1 修正为 0）。新增 tests/test_updater.py
+      > 19 项（timeout 传递/契约/TimeExpired、目录穿越/绝对路径/链接目标拒绝、字节上限精确、
+      > assistants 白名单、CLI JSON 退出码）。
+      >
       > **3.4.0 状态（2026-09-15）**：feature（`iterate update` 自更新命令）。GitHub Release
       > v3.4.0 已发布（tag `v3.4.0`，CI 自动生成 `iterate-skill.tar.gz` 546,730 字节 +
       > `SHA256SUMS.txt` + `iterate-qoder.zip`，`:!harness` 剔除 harness，`tar -tzf | grep harness/`
