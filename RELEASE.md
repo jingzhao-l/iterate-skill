@@ -508,9 +508,35 @@ stamp 不匹配会自动重装到新 tag。
        > latest=2.2.3，与 2.0.1 记录一致）。端到端验证：`npm install -g --prefix
        > ~/.npm-global iterate-harness@2.2.3` 后 `ih --version` = `iterate_harness 2.2.3`
        >（用户前缀 + postinstall 被 allow-scripts 门控不影响，包装器首次运行惰性
-       > bootstrap 命中 GitHub release 锚点 tarball）。主仓库 push 提交 `9c156b5`。
-        >
-        > **2.2.5 发布记录（2026-09-10）**：例行审查 + 修复发版（patch）。主要变更：
+> bootstrap 命中 GitHub release 锚点 tarball）。主仓库 push 提交 `9c156b5`。
+         >
+         > **2.2.7 发布记录（2026-09-16）**：例行审查 + 修复发版（patch）。主要变更：
+         > CLI `--permission-mode`/`--allowed-tools`/`--disallowed-tools` 原来是
+         >   `merge_cli_overrides` 的 stray attr（写入 `Settings` 顶层、永远不被读取），
+         >   现已路由到真实使用的 `Settings.permission` 子模型；`--settings` 指向不存在
+         >   的路径时 main() 报错退出而不是静默回落默认配置；死选项 `--name`/`--bare`/
+         >   `--mcp-config` 移除（无后端实现）。npm 包装器下载产物新增 SHA256 完整性
+         >   校验（bootstrap.js 从 `.sha256` sidecar 取 digest，不匹配即 abort；release.yml
+         >   新增 Generate SHA256 checksums step 上传 sidecar）。插件 YAML frontmatter
+         >   `"false"` 不再被 `bool()` 误成 True（`_coerce_bool`）；swarm mailbox 的
+         >   `agent_id` 入口加 `validate_agent_id` 拒绝 `../`/NUL/`.`/`..` 路径穿越；
+         >   bridge session_id 加 `secrets.token_hex(3)` 后缀消除秒级碰撞 + manager
+         >   拒绝重复/空 ID；hooks JSON 被 ````json 围栏包裹时先 `_strip_code_fences`
+         >   再解析；session_storage 消除 exists()-then-read TOCTOU（改 try/except
+         >   return None）并用 `exclusive_file_lock` 包裹双文件写；cron 历史文件超过
+         >   5MB/5000 条下锁修剪，shutdown 时 in-flight job cancel + 10s 等待（stop
+         >   等待 12s 后才 SIGKILL）。校验 **2098 pytest + 6 skip**、ruff clean、mypy
+         >   clean（13 源文件专项 + 246 全量）、npm 包装器 **56 passed**，`release.yml`
+         >   端到端产出 wheel + `.whl.sha256` 双 asset（已验证）。版本号在
+         >   `__init__.py` / `npm/package.json` / `CHANGELOG.md` 同步至 2.2.7。走
+         >   `.release/iterate-harness` 替代路径同步提交并快进推送（`0da9c89..645bf6f`）；
+         >   主仓库 push 提交 `f883ca4`。GitHub Release v2.2.7 已建（release.yml 自动
+         >   构建 wheel 传 release + 发布 PyPI 2.2.7，已验证 PyPI latest=2.2.7）；npm
+         >   `iterate-harness@2.2.7` 已发布（registry latest=2.2.7）。端到端验证：
+         >   `npm install -g --prefix ~/.npm-global iterate-harness@2.2.7` 后
+         >   `ih --version` = `iterate_harness 2.2.7`。
+         >
+         > **2.2.5 发布记录（2026-09-10）**：例行审查 + 修复发版（patch）。主要变更：
         > npm 包装器在无人值守/非 TTY 环境下首次运行会永久挂死（`npm/lib/ui.js`
         > 的 `askYesNo` + `npm/lib/bootstrap.js` 的 `runHarness`）：`askYesNo` 只
         > 监听 `rl.question` 回调，从不处理 EOF（`readline` 在 stdin 关闭/管道化/
