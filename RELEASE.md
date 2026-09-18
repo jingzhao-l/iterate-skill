@@ -927,6 +927,39 @@ stamp 不匹配会自动重装到新 tag。
 >        313.4 kB，tarball 复核含 `dist/live.js` 新分类器、`clearQualityGate`、
 >        `markFixRolledBackInTranscript`，compat 含 `0.1.5-rc.1`）。验证 typecheck +
 >        build + build:client 干净，541 测试全过。
+>
+>        **3.5.4 发布记录（2026-09-18）**：依赖升级 + 缺陷修复 + UX 缺口 + 新能力批次。
+>        **上游 dsh**：`dsh-v0.1.6-alpha.1` 四包（tools/util-values/jobs/session）升级 +
+>        dsh-agent 补入 devDependencies（dsh-jobs peer 要求）后 clean install；`dshReleases`
+>        声明扩到 `0.1.6-alpha.1: compatible`；新能力接入 `tools/pre-execute` 瀑布——①
+>        调用方在 dispatch 前已 abort 时返回 `{kind:'cancel'}`（canonical 取消语义，不再
+>        提示或经 `next()` 放行），② 策略拒绝附加结构化 `deny.info`（name
+>        `iterate-approval-gate`/code `APPROVAL_DENIED`/reason）供持久化投影区分「审批拒绝」
+>        与普通工具失败。**缺陷修复**：review changed-only 空 diff 时 meta-review 覆盖门禁
+>        与 plan 一样回退 full（真实 git 仓库集成测试）；defense/experience 并发标记 +
+>        确定性派生 id + for-client `id` 白名单（新条目保留调用方 id，hitCount/timestamp/
+>        lastHitAt 由 store 覆盖）+ 手工编辑条目归一；triage 备份上限 `MAX_TRIAGE_BACKUPS`
+>        真正生效；prune 新增 `sweepExperienceBank`/`sweepDefenseEvents`（保留最新
+>        MAX_EXPERIENCE_ENTRIES / 丢旧事件重算计数）；decision-log 重写竞态改 bounded
+>        compare-and-append 重试（`MAX_LOG_REWRITE_RETRIES=3`，并发新条目不丢）；context
+>        `skillDir` realpath 解析（symlink 穿透后仍校验在项目/插件目录内）；transcript
+>        nudge 回退保留原 run 身份（mode/taskMode/goal/maxRounds）。**UX 缺口（审查清单）**
+>        ① schema 重试死循环修复（skill-prompt 两处 do-while `retries<2`+`<=2` 恒真，改
+>        3 次 bounded attempts + 可见失败日志，坏轮次不再冒充收敛）；② 观测台
+>        `stoppedReason`（transcript capture 显式/推导、builder 持久化+rehydrate、client
+>        徽标渲染收敛/达上限/验证中止/配置中止中文文案，死亡 run 不再永远"运行中"）；
+>        ③ 验证中止时 transcript checkpoint 与磁盘一致（不再 `checkpoint:null` 隐藏可恢复
+>        断点）；④ client 回合计数修复（normal 模式聚合只带 live round 时改取 round 号，
+>        dry-run 累积正常）；⑤ validate 携带 allowed/rejectReason — 命令不在
+>        validation.commands 属配置缺口，abort WITHOUT rollback 并报 `configErrors`/
+>        `aborted_by_config`，真失败仍回滚。主仓库提交 `3f29fe3`；subtree split 超时（历史
+>        non-fast-forward 老坑），照例走 `.release/iterate-plugin` 替代路径（rsync 同步、
+>        npm install 更新 node_modules 后提交 `ae3e30f` 快进推送 `8dc2a7f..ae3e30f`）；
+>        npm `iterate-plugin@3.5.4` 已发布（latest=3.5.4，78 文件 / 336.6 kB，tarball
+>        复核含 `dist/session-hooks.js` cancel/deny.info 路径）。**验证**：610 测试全过
+>        （新 +34：parse 回合号、transcript stoppedReason、session-hooks cancel/deny.info、
+>        meta-review changed-only 覆盖、并发/确定性 id/triage/prune/context realpath、
+>        nudge 身份回退）、typecheck + typecheck:client + build + build:client 干净。
 
 ---
 
