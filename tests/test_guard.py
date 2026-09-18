@@ -521,3 +521,43 @@ class TestGuardCLI:
         _write_config(project, config)
         code = cli_main(["invariant", "-p", str(project)])
         assert code == EXIT_FAIL
+
+
+class TestCommandExecutionBoundaries:
+    """Bounded output buffering and timeout enforcement in ``_run_command``.
+
+    A chatty validation command must never accumulate unbounded output in
+    memory (only a bounded diagnostic tail survives), and a wedged command
+    must be killed after ``_COMMAND_TIMEOUT_SECONDS`` rather than hanging the
+    host forever.
+    """
+
+    def test_chatty_output_stays_bounded(self, tmp_path, monkeypatch) -> None:
+        # `seq` is only executable because the operator widens the allowlist
+        # via the env var; the point under test is the output buffering, not
+        # the prefix gate.
+        monkeypatch.setenv("ITERATE_EXTRA_SAFE_COMMAND_PREFIXES", "seq")
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"]["commands"] = {"python": ["seq 5000"]}
+        _write_config(project, config)
+        result = run_guard_postcheck(project, None)
+        assert result.passed is True
+        detail = next(d for _, ok, d in result.items if ok)
+        # 5000 lines produced by the child, but only the last line participates
+        # in the bounded tail — proving output is truncated, not fully kept.
+        assert "5000" in detail
+        # The returned diagnostic tail stays small (far below the 5000 lines).
+        assert len(detail) < 1000
+
+    # ``seq`` also covers "last line is retained" (the tail source).
+    def test_timeout_kills_wedged_command(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("ITERATE_EXTRA_SAFE_COMMAND_PREFIXES", "sleep")
+        monkeypatch.setattr("iterate_cli.guard._COMMAND_TIMEOUT_SECONDS", 1)
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"]["commands"] = {"python": ["sleep 30"]}
+        _write_config(project, config)
+        result = run_guard_postcheck(project, None)
+        assert result.passed is False
+        assert any("timed out" in detail for _, _, detail in result.items)

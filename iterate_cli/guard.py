@@ -31,8 +31,11 @@ Safety rules carried over from the iterate security baseline:
 
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +53,18 @@ from iterate_cli.tui import tui
 EXIT_FAIL = 1
 #: Exit code used when everything passes.
 EXIT_PASS = 0
+
+#: Maximum output lines retained in memory per executed command. The guard only
+#: needs a diagnostic tail, so a chatty build/test command cannot exhaust the
+#: host's memory; only the last ``_OUTPUT_LINE_CAP`` lines are ever kept.
+_OUTPUT_LINE_CAP = 200
+#: Hard byte ceiling on streamed command output. Once the cumulative output
+#: exceeds this cap the buffer stops growing (the pipe is still drained, so the
+#: child never blocks on a full pipe).
+_OUTPUT_BYTE_CAP = 1024 * 1024
+#: Per-command timeout in seconds. A wedged validation/build command must not
+#: block the host agent forever; on expiry the whole process group is killed.
+_COMMAND_TIMEOUT_SECONDS = 600
 
 #: Shell-chaining metacharacters that must never appear in an executable
 #: command string. Same canonical set as personalize.FORBIDDEN_COMMAND_CHARS /
@@ -315,6 +330,21 @@ def _invariant_ensure(config: dict[str, Any]) -> list[str]:
     return [str(entry) for entry in ensure if isinstance(entry, str)]
 
 
+def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
+    """Best-effort SIGKILL of ``proc`` and its whole process group.
+
+    Commands execute under ``shell=True`` with ``start_new_session=True``, so
+    ``proc.pid`` is the session/process-group leader. Killing the group covers
+    the shell AND any child processes it spawned (a bare ``proc.kill()`` would
+    orphan the children, leaving a runaway build). Failures are ignored: the
+    caller always reports a timeout either way.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        proc.kill()
+
+
 def _run_command(command: str, project_root: Path) -> tuple[int, str]:
     """Run one exact command under the project root.
 
@@ -323,6 +353,12 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
     command containing shell-chaining metacharacters (or empty after trim) is
     refused without being executed, so a hand-edited or drift-polluted config
     can never execute chained shell.
+
+    Output is drained through a bounded line buffer (last ``_OUTPUT_LINE_CAP``
+    lines / ``_OUTPUT_BYTE_CAP`` bytes), so a chatty build or test command
+    cannot drive the host process into unbounded memory growth; only a
+    diagnostic tail is ever returned. Stdout and stderr are merged so a failing
+    command's error text lands in the same contiguous tail.
 
     Args:
         command: Exact command string to execute.
@@ -334,23 +370,47 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
     """
     if not _command_is_safe(command):
         return EXIT_FAIL, f"refused: unsafe command {command!r} (shell metacharacter or empty)"
+
+    lines: list[str] = []
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             cwd=str(project_root),
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
             stdin=subprocess.DEVNULL,
-            timeout=600,
-            check=False,
+            start_new_session=True,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return EXIT_FAIL, f"could not execute: {exc}"
-    combined = (proc.stdout or "") + (proc.stderr or "")
-    tail = " | ".join(line for line in combined.splitlines()[-3:])
-    return proc.returncode, tail[:400]
+
+    total_bytes = 0
+
+    def _drain() -> None:
+        nonlocal total_bytes
+        assert proc.stdout is not None
+        for line in iter(proc.stdout.readline, ""):
+            total_bytes += len(line.encode("utf-8", errors="replace"))
+            if total_bytes > _OUTPUT_BYTE_CAP:
+                continue
+            lines.append(line)
+            if len(lines) > _OUTPUT_LINE_CAP:
+                del lines[: len(lines) - _OUTPUT_LINE_CAP]
+
+    thread = threading.Thread(target=_drain, daemon=True)
+    thread.start()
+    try:
+        returncode = proc.wait(timeout=_COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        proc.wait()
+        return EXIT_FAIL, f"command timed out after {_COMMAND_TIMEOUT_SECONDS}s"
+    thread.join(timeout=5)
+    tail = " | ".join(line.rstrip("\n") for line in lines[-3:])
+    return returncode, tail[:400]
 
 
 def _command_entries(commands_by_module: dict[str, list[str]], modules: list[str] | None) -> list[tuple[str, str]]:
