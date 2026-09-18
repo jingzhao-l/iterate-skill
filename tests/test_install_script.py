@@ -488,6 +488,13 @@ class TestParseChecksum:
         text = f"# comment\n\n{self._SHA_C}  file1\n".encode()
         assert install._parse_checksum(text, "file1") == self._SHA_C
 
+    def test_non_utf8_body_returns_none(self):
+        """A checksum body that is not valid UTF-8 is malformed, not a crash:
+        the caller then refuses to proceed (fail closed)."""
+        assert install._parse_checksum(
+            b"\xff\xfe\x00garbage\xff", "iterate-skill.tar.gz"
+        ) is None
+
     def test_missing_filename(self):
         assert install._parse_checksum(
             f"{self._SHA_A}  other.txt\n".encode(), "iterate-skill.tar.gz"
@@ -1107,6 +1114,58 @@ class TestDownloadReleaseSource:
 
 
 # --------------------------------------------------------------------------- #
+# _download_release_source integrity classification (fail-closed vs fallback)
+# --------------------------------------------------------------------------- #
+
+class TestDownloadReleaseIntegrity:
+    """Integrity failures raise ``ReleaseIntegrityError`` (fail closed) while
+    pure network failures return None (legitimate local-source fallback).
+    ``update_command`` must never claim "Update complete." for an unverified
+    release."""
+
+    def test_network_failure_returns_none(self, monkeypatch) -> None:
+        def fake_download(url, token, timeout=30):
+            return None, "mock network error"
+
+        monkeypatch.setattr(install, "_download_bytes", fake_download)
+        assert install._download_release_source("http://x/tar", "http://x/sha", None) is None
+
+    def test_raises_without_checksum_url(self) -> None:
+        with pytest.raises(install.ReleaseIntegrityError, match="SHA256SUMS.txt URL is required"):
+            install._download_release_source("http://x/tar", None, None)
+
+    def test_raises_on_checksum_download_failure(self, monkeypatch) -> None:
+        def fake_download(url, token, timeout=30):
+            if "SHA256SUMS" in url:
+                return None, "HTTP 500"
+            return b"tarball", None
+
+        monkeypatch.setattr(install, "_download_bytes", fake_download)
+        with pytest.raises(install.ReleaseIntegrityError, match="could not download checksum file"):
+            install._download_release_source("http://x/tar", "http://x/SHA256SUMS.txt", None)
+
+    def test_raises_on_missing_checksum_entry(self, monkeypatch) -> None:
+        def fake_download(url, token, timeout=30):
+            if "SHA256SUMS" in url:
+                return (hashlib.sha256(b"x").hexdigest() + "  other.txt\n").encode(), None
+            return b"tarball", None
+
+        monkeypatch.setattr(install, "_download_bytes", fake_download)
+        with pytest.raises(install.ReleaseIntegrityError, match="not found in checksum file"):
+            install._download_release_source("http://x/tar", "http://x/SHA256SUMS.txt", None)
+
+    def test_raises_on_checksum_mismatch(self, monkeypatch) -> None:
+        def fake_download(url, token, timeout=30):
+            if "SHA256SUMS" in url:
+                return ("0" * 64 + "  iterate-skill.tar.gz\n").encode(), None
+            return b"tarball-content", None
+
+        monkeypatch.setattr(install, "_download_bytes", fake_download)
+        with pytest.raises(install.ReleaseIntegrityError, match="Checksum mismatch"):
+            install._download_release_source("http://x/tar", "http://x/SHA256SUMS.txt", None)
+
+
+# --------------------------------------------------------------------------- #
 # install_command
 # --------------------------------------------------------------------------- #
 
@@ -1125,13 +1184,15 @@ class TestInstallCommand:
         assert install.install_command("trae", target, dry_run=False, source=source, force=False, global_install=False) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
 
-    def test_missing_required_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_missing_required_reports_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         source = _make_fake_source(tmp_path, monkeypatch)
         shutil.rmtree(source / "config" / "dimensions")
         target = tmp_path / "proj"
         target.mkdir()
-        with pytest.raises(FileNotFoundError):
-            install.install_command("trae", target, dry_run=False, source=source, force=False, global_install=False)
+        # A copy failure for one assistant is caught and reported as a
+        # non-zero exit (partial install is surfaced explicitly) rather than
+        # crashing the whole loop with a raw traceback.
+        assert install.install_command("trae", target, dry_run=False, source=source, force=False, global_install=False) == 1
 
     def test_interactive_cancel_returns_1(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         source = _make_fake_source(tmp_path, monkeypatch)
@@ -1139,6 +1200,29 @@ class TestInstallCommand:
         seq = _SeqInput([""])
         monkeypatch.setattr(install, "interactive_select_assistants", lambda t, i: [])
         assert install.install_command(None, tmp_path, dry_run=False, source=source, force=False, global_install=False, input_func=seq) == 1
+
+    def test_partial_failure_continues_and_reports(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+        """A copy failure for one assistant must not abort the run: the
+        remaining assistants still install, and the partial outcome is
+        reported with a non-zero exit (no false 'Installation complete.')."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        calls = {"n": 0}
+        real_copy = install.copy_skill_files
+
+        def _flaky_copy(src, dst, dry_run, overwrite):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_copy(src, dst, dry_run, overwrite)
+            raise FileNotFoundError(f"Required skill file missing: {dst}")
+
+        monkeypatch.setattr(install, "copy_skill_files", _flaky_copy)
+        assert install.install_command("all", target, dry_run=False, source=source, force=True, global_install=False) == 1
+        captured = capsys.readouterr()
+        assert "Installation incomplete" in captured.err
+        assert "install failed for" in captured.err
+        assert "Installation complete." not in captured.out + captured.err
 
     def test_stale_install_asks_to_upgrade(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         source = _make_fake_source(tmp_path, monkeypatch)
@@ -1232,9 +1316,11 @@ class TestUpdateCommand:
         target = tmp_path / "proj"
         target.mkdir()
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: ({"tag": "v1", "tarball_url": "http://x/tar"}, None))
-        # without 'checksum_url', update must refuse download and fall back to local.
-        assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
-        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
+        # Without 'checksum_url' the release can never be verified: update must
+        # FAIL CLOSED (exit 1, nothing installed) instead of falling back to
+        # the local checkout while claiming "Update complete.".
+        assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 1
+        assert not (target / ".trae").exists()
 
     def test_user_declines_download(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
         source = _make_fake_source(tmp_path, monkeypatch)
@@ -1310,6 +1396,38 @@ class TestUpdateCommand:
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (None, "mock network error"))
         assert install.update_command("trae", target, source, "   ", global_install=False, yes=True) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
+
+    def test_falls_back_to_local_on_network_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """A release whose tarball cannot be DOWNLOADED (pure network failure)
+        legitimately falls back to the local source — but only then."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        info = {"tag": "v1", "tarball_url": "http://x/tar", "checksum_url": "http://x/sha"}
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (info, None))
+        monkeypatch.setattr(install, "_download_release_source", lambda a, b, c: None)
+        assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
+        assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
+
+    def test_fails_closed_on_checksum_mismatch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+        """An integrity failure must abort the update (exit 1, nothing
+        installed, no 'Update complete.') instead of falling back to the
+        local checkout while claiming success."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        info = {"tag": "v1", "tarball_url": "http://x/tar", "checksum_url": "http://x/sha"}
+        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (info, None))
+
+        def _integrity_boom(a, b, c):
+            raise install.ReleaseIntegrityError("Checksum mismatch for release tarball")
+
+        monkeypatch.setattr(install, "_download_release_source", _integrity_boom)
+        assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 1
+        assert not (target / ".trae").exists()
+        captured = capsys.readouterr()
+        assert "Refusing to update" in captured.err
+        assert "Update complete." not in captured.out + captured.err
 
     def test_update_reports_partial_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
         """A mid-run assistant failure must be reported, not silently swallowed.

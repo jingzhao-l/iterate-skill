@@ -409,6 +409,17 @@ LANGUAGE_CHOICES = ["zh", "en"]
 SCOPE_CHOICES = ["full", "changed-only"]
 
 
+class ReleaseIntegrityError(Exception):
+    """A release could not be verified as authentic (missing/undownloadable
+    checksum asset, missing checksum entry, or SHA-256 mismatch).
+
+    Raised by ``_download_release_source`` so callers can fail closed instead of
+    silently upgrading from a possibly tampered release. Network/rate-limit
+    failures are NOT this exception: they return ``None`` and legitimately
+    fall back to local source.
+    """
+
+
 def copy_skill_files(
     source: Path, destination: Path, dry_run: bool, force: bool
 ) -> list[str]:
@@ -1034,6 +1045,7 @@ def install_command(
         targets = list(SUPPORTED_AI.keys()) if ai == "all" else [ai]
 
     installed: list[tuple[str, str, Path]] = []
+    failed: list[tuple[str, str]] = []
     seen_destinations: set[Path] = set()
     user_declined = 0
     auto_skipped = 0
@@ -1071,7 +1083,15 @@ def install_command(
                 )
                 auto_skipped += 1
 
-        copied = copy_skill_files(source, destination, dry_run, overwrite)
+        try:
+            copied = copy_skill_files(source, destination, dry_run, overwrite)
+        except (OSError, ValueError, FileNotFoundError) as exc:
+            # A copy failure for one assistant must not abort the whole run:
+            # record it and keep installing the remaining assistants, then
+            # report the partial outcome with a non-zero exit. This mirrors the
+            # per-assistant tolerance of ``update_command``.
+            failed.append((assistant, str(exc)))
+            continue
         for item in copied:
             _hint(item)
         seen_destinations.add(destination)
@@ -1082,6 +1102,22 @@ def install_command(
     if dry_run:
         _success("Dry run complete; no files were copied.")
         return 0
+
+    if failed:
+        # Report a partial installation explicitly instead of a misleading
+        # "Installation complete." The <2.0.0 npx wrapper and CI callers rely
+        # on exit 0 meaning "every target installed".
+        for name, reason in failed:
+            _error(f"install failed for {name}: {reason}")
+        if installed:
+            _error(
+                f"Installation incomplete: installed {len(installed)} assistant(s) "
+                f"({', '.join(name for name, _, _ in installed)}), failed {len(failed)} "
+                f"({', '.join(name for name, _ in failed)})."
+            )
+        else:
+            _error(f"Installation failed for: {', '.join(name for name, _ in failed)}")
+        return 1
 
     if not installed and user_declined == 0 and auto_skipped > 0:
         # Auto-skip no-op: every target already existed on a non-interactive
@@ -1472,8 +1508,14 @@ def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
     other value can never be the output of ``hashlib.sha256(data).hexdigest()``
     used by the verifier, so a non-hex or truncated digest is treated as a
     malformed entry (skipped) rather than compared as if it were a real hash.
+    A body that is not valid UTF-8 is treated as malformed too (None) instead
+    of leaking an uncaught ``UnicodeDecodeError``; the caller then refuses to
+    proceed.
     """
-    text = checksum_text.decode("utf-8")
+    try:
+        text = checksum_text.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -1509,10 +1551,15 @@ def _download_release_source(
     Refuses to proceed if ``checksum_url`` is None or if the checksum
     cannot be verified. This prevents supply-chain attacks via
     unverified tarballs.
+
+    Raises:
+        ReleaseIntegrityError: When the release cannot be verified (missing or
+            undownloadable checksum URL, no matching checksum entry, or a SHA-256
+            mismatch). Callers must fail closed on this — never fall back to a
+            different source while claiming the release applied.
     """
     if not checksum_url:
-        _error("Refusing to download release: SHA256SUMS.txt URL is required for integrity verification.")
-        return None
+        raise ReleaseIntegrityError("SHA256SUMS.txt URL is required for integrity verification.")
 
     data, tarball_error = _download_bytes(tarball_url, token)
     if data is None:
@@ -1523,23 +1570,21 @@ def _download_release_source(
     checksum_data, checksum_error = _download_bytes(checksum_url, token)
     if not checksum_data:
         if checksum_error:
-            _error(f"Refusing to proceed: could not download checksum file: {checksum_error}")
-        else:
-            _error("Refusing to proceed: could not download checksum file.")
-        return None
+            raise ReleaseIntegrityError(f"could not download checksum file: {checksum_error}")
+        raise ReleaseIntegrityError("could not download checksum file.")
 
     expected_hash = _parse_checksum(checksum_data, EXPECTED_TARBALL_FILENAME)
     if not expected_hash:
-        _error(f"Refusing to proceed: {EXPECTED_TARBALL_FILENAME} not found in checksum file.")
-        return None
+        raise ReleaseIntegrityError(f"{EXPECTED_TARBALL_FILENAME} not found in checksum file.")
 
     actual_hash = hashlib.sha256(data).hexdigest()
     # Constant-time compare: the expected hash is attacker-influenced (it
     # travels over the network with the tarball), so early-exit string !=
     # would leak prefix information usable to forge a checksum.
     if not hmac.compare_digest(actual_hash.lower(), expected_hash.lower()):
-        _error(f"Checksum mismatch for release tarball: expected {expected_hash}, got {actual_hash}")
-        return None
+        raise ReleaseIntegrityError(
+            f"Checksum mismatch for release tarball: expected {expected_hash}, got {actual_hash}"
+        )
     _success("Release tarball checksum verified.")
 
     temp_dir = Path(tempfile.mkdtemp(prefix="iterate-release-"))
@@ -1626,26 +1671,40 @@ def update_command(
         _hint(f"This will download code from https://github.com/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases and install it into your AI assistant skill directories.")
         has_checksum = "checksum_url" in release_info
         if not has_checksum:
-            _error("Error: no SHA256SUMS.txt asset found for this release. Refusing to download without integrity verification. Falling back to local source.")
-            release_source = None
-        else:
-            if not yes:
-                confirmed = _safe_confirm("Continue? [y/N]: ", input_func, default=False)
-                if confirmed is not True:
-                    # Declined, or non-interactive stdin (CI/pipe) where asking
-                    # would have hit EOFError — treat as declined and stop.
-                    _hint("Update cancelled.")
-                    return 1
-            _hint("Downloading release source...")
+            # A release without integrity metadata can never be verified: fail
+            # closed rather than silently upgrading from the local checkout
+            # while reporting "Update complete." (exit 0).
+            _error(
+                "Error: no SHA256SUMS.txt asset found for this release. "
+                "Refusing to update without integrity verification. "
+                "Run again when the release carries checksums, or update manually "
+                "from a local source with confidence in its origin."
+            )
+            return 1
+        if not yes:
+            confirmed = _safe_confirm("Continue? [y/N]: ", input_func, default=False)
+            if confirmed is not True:
+                # Declined, or non-interactive stdin (CI/pipe) where asking
+                # would have hit EOFError — treat as declined and stop.
+                _hint("Update cancelled.")
+                return 1
+        _hint("Downloading release source...")
+        try:
             release_source = _download_release_source(
                 release_info["tarball_url"],
                 release_info["checksum_url"],
                 token,
             )
-            if release_source:
-                _hint(f"Using release source: {release_source}")
-            else:
-                _warning("Could not download release source; falling back to local source...")
+        except ReleaseIntegrityError as exc:
+            # Integrity failure (missing/undownloadable checksum, missing
+            # entry, SHA mismatch) must abort — never fall back to local and
+            # claim "Update complete." for an unverified release.
+            _error(f"Refusing to update from release: {exc}")
+            return 1
+        if release_source:
+            _hint(f"Using release source: {release_source}")
+        else:
+            _warning("Could not download release source; falling back to local source...")
     else:
         _warning("Could not reach GitHub releases; refreshing from local source...")
         if release_error:
