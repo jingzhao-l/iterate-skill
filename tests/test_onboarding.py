@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+from iterate_cli import __version__
 from iterate_cli.cli import main as cli_main
 from iterate_cli.fingerprint import (
     FINGERPRINT_VERSION,
@@ -2023,6 +2024,18 @@ class TestCLIVersion:
         assert ret == 0
         captured = capsys.readouterr()
         assert "██" in captured.out
+
+    def test_version_flag_json_output(self, capsys) -> None:
+        # `--json --version` honours the structured-output contract of the other
+        # JSON commands: a single machine-readable object, no banner, no hints.
+        capsys.readouterr()
+        ret = cli_main(["--json", "--version"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["command"] == "version"
+        assert data["version"] == __version__
+        assert "██" not in captured.out
 
 
 class TestCLIGlobalFlagsAfterSubcommand:
@@ -4735,6 +4748,36 @@ class TestSavePersonalizationTransactional:
     def test_raises_on_missing_config(self, empty_project: Path) -> None:
         with pytest.raises(FileNotFoundError):
             save_personalization(empty_project, PersonalizationData(protected_paths=["x"]))
+
+    def test_warns_when_user_markers_invalid(self, fake_project: Path, capsys) -> None:
+        """A present ITERATE.md with broken ownership markers must warn instead
+        of silently dropping the user-owned notes (the config still saves, but
+        the user is told the .md section was not updated and why)."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        # Corrupt the marker block: END marker before START marker.
+        md_path = fake_project / "ITERATE.md"
+        corrupted = md_path.read_text(encoding="utf-8").replace(
+            "<!-- ITERATE:USER-OWNED:START -->",
+            "<!-- ITERATE:USER-OWNED:END -->",
+        )
+        md_path.write_text(corrupted, encoding="utf-8")
+
+        capsys.readouterr()
+        personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            iterate_notes=["不得修改认证模块"],
+        )
+        config_path, iterate_md_path = save_personalization(fake_project, personalization)
+
+        # Config persisted, but the notes were NOT merged into ITERATE.md.
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["personalization"]["protected_paths"] == ["legacy/**"]
+        assert "不得修改认证模块" not in iterate_md_path.read_text(encoding="utf-8")
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "ownership markers" in combined
+        assert "user-owned section cannot be updated" in combined
 
     def test_rolls_back_config_when_iterate_md_write_fails(
         self, fake_project: Path, monkeypatch, capsys

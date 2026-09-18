@@ -71,9 +71,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.version:
+        # `iterate --json --version` honours the JSON contract of the other
+        # structured commands instead of emitting the human banner/text.
+        if getattr(args, "json", False):
+            print(json.dumps({"command": "version", "version": __version__}))
+            return 0
         # Structured (JSON) output must not be polluted by the ASCII banner,
         # matching the subcommand paths below.
-        if _should_show_banner(args) and not getattr(args, "json", False):
+        if _should_show_banner(args):
             tui.banner()
         # A bare "iterate <version>" line is emitted on non-TTY (piped) stdout
         # so scripts can parse `iterate --version` without ANSI/prompt noise.

@@ -913,8 +913,11 @@ def build_updated_iterate_md(
     user-owned section. Pure (no disk writes).
 
     Returns ``None`` when no update is possible: ITERATE.md is absent,
-    unreadable, or lacks the user-owned markers. The transactional save treats
-    ``None`` as "skip ITERATE.md" rather than failing.
+    unreadable, or lacks the user-owned markers. Absent/unreadable files are
+    skipped silently; an existing file with malformed markers emits a warning
+    (its user-owned notes would otherwise be silently dropped from the
+    persisted personalization). The transactional save treats ``None`` as
+    "skip ITERATE.md" rather than failing.
 
     Args:
         project_root: Project root directory containing ITERATE.md.
@@ -942,6 +945,12 @@ def build_updated_iterate_md(
     start_idx = content.find(USER_START_MARKER)
     end_idx = content.find(USER_END_MARKER)
     if not has_valid_user_owned_markers(content):
+        tui.warning(
+            "ITERATE.md is present but its ownership markers are missing or "
+            "malformed, so the user-owned section cannot be updated. Fix the "
+            "markers (or delete ITERATE.md and re-run) and personalization "
+            "will persist there."
+        )
         return None
 
     new_personalization_md = data.to_user_md_sections()
