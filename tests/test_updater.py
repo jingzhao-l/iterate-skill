@@ -793,6 +793,33 @@ def test_safe_extractall_accepts_benign_tree(tmp_path) -> None:
     assert (tmp_path / "config" / "dimensions" / "core.yaml").is_file()
 
 
+def test_safe_extractall_refuses_symlink_without_data_filter(tmp_path, monkeypatch) -> None:
+    """On Python < 3.12 (no ``tarfile.data_filter``) any symlink/hardlink
+    member must be refused outright: the fallback extraction cannot follow a
+    link chain out of the root, and the release tarball ships no links."""
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "target"  # benign-looking relative target
+        tar.addfile(info)
+    buf.seek(0)
+    with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+        with pytest.raises(tarfile.TarError, match="without the data extraction filter"):
+            updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_accepts_benign_tree_without_data_filter(tmp_path, monkeypatch) -> None:
+    """The no-data_filter fallback still extracts a benign, link-free tree."""
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    blob = _tarball_with_members(["SKILL.md", "config/dimensions/core.yaml"])
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        updater._safe_extractall(tar, tmp_path)
+    assert (tmp_path / "SKILL.md").is_file()
+    assert (tmp_path / "config" / "dimensions" / "core.yaml").is_file()
+
+
 # ---------------------------------------------------------------------------
 # Byte-accurate download cap (_urlopen_bounded)
 # ---------------------------------------------------------------------------

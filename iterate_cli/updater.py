@@ -430,6 +430,15 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
     if hasattr(tarfile, "data_filter"):
         tar.extractall(path=path, filter="data")
     else:
+        # No Python-3.12 data_filter here: refuse the one archive form the
+        # member scan above cannot fully contain (a symlink/hardlink member
+        # whose safe-looking target is redirected out-of-root through a later
+        # intermediate link). The release tarball ships no links, so a link on
+        # an older interpreter is by definition a tampered archive.
+        if any(member.issym() or member.islnk() for member in members):
+            raise tarfile.TarError(
+                "refusing symlink/hardlink member without the data extraction filter"
+            )
         tar.extractall(path=path)
 
 
