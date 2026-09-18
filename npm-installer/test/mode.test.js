@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode, parseChecksums, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, buildAuthFlags, InstallerError } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, buildAuthFlags, InstallerError, runCommand, runPythonInstall } = require('../lib/installer');
 
 // 64-char lowercase hex digest, as sha256 actually produces.
 const H = 'a'.repeat(64);
@@ -319,6 +319,37 @@ async function run() {
   assert.deepStrictEqual(buildAuthFlags(api, ''), [], 'blank token means no auth flags');
 
   console.log('mode.test.js: all buildAuthFlags tests passed');
+
+  // runCommand: a wedged child must be SIGKILLed after the timeout instead of
+  // hanging the installer forever, and the rejection must make the failure
+  // classable (InstallerError).
+  const timedOut = await runCommand('sleep', ['30'], { timeout: 300 }).then(
+    () => ({ timedOut: false }),
+    (err) => ({ timedOut: err instanceof InstallerError && /timed out after 300 ms/.test(err.message) }),
+  );
+  assert.ok(timedOut.timedOut, 'runCommand must reject with a "timed out" InstallerError on timeout');
+
+  // runCommand: stdout retention must be bounded (no unbounded memory growth
+  // for a chatty producer) while still returning the tail of the output.
+  const script = "for (let i = 0; i < 200000; i++) console.log('line-' + i);";
+  const tail = await runCommand(process.execPath, ['-e', script]);
+  assert.ok(tail.includes('line-199999'), 'chatty output must keep its tail');
+  assert.ok(tail.length <= 1024 * 1024, 'retained output must be bounded (1 MiB cap)');
+
+  // runPythonInstall: a signal-killed child reports a null exit code which
+  // Node surfaces as closer code null; the shell would read that as success,
+  // so the promise must normalize it to a non-zero failure. Using a tiny
+  // SIGKILL-itself script stands in for a wedged python subprocess.
+  const killSelf = path.join(os.tmpdir(), `iterate-kill-self-${process.pid}.js`);
+  fs.writeFileSync(killSelf, 'process.kill(process.pid, "SIGKILL");\n');
+  try {
+    const code = await runPythonInstall(process.execPath, killSelf, []);
+    assert.strictEqual(code, 1, 'null (signal-killed) close code must normalize to exit 1');
+  } finally {
+    fs.rmSync(killSelf, { force: true });
+  }
+
+  console.log('mode.test.js: all runCommand/runPythonInstall hardening tests passed');
 }
 
 run().catch((err) => {

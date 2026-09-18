@@ -56,7 +56,10 @@ async function run() {
 
   try {
     const code = await main(options);
-    process.exit(code);
+    // Normalize: a null/non-numeric code (main should never produce one, but a
+    // signal-killed child upstream does) must surface as a failure, never as
+    // the success exit 0 that `process.exit(null)` would yield.
+    process.exit(typeof code === 'number' ? code : 1);
   } catch (err) {
     console.error(`\nUnexpected error: ${err.message}`);
     process.exit(1);

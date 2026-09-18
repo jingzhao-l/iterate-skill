@@ -308,21 +308,69 @@ function parseChecksums(text) {
   return map;
 }
 
+/**
+ * Bounded in-memory output buffer: retains only the last ``cap`` characters.
+ * Used by ``runCommand`` so a chatty child (a verbose build listing, pip log
+ * flood, etc.) can never drive the installer's memory usage unbounded.
+ */
+class TailBuffer {
+  constructor(cap) {
+    this.cap = cap;
+    this.text = '';
+  }
+  push(chunk) {
+    if (!chunk) return;
+    if (this.text.length + chunk.length > this.cap) {
+      this.text = (this.text + chunk).slice(-this.cap);
+    } else {
+      this.text += chunk;
+    }
+  }
+  toString() {
+    return this.text;
+  }
+}
+
+// Default ceiling for a single child command: 10 minutes then SIGKILL. Long
+// operations in this file (pip/pipx installs, venv creation) can legitimately
+// take minutes on slow networks, but a wedged child must never hang the
+// installer forever.
+const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+// Hard cap on retained stdout/stderr per command (memory bound).
+const MAX_CAPTURED_OUTPUT_CHARS = 1024 * 1024;
+
 function runCommand(bin, args, options = {}) {
+  const { timeout = DEFAULT_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: 'pipe', ...options });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (data) => { stdout += data.toString(); });
-    child.stderr?.on('data', (data) => { stderr += data.toString(); });
+    const child = spawn(bin, args, { stdio: 'pipe', ...spawnOptions });
+    const stdoutTail = new TailBuffer(MAX_CAPTURED_OUTPUT_CHARS);
+    const stderrTail = new TailBuffer(MAX_CAPTURED_OUTPUT_CHARS);
+    child.stdout?.on('data', (data) => stdoutTail.push(data.toString()));
+    child.stderr?.on('data', (data) => stderrTail.push(data.toString()));
+    let killed = false;
+    const timer =
+      timeout > 0
+        ? setTimeout(() => {
+            killed = true;
+            child.kill('SIGKILL');
+          }, timeout)
+        : null;
     child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
+      if (killed) {
+        reject(new InstallerError(`${bin} timed out after ${timeout} ms`));
+        return;
+      }
       if (code === 0) {
-        resolve(stdout);
+        resolve(stdoutTail.toString());
       } else {
-        reject(new InstallerError(`${bin} exited with ${code}: ${stderr || stdout}`));
+        reject(new InstallerError(`${bin} exited with ${code}: ${stderrTail.toString() || stdoutTail.toString()}`));
       }
     });
-    child.on('error', reject);
+    child.on('error', (err) => {
+      if (timer) clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
@@ -434,8 +482,10 @@ function runPythonInstall(pythonBin, installScript, args, options = {}) {
     child.on('close', (code) => {
       // Resolve with the exit code (rather than rejecting) so the caller can
       // distinguish "real failure" from "user cancelled the selection" and
-      // avoid reporting a false success.
-      resolve(code);
+      // avoid reporting a false success. A signal-killed child reports a null
+      // code, which the shell would otherwise read as success; normalize to a
+      // non-zero failure.
+      resolve(typeof code === 'number' ? code : 1);
     });
     child.on('error', reject);
   });
@@ -889,4 +939,10 @@ module.exports = {
   normalizeToken,
   buildAuthFlags,
   supportsCurlFailWithBody,
+  // Executed under test for the timeout/null-exit-code hardening; retaining
+  // the exports also keeps them statically reachable for QA/debugging.
+  runCommand,
+  runPythonInstall,
+  TailBuffer,
+  DEFAULT_COMMAND_TIMEOUT_MS,
 };
