@@ -108,6 +108,13 @@ class DriftResult:
 def _matches_ignore(name: str, ignore_patterns: list[str] | None) -> bool:
     """Return True if ``name`` matches any fnmatch ignore pattern.
 
+    Uses ``fnmatch.fnmatchcase`` (not ``fnmatch.fnmatch``) so matching is
+    case-sensitive on every platform: ``fnmatch`` delegates to
+    ``os.path.normcase`` first, which lowercases on Windows and is a no-op on
+    POSIX, making ignore behavior depend on the host filesystem. Manifest names
+    are lowercase by construction (``MANIFEST_FILES``), so an ignore pattern
+    should spell the exact lowercase name.
+
     Args:
         name: The manifest file name (basename) to test.
         ignore_patterns: Optional glob patterns to ignore. Empty/None matches nothing.
@@ -117,7 +124,7 @@ def _matches_ignore(name: str, ignore_patterns: list[str] | None) -> bool:
     """
     if not ignore_patterns:
         return False
-    return any(fnmatch.fnmatch(name, pat) for pat in ignore_patterns)
+    return any(fnmatch.fnmatchcase(name, pat) for pat in ignore_patterns)
 
 
 def compute_sha256(path: Path) -> str:

@@ -127,6 +127,13 @@ class TestScanIgnore:
         names = {p.name for p in scan_manifests(js_project, ["package*"])}
         assert names == {"tsconfig.json"}
 
+    def test_pattern_matching_is_case_sensitive(self, js_project: Path) -> None:
+        # Ignore matching is case-sensitive on EVERY platform (unlike
+        # fnmatch.fnmatch, whose normcase lowercases on Windows): an ignore
+        # pattern spelled differently from a manifest name suppresses nothing.
+        names = {p.name for p in scan_manifests(js_project, ["Package.json"])}
+        assert names == {"package.json", "tsconfig.json"}
+
     def test_empty_ignore_list_ignores_nothing(self, js_project: Path) -> None:
         names = {p.name for p in scan_manifests(js_project, [])}
         assert names == {"package.json", "tsconfig.json"}
