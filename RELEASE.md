@@ -121,9 +121,12 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
       > **3.4.2 状态（2026-09-18）**：patch（防御式编码 9 项修复批次 F3-F12）。
       > 主仓库 v3.4.2 已推送（`main` a8c4857，7 个逻辑 commit，tag `v3.4.2`）；
-      > ⚠️ **GitHub Release 未创建**：本地 `gh` 凭据失效（401 Unauthorized）、无 GITHUB_TOKEN，
-      > `release.yml`（tarball + SHA256SUMS + qoder zip 由 Release published 触发）待凭据恢复后
-      > 补发布（重推 tag 或 `gh workflow run` 均可触发 checksums/qoder 作业）；
+      > ✅ **GitHub Release v3.4.2 已创建**（`gh auth login` 恢复 keyring 凭据后
+      > `gh release create v3.4.2` 完成，url
+      > github.com/jingzhao-l/iterate-skill/releases/tag/v3.4.2）；`release.yml` 作业 success
+      > （head `a8c4857`），3 个资产齐备：`iterate-skill.tar.gz`（561,894 B）、`SHA256SUMS.txt`
+      > （checksum 自校验 OK）、`iterate-qoder.zip`（604,489 B）；tar 与 zip 内 `harness/` 均为 0、
+      > `SKILL.md version: 3.4.2` 一致；
       > npm `iterate-skill-installer@3.4.2` 已发布（registry `latest=3.4.2`，实测
       > `npx -y iterate-skill-installer@3.4.2 --version` 输出 3.4.2）；
       > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
