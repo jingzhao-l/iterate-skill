@@ -5,7 +5,25 @@
 
 ---
 
-## [3.4.1] — 2026-09-16
+## [3.4.2] — 2026-09-18
+
+### 修复 / Fixes
+
+- **守卫命令防挂死与内存有界（F7）**：`guard._run_command` 原先用 `subprocess.run` 无上限收集输出，命令一直刷屏会耗尽内存、无 `timeout` 时永不返回；现改为 `Popen` + 有界尾部缓冲（`_OUTPUT_LINE_CAP=200` 行 / `_OUTPUT_BYTE_CAP=1 MiB`）+ `_COMMAND_TIMEOUT_SECONDS=600` 超时 + `start_new_session`（`_kill_process_tree` 用进程组 `SIGKILL` 连子进程一起杀）。
+- **`--json --version` 输出机器可读（F5）**：`iterate --json --version` 先前输出的是人类文案 `Iterate v3.4.1` + banner 引导，JSON 消费者无法解析版本；现严格输出 `{"command":"version","version":"..."}` 且不打印 banner，退出码 0。
+- **迭代文件中所有权标记失效时告警（F4）**：`personalize.build_updated_iterate_md` 在 ITERATE.md 缺少/损坏 `<!-- iterate:start -->` 标记时静默返回 None，用户数据被悄悄跳过；现发 `tui.warning`（"ownership markers ... user-owned section cannot be updated"）后交给主流程处理。
+- **忽略规则大小写确定性（F6）**：`fingerprint._matches_ignore` 用 `fnmatch.fnmatch`（macOS/Windows 上大小写不敏感）、Linux 敏感，行为随平台漂移；改 `fnmatchcase` 全平台大小写敏感。
+- **Python<3.12 解压回退路径拒绝软/硬链接（F3）**：`updater._safe_extractall` 在无 `tarfile.data_filter`（<3.12）的回退分支上裸 `extractall`，软/硬链接成员可借链接链逃逸；现该分支对任何 symlink/hardlink 成员一律 `TarError` 拒绝（发布 tar 包本不含链接）。
+- **更新完整性失败必拒（F8）**：`install.update_command` 在缺 `checksum_url` / 校验和下载失败 / 条目缺失 / SHA-256 不匹配时曾回退"本地目录更新的成功路径"（exit 0、"Update complete."），实际装的却是未经验证的旧代码；新增 `ReleaseIntegrityError`，完整性失败一律失败快返 exit 1、不装任何文件，"网络下载失败"（纯网络错误）仍合法回退本地源（exit 0）。
+- **校验和解析防崩溃（F11）**：`install._parse_checksum` 对非 UTF-8 文件体 decode 直接抛 `UnicodeDecodeError` 崩溃；改捕获后返回 None，由调用方按完整性失败处理。
+- **安装部分失败不中断（F12）**：`install.install_command` 对多助手安装时某个助手拷贝失败会整体崩溃/静默；现逐个助手 try/except，失败者记录并继续，最终以 `Exit code 1` + "Installation incomplete" 明确报告部分成功。
+- **npm 安装器退出码与超时硬化（F9/F10）**：`npx` 子进程被信号杀死时 `close` code 为 null，被当作成功；`bin/cli.js` 与 `runPythonInstall` 统一把非数字/null 归为 1。`runCommand` 原无超时上限、输出无界收集：新增 `DEFAULT_COMMAND_TIMEOUT_MS=10min`（超时 `SIGKILL`，报错含时长）与 `TailBuffer` 1 MiB 有界尾部缓冲。
+
+### 测试 / Tests
+
+- 全量 1124 个 Python 测试通过、`ruff check` 通过、`npm test` 通过。新增 16 项：守卫有界输出（`seq 5000` 尾部保留且 < 1 KiB）与超时杀进程（monkeypatch 1s / `sleep 30`）；`--json --version` 结构断言；标记损坏告警文案；`fnmatchcase` 大小写敏感；<3.12 分支拒绝软链接、良性树放行；完整性失败 4 例（缺 URL / 校验和下载失败 / 条目缺失 / SHA 不匹配）均 fail-closed、纯网络失败回退本地 exit 0、`update` 完整性失败 exit 1 且不装文件、校验和"Update complete."不可达；非 UTF-8 校验和返回 None；多助手部分失败 exit 1 且报告；npm 端超时拒绝、1 MiB 尾部有界、null 退出码归一为 1。
+
+---
 
 ### 修复 / Fixes
 
