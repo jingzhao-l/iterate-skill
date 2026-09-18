@@ -119,6 +119,33 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.4.2 状态（2026-09-18）**：patch（防御式编码 9 项修复批次 F3-F12）。
+      > 主仓库 v3.4.2 已推送（`main` a8c4857，7 个逻辑 commit，tag `v3.4.2`）；
+      > ⚠️ **GitHub Release 未创建**：本地 `gh` 凭据失效（401 Unauthorized）、无 GITHUB_TOKEN，
+      > `release.yml`（tarball + SHA256SUMS + qoder zip 由 Release published 触发）待凭据恢复后
+      > 补发布（重推 tag 或 `gh workflow run` 均可触发 checksums/qoder 作业）；
+      > npm `iterate-skill-installer@3.4.2` 已发布（registry `latest=3.4.2`，实测
+      > `npx -y iterate-skill-installer@3.4.2 --version` 输出 3.4.2）；
+      > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本 `.dist_tmp/clawhub_publish.py`
+      > + stage `.dist_tmp/clawhub-stage-3.4.2/iterate-skill`（80 文件、1,986,679 字节、harness 0）
+      > 发布 3.4.2（`ok:true`，versionId `k97drxn6129f84v6wvpgaayhzx8enx1v`，`status` pending）；
+      > ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_342.py` 按 3.4.1 文件集重建精简 zip
+      > 543,257 字节、73 文件、harness 0、SKILL 3.4.2；`.dist_tmp/verify_update_342.py`
+      > `update_skill_settings` success，file_id `d124cbc8-4812-45aa-8e39-e456a501d25e`）；
+      > SkillHub（skillId `104490`）经 `.dist_tmp/rebuild_skillhub_342.py` 精简包（69 文件、540,874
+      > 字节、harness 0、剔除 LICENSE/.gitignore/.gitmodules/npm-installer/LICENSE）`.skillhub publish`
+      > 成功（`ok:true`，versionId `322486`，`tags.latest=3.4.2`，`reviewStatus/securityScanStatus`
+      > =pending 为平台异步审核）。发版前全量 pytest 1124 + ruff 通过、npm 安装器测试通过。
+      > 3.4.2 内容：`guard` 命令输出有界（`_OUTPUT_LINE_CAP=200`/1 MiB）+ `_COMMAND_TIMEOUT_SECONDS=600`
+      > 超时杀进程（进程组 SIGKILL）；`iterate --json --version` 严格机读 JSON（无 banner、exit 0）；
+      > 所有权标记缺失/损坏时 `personalize` 告警而非静默跳过；`_matches_ignore` 改 `fnmatchcase`
+      > 全平台大小写敏感；`_safe_extractall` Python<3.12 回退路径拒绝 symlink/hardlink；
+      > 安装器新增 `ReleaseIntegrityError`——校验和缺失/下载失败/不匹配一律 fail-closed（exit 1、
+      > 不装文件、绝不打印 "Update complete."），纯网络失败仍回退本地源；`_parse_checksum` 非 UTF-8
+      > 不崩溃；`install_command` 多助手部分失败逐个报告（exit 1）；npm 安装器 null 退出码归一 1、
+      > `runCommand` 10min 超时 + 1 MiB 尾部缓冲。新增 16 项测试（guard/onboarding/drift/
+      > updater/install + npm mode.test）。
+      >
       > **3.4.1 状态（2026-09-16）**：patch（updater 硬化批次）。GitHub Release
       > v3.4.1 已发布（tag `v3.4.1`，CI 自动生成 `iterate-skill.tar.gz` 552,991 字节 +
       > `SHA256SUMS.txt` + `iterate-qoder.zip` 596,002 字节，`:!harness` 剔除 harness，
