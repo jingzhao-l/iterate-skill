@@ -568,8 +568,35 @@ stamp 不匹配会自动重装到新 tag。
        > ~/.npm-global iterate-harness@2.2.3` 后 `ih --version` = `iterate_harness 2.2.3`
        >（用户前缀 + postinstall 被 allow-scripts 门控不影响，包装器首次运行惰性
 > bootstrap 命中 GitHub release 锚点 tarball）。主仓库 push 提交 `9c156b5`。
-         >
-         > **2.2.7 发布记录（2026-09-16）**：例行审查 + 修复发版（patch）。主要变更：
+>
+          > **2.3.0 发布记录（2026-09-19）**：例行审查 + 修复 + 新能力发版（minor）。主要变更：
+          > WebUI 会话 start 请求新增 `permission_mode`（full_auto/plan/default，缺省
+          > full_auto，非法 422）；bridge manager 保留最近完成会话（`max_completed=20`，
+          > 仅显式 stop 驱逐，transcript 完成后可读回）；npm 包装器下载完整性
+          > **fail-closed**（`.sha256` sidecar 缺失/畸形/不匹配一律删除产物拒绝安装，唯一
+          > 豁免 `--no-verify`；并补齐 `activeStepChildren` 注册——此前信号转发到 in-flight
+          > pip 是死代码；`engines.node` 上调 >=18）；权限内置敏感路径新增 `*/.env`、
+          > `*/.env.*`、`*/.envrc`、`*/.netrc`、`*/.pypirc`、`*/.npmrc`、`*/.git-credentials`、
+          > `*/.config/gh/hosts.yml`（先于 allow/deny 与模式判断）；防御内核 `rollback`
+          > 同步调用修正（去除错误 `await`）；iterate 包 last_state/loop_policy（拒绝 bool
+          > 计数维度）/personalization（`line: true` 不再当第 1 行）/onboarding（精确
+          > `completed_at` 行）/trend_store（`covered_dimensions` 作用域，集合外 finding
+          > 不再自动 fixed）；web `send_message` TOCTOU 锁内复查、`close_runtime` 归属
+          > bundle 守护、CJK 否定批准语义（不想批准/不能同意=拒绝，没关系/没问题=批准）；
+          > 防御守卫 plugins loader / session_storage / mcp client / Windows `fstat`；
+          > 纳入前日遗留未提交的 swarm worktree 陈旧目录清理 + 跨仓库删除守卫。
+          > 校验 **2127 pytest + 6 skip**、ruff clean、mypy strict clean（246 源文件）、
+          > npm 包装器 **56 passed**。版本号在 `__init__.py` / `npm/package.json` /
+          > `CHANGELOG.md` 同步至 2.3.0。走 `.release/iterate-harness` 替代路径 rsync
+          > 提交并快进推送（`36cbd44..9d75a4a`）；主仓库 push 提交 `5a0ce53`。GitHub
+          > Release v2.3.0 已建（release.yml success 29s，自动产出 wheel +
+          > `.whl.sha256` 双 asset + 发布 PyPI 2.3.0，已验证 PyPI latest=2.3.0）；npm
+          > `iterate-harness@2.3.0` 已发布（registry 传播约 60s 后 latest=2.3.0）。
+          > 端到端验证：`npm install -g --prefix ~/.npm-global iterate-harness@2.3.0` 后
+          > `ih --version` = `iterate_harness 2.3.0`（包装器首次运行惰性 bootstrap 命中
+          > PyPI spec）。
+          >
+          > **2.2.7 发布记录（2026-09-16）**：例行审查 + 修复发版（patch）。主要变更：
          > CLI `--permission-mode`/`--allowed-tools`/`--disallowed-tools` 原来是
          >   `merge_cli_overrides` 的 stray attr（写入 `Settings` 顶层、永远不被读取），
          >   现已路由到真实使用的 `Settings.permission` 子模型；`--settings` 指向不存在
