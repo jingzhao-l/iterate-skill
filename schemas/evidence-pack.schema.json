@@ -113,10 +113,16 @@
           }
         },
         "handlerProbe": {
-          "type": "null"
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/handlerProbeSignal" }
+          ]
         },
         "stateDiff": {
-          "type": "null"
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/stateDiffSignal" }
+          ]
         },
         "pixelDiff": {
           "type": "object",
@@ -205,6 +211,66 @@
     "treeDigest": {
       "type": "string",
       "pattern": "^[0-9a-f]{32}$"
+    },
+    "handlerProbeSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["probeVersion", "hitCount", "handlers", "lateCount"],
+      "properties": {
+        "probeVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "hitCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "handlers": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "line"],
+            "properties": {
+              "file": { "type": "string", "minLength": 1, "maxLength": 512 },
+              "line": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "lateCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "stateDiffSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "changed", "entries"],
+      "properties": {
+        "source": {
+          "enum": ["z1-macro", "z2-mirror", "z3-kvc"]
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "before", "after"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1, "maxLength": 512 },
+              "before": { "type": "string", "maxLength": 1024 },
+              "after": { "type": "string", "maxLength": 1024 }
+            }
+          }
+        }
+      }
     },
     "bounds": {
       "type": "object",

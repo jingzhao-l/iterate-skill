@@ -92,12 +92,43 @@ export const ActSignalSchema = z.strictObject({
 });
 export type ActSignal = z.infer<typeof ActSignalSchema>;
 
+/** P6 §3.1: Z1 handler probe signal — present iff a probe connection served
+ * the act window; null stays the honest absence marker (Z5-only form). */
+export const HandlerRefSchema = z.strictObject({
+  file: z.string().min(1).max(512),
+  line: z.number().int().min(0)
+});
+export type HandlerRef = z.infer<typeof HandlerRefSchema>;
+
+export const HandlerProbeSignalSchema = z.strictObject({
+  probeVersion: z.string().min(1).max(64),
+  hitCount: z.number().int().min(0),
+  handlers: z.array(HandlerRefSchema).max(32),
+  lateCount: z.number().int().min(0)
+});
+export type HandlerProbeSignal = z.infer<typeof HandlerProbeSignalSchema>;
+
+export const StateEntrySchema = z.strictObject({
+  key: z.string().min(1).max(512),
+  before: z.string().max(1024),
+  after: z.string().max(1024)
+});
+export type StateEntry = z.infer<typeof StateEntrySchema>;
+
+export const StateDiffSignalSchema = z.strictObject({
+  source: z.enum(["z1-macro", "z2-mirror", "z3-kvc"]),
+  changed: z.boolean(),
+  entries: z.array(StateEntrySchema).max(64)
+});
+export type StateDiffSignal = z.infer<typeof StateDiffSignalSchema>;
+
 export const SignalsSchema = z.strictObject({
   act: ActSignalSchema,
   axEvent: AxEventSignalSchema.optional(),
-  // Z5 channel has no in-process probes: explicit null is the honest boundary.
-  handlerProbe: z.null(),
-  stateDiff: z.null(),
+  // Z5 channel has no in-process probes: explicit null is the honest boundary;
+  // P6 §3.1 opens the object alternative once a GlassPaneProbe connects.
+  handlerProbe: z.union([HandlerProbeSignalSchema, z.null()]),
+  stateDiff: z.union([StateDiffSignalSchema, z.null()]),
   pixelDiff: PixelDiffSignalSchema.optional(),
   responsiveness: ResponsivenessSignalSchema.optional(),
   crash: CrashSignalSchema.optional()

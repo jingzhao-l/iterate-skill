@@ -31,6 +31,12 @@ const FIXTURE_MATRIX = [
     parse: parseEvidencePack
   },
   {
+    // P6 §3.1: probe-carrying pack (handlerProbe/stateDiff null→object).
+    file: "evidence-pack.ok-03.json",
+    schema: EVIDENCE_PACK_JSON_SCHEMA,
+    parse: parseEvidencePack
+  },
+  {
     file: "decision-log-entry.ok-01.json",
     schema: DECISION_LOG_ENTRY_JSON_SCHEMA,
     parse: parseDecisionLogEntry

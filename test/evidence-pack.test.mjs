@@ -79,10 +79,32 @@ test("negative: wrong schemaVersion const is rejected on both sides", () => {
   assertBothSidesReject(broken, "schemaVersion const break");
 });
 
-test("negative: non-null handlerProbe is rejected on both sides (Z5 honest boundary)", () => {
+test("P6 §3.1: probe-carrying fixture (handlerProbe/stateDiff objects) passes ajv and zod", () => {
+  assertBothSidesAccept(readFixture("evidence-pack.ok-03.json"), "ok-03");
+});
+
+test("negative: malformed handlerProbe object is rejected on both sides (P6 oneOf shape)", () => {
   const broken = structuredClone(base);
   broken.signals.handlerProbe = { entered: [] };
-  assertBothSidesReject(broken, "handlerProbe not null");
+  assertBothSidesReject(broken, "handlerProbe wrong shape");
+});
+
+test("negative: handlerProbe with unknown key is rejected on both sides", () => {
+  const broken = structuredClone(base);
+  broken.signals.handlerProbe = {
+    probeVersion: "gp-probe/0.1.0",
+    hitCount: 1,
+    handlers: [],
+    lateCount: 0,
+    extra: true
+  };
+  assertBothSidesReject(broken, "handlerProbe extra key");
+});
+
+test("negative: stateDiff with unknown source is rejected on both sides", () => {
+  const broken = structuredClone(base);
+  broken.signals.stateDiff = { source: "z9-magic", changed: true, entries: [] };
+  assertBothSidesReject(broken, "stateDiff unknown source");
 });
 
 test("negative: circuitBreaker level out of range is rejected on both sides", () => {
