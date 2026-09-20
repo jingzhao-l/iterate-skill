@@ -31,18 +31,18 @@ def _extract_dict_literal(source: Path, var_name: str) -> dict[str, str]:
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == var_name:
-                if isinstance(node.value, ast.Dict):
-                    keys = [
-                        str(k.value) if isinstance(k, ast.Constant) else ""
-                        for k in node.value.keys
-                    ]
-                    values = [
-                        str(v.value) if isinstance(v, ast.Constant) else ""
-                        for v in node.value.values
-                    ]
-                    if len(keys) == len(values):
-                        return dict(zip(keys, values))
+            matched = isinstance(target, ast.Name) and target.id == var_name
+            if matched and isinstance(node.value, ast.Dict):
+                keys = [
+                    str(k.value) if isinstance(k, ast.Constant) else ""
+                    for k in node.value.keys
+                ]
+                values = [
+                    str(v.value) if isinstance(v, ast.Constant) else ""
+                    for v in node.value.values
+                ]
+                if len(keys) == len(values):
+                    return dict(zip(keys, values))
     raise AssertionError(f"{var_name!r} not found in {source.name}")
 
 
@@ -53,13 +53,13 @@ def _extract_list_literal(source: Path, var_name: str) -> list[str]:
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == var_name:
-                if isinstance(node.value, ast.List):
-                    return [
-                        str(elt.value)
-                        for elt in node.value.elts
-                        if isinstance(elt, ast.Constant)
-                    ]
+            matched = isinstance(target, ast.Name) and target.id == var_name
+            if matched and isinstance(node.value, ast.List):
+                return [
+                    str(elt.value)
+                    for elt in node.value.elts
+                    if isinstance(elt, ast.Constant)
+                ]
     raise AssertionError(f"{var_name!r} not found in {source.name}")
 
 

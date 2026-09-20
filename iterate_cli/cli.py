@@ -20,6 +20,7 @@ All user-facing output is routed through the unified TUI layer
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -1495,12 +1496,12 @@ def _confirm(
 
 def _maybe_print_update_hint() -> None:
     """Emit a one-line update hint (advisory, best-effort). Never raises."""
-    try:
+    # Deliberately swallowed: a hint must never break ``iterate --version``,
+    # so an import failure, network error or unsuitable terminal is ignored.
+    with contextlib.suppress(Exception):
         from iterate_cli.updater import maybe_print_update_hint
 
         maybe_print_update_hint()
-    except Exception:  # noqa: BLE001 — advisory only, must never break --version
-        pass
 
 
 # ---------------------------------------------------------------------------
