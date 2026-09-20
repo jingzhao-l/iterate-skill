@@ -42,5 +42,9 @@ jobs:
             # The repo ruleset requires verified signatures / PRs on main and
             # only bypasses the repo owner. Push as the owner (BADGE_PUSH_TOKEN)
             # so the hourly badge refresh is not blocked by branch rules.
+            # NOTE: actions/checkout persists GITHUB_TOKEN as an Authorization
+            # extraheader which would take precedence over the inline PAT; strip
+            # it first so the push authenticates as the owner.
+            git config --unset-all "http.https://github.com/.extraheader" || true
             git push "https://x-access-token:${BADGE_PUSH_TOKEN}@github.com/jingzhao-l/iterate-skill.git" HEAD:main
           fi
