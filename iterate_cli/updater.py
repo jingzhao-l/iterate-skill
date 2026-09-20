@@ -35,10 +35,11 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional, Protocol
+from typing import Any
 
 from iterate_cli import __version__
 
@@ -166,7 +167,7 @@ class ReleaseUnavailableError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def normalize_version(raw: object) -> Optional[str]:
+def normalize_version(raw: object) -> str | None:
     """Extract an ``X.Y.Z`` version from arbitrary release tag/name text."""
     match = VERSION_PATTERN.search(str(raw or "").strip())
     return match.group(0) if match else None
@@ -202,7 +203,7 @@ def compare_versions(current: str, latest: str) -> int:
 
 @dataclass
 class _Fetched:
-    """Minimal HTTP response surface consumed by the fetch protocol."""
+    """Minimal HTTP response surface consumed by the injectable ``fetch`` callables."""
 
     status: int
     body: bytes
@@ -211,19 +212,13 @@ class _Fetched:
         return json.loads(self.body.decode("utf-8"))
 
 
-class _FetchFn(Protocol):
-    def __call__(
-        self, url: str, *, timeout: float, headers: dict[str, str]
-    ) -> _Fetched: ...
-
-
 @dataclass
 class ReleaseInfo:
     """Latest-release facts the updater needs."""
 
     tag: str
     tarball_url: str
-    checksum_url: Optional[str] = None
+    checksum_url: str | None = None
 
 
 def _urlopen_bounded(url: str, timeout: float, headers: dict[str, str]) -> bytes:
@@ -259,7 +254,7 @@ def _error_reason(exc: BaseException, prefix: str) -> str:
 def fetch_latest_release(
     fetch: Callable[..., _Fetched] | None = None,
     timeout: float = HTTP_TIMEOUT_SECONDS,
-) -> tuple[Optional[ReleaseInfo], Optional[str]]:
+) -> tuple[ReleaseInfo | None, str | None]:
     """Discover the latest published release.
 
     Returns ``(info, error_reason)`` — ``error_reason`` is None on success;
@@ -307,8 +302,8 @@ def fetch_latest_release(
     if tag is None:
         return None, "GitHub API response is missing a vX.Y.Z version"
 
-    tarball_url: Optional[str] = None
-    checksum_url: Optional[str] = None
+    tarball_url: str | None = None
+    checksum_url: str | None = None
     assets = payload.get("assets") if isinstance(payload, dict) else None
     if isinstance(assets, list):
         for item in assets:
@@ -358,7 +353,7 @@ def _download_bytes(
     fetch: Callable[..., _Fetched],
     timeout: float,
     what: str,
-) -> tuple[Optional[bytes], Optional[str]]:
+) -> tuple[bytes | None, str | None]:
     """Fetch a URL body, returning ``(data, error_reason)``."""
     try:
         response = fetch(
@@ -379,7 +374,7 @@ def _download_bytes(
     return response.body, None
 
 
-def _verify(tarball: bytes, checksums: bytes) -> Optional[str]:
+def _verify(tarball: bytes, checksums: bytes) -> str | None:
     """Return None on match, else the human-readable rejection reason."""
     expected = parse_checksums(checksums).get(TARBALL_ASSET_NAME)
     if expected is None:
@@ -407,7 +402,7 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
         if total > MAX_EXTRACT_BYTES:
             raise tarfile.TarError("archive expands past the decompression-bomb cap")
         name = member.name.replace("\\", "/")
-        if name.startswith("/") or name.startswith("\\"):
+        if name.startswith(("/", "\\")):
             raise tarfile.TarError(f"refusing absolute member path: {member.name!r}")
         normalized = os.path.normpath(name)
         if normalized in (".", ""):
@@ -418,7 +413,7 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
             )
         if member.issym() or member.islnk():
             link = member.linkname.replace("\\", "/")
-            if link.startswith("/") or link.startswith("\\"):
+            if link.startswith(("/", "\\")):
                 raise tarfile.TarError(
                     f"refusing absolute link target: {member.name!r} -> {member.linkname!r}"
                 )
@@ -446,7 +441,7 @@ def download_verified_release(
     release: ReleaseInfo,
     fetch: Callable[..., _Fetched] | None = None,
     timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
-) -> tuple[Optional[Path], Optional[str]]:
+) -> tuple[Path | None, str | None]:
     """Download + verify + extract the release tarball into a temp dir.
 
     Refuses a release with no checksum asset and refuses extraction on any
@@ -499,7 +494,7 @@ def download_verified_release(
 # ---------------------------------------------------------------------------
 
 
-def source_checkout_root() -> Optional[Path]:
+def source_checkout_root() -> Path | None:
     """Return the repo root when running from a source checkout, else None.
 
     A source install (editable ``pip install -e .`` or running from a clone)
@@ -577,9 +572,7 @@ def _copy_release_path(source: Path, destination: Path, relative: str) -> None:
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
-        if dst.is_symlink():
-            dst.unlink()
-        elif dst.exists() and not dst.is_dir():
+        if dst.is_symlink() or dst.exists() and not dst.is_dir():
             dst.unlink()
         shutil.copytree(src, dst, dirs_exist_ok=True)
     else:
@@ -633,7 +626,11 @@ class UpdateResult:
 def _default_runner(
     argv: list[str], *, timeout: float | None = None
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    # ``check=False`` is deliberate: callers read ``returncode`` / ``success``
+    # and turn a non-zero exit into a structured message themselves.
+    return subprocess.run(
+        argv, capture_output=True, text=True, timeout=timeout, check=False
+    )
 
 
 def _run_command(
@@ -662,7 +659,7 @@ def _run_command(
 def update_cli_package(
     *,
     method: str,
-    source_dir: Optional[Path] = None,
+    source_dir: Path | None = None,
     runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
 ) -> UpdateResult:
     """Reinstall the CLI package into the current environment.
@@ -834,14 +831,14 @@ class UpdateOutcome:
     """Everything the ``update`` command needs to report, incl. ``--json``."""
 
     current: str
-    latest: Optional[str] = None
+    latest: str | None = None
     method: str = INSTALL_METHOD_PIP
     unreachable: bool = False
     up_to_date: bool = False
     check_only: bool = False
     cancelled: bool = False
-    download_error: Optional[str] = None
-    cli_result: Optional[UpdateResult] = None
+    download_error: str | None = None
+    cli_result: UpdateResult | None = None
     assistants_updated: list[str] = field(default_factory=list)
     assistants_failed: list[tuple[str, str]] = field(default_factory=list)
     assistants_unknown: list[str] = field(default_factory=list)
@@ -874,7 +871,7 @@ class UpdateOutcome:
         }
 
 
-def validate_assistant_names(assistants: Optional[list[str]]) -> list[str]:
+def validate_assistant_names(assistants: list[str] | None) -> list[str]:
     """Return the ``--assistants`` names that are not known assistant keys.
 
     Empty list means every requested name is valid. An explicit empty list is
@@ -891,10 +888,10 @@ def run_update(
     project_root: Path,
     check_only: bool = False,
     confirmed: bool = False,
-    assistants: Optional[list[str]] = None,
+    assistants: list[str] | None = None,
     fetch: Callable[..., _Fetched] | None = None,
     runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
-    home: Optional[Path] = None,
+    home: Path | None = None,
 ) -> UpdateOutcome:
     """Implement ``iterate update``.
 

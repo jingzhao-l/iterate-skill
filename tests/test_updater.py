@@ -16,15 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from iterate_cli import __version__
-from iterate_cli import updater
+from iterate_cli import __version__, updater
 from iterate_cli.updater import (
     CHECKSUMS_ASSET_NAME,
+    INSTALL_METHOD_PIP,
+    INSTALL_METHOD_SOURCE,
     OPTIONAL_RELEASE_PATHS,
     RELEASE_API_URL,
     REQUIRED_RELEASE_PATHS,
-    INSTALL_METHOD_PIP,
-    INSTALL_METHOD_SOURCE,
     TARBALL_ASSET_NAME,
     UpdateOutcome,
     UpdateResult,
@@ -40,7 +39,6 @@ from iterate_cli.updater import (
     update_assistant_dir,
     update_cli_package,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / builders (offline release simulation)
@@ -738,23 +736,29 @@ def _tarball_with_members(file_names: list[str]) -> bytes:
 def test_safe_extractall_rejects_dir_traversal_member(tmp_path) -> None:
     """A ``../escape/`` directory member must be refused, not just files."""
     blob = _tarball_with_members(["../escape/"])
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-        with pytest.raises(tarfile.TarError, match="traversal"):
-            updater._safe_extractall(tar, tmp_path)
+    with (
+        tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar,
+        pytest.raises(tarfile.TarError, match="traversal"),
+    ):
+        updater._safe_extractall(tar, tmp_path)
 
 
 def test_safe_extractall_rejects_absolute_member(tmp_path) -> None:
     blob = _tarball_with_members(["/etc/evil"])
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-        with pytest.raises(tarfile.TarError, match="absolute"):
-            updater._safe_extractall(tar, tmp_path)
+    with (
+        tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar,
+        pytest.raises(tarfile.TarError, match="absolute"),
+    ):
+        updater._safe_extractall(tar, tmp_path)
 
 
 def test_safe_extractall_rejects_escaping_relative_member(tmp_path) -> None:
     blob = _tarball_with_members(["a/../../escape.txt"])
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-        with pytest.raises(tarfile.TarError, match="traversal"):
-            updater._safe_extractall(tar, tmp_path)
+    with (
+        tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar,
+        pytest.raises(tarfile.TarError, match="traversal"),
+    ):
+        updater._safe_extractall(tar, tmp_path)
 
 
 def test_safe_extractall_rejects_symlink_absolute_target(tmp_path) -> None:
@@ -766,9 +770,11 @@ def test_safe_extractall_rejects_symlink_absolute_target(tmp_path) -> None:
         info.linkname = "/etc/passwd"
         tar.addfile(info)
     buf.seek(0)
-    with tarfile.open(fileobj=buf, mode="r:gz") as tar:
-        with pytest.raises(tarfile.TarError, match="absolute link target"):
-            updater._safe_extractall(tar, tmp_path)
+    with (
+        tarfile.open(fileobj=buf, mode="r:gz") as tar,
+        pytest.raises(tarfile.TarError, match="absolute link target"),
+    ):
+        updater._safe_extractall(tar, tmp_path)
 
 
 def test_safe_extractall_rejects_symlink_escaping_target(tmp_path) -> None:
@@ -780,9 +786,11 @@ def test_safe_extractall_rejects_symlink_escaping_target(tmp_path) -> None:
         info.linkname = "../../outside"
         tar.addfile(info)
     buf.seek(0)
-    with tarfile.open(fileobj=buf, mode="r:gz") as tar:
-        with pytest.raises(tarfile.TarError, match="escaping"):
-            updater._safe_extractall(tar, tmp_path)
+    with (
+        tarfile.open(fileobj=buf, mode="r:gz") as tar,
+        pytest.raises(tarfile.TarError, match="escaping"),
+    ):
+        updater._safe_extractall(tar, tmp_path)
 
 
 def test_safe_extractall_accepts_benign_tree(tmp_path) -> None:
@@ -805,9 +813,11 @@ def test_safe_extractall_refuses_symlink_without_data_filter(tmp_path, monkeypat
         info.linkname = "target"  # benign-looking relative target
         tar.addfile(info)
     buf.seek(0)
-    with tarfile.open(fileobj=buf, mode="r:gz") as tar:
-        with pytest.raises(tarfile.TarError, match="without the data extraction filter"):
-            updater._safe_extractall(tar, tmp_path)
+    with (
+        tarfile.open(fileobj=buf, mode="r:gz") as tar,
+        pytest.raises(tarfile.TarError, match="without the data extraction filter"),
+    ):
+        updater._safe_extractall(tar, tmp_path)
 
 
 def test_safe_extractall_accepts_benign_tree_without_data_filter(tmp_path, monkeypatch) -> None:
