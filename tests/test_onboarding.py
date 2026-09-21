@@ -1253,6 +1253,10 @@ class TestIncrementalRefreshAtomicity:
         """If config write fails, ITERATE.md must be rolled back to original."""
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
+        # A real project change (new manifest) so the refresh actually writes
+        # both files — a no-op refresh (nothing changed) skips writing by
+        # design and would never exercise the rollback path.
+        (fake_project / "requirements.txt").write_text("pytest\n", encoding="utf-8")
 
         iterate_md = fake_project / "ITERATE.md"
         config_path = fake_project / "iterate.config.yaml"
@@ -1291,6 +1295,9 @@ class TestIncrementalRefreshAtomicity:
         """If ITERATE.md write fails, config must remain unchanged (B-8-1)."""
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
+        # Force both outputs to differ (new manifest) so the ITERATE.md write
+        # is actually attempted and the config is left untouched when it fails.
+        (fake_project / "requirements.txt").write_text("pytest\n", encoding="utf-8")
 
         iterate_md = fake_project / "ITERATE.md"
         config_path = fake_project / "iterate.config.yaml"
@@ -1324,14 +1331,26 @@ class TestIncrementalRefreshAtomicity:
         """Rollback failure must be logged to stderr (M-10-1)."""
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)
+        (fake_project / "requirements.txt").write_text("pytest\n", encoding="utf-8")
+        iterate_md = fake_project / "ITERATE.md"
+        md_before = iterate_md.read_text(encoding="utf-8")
 
-        # Make ALL atomic_write calls fail — both initial write and rollback.
+        # Make the config write AND the ITERATE.md rollback (which replays the
+        # pre-refresh text) fail, while letting the ITERATE.md write itself
+        # succeed — mirroring "refresh wrote MD, then failed on config, and
+        # then could not roll the MD back".
         import iterate_cli.refresh as refresh_mod
 
-        def always_failing_atomic_write(path, content, encoding="utf-8"):
-            raise OSError("simulated write failure")
+        original_atomic_write = refresh_mod.atomic_write
 
-        monkeypatch.setattr(refresh_mod, "atomic_write", always_failing_atomic_write)
+        def failing_atomic_write(path, content, encoding="utf-8"):
+            if str(path).endswith("iterate.config.yaml"):
+                raise OSError("simulated write failure")
+            if isinstance(content, str) and content == md_before:
+                raise OSError("simulated rollback failure")
+            return original_atomic_write(path, content, encoding)
+
+        monkeypatch.setattr(refresh_mod, "atomic_write", failing_atomic_write)
 
         result = incremental_refresh(fake_project)
 
@@ -1858,7 +1877,7 @@ class TestCLIStatus:
             "dimensions: [broken", encoding="utf-8"
         )
         ret = cli_main(["status", "-p", str(fake_project), "--json"])
-        assert ret == 0
+        assert ret == 1
         captured = capsys.readouterr()
         payload = json.loads(captured.out)
         assert payload["onboarded"] is True

@@ -663,6 +663,26 @@ class TestValidateDimensions:
         errors = validate.validate_dimensions(dimensions_dir)
         assert any("field priority must be one of" in e for e in errors)
 
+    def test_non_utf8_file_reported_without_crash(self, tmp_path: Path) -> None:
+        dimensions_dir = tmp_path / "dimensions"
+        dimensions_dir.mkdir()
+        (dimensions_dir / "bad.yaml").write_bytes(b"\xff\xfe\x00\x01name: x\n")
+        # A sibling valid file must still be validated (no abort mid-walk).
+        (dimensions_dir / "good.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Good",
+                    "name_en": "Good",
+                    "priority": "low",
+                    "focus": "Fine.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        errors = validate.validate_dimensions(dimensions_dir)
+        assert any("Could not read bad.yaml" in e for e in errors)
+        assert not any("good.yaml" in e for e in errors)
+
 
 class TestDimensionEnumFromSchema:
     """Cover _dimension_enum_from_schema: inline enum and $ref forms (fix 3)."""

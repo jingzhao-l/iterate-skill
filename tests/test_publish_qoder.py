@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -267,3 +268,51 @@ class TestCopyTreeDotfiles:
         assert "plain.txt" in names
         assert ".git" not in names
         assert "harness" not in names
+
+
+class TestCopyTrackedTree:
+    def _git(self, repo: Path, args: list[str], env: dict) -> None:
+        proc = subprocess.run(
+            ["git", *args], cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        assert proc.returncode == 0, proc.stderr.decode()
+
+    def test_only_committed_files_copied_scratch_never_leaks(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Tracked-tree fallback must equal git archive: untracked dev/scratch
+        artifacts in the working tree must never ship in the package body."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        (repo / "shipped.txt").write_text("s", encoding="utf-8")
+        (repo / "scripts").mkdir()
+        (repo / "scripts" / "install.py").write_text("ok", encoding="utf-8")
+        (repo / ".gitignore").write_text("scratch.\n", encoding="utf-8")
+        (repo / "scratch.py").write_text("untracked wat", encoding="utf-8")
+        (repo / "dev").mkdir()
+        (repo / "dev" / "experiments.py").write_text("dev only", encoding="utf-8")
+
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        self._git(repo, ["init", "-q", "-b", "main"], env)
+        self._git(repo, ["add", "SKILL.md", "shipped.txt", "scripts/install.py", ".gitignore"], env)
+        self._git(repo, ["commit", "-q", "-m", "seed"], env)
+
+        monkeypatch.setattr(publish_qoder, "REPO_ROOT", str(repo))
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        publish_qoder._copy_tracked_tree(str(dst), ("dev",))
+        names = sorted(str(p.relative_to(dst)) for p in dst.rglob("*") if p.is_file())
+        assert "SKILL.md" in names
+        assert "shipped.txt" in names
+        assert "scripts/install.py" in names
+        assert ".gitignore" in names
+        # Untracked scratch and excluded dir never ship.
+        assert all("scratch.py" not in n for n in names)
+        assert all("dev" not in n for n in names)

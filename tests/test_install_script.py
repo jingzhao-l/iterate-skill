@@ -864,6 +864,45 @@ class TestSetConfigValues:
         target.mkdir()
         assert install.set_config_values(target, source, [["notakeyvalue"]]) == 1
 
+    def test_non_utf8_project_config_refused_without_clobber(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A project config we cannot decode must fail cleanly and stay byte-identical.
+
+        Regression: the raw-text read was unguarded, so a non-UTF-8 config
+        raised a traceback... or, had the read been guarded alone, could have
+        been silently overwritten by a validated save.
+        """
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        path = target / "iterate.config.yaml"
+        original = b"\xff\xfe\x00\x01goal: existing\n"
+        path.write_bytes(original)
+        assert install.set_config_values(target, source, [["goal=New"]]) == 1
+        assert path.read_bytes() == original
+
+    def test_validation_failure_restores_exact_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A rejected save must restore the original file char-for-char, atomically.
+
+        Regression: the revert path wrote the previous text through a plain
+        (non-atomic) write, so a crash mid-revert could truncate the config.
+        """
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        path = target / "iterate.config.yaml"
+        original = "goal: keep me\nvalidation:\n  command_whitelist: [python]\n"
+        path.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(
+            install, "_validate_project_config", lambda _t, _s: ["intentional failure"]
+        )
+        assert install.set_config_values(target, source, [["goal=New"]]) == 1
+        assert path.read_text(encoding="utf-8") == original
+        assert list(target.glob(".iterate.config.yaml.*.tmp")) == []
+
 
 class TestConfigCommandDispatch:
     def test_no_action_warns(self, tmp_path: Path):
@@ -1481,9 +1520,20 @@ class TestPromptHelpers:
         assert install.prompt_text("q", default="d", input_func=lambda p: "") == "d"
         assert install.prompt_text("q", input_func=lambda p: "v") == "v"
 
+    def test_prompt_text_eof_returns_default_or_empty(self):
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        assert install.prompt_text("q", default="d", input_func=eof) == "d"
+        assert install.prompt_text("q", input_func=eof) == ""
+
     def test_prompt_int(self):
         assert install.prompt_int("q", default=5, input_func=lambda p: "") == 5
         assert install.prompt_int("q", input_func=lambda p: "12") == 12
+
+    def test_prompt_int_eof_uses_default_or_raises(self):
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        assert install.prompt_int("q", default=5, input_func=eof) == 5
+        with pytest.raises(EOFError):
+            install.prompt_int("q", input_func=eof)
 
     def test_prompt_int_in_range_retries(self):
         calls = iter(["99", "3"])
@@ -1492,6 +1542,28 @@ class TestPromptHelpers:
     def test_prompt_bool(self):
         assert install.prompt_bool("q", default=True, input_func=lambda p: "") is True
         assert install.prompt_bool("q", default=True, input_func=lambda p: "n") is False
+
+    def test_prompt_bool_eof_keeps_default(self):
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        assert install.prompt_bool("q", default=True, input_func=eof) is True
+        assert install.prompt_bool("q", default=False, input_func=eof) is False
+
+    def test_prompt_choice_eof_uses_default_or_empty(self):
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        assert install.prompt_choice("q", ["a", "b"], default="b", input_func=eof) == "b"
+        assert install.prompt_choice("q", ["a", "b"], input_func=eof) == ""
+
+    def test_prompt_dimensions_eof_keeps_current(self):
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        assert install.prompt_dimensions(["correctness"], input_func=eof) == ["correctness"]
+        assert install.prompt_dimensions([], input_func=eof) == install.DIMENSION_CHOICES
+
+    def test_upgrade_confirmation_eof_declines(self, tmp_path: Path):
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        assert (
+            install._ask_upgrade_confirmation("cursor", tmp_path / "dst", "Cursor", eof)
+            is False
+        )
 
     def test_prompt_dimensions_empty_keeps_current(self):
         assert install.prompt_dimensions(["correctness"], input_func=lambda p: "") == ["correctness"]
@@ -1543,6 +1615,20 @@ class TestInteractiveConfig:
         assert cfg["dimensions"] == ["correctness", "security"]
         assert cfg["review"]["scope"] == "changed-only"
         assert cfg["git"]["push_per_round"] is False
+
+    def test_wizard_refuses_corrupt_existing_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """An unreadable/undecodable existing project config must never be
+        clobbered by the wizard; the wizard aborts with a clean error."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        path = target / "iterate.config.yaml"
+        original = b"\xff\xfe\x00\x01goal: stays\n"
+        path.write_bytes(original)
+        assert install.interactive_config(target, source, input_func=lambda p: "x") == 1
+        assert path.read_bytes() == original
 
 
 # --------------------------------------------------------------------------- #

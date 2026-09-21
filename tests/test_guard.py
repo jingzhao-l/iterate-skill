@@ -22,6 +22,7 @@ from iterate_cli.cli import main as cli_main
 from iterate_cli.guard import (
     EXIT_FAIL,
     EXIT_PASS,
+    _DRAIN_CHUNK_CHARS,
     render_guard_result,
     run_guard_postcheck,
     run_guard_precheck,
@@ -548,6 +549,62 @@ class TestCommandExecutionBoundaries:
         # in the bounded tail — proving output is truncated, not fully kept.
         assert "5000" in detail
         # The returned diagnostic tail stays small (far below the 5000 lines).
+        assert len(detail) < 1000
+
+    # ``seq`` also covers "last line is retained" (the tail source).
+    def test_single_line_spans_chunks_without_loss(self, tmp_path, monkeypatch) -> None:
+        """A line longer than one drain chunk must survive intact across seams.
+
+        The chunked drain carries the tail of a still-open line between reads;
+        a regression here would mangle or drop the content near a chunk
+        boundary (which is invisible to the old readline-based draining).
+        """
+        project = _make_project(tmp_path)
+        scripts_dir = project / "scripts"
+        scripts_dir.mkdir()
+        script_path = scripts_dir / "blob.py"
+        prefix = "LEAD-MARK-"
+        blob_size = _DRAIN_CHUNK_CHARS * 2 + 123  # uneven so it crosses oddly
+        script_path.write_text(
+            "import sys\n"
+            f"sys.stdout.write({prefix!r} + 'A' * {blob_size} + '\\n')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ITERATE_EXTRA_SAFE_COMMAND_PREFIXES", "python3")
+        config = _base_config()
+        config["validation"]["commands"] = {"python": ["python3 scripts/blob.py"]}
+        _write_config(project, config)
+        out = run_guard_postcheck(project, None)
+        assert out.passed is True
+        detail = next(d for _, ok, d in out.items if ok)
+        # The leading marker must still be present and the tail bounded far
+        # below the 128KB+ single line that produced it.
+        assert "LEAD-MARK-" in detail
+        assert len(detail) < 1000
+
+    def test_huge_newline_free_blob_stays_bounded(self, tmp_path, monkeypatch) -> None:
+        """A multi-MB newline-free blob (progress deltas, minified output) must
+        complete quickly without materializing the whole blob in memory — the
+        readline-based drain would have buffered the entire line (the fix)."""
+        project = _make_project(tmp_path)
+        scripts_dir = project / "scripts"
+        scripts_dir.mkdir()
+        script_path = scripts_dir / "blob.py"
+        blob_size = _DRAIN_CHUNK_CHARS * 64  # 4 MiB in one single line
+        script_path.write_text(
+            "import sys\n"
+            f"sys.stdout.write('A' * {blob_size})\n"
+            "sys.stdout.flush()\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ITERATE_EXTRA_SAFE_COMMAND_PREFIXES", "python3")
+        config = _base_config()
+        config["validation"]["commands"] = {"python": ["python3 scripts/blob.py"]}
+        _write_config(project, config)
+        out = run_guard_postcheck(project, None)
+        assert out.passed is True
+        detail = next(d for _, ok, d in out.items if ok)
+        # Only a tiny diagnostic snippet may survive the 4MiB echo.
         assert len(detail) < 1000
 
     # ``seq`` also covers "last line is retained" (the tail source).
