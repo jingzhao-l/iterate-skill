@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 const nodeRequire = createRequire(import.meta.url);
 
 export const EVIDENCE_PACK_SCHEMA_ID =
-  "https://schemas.iterate.dev/evidence-pack-0.1-draft.json" as const;
+  "https://schemas.iterate.dev/evidence-pack-0.1.json" as const;
 export const DECISION_LOG_ENTRY_SCHEMA_ID =
   "https://schemas.iterate.dev/decision-log-entry-0.1-draft.json" as const;
 export const RECIPE_CONFIG_SCHEMA_ID =

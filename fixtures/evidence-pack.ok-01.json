@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "glasspane.evidence/0.1-draft",
+  "schemaVersion": "glasspane.evidence/0.1",
   "operationId": "op_0123456789ABCDEFGHJKMNPQRS",
   "createdAt": "2026-09-14T12:34:56.789Z",
   "attribution": {

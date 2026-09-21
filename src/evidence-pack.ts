@@ -11,7 +11,7 @@ export const TREE_DIGEST_PATTERN = /^[0-9a-f]{32}$/;
 
 export const SELECTOR_MAX_LENGTH = 512;
 
-export const EVIDENCE_SCHEMA_VERSION = "glasspane.evidence/0.1-draft" as const;
+export const EVIDENCE_SCHEMA_VERSION = "glasspane.evidence/0.1" as const;
 
 export const AttributionLevelSchema = z.enum(["soft", "strong", "weak"]);
 export type AttributionLevel = z.infer<typeof AttributionLevelSchema>;
