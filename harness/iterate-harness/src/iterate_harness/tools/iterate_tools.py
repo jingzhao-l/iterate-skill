@@ -269,6 +269,8 @@ class IterateReviewTool(BaseTool[BaseModel]):
     input_model = IterateReviewInput
 
     def is_read_only(self, arguments: BaseModel) -> bool:
+        if isinstance(arguments, IterateReviewInput):
+            return arguments.operation != "aggregate"
         return True
 
     async def execute(self, arguments: BaseModel, context: ToolExecutionContext) -> ToolResult:
