@@ -1102,15 +1102,13 @@ class TestDownloadReleaseSource:
 
     def test_refuses_when_no_root_has_marker(self, tmp_path: Path, monkeypatch, capsys) -> None:
         data = self._tar_bytes({"docs": ["README.md"]})
-        result = self._run(monkeypatch, data)
-        assert result is None
-        assert "exactly one" in capsys.readouterr().err
+        with pytest.raises(install.ReleaseStructureError, match="exactly one"):
+            self._run(monkeypatch, data)
 
     def test_refuses_when_multiple_roots_have_marker(self, tmp_path: Path, monkeypatch, capsys) -> None:
         data = self._tar_bytes({"a": ["SKILL.md"], "b": ["SKILL.md"]})
-        result = self._run(monkeypatch, data)
-        assert result is None
-        assert "found 2" in capsys.readouterr().err
+        with pytest.raises(install.ReleaseStructureError, match="found 2"):
+            self._run(monkeypatch, data)
 
 
 # --------------------------------------------------------------------------- #

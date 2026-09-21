@@ -420,6 +420,19 @@ class ReleaseIntegrityError(Exception):
     """
 
 
+class ReleaseStructureError(Exception):
+    """A release passed integrity verification but its archive is unusable
+    (extraction failed, or it does not contain exactly one top-level directory
+    with a ``SKILL.md`` marker).
+
+    Raised by ``_download_release_source`` so callers abort the update instead
+    of silently falling back to the local checkout while the verified release
+    is broken — a filtered fallback with the wrong source would be missing the
+    failing feature or version, which is the silent defect this class is meant
+    to surface.
+    """
+
+
 def copy_skill_files(
     source: Path, destination: Path, dry_run: bool, force: bool
 ) -> list[str]:
@@ -562,7 +575,12 @@ def _prompt_multi_select(
             marker = "[✓]" if opt in selected else "[ ]"
             _tui_print(f"  {marker} {i}. {display}", style="iterate.label" if opt in selected else "")
 
-        raw = input_func("  \u2514 ").strip()
+        try:
+            raw = input_func("  \u2514 ").strip()
+        except EOFError:
+            # Piped/closed stdin (e.g. `installer < /dev/null`) ends the prompt
+            # cleanly instead of crashing with a traceback.
+            break
         if not raw:
             break
 
@@ -703,9 +721,13 @@ def _read_arrow_key(stdin) -> str | None:
 
     Commands: ``up``, ``down``, ``toggle`` (Space / Enter), ``cancel`` (q/Q).
     Returns ``None`` for unrecognized keys. Raises ``KeyboardInterrupt`` on
-    Ctrl+C so the caller can restore the terminal and cancel.
+    Ctrl+C so the caller can restore the terminal and cancel. An EOF read is
+    mapped to ``cancel`` so a closed/torn-down terminal cannot busy-loop the
+    menu at 100% CPU reading endless empty reads.
     """
     ch = stdin.read(1)
+    if ch == "":
+        return "cancel"
     if ch == "\x1b":
         # Escape sequence: ESC [ A (up) / B (down).
         seq = stdin.read(2)
@@ -878,7 +900,13 @@ def _prompt_arrow_multi_select(
     except KeyboardInterrupt:
         state.cancel()
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        # A torn-down terminal can make the restore itself fail
+        # (``termios.error``); swallow it rather than surfacing a second
+        # traceback on top of the cancel that already happened.
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except termios.error:
+            pass
         _sys.stdout.write("\x1b[?25h")
         _sys.stdout.write("\n")
         _sys.stdout.flush()
@@ -983,7 +1011,11 @@ def _ask_upgrade_confirmation(
     ``sys.stdin.isatty()`` before calling.
     """
     _warning(f"{display_name} 已存在 iterate-skill 安装（可能为旧版本）：{destination}")
-    answer = input_func("  是否覆盖升级到最新版？[Y/n]: ").strip().lower()
+    try:
+        answer = input_func("  是否覆盖升级到最新版？[Y/n]: ").strip().lower()
+    except EOFError:
+        # EOF on a TTY (Ctrl-D): decline the overwrite rather than crash.
+        return False
     if answer in ("n", "no"):
         _hint(f"Skipped {display_name}：保留现有安装。")
         return False
@@ -1557,6 +1589,15 @@ def _download_release_source(
             undownloadable checksum URL, no matching checksum entry, or a SHA-256
             mismatch). Callers must fail closed on this — never fall back to a
             different source while claiming the release applied.
+        ReleaseStructureError: When the verified archive is unusable (extraction
+            failed, or it does not contain exactly one top-level directory with a
+            ``SKILL.md`` marker). Callers must abort — a broken release must not
+            silently fall back to a possibly-different local source.
+
+    Returns:
+        The extracted ``SKILL.md`` root directory, or ``None`` only when the
+        tarball/checksum could not be downloaded (pure network failure, which
+        legitimately allows falling back to the local source).
     """
     if not checksum_url:
         raise ReleaseIntegrityError("SHA256SUMS.txt URL is required for integrity verification.")
@@ -1594,18 +1635,19 @@ def _download_release_source(
             root_candidates = [p for p in temp_dir.iterdir() if p.is_dir()]
             skill_roots = [d for d in root_candidates if (d / "SKILL.md").is_file()]
             if len(skill_roots) != 1:
-                _error(
-                    "Refusing to proceed: release tarball must contain exactly one "
-                    "top-level directory with a SKILL.md marker, "
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise ReleaseStructureError(
+                    "release tarball must contain exactly one top-level directory "
+                    "with a SKILL.md marker, "
                     f"found {len(skill_roots)}."
                 )
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                return None
             return skill_roots[0]
     except (tarfile.TarError, OSError):
-        # Clean up the temp directory on any failure to avoid leaking it.
+        # A checksum-verified archive that cannot be extracted is a broken
+        # release, not a network flake: abort instead of falling back to local
+        # and silently installing a different source tree.
         shutil.rmtree(temp_dir, ignore_errors=True)
-        return None
+        raise ReleaseStructureError("release tarball could not be extracted.")
 
 
 def _update_one_assistant(
@@ -1699,6 +1741,12 @@ def update_command(
             # Integrity failure (missing/undownloadable checksum, missing
             # entry, SHA mismatch) must abort — never fall back to local and
             # claim "Update complete." for an unverified release.
+            _error(f"Refusing to update from release: {exc}")
+            return 1
+        except ReleaseStructureError as exc:
+            # The release checksum-verified but its archive is unusable: abort
+            # rather than install a locally-checked-out tree that may differ
+            # from the broken release.
             _error(f"Refusing to update from release: {exc}")
             return 1
         if release_source:
@@ -1906,6 +1954,11 @@ def load_config(path: Path) -> dict[str, object]:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise ValueError(f"Invalid YAML in {path}: {exc}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError (non-UTF-8 bytes) inherits ValueError, not
+        # YAMLError — without this clause a binary/locale-encoded config
+        # would crash with a raw traceback instead of a clean message.
+        raise IOError(f"Could not read {path}: {exc}") from exc
 
     if data is None:
         return {}
@@ -1929,6 +1982,25 @@ def save_config(path: Path, config: dict[str, object]) -> None:
         os.replace(tmp_name, path)
     except BaseException:
         # Never leave a partial temp file behind on failure.
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Atomically write raw text to ``path`` (temp file + ``os.replace``).
+
+    Used for config-rollback writes so a mid-write failure can never leave a
+    truncated config behind, matching ``save_config``'s guarantee.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp_name, path)
+    except BaseException:
         try:
             os.remove(tmp_name)
         except OSError:
@@ -1982,10 +2054,20 @@ def list_config(target: Path) -> int:
 def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) -> int:
     """Apply --set key=value pairs to the project-level config and validate."""
     project_path = target / "iterate.config.yaml"
-    previous_text = (
-        project_path.read_text(encoding="utf-8") if project_path.exists() else None
-    )
-    config = load_config(project_path) if previous_text is not None else {}
+    if project_path.exists():
+        try:
+            config = load_config(project_path)
+            previous_text = project_path.read_text(encoding="utf-8")
+        except (ValueError, TypeError, IOError) as exc:
+            # load_config surfaces YAML/type/read errors; guard the raw text
+            # read too so a non-UTF-8 file fails with a clean message instead
+            # of a traceback (and never gets blindly overwritten).
+            _error(f"Cannot modify {project_path}: {exc}")
+            _hint("Fix the file manually, or delete it and re-run with --init.")
+            return 1
+    else:
+        config = {}
+        previous_text = None
 
     for group in set_pairs:
         for pair in group:
@@ -2011,7 +2093,7 @@ def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) ->
         for error in errors:
             _hint(f"- {error}")
         if previous_text is not None:
-            project_path.write_text(previous_text, encoding="utf-8")
+            _atomic_write_text(project_path, previous_text)
         else:
             project_path.unlink()
         return 1
@@ -2040,7 +2122,12 @@ def prompt_choice(
         marker = " (default)" if choice == default else ""
         _hint(f"{idx}. {choice}{marker}")
     while True:
-        answer = input_func("  \u2514 Enter number or name: ").strip()
+        try:
+            answer = input_func("  \u2514 Enter number or name: ").strip()
+        except EOFError:
+            # Ctrl-D / closed stdin mid-prompt: adopt the default (or, with no
+            # default, empty) instead of crashing with a traceback.
+            return default if default is not None else ""
         if not answer and default is not None:
             return default
         if answer.isdigit():
@@ -2066,7 +2153,12 @@ def prompt_text(
     """
     default_hint = f" [{default}]" if default else ""
     while True:
-        answer = input_func(f"\n{question}{default_hint}: ").strip()
+        try:
+            answer = input_func(f"\n{question}{default_hint}: ").strip()
+        except EOFError:
+            # EOF mid-prompt: fall back to the default (or empty text when no
+            # default exists) instead of surfacing a traceback.
+            return default if default is not None else ""
         if answer:
             return answer
         if default is not None:
@@ -2088,7 +2180,14 @@ def prompt_int(
     """
     default_hint = f" [{default}]" if default is not None else ""
     while True:
-        answer = input_func(f"\n{question}{default_hint}: ").strip()
+        try:
+            answer = input_func(f"\n{question}{default_hint}: ").strip()
+        except EOFError:
+            # EOF mid-prompt: adopt the default; without one there is no
+            # sane integer to synthesize, so surface the cancellation.
+            if default is not None:
+                return default
+            raise
         if not answer and default is not None:
             return default
         try:
@@ -2111,7 +2210,12 @@ def prompt_bool(
     """
     default_text = "Y/n" if default else "y/N"
     while True:
-        answer = input_func(f"\n{question} [{default_text}]: ").strip().lower()
+        try:
+            answer = input_func(f"\n{question} [{default_text}]: ").strip().lower()
+        except EOFError:
+            # EOF mid-prompt: adopt the default (answering "no" on a decline-
+            # by-default question is the safe conservative choice).
+            return default
         if not answer:
             return default
         if answer in ("y", "yes"):
@@ -2137,15 +2241,22 @@ def interactive_config(
     master_path = source / DEFAULT_CONFIG_PATH
 
     if project_path.exists():
-        config = load_config(project_path)
+        try:
+            config = load_config(project_path)
+            previous_text = project_path.read_text(encoding="utf-8")
+        except (ValueError, TypeError, IOError) as exc:
+            # A project config we cannot parse or read (bad YAML, non-UTF-8
+            # bytes, unreadable file) must not be clobbered by the wizard:
+            # fail with a clean message instead of a traceback.
+            _error(f"Cannot edit {project_path}: {exc}")
+            _hint("Fix the file manually first, or delete it and run the wizard again.")
+            return 1
     elif master_path.exists():
         config = load_config(master_path)
+        previous_text = None
     else:
         config = {}
-
-    previous_text = (
-        project_path.read_text(encoding="utf-8") if project_path.exists() else None
-    )
+        previous_text = None
 
     _intro("iterate-skill configuration wizard")
 
@@ -2198,7 +2309,7 @@ def interactive_config(
         for error in errors:
             _hint(f"- {error}")
         if previous_text is not None:
-            project_path.write_text(previous_text, encoding="utf-8")
+            _atomic_write_text(project_path, previous_text)
         else:
             project_path.unlink()
         return 1
@@ -2232,7 +2343,11 @@ def prompt_dimensions(current: object, input_func: InputFunc = input) -> list[st
     for idx, dim in enumerate(DIMENSION_CHOICES, start=1):
         marker = " [enabled]" if dim in current_set else ""
         _hint(f"{idx}. {dim}{marker}")
-    answer = input_func("Dimensions: ").strip()
+    try:
+        answer = input_func("Dimensions: ").strip()
+    except EOFError:
+        # EOF mid-prompt: keep the current dimension selection.
+        return _ensure_non_empty_dimensions(list(current_set))
     if not answer:
         return _ensure_non_empty_dimensions(list(current_set))
 
