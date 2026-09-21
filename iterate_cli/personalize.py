@@ -794,7 +794,14 @@ def merge_personalization_into_config(
         str(module): list(cmds) if isinstance(cmds, list) else []
         for module, cmds in raw_commands.items()
     }
-    whitelist = list(validation.get("command_whitelist") or [])
+    raw_whitelist = validation.get("command_whitelist") or []
+    # A hand-edited scalar ``command_whitelist: pytest`` must not be char-split
+    # into ['p','y','t','e','s','t'] and persisted; coerce to string entries
+    # only for genuine list members, degrading any other shape to an empty
+    # whitelist (dropping the key below keeps the config schema-valid).
+    whitelist = [str(w) for w in raw_whitelist if isinstance(w, (str, int, float))] if isinstance(
+        raw_whitelist, list
+    ) else []
 
     def _owned_strings(module: str) -> set[str]:
         """Return the previously personalization-owned strings for a module."""

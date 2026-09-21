@@ -23,12 +23,15 @@ this module never reads stdin.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import hmac
 import io
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -68,6 +71,9 @@ UPDATE_CHECK_ENV = "ITERATE_UPDATE_CHECK"  # "0"/"off"/"false" disables the hint
 
 HTTP_TIMEOUT_SECONDS = 15
 DOWNLOAD_TIMEOUT_SECONDS = 30
+#: Advisory ``--version`` hint must never hang the version command on a slow
+#: network; a short dedicated timeout keeps the hint best-effort and snappy.
+UPDATE_HINT_TIMEOUT_SECONDS = 3
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB safety cap on any single payload
 _DOWNLOAD_CHUNK_SIZE = 64 * 1024
 MAX_EXTRACT_BYTES = 600 * 1024 * 1024  # total uncompressed (decompression-bomb guard)
@@ -380,7 +386,7 @@ def _verify(tarball: bytes, checksums: bytes) -> str | None:
     if expected is None:
         return f"checksum file has no {TARBALL_ASSET_NAME} entry"
     actual = _sha256_of(tarball)
-    if actual != expected:
+    if not hmac.compare_digest(actual, expected):
         return (
             f"SHA-256 mismatch: expected {expected}, got {actual}; refusing any write"
         )
@@ -628,9 +634,32 @@ def _default_runner(
 ) -> subprocess.CompletedProcess[str]:
     # ``check=False`` is deliberate: callers read ``returncode`` / ``success``
     # and turn a non-zero exit into a structured message themselves.
-    return subprocess.run(
-        argv, capture_output=True, text=True, timeout=timeout, check=False
+    if timeout is None:
+        return subprocess.run(
+            argv, capture_output=True, text=True, timeout=None, check=False
+        )
+    # A timeout that kills the whole child process group: subprocess.run only
+    # SIGKILLs the direct child on TimeoutExpired, so a stalled ``pip`` build
+    # step (grandchild sharing the captured pipes) could otherwise outlive the
+    # reported timeout. start_new_session isolates the tree; killpg reaps it.
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        # Drain the pipes so a blocked child cannot wedge cleanup, then re-raise
+        # so the caller converts TimeoutExpired into a readable error.
+        with contextlib.suppress(Exception):
+            proc.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 def _run_command(
@@ -814,7 +843,7 @@ def maybe_print_update_hint() -> None:
     }:
         return
     try:
-        hint = build_update_hint()
+        hint = build_update_hint(timeout=UPDATE_HINT_TIMEOUT_SECONDS)
     except Exception:  # noqa: BLE001 — advisory only, never crash --version
         return
     if hint:

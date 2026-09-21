@@ -59,6 +59,24 @@ def _should_show_banner(args: argparse.Namespace) -> bool:
     return not os.environ.get("ITERATE_NO_BANNER", "").strip()
 
 
+def _force_utf8_stdio() -> None:
+    """Best-effort switch stdout/stderr to UTF-8 (``errors="replace"``).
+
+    Structured output contains non-ASCII text (Chinese drift advice, etc.);
+    on consoles using a legacy/ANSI code page (notably Windows) printing it
+    would raise ``UnicodeEncodeError`` and turn a working command into a raw
+    traceback. Fails silently when the streams do not support reconfigure.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point.
 
@@ -68,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         Exit code: 0 for success, 1 for error/cancel.
     """
+    _force_utf8_stdio()
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -643,6 +662,21 @@ def _cmd_onboard(project_root: Path) -> int:
         if not existing_personalization.is_empty():
             data.personalization = existing_personalization
 
+    # A corrupt existing iterate.config.yaml must not be silently overwritten
+    # by onboarding output (every other writer refuses; mirror that so
+    # partially-recoverable hand edits are not discarded).
+    config_path = project_root / CONFIG_YAML
+    if config_path.is_file() and load_onboarding_config(project_root) is None:
+        tui.error(
+            "iterate.config.yaml exists but could not be parsed; refusing to "
+            "overwrite it with onboarding output."
+        )
+        tui.hint(
+            "Run 'iterate doctor' to diagnose and fix the config first.",
+            indent=2,
+        )
+        return 1
+
     try:
         iterate_md, config_yaml = write_onboarding_outputs(
             data, project_root, existing_md
@@ -1051,7 +1085,10 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     data["onboarded"] = onboarded
 
     drift = None
-    if config:
+    # Distinguish a parsed-but-empty config ({}) from a corrupt/absent one:
+    # an empty mapping is a legitimate parse, so the detail keys are still
+    # emitted (with defaults) instead of the payload being silently truncated.
+    if config is not None:
         onboarding = (
             config.get("onboarding")
             if isinstance(config.get("onboarding"), dict)
@@ -1060,7 +1097,8 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
         data["completed_at"] = onboarding.get("completed_at", "unknown")
         data["channel"] = onboarding.get("channel", "unknown")
         data["skill_version"] = onboarding.get("skill_version", "unknown")
-        data["drift_check"] = onboarding.get("drift_check", True)
+        drift_enabled = onboarding.get("drift_check", True)
+        data["drift_check"] = drift_enabled
         raw_fingerprints = onboarding.get("fingerprints") or []
         data["fingerprints"] = (
             len(raw_fingerprints) if isinstance(raw_fingerprints, list) else 0
@@ -1071,25 +1109,35 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
         )
 
         drift = check_onboarding_drift(project_root)
-        data["drift"] = drift_summary(drift)
+        drift_enabled = data["drift_check"]
+        if not drift_enabled:
+            # "Check disabled" must be distinguishable from a genuine
+            # "unknown" state for JSON consumers (the TUI already renders it
+            # correctly).
+            data["drift"] = "disabled"
+            data["drift_detected"] = None
+        elif drift is None:
+            data["drift"] = "unknown"
+            data["drift_detected"] = None
+        else:
+            data["drift"] = drift_summary(drift)
+            data["drift_detected"] = drift.has_drift
         # Machine-readable drift detail (B4): scripts can key off
         # drift_detected plus the concrete added/removed/changed lists
         # instead of parsing the human summary string.
-        if drift is None:
-            data["drift_detected"] = None
-            data["drifted_added"] = []
-            data["drifted_removed"] = []
-            data["drifted_changed"] = []
-        else:
-            data["drift_detected"] = drift.has_drift
-            data["drifted_added"] = list(drift.added)
-            data["drifted_removed"] = list(drift.removed)
-            data["drifted_changed"] = list(drift.changed)
+        data["drifted_added"] = list(drift.added) if drift is not None else []
+        data["drifted_removed"] = list(drift.removed) if drift is not None else []
+        data["drifted_changed"] = list(drift.changed) if drift is not None else []
 
     if json_output:
         import json
 
         print(json.dumps(data, ensure_ascii=False, indent=2))
+        # A config that exists but could not be parsed is a failure, matching
+        # the TUI renderer's exit code for the same condition so CI scripts
+        # cannot silently treat a broken config as success.
+        if data["config_exists"] and not data["config_ok"]:
+            return 1
         return 0
 
     return _render_status_tui(project_root, data, config, drift)
@@ -1113,7 +1161,7 @@ def _render_status_tui(
 
     tui.success("Status: Onboarded")
 
-    if not config:
+    if config is None:
         if data["config_exists"]:
             tui.error("Status: iterate.config.yaml is present but could not be parsed")
             tui.hint("Run 'iterate doctor' for details.", indent=2)
@@ -1377,22 +1425,7 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
             # Distinguish the three reasons drift checking is unavailable
             # (mirroring doctor's drift check) so a JSON consumer can tell
             # "not onboarded" from "check disabled" from "no fingerprints yet".
-            reason = "onboarding not completed"
-            config = load_onboarding_config(project_root)
-            if config is not None:
-                onboarding = (
-                    config.get("onboarding")
-                    if isinstance(config.get("onboarding"), dict)
-                    else {}
-                )
-                if not onboarding.get("drift_check", True):
-                    reason = "drift check is disabled (drift_check: false)"
-                else:
-                    stored = onboarding.get("fingerprints") or []
-                    if not isinstance(stored, list) or not stored:
-                        reason = "no fingerprints recorded yet (run `iterate refresh` to capture them)"
-                    else:
-                        reason = "drift check unavailable"
+            reason = _drift_unavailable_reason(project_root, load_onboarding_config(project_root))
             print(
                 json.dumps(
                     {
@@ -1428,11 +1461,24 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
 
     if drift is None:
         tui.info("Fingerprint verification unavailable.", indent=2)
-        tui.hint(
-            "Run 'iterate onboard' first, or enable drift_check in "
-            "iterate.config.yaml.",
-            indent=4,
+        reason = _drift_unavailable_reason(
+            project_root, load_onboarding_config(project_root)
         )
+        if "could not be parsed" in reason:
+            # A corrupt config cannot be fixed by onboarding or by enabling
+            # drift_check; point at doctor instead of the generic hint.
+            tui.hint("Run 'iterate doctor' to diagnose the config.", indent=4)
+        elif "disabled" in reason:
+            tui.hint(
+                "Enable drift_check in iterate.config.yaml to verify fingerprints.",
+                indent=4,
+            )
+        else:
+            tui.hint(
+                "Run 'iterate onboard' first, or enable drift_check in "
+                "iterate.config.yaml.",
+                indent=4,
+            )
         return 0
 
     if drift.has_drift:
@@ -1464,6 +1510,36 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
 # ---------------------------------------------------------------------------
 # Helpers shared by subcommand handlers
 # ---------------------------------------------------------------------------
+
+
+def _drift_unavailable_reason(
+    project_root: Path, config: dict[str, Any] | None
+) -> str:
+    """Return a machine-readable reason for "drift check unavailable".
+
+    Distinguishes "not onboarded" from "config corrupt" from "check disabled"
+    from "no fingerprints yet" so both the JSON payload and the TUI hint can
+    point the user at the right fix.
+    """
+    reason = "onboarding not completed"
+    config_path = project_root / CONFIG_YAML
+    if config_path.is_file() and config is None:
+        return "iterate.config.yaml exists but could not be parsed"
+    if config is not None:
+        onboarding = (
+            config.get("onboarding")
+            if isinstance(config.get("onboarding"), dict)
+            else {}
+        )
+        if not onboarding.get("drift_check", True):
+            reason = "drift check is disabled (drift_check: false)"
+        else:
+            stored = onboarding.get("fingerprints") or []
+            if not isinstance(stored, list) or not stored:
+                reason = "no fingerprints recorded yet (run `iterate refresh` to capture them)"
+            else:
+                reason = "drift check unavailable"
+    return reason
 
 
 def _stdin_is_interactive() -> bool:
@@ -1521,6 +1597,12 @@ def _report_update_outcome(
         if outcome.assistants_unknown or outcome.unreachable:
             return 1
         if outcome.assistants_failed:
+            return 1
+        # A download/integrity failure on a confirmed update means the update
+        # did NOT happen; it must exit non-zero so automation does not treat
+        # the environment as updated. (unreachable covers "could not check",
+        # download_error covers "release download/verify/extract failed".)
+        if outcome.download_error:
             return 1
         if (
             not outcome.cancelled
@@ -1581,7 +1663,7 @@ def _report_update_outcome(
 
     any_failure = (
         outcome.cli_result is not None and not outcome.cli_result.success
-    ) or bool(outcome.assistants_failed)
+    ) or bool(outcome.assistants_failed) or bool(outcome.download_error)
     return 1 if any_failure else 0
 
 
@@ -1612,7 +1694,7 @@ def _cmd_update(
         )
         if json_output:
             print(json.dumps(outcome.to_dict(), ensure_ascii=False, indent=2))
-            return 0 if not outcome.unreachable else 1
+            return 0 if not (outcome.unreachable or outcome.assistants_unknown) else 1
         tui.intro("Iterate Skill — Update Check")
         return _report_update_outcome(outcome, json_output=False, title_prefix="\n")
 

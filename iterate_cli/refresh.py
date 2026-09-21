@@ -319,6 +319,11 @@ def _build_refresh_outputs(project_root: Path) -> tuple[bool, str, str, str]:
         # Refusing to overwrite an ITERATE.md without the USER-OWNED markers
         # (it may be hand-edited); surface the reason instead of destroying it.
         return False, "", "", str(exc)
+    except (OSError, UnicodeDecodeError) as exc:
+        # A broken/stripped install where neither the packaged template nor
+        # the repo fallback is readable must not crash refresh with a raw
+        # traceback; surface a clean error instead.
+        return False, "", "", f"Failed to generate {ITERATE_MD}: {exc}"
     new_config = _build_refreshed_config(existing_config, data)
     config_yaml = yaml.safe_dump(
         new_config,
@@ -333,8 +338,11 @@ def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: s
     """Atomically write refreshed ITERATE.md and config, rolling back on failure.
 
     Both files are written with ``_atomic_write`` (temp file + ``os.replace``).
-    If either write fails, the other is rolled back to its pre-refresh state.
-    If rollback itself fails, files may be inconsistent (logged to stderr).
+    Files whose content is unchanged are skipped (a refresh that changed
+    nothing is a logical no-op and must not churn mtimes or fail on read-only
+    dirs). If either write fails, the other is rolled back to its pre-refresh
+    state. If rollback itself fails, files may be inconsistent (logged to
+    stderr).
 
     Args:
         project_root: The project root directory.
@@ -364,16 +372,28 @@ def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: s
             tui.error(f"Failed to back up {config_path} for rollback: {exc}")
             backup_config = None
 
-        atomic_write(iterate_md_path, refreshed_md)
-        atomic_write(config_path, config_yaml)
+        # A logical no-op refresh (nothing changed since the last run) must not
+        # churn file mtimes/inodes or fail on read-only project dirs, so only
+        # rewrite each file when its content actually differs. A failed backup
+        # read (None) counts as "differs" and still triggers a write.
+        needs_md = backup_md != refreshed_md
+        needs_config = backup_config != config_yaml
+        wrote_md = False
+        wrote_config = False
+        if needs_md:
+            atomic_write(iterate_md_path, refreshed_md)
+            wrote_md = True
+        if needs_config:
+            atomic_write(config_path, config_yaml)
+            wrote_config = True
     except OSError as exc:
         tui.error(f"Failed to write refresh outputs: {exc}")
-        if backup_md is not None:
+        if wrote_md and backup_md is not None:
             try:
                 atomic_write(iterate_md_path, backup_md)
             except OSError as rollback_exc:
                 tui.error(f"Rollback failed for {iterate_md_path}: {rollback_exc}")
-        if backup_config is not None:
+        if wrote_config and backup_config is not None:
             try:
                 atomic_write(config_path, backup_config)
             except OSError as rollback_exc:
@@ -527,16 +547,21 @@ def full_reonboard(
     if not iterate_md_path.is_file() and not config_path.is_file():
         return REONBOARD_FAILED
 
-    # Backup existing files.
+    # Backup existing files. The name embeds a short random salt so two
+    # re-onboards in the same second cannot silently overwrite each other's
+    # snapshot (mirroring configcmd.run_config_set's salted backup).
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    import uuid
+
+    backup_suffix = f"{timestamp}-{uuid.uuid4().hex[:6]}"
     try:
         if iterate_md_path.is_file():
             shutil.copy2(
-                iterate_md_path, project_root / f"{ITERATE_MD}.bak-{timestamp}"
+                iterate_md_path, project_root / f"{ITERATE_MD}.bak-{backup_suffix}"
             )
         if config_path.is_file():
             shutil.copy2(
-                config_path, project_root / f"{CONFIG_YAML}.bak-{timestamp}"
+                config_path, project_root / f"{CONFIG_YAML}.bak-{backup_suffix}"
             )
     except OSError as exc:
         tui.error(f"Backup failed, aborting re-onboarding: {exc}")
@@ -670,6 +695,14 @@ def _resolve_validation_config(
     has_whitelist_key = "command_whitelist" in validation_existing
     command_whitelist = validation_existing.get("command_whitelist")
     if command_whitelist is None:
+        command_whitelist = [] if has_whitelist_key else None
+    elif not isinstance(command_whitelist, list):
+        # A hand-edited scalar/non-list whitelist (e.g. ``command_whitelist:
+        # pytest``) would be iterated incorrectly by the reconcile step — a
+        # string char-splits into single letters and an int raises TypeError
+        # from ``set(int)``. Degrade to an empty whitelist (preserving the
+        # operator's intent to restrict execution) instead of corrupting the
+        # config or crashing refresh.
         command_whitelist = [] if has_whitelist_key else None
     effective_whitelist = (
         command_whitelist

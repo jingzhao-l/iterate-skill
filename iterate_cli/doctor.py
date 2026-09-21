@@ -1047,11 +1047,18 @@ def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]
     fixes: list[str] = []
 
     # dimensions: must be non-empty and unique (schema minItems/uniqueItems).
+    # Non-string members (e.g. a nested list from a hand edit) are unhashable
+    # and would crash ``set``/``in``; mirror the check path (_dimension_ids
+    # stringifies) so ``doctor --fix`` repairs instead of crashing. Non-string
+    # entries are dropped instead of stringified into junk dimension names.
     dims = new_config.get("dimensions")
     if isinstance(dims, list):
         seen: set[str] = set()
         deduped: list[str] = []
         for d in dims:
+            if not isinstance(d, str):
+                fixes.append(f"dimensions: removed non-string entry {d!r}.")
+                continue
             if d not in seen:
                 deduped.append(d)
                 seen.add(d)

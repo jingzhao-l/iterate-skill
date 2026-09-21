@@ -54,7 +54,10 @@ def has_valid_user_owned_markers(content: str) -> bool:
     start_idx = content.find(USER_START_MARKER)
     if start_idx == -1:
         return False
-    end_idx = content.find(USER_END_MARKER)
+    # Use the *last* occurrence of the END marker: user paste content may
+    # legitimately contain the literal marker string (e.g. a pasted HTML
+    # comment), and the true closing marker is the trailing one.
+    end_idx = content.rfind(USER_END_MARKER)
     if end_idx == -1:
         return False
     return end_idx > start_idx + len(USER_START_MARKER)
@@ -454,9 +457,11 @@ def extract_user_owned_section(existing_md: str) -> str:
     if not has_valid_user_owned_markers(existing_md):
         return DEFAULT_USER_OWNED_SECTION
 
-    # Extract content between markers (after the start marker line).
+    # Extract content between markers (after the start marker line). The
+    # trailing END marker is matched with rfind so pasted user content that
+    # itself contains the marker string cannot truncate the section.
     after_start = existing_md[start_idx + len(USER_START_MARKER):]
-    end_in_after = after_start.find(USER_END_MARKER)
+    end_in_after = after_start.rfind(USER_END_MARKER)
     if end_in_after == -1:
         return DEFAULT_USER_OWNED_SECTION
 
@@ -474,7 +479,7 @@ def _replace_user_owned_section(content: str, new_user_content: str) -> str:
         Updated content with the user-owned section replaced.
     """
     start_idx = content.find(USER_START_MARKER)
-    end_idx = content.find(USER_END_MARKER)
+    end_idx = content.rfind(USER_END_MARKER)
 
     if not has_valid_user_owned_markers(content):
         return content
