@@ -1640,6 +1640,11 @@ PAUSE_ACTION_SKIP = "skip"
 PAUSE_ACTION_NARROW = "narrow"
 PAUSE_ACTION_RESUME = "resume"
 
+#: Bounded wait for the pause intervention channel (TUI/web). Mirrors the
+#: 300s modal timeout used by the web run manager: an unresponsive client must
+#: never hard-lock the query coroutine — the loop falls back to STOP.
+PAUSE_CHANNEL_TIMEOUT_SECONDS = 300.0
+
 
 async def _handle_iterate_pause(
     context: "QueryContext",
@@ -1688,12 +1693,22 @@ async def _handle_iterate_pause_select(
 
     try:
         answer = (
-            await select_cb(
-                prompts.pause_menu_title(round_number, new_findings, pause_reason),
-                prompts.pause_menu_options(),
+            await asyncio.wait_for(
+                select_cb(
+                    prompts.pause_menu_title(round_number, new_findings, pause_reason),
+                    prompts.pause_menu_options(),
+                ),
+                timeout=PAUSE_CHANNEL_TIMEOUT_SECONDS,
             )
             or ""
         ).strip()
+    except asyncio.TimeoutError:
+        # The intervention channel went silent (dropped TUI/web client). A
+        # never-answered pause would hard-lock the query coroutine forever,
+        # so fall back to the safe default and stop the loop.
+        log.warning("iterate pause select timed out after %ss; stopping", PAUSE_CHANNEL_TIMEOUT_SECONDS)
+        await _log_pause_decision(context, round_number, PAUSE_ACTION_STOP, "select timeout")
+        return PAUSE_ACTION_STOP, None
     except Exception:
         log.exception("iterate pause select failed; stopping the loop")
         await _log_pause_decision(context, round_number, PAUSE_ACTION_STOP, "select error")
@@ -1709,7 +1724,15 @@ async def _handle_iterate_pause_select(
         dimensions = ""
         if prompt_cb is not None:
             try:
-                dimensions = (await prompt_cb(prompts.narrow_dimensions_question()) or "").strip()
+                dimensions = (
+                    await asyncio.wait_for(
+                        prompt_cb(prompts.narrow_dimensions_question()),
+                        timeout=PAUSE_CHANNEL_TIMEOUT_SECONDS,
+                    )
+                    or ""
+                ).strip()
+            except asyncio.TimeoutError:
+                log.warning("iterate narrow-dimensions prompt timed out; defaulting to resume")
             except Exception:
                 log.warning("iterate narrow-dimensions prompt failed", exc_info=True)
         if not dimensions:
@@ -1738,9 +1761,18 @@ async def _handle_iterate_pause_text(
         return PAUSE_ACTION_STOP, None
     try:
         answer = (
-            await prompt_cb(prompts.pause_menu_question(round_number, new_findings, pause_reason))
+            await asyncio.wait_for(
+                prompt_cb(prompts.pause_menu_question(round_number, new_findings, pause_reason)),
+                timeout=PAUSE_CHANNEL_TIMEOUT_SECONDS,
+            )
             or ""
         ).strip()
+    except asyncio.TimeoutError:
+        # Intervention channel went silent (dropped client / no human). Stop
+        # instead of hard-locking the query coroutine forever.
+        log.warning("iterate pause prompt timed out after %ss; stopping", PAUSE_CHANNEL_TIMEOUT_SECONDS)
+        await _log_pause_decision(context, round_number, PAUSE_ACTION_STOP, "prompt timeout")
+        return PAUSE_ACTION_STOP, None
     except Exception:
         log.exception("iterate pause prompt failed; stopping the loop")
         await _log_pause_decision(context, round_number, PAUSE_ACTION_STOP, "prompt error")

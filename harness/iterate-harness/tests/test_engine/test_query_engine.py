@@ -472,6 +472,41 @@ async def test_query_engine_coordinator_mode_uses_coordinator_prompt_and_runs_ag
 
 
 @pytest.mark.asyncio
+async def test_query_engine_coordinator_context_never_accumulates_across_submits(tmp_path: Path, monkeypatch):
+    """Regression: coordinator runtime context must be appended fresh per
+    request and never persisted into live history, or every submit sends N
+    accumulated copies to the provider."""
+    monkeypatch.setenv("ITERATE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+
+    api_client = CoordinatorLoopApiClient()
+    system_prompt = build_runtime_system_prompt(Settings(), cwd=tmp_path, latest_user_prompt="investigate issue")
+    engine = QueryEngine(
+        api_client=api_client,
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings()),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt=system_prompt,
+    )
+
+    events = [event async for event in engine.submit_message("investigate issue")]
+    assert any(isinstance(event, ToolExecutionCompleted) and event.tool_name == "agent" for event in events)
+    events = [event async for event in engine.submit_message("investigate issue")]
+
+    for request in api_client.requests:
+        coordinator_context_messages = [
+            msg for msg in request.messages if msg.role == "user" and "Coordinator User Context" in msg.text
+        ]
+        assert len(coordinator_context_messages) == 1, "coordinator context must not accumulate across submits"
+    live = [
+        msg for msg in engine.messages if msg.role == "user" and "Coordinator User Context" in msg.text
+    ]
+    assert live == [], "coordinator context must never be persisted into live history"
+    assert isinstance(events[-1], AssistantTurnComplete)
+
+
+@pytest.mark.asyncio
 async def test_query_engine_allows_unbounded_turns_when_max_turns_is_none(tmp_path: Path):
     sample = tmp_path / "hello.txt"
     sample.write_text("alpha\nbeta\n", encoding="utf-8")

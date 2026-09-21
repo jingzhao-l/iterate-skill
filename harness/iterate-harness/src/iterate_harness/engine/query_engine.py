@@ -334,6 +334,20 @@ class QueryEngine:
         """Replace the in-memory conversation history."""
         self._messages = list(messages)
 
+    def _query_messages(self) -> tuple[list[ConversationMessage], ConversationMessage | None]:
+        """Build the provider message list for one query loop run.
+
+        The coordinator runtime context is synthetic and must be appended at
+        the END of the request, and its presence is negotiated with
+        ``run_query`` (it pops/re-appends the trailing coordinator message to
+        keep provider tool_use/tool_result ordering intact). It must NEVER be
+        persisted into :attr:`self._messages`: folding it back in makes the
+        next submit append another copy, growing the context N copies deep.
+        Return the stable history plus the coordinator message (or None) so
+        callers can separate them.
+        """
+        return list(self._messages), self._build_coordinator_context_message()
+
     def has_pending_continuation(self) -> bool:
         """Return True when the conversation ends with tool results awaiting a follow-up model turn."""
         if not self._messages:
@@ -394,13 +408,21 @@ class QueryEngine:
             reasoning_effort=self._reasoning_effort,
             defensive_kernel=self._new_defensive_kernel(),
         )
-        query_messages = list(self._messages)
-        coordinator_context = self._build_coordinator_context_message()
+        query_messages, coordinator_context = self._query_messages()
         if coordinator_context is not None:
             query_messages.append(coordinator_context)
         async for event, usage in run_query(context, query_messages):
             if isinstance(event, AssistantTurnComplete):
-                self._messages = list(query_messages)
+                # Publish the completed turn atomically. Never hand the live
+                # list to run_query: it tears ``messages[:]`` in place during
+                # compaction, so a concurrent reader would observe a partially
+                # rewritten conversation. Drop the synthetic coordinator
+                # message so the next submit does not accumulate stale copies.
+                self._messages = (
+                    query_messages
+                    if coordinator_context is None
+                    else [m for m in query_messages if m is not coordinator_context]
+                )
             if usage is not None:
                 self._cost_tracker.add(usage)
             yield event
@@ -427,14 +449,18 @@ class QueryEngine:
             reasoning_effort=self._reasoning_effort,
             defensive_kernel=self._new_defensive_kernel(),
         )
-        query_messages = list(self._messages)
+        query_messages, coordinator_context = self._query_messages()
+        if coordinator_context is not None:
+            query_messages.append(coordinator_context)
         async for event, usage in run_query(context, query_messages):
             if isinstance(event, AssistantTurnComplete):
-                # Publish the completed turn atomically. Never hand the live
-                # list to run_query: it tears ``messages[:]`` in place during
-                # compaction, so a concurrent reader would observe a partially
-                # rewritten conversation.
-                self._messages = list(query_messages)
+                # Same forwarding rule as submit_message: never persist the
+                # synthetic coordinator message into the live history.
+                self._messages = (
+                    query_messages
+                    if coordinator_context is None
+                    else [m for m in query_messages if m is not coordinator_context]
+                )
             if usage is not None:
                 self._cost_tracker.add(usage)
             yield event
