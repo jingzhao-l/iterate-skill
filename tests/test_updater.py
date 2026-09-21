@@ -674,18 +674,24 @@ def test_update_outcome_to_dict_shape() -> None:
 
 def test_run_command_production_runner_applies_timeout(monkeypatch) -> None:
     """The production default runner must bound git/pip work by the timeout."""
-    executed: list[dict[str, object]] = []
+    captured: dict[str, object] = {}
 
-    def fake_run(argv, **kwargs):
-        executed.append({"argv": argv, "timeout": kwargs.get("timeout")})
-        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
+    class FakeProcess:
+        def __init__(self, argv, **kwargs):
+            captured["argv"] = argv
+            # The whole child tree must be isolated so a timeout can killpg it.
+            if "start_new_session" not in kwargs or not kwargs["start_new_session"]:
+                raise AssertionError("subprocess must be started in a new session")
+            self.returncode = 0
 
-    monkeypatch.setattr(updater.subprocess, "run", fake_run)
-    updater._run_command(
-        ["git", "pull"], updater._default_runner, 120, "git pull"
-    )
-    assert executed, "spin: subprocess.run should have been called"
-    assert executed[0]["timeout"] == 120
+        def communicate(self, timeout=None):
+            captured["timeout"] = timeout
+            return "", ""
+
+    monkeypatch.setattr(updater.subprocess, "Popen", FakeProcess)
+    updater._run_command(["git", "pull"], updater._default_runner, 120, "git pull")
+    assert captured["argv"] == ["git", "pull"]
+    assert captured["timeout"] == 120
 
 
 def test_run_command_injected_runner_keeps_contract() -> None:
@@ -701,10 +707,18 @@ def test_run_command_injected_runner_keeps_contract() -> None:
 def test_run_command_timeout_expired_reports_runtime_error(monkeypatch) -> None:
     """A subprocess.TimeoutExpired becomes a readable RuntimeError, not a crash."""
 
-    def hanging_run(argv, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout"), output=b"", stderr=b"")
+    class HangingProcess:
+        def __init__(self, argv, **kwargs):
+            self.returncode = None
+            self.pid = 4242
+            self._argv = argv
 
-    monkeypatch.setattr(updater.subprocess, "run", hanging_run)
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(
+                cmd=self._argv, timeout=timeout, output=b"", stderr=b""
+            )
+
+    monkeypatch.setattr(updater.subprocess, "Popen", HangingProcess)
     with pytest.raises(RuntimeError, match="timed out after 600s"):
         updater._run_command(
             ["pip", "install"], updater._default_runner, 600, "pip install"
