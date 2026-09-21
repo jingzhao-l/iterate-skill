@@ -468,6 +468,11 @@ def validate_dimensions(path: Path) -> list[str]:
         except yaml.YAMLError as exc:
             errors.append(f"Invalid YAML in {file_path.name}: {exc}")
             continue
+        except (OSError, UnicodeDecodeError) as exc:
+            # A non-UTF-8 or otherwise unreadable file must be reported as an
+            # error, not crash the whole validation run with a traceback.
+            errors.append(f"Could not read {file_path.name}: {exc}")
+            continue
 
         if not isinstance(data, dict):
             errors.append(f"{file_path.name} must be a YAML mapping")

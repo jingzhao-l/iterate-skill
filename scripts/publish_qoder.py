@@ -195,6 +195,35 @@ def _git_archive_extract(dst: str, excludes: Iterable[str]) -> list[str]:
     return warnings
 
 
+def _copy_tracked_tree(dst: str, excludes: Iterable[str]) -> None:
+    """Copy exactly the git-tracked (HEAD) tree into ``dst``.
+
+    This is the faithful fallback to ``git archive``: only files committed at
+    HEAD are copied, so a working tree polluted with dev/scratch artifacts
+    (untracked experiments, build outputs that ``.gitignore`` rejects) can
+    never leak into the packaged skill body — the whole point of C-L13-style
+    hardening is that both inputs produce the same skill body.
+    """
+    proc = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", "-z", "HEAD"],
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("git ls-tree failed; cannot enumerate tracked files")
+    for rel in proc.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        if not rel:
+            continue
+        top = rel.split("/", 1)[0]
+        if top in MANDATORY_EXCLUDES or top in excludes or top == ".git":
+            continue
+        dst_path = os.path.join(dst, rel)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.copy2(os.path.join(REPO_ROOT, rel), dst_path)
+
+
 def _safe_members(archive: zipfile.ZipFile, dst: str):
     """Yield archive members whose stored paths are safe to extract.
 
@@ -261,8 +290,12 @@ def build_package(
             try:
                 warnings.extend(_git_archive_extract(stage, all_excludes))
             except (RuntimeError, OSError) as exc:
-                warnings.append(f"git archive unavailable ({exc}); falling back to copy")
-                _copy_tree(REPO_ROOT, stage, all_excludes)
+                warnings.append(f"git archive unavailable ({exc}); falling back to tracked copy")
+                try:
+                    _copy_tracked_tree(stage, all_excludes)
+                except (RuntimeError, OSError) as copy_exc:
+                    warnings.append(f"tracked copy unavailable ({copy_exc}); falling back to plain copy")
+                    _copy_tree(REPO_ROOT, stage, all_excludes)
 
         skill_path = os.path.join(stage, "SKILL.md")
         if not os.path.isfile(skill_path):

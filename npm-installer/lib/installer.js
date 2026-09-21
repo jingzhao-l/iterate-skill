@@ -427,6 +427,20 @@ async function extractTarball(tarballPath, destDir) {
     throw new InstallerError('Refusing to extract tarball: archive contains no entries.');
   }
 
+  // 1a. Reject absolute-path entries outright before any other accounting.
+  // A member named ``/etc/cron.d/x`` or ``C:\\...`` would resolve through the
+  // top-level-strip logic into destDir, but accepting its name as a "safe"
+  // component invites ambiguity between tar implementations about what the
+  // first component really is — never claim a release archive can contain
+  // absolute paths, so fail closed instead.
+  for (const entry of entries) {
+    if (entry.startsWith('/') || /^[A-Za-z]:[\\/]/.test(entry)) {
+      throw new InstallerError(
+        `Refusing to extract tarball: entry "${entry}" uses an absolute path.`,
+      );
+    }
+  }
+
   // 1b. Reject any symbolic or hard link entry before touching the tree.
   // The verbose listing's first character is the entry type for both GNU tar
   // and bsdtar (macOS): '-' regular, 'd' directory, 'l' symbolic link, 'h'
@@ -473,13 +487,37 @@ async function extractTarball(tarballPath, destDir) {
 }
 
 function runPythonInstall(pythonBin, installScript, args, options = {}) {
+  // A wedged pip/skill install must never hang the whole installer forever.
+  // On timeout we SIGKILL the child's *process group*: spawn in its own
+  // session (detached) so grandchildren holding the pipes are reaped too,
+  // mirroring the Python updater's killpg hardening.
+  const { timeout = DEFAULT_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
+  const detached = process.platform !== 'win32';
   return new Promise((resolve, reject) => {
     const child = spawn(pythonBin, [installScript, 'install', ...args], {
       stdio: 'inherit',
       env: { ...process.env, FORCE_COLOR: '1' },
-      ...options,
+      detached,
+      ...spawnOptions,
     });
+    const timer =
+      timeout > 0
+        ? setTimeout(() => {
+            try {
+              if (child.pid === undefined) {
+                child.kill('SIGKILL');
+              } else if (detached) {
+                process.kill(-child.pid, 'SIGKILL'); // negative pid = whole group
+              } else {
+                child.kill('SIGKILL');
+              }
+            } catch {
+              // Process already gone — nothing to reap.
+            }
+          }, timeout)
+        : null;
     child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
       // Resolve with the exit code (rather than rejecting) so the caller can
       // distinguish "real failure" from "user cancelled the selection" and
       // avoid reporting a false success. A signal-killed child reports a null
@@ -487,7 +525,10 @@ function runPythonInstall(pythonBin, installScript, args, options = {}) {
       // non-zero failure.
       resolve(typeof code === 'number' ? code : 1);
     });
-    child.on('error', reject);
+    child.on('error', (err) => {
+      if (timer) clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
@@ -819,12 +860,23 @@ async function main(options = {}) {
 
   try {
     info(`Downloading release tarball (${TARBALL_ASSET_NAME})...`);
-    await downloadFile(tarballAsset.browser_download_url, tarballPath, token, { progress: true });
+    try {
+      await downloadFile(tarballAsset.browser_download_url, tarballPath, token, { progress: true });
+    } catch (err) {
+      error(`Could not download release tarball: ${err.message}`);
+      hint(`A 403/404 usually means the GitHub rate limit or an expired asset URL; retry with GITHUB_TOKEN set.`);
+      return 1;
+    }
 
     info('Downloading checksums...');
-    await downloadFile(checksumAsset.browser_download_url, checksumPath, token, {
-      maxBytes: CHECKSUMS_MAX_BYTES,
-    });
+    try {
+      await downloadFile(checksumAsset.browser_download_url, checksumPath, token, {
+        maxBytes: CHECKSUMS_MAX_BYTES,
+      });
+    } catch (err) {
+      error(`Could not download ${CHECKSUMS_ASSET_NAME}: ${err.message}`);
+      return 1;
+    }
 
     info('Verifying checksum...');
     const checksums = parseChecksums(fs.readFileSync(checksumPath, 'utf8'));

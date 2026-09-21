@@ -62,6 +62,10 @@ _OUTPUT_LINE_CAP = 200
 #: exceeds this cap the buffer stops growing (the pipe is still drained, so the
 #: child never blocks on a full pipe).
 _OUTPUT_BYTE_CAP = 1024 * 1024
+#: Characters read per stream chunk while draining command output. Chunked reads
+#: (rather than readline) keep memory bounded even for a single gigantic
+#: newline-free line, and let the drain thread yield between chunks.
+_DRAIN_CHUNK_CHARS = 64 * 1024
 #: Per-command timeout in seconds. A wedged validation/build command must not
 #: block the host agent forever; on expiry the whole process group is killed.
 _COMMAND_TIMEOUT_SECONDS = 600
@@ -392,11 +396,29 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
     def _drain() -> None:
         nonlocal total_bytes
         assert proc.stdout is not None
-        for line in iter(proc.stdout.readline, ""):
-            total_bytes += len(line.encode("utf-8", errors="replace"))
+        # Chunked (not readline) draining: a tool that emits one gigantic
+        # newline-free line (progress deltas, minified output) would otherwise
+        # materialize the whole line in memory and silently bypass the byte
+        # cap. Only the last _OUTPUT_LINE_CAP lines and the tail of a
+        # still-open line (carry) are ever retained.
+        carry = ""
+        while True:
+            chunk = proc.stdout.read(_DRAIN_CHUNK_CHARS)
+            if not chunk:
+                break
+            total_bytes += len(chunk.encode("utf-8", errors="replace"))
             if total_bytes > _OUTPUT_BYTE_CAP:
                 continue
-            lines.append(line)
+            carry += chunk
+            if "\n" in carry:
+                complete, _, carry = carry.rpartition("\n")
+                lines.extend(complete.split("\n"))
+                if len(lines) > _OUTPUT_LINE_CAP:
+                    del lines[: len(lines) - _OUTPUT_LINE_CAP]
+            if len(carry) > _OUTPUT_BYTE_CAP:
+                carry = carry[-_OUTPUT_BYTE_CAP:]
+        if carry:
+            lines.append(carry)
             if len(lines) > _OUTPUT_LINE_CAP:
                 del lines[: len(lines) - _OUTPUT_LINE_CAP]
 
