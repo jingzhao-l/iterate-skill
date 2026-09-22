@@ -818,27 +818,24 @@ async def run_query(
                     continue
             while not progress_queue.empty():
                 yield progress_queue.get_nowait(), None
+            # Awaiting the task BOTH stores its result and re-raises a failed
+            # compaction. A compaction LLM failure must not silently leave
+            # ``last_compaction_result`` stale: the loop below would then
+            # rewrite ``messages[:]`` from a snapshot that pretends nothing
+            # happened instead of surfacing the hard failure.
             last_compaction_result = await task
-        finally:
-            # The consumer can stop early (cancellation, an unmetablock
-            # error, an escape). In that case the compaction task must never
-            # keep running in the background: it holds the shared session
-            # ``messages`` list and would keep rewriting it — and mutating
-            # ``context.tool_metadata`` — after we have yielded control,
-            # tearing state the next turn reads.
-            if task.done():
-                if not task.cancelled():
-                    exc = task.exception()
-                    if exc is not None:
-                        log.error("compaction task failed: %s", exc)
-                return
-            task.cancel()
-            try:
+        except BaseException:
+            # The consumer stopped early (cancellation, generator close, an
+            # escape). The compaction task must never keep running in the
+            # background: it holds the shared session ``messages`` list and
+            # would keep rewriting it — and mutating ``context.tool_metadata``
+            # — after we have yielded control, tearing state the next turn
+            # reads.
+            if not task.done():
+                task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            except BaseException:
-                log.exception("compaction task did not finish cleanly")
-        return
+            raise
 
     turn_count = 0
     # Restore an active worktree-isolation session from durable tool
