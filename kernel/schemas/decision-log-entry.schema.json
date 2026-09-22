@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.iterate.dev/decision-log-entry-0.1-draft.json",
+  "title": "DecisionLogEntry",
+  "description": "Entry-level contract of the opID-to-decision one-way hash chain (audit chain, Phase A part). Each entry links to the previous entry via SHA-256 of its canonical form; the genesis entry uses an empty prevEntryHash.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "entryId",
+    "sequence",
+    "prevEntryHash",
+    "summary",
+    "outcome",
+    "createdAt"
+  ],
+  "properties": {
+    "entryId": {
+      "type": "string",
+      "pattern": "^dl_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "prevEntryHash": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{64})?$"
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^op_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "outcome": {
+      "enum": ["pass", "fail", "blocked", "inconclusive"]
+    },
+    "createdAt": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    }
+  }
+}
