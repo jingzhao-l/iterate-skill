@@ -207,8 +207,7 @@ def _copy_tracked_tree(dst: str, excludes: Iterable[str]) -> None:
     proc = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", "-z", "HEAD"],
         cwd=REPO_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if proc.returncode != 0:

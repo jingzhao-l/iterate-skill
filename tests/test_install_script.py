@@ -1521,7 +1521,7 @@ class TestPromptHelpers:
         assert install.prompt_text("q", input_func=lambda p: "v") == "v"
 
     def test_prompt_text_eof_returns_default_or_empty(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)
         assert install.prompt_text("q", default="d", input_func=eof) == "d"
         assert install.prompt_text("q", input_func=eof) == ""
 
@@ -1530,7 +1530,7 @@ class TestPromptHelpers:
         assert install.prompt_int("q", input_func=lambda p: "12") == 12
 
     def test_prompt_int_eof_uses_default_or_raises(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)
         assert install.prompt_int("q", default=5, input_func=eof) == 5
         with pytest.raises(EOFError):
             install.prompt_int("q", input_func=eof)
@@ -1544,22 +1544,22 @@ class TestPromptHelpers:
         assert install.prompt_bool("q", default=True, input_func=lambda p: "n") is False
 
     def test_prompt_bool_eof_keeps_default(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)
         assert install.prompt_bool("q", default=True, input_func=eof) is True
         assert install.prompt_bool("q", default=False, input_func=eof) is False
 
     def test_prompt_choice_eof_uses_default_or_empty(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)
         assert install.prompt_choice("q", ["a", "b"], default="b", input_func=eof) == "b"
         assert install.prompt_choice("q", ["a", "b"], input_func=eof) == ""
 
     def test_prompt_dimensions_eof_keeps_current(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)
         assert install.prompt_dimensions(["correctness"], input_func=eof) == ["correctness"]
         assert install.prompt_dimensions([], input_func=eof) == install.DIMENSION_CHOICES
 
     def test_upgrade_confirmation_eof_declines(self, tmp_path: Path):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)  # noqa: E731
+        eof = lambda _p: (_ for _ in ()).throw(EOFError)
         assert (
             install._ask_upgrade_confirmation("cursor", tmp_path / "dst", "Cursor", eof)
             is False

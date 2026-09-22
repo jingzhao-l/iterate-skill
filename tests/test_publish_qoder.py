@@ -273,7 +273,11 @@ class TestCopyTreeDotfiles:
 class TestCopyTrackedTree:
     def _git(self, repo: Path, args: list[str], env: dict) -> None:
         proc = subprocess.run(
-            ["git", *args], cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ["git", *args],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            check=False,
         )
         assert proc.returncode == 0, proc.stderr.decode()
 

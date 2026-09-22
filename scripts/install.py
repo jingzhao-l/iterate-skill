@@ -1958,7 +1958,7 @@ def load_config(path: Path) -> dict[str, object]:
         # UnicodeDecodeError (non-UTF-8 bytes) inherits ValueError, not
         # YAMLError — without this clause a binary/locale-encoded config
         # would crash with a raw traceback instead of a clean message.
-        raise IOError(f"Could not read {path}: {exc}") from exc
+        raise OSError(f"Could not read {path}: {exc}") from exc
 
     if data is None:
         return {}
@@ -2058,7 +2058,7 @@ def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) ->
         try:
             config = load_config(project_path)
             previous_text = project_path.read_text(encoding="utf-8")
-        except (ValueError, TypeError, IOError) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             # load_config surfaces YAML/type/read errors; guard the raw text
             # read too so a non-UTF-8 file fails with a clean message instead
             # of a traceback (and never gets blindly overwritten).
@@ -2244,7 +2244,7 @@ def interactive_config(
         try:
             config = load_config(project_path)
             previous_text = project_path.read_text(encoding="utf-8")
-        except (ValueError, TypeError, IOError) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             # A project config we cannot parse or read (bad YAML, non-UTF-8
             # bytes, unreadable file) must not be clobbered by the wizard:
             # fail with a clean message instead of a traceback.

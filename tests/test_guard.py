@@ -20,9 +20,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from iterate_cli.cli import main as cli_main
 from iterate_cli.guard import (
+    _DRAIN_CHUNK_CHARS,
     EXIT_FAIL,
     EXIT_PASS,
-    _DRAIN_CHUNK_CHARS,
     render_guard_result,
     run_guard_postcheck,
     run_guard_precheck,

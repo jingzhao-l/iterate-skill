@@ -34,15 +34,29 @@ pip install -r requirements.txt
    - `test:` 测试
    - `refactor:` 重构
    - `chore:` 杂项
-4. 确保本地校验通过：
+4. 确保本地校验通过（与 CI 的 Python job 等价，含钉住版本的 ruff）：
 
    ```bash
-   python scripts/validate.py config config/iterate.config.yaml
-   python scripts/validate.py decisions templates/iterate-decisions.template.md
-   pytest tests/ -q
+   ./scripts/check.sh
    ```
 
 5. 推送分支并创建 Pull Request。
+
+---
+
+## 推送前门禁（pre-push）
+
+main 已两次仅因 `ruff check` 未提前运行而变红。仓库附带 `.githooks/pre-push`：
+推送到 `main`/`master` 前执行 `./scripts/check.sh --lint-only`，不通过就拒绝推送。
+
+git 不会自动加载仓库内的 hooks 目录，需自行安装一次：
+
+```bash
+cp .githooks/pre-push .git/hooks/pre-push
+```
+
+确知要绕过时（CI 仍会跑同一道门）：`git push --no-verify`，或 `SKIP_PREPUSH=1 git push`。
+门禁要求本地 ruff 与 `.github/workflows/ci.yml` 中的 pin 完全一致，否则报错并给出安装命令。
 
 ---
 

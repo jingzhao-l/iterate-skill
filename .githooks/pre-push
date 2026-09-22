@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Block a push to main whose lint would fail in CI.
+#
+# Install (git does not load this directory by itself):
+#   cp .githooks/pre-push .git/hooks/pre-push
+#
+# Deliberate escape hatches, both visible in CI afterwards:
+#   git push --no-verify
+#   SKIP_PREPUSH=1 git push
+set -euo pipefail
+
+targets_main=0
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main | refs/heads/master) targets_main=1 ;;
+  esac
+done
+if [ "$targets_main" = "0" ]; then
+  exit 0
+fi
+
+if [ "${SKIP_PREPUSH:-0}" = "1" ]; then
+  echo "pre-push: skipped via SKIP_PREPUSH=1 — CI will lint this push instead." >&2
+  exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+if [ ! -f ./scripts/check.sh ]; then
+  # A checkout that predates this gate (e.g. a linked worktree still on an old
+  # commit) must not be blocked by a missing file — say so and let it through.
+  echo "pre-push: ./scripts/check.sh is absent here, so the lint gate could not run." >&2
+  exit 0
+fi
+rc=0
+./scripts/check.sh --lint-only || rc=$?
+if [ "$rc" = 0 ]; then
+  exit 0
+fi
+if [ "$rc" = 3 ]; then
+  cat >&2 <<'MESSAGE'
+
+pre-push: lint could not be verified here — this environment has no ruff
+          matching CI's pinned version. check.sh above names the exact version
+          and the install command.
+  Anyway: git push --no-verify        (CI runs the same lint either way)
+MESSAGE
+  exit 1
+fi
+cat >&2 <<'MESSAGE'
+
+pre-push: blocked. `ruff check` does not pass, so this push would turn main red.
+  Fix:    ./scripts/check.sh --lint-only   (then `ruff check --fix` or edit)
+  Later:  git push --no-verify             (CI still runs the same gate)
+MESSAGE
+exit 1

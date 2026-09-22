@@ -41,10 +41,26 @@ jobs:
             git commit -m "chore: refresh downloads badge data"
             # The repo ruleset requires verified signatures / PRs on main and
             # only bypasses the repo owner. Push as the owner (BADGE_PUSH_TOKEN)
-            # so the hourly badge refresh is not blocked by branch rules.
+            # so the badge refresh is not blocked by branch rules.
             # NOTE: actions/checkout persists GITHUB_TOKEN as an Authorization
             # extraheader which would take precedence over the inline PAT; strip
-            # it first so the push authenticates as the owner.
+            # it before *any* remote operation so we authenticate as the owner.
             git config --unset-all "http.https://github.com/.extraheader" || true
-            git push "https://x-access-token:${BADGE_PUSH_TOKEN}@github.com/jingzhao-l/iterate-skill.git" HEAD:main
+            PUSH_URL="https://x-access-token:${BADGE_PUSH_TOKEN}@github.com/jingzhao-l/iterate-skill.git"
+            # GitHub delivers `schedule` best-effort: a run can start hours after
+            # its slot, and main keeps moving underneath it. A plain
+            # `git push HEAD:main` is then rejected as non-fast-forward (the
+            # ruleset also forbids force-push) and that entire refresh is lost —
+            # observed 2026-09-22, where a 4.6h-late run left a 5h gap in the
+            # badge. Rebase this one commit onto the current tip before pushing.
+            # badges/downloads.json is generated output, so on conflict this
+            # run's freshly fetched numbers must win: while rebasing, `-X theirs`
+            # favours the replayed commit over the upstream tip.
+            git fetch --quiet "$PUSH_URL" main
+            if ! git rebase --quiet -X theirs FETCH_HEAD; then
+              git rebase --abort
+              echo "::error::could not rebase the badge refresh onto current main"
+              exit 1
+            fi
+            git push --quiet "$PUSH_URL" HEAD:main
           fi
