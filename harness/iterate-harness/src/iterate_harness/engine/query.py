@@ -1218,8 +1218,16 @@ async def run_query(
                 from iterate_harness.iterate import worktree_runtime
 
                 await worktree_runtime.finalize(context, merged=True)
+                hint = ""
+                try:
+                    from iterate_harness.iterate.checkpoint import load_checkpoint
+
+                    if load_checkpoint(context.cwd) is not None:
+                        hint = " (resume later rounds with /iterate resume)"
+                except Exception:  # noqa: BLE001 - hint is best-effort
+                    pass
                 yield StatusEvent(
-                    message=f"iterate loop stopped: {decision.stop_reason}"
+                    message=f"iterate loop stopped: {decision.stop_reason}{hint}"
                 ), None
                 return
 
@@ -1697,6 +1705,26 @@ async def _handle_iterate_pause(
     select_cb = context.ask_user_select
     prompt_cb = context.ask_user_prompt
     if select_cb is None and prompt_cb is None:
+        # Headless/no-channel session: never block the loop on a human that
+        # isn't there — stop cleanly AND surface the reason through the hook
+        # bus so headless operators/CI get a visible signal instead of a vain
+        # wait. (The notification is best-effort; the decision log is the
+        # durable audit trail.)
+        if context.hook_executor is not None:
+            try:
+                await context.hook_executor.execute(
+                    HookEvent.NOTIFICATION,
+                    {
+                        "event": HookEvent.NOTIFICATION.value,
+                        "notification_type": "iterate_pause",
+                        "reason": (
+                            "no interactive channel available; "
+                            "iterate would pause for review but nothing can answer — stop"
+                        ),
+                    },
+                )
+            except Exception:  # noqa: BLE001 - notifications must never break the loop
+                log.warning("iterate pause headless notification failed", exc_info=True)
         await _log_pause_decision(context, round_number, PAUSE_ACTION_STOP, "headless default")
         return PAUSE_ACTION_STOP, None
     if select_cb is not None:
