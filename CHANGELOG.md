@@ -5,6 +5,37 @@
 
 ---
 
+## [3.4.3] — 2026-09-19
+
+### 修复 / Fixes
+
+- **Guard 命令输出有界与超时收敛（F26-F31）**：`guard._run_command` 改为 `Popen` +
+  分块 drain（`_DRAIN_CHUNK_CHARS=64 KiB` 逐块读、超长行/超宽字节被截断，`_OUTPUT_LINE_CAP=200`/
+  `_OUTPUT_BYTE_CAP=1 MiB`）+ `_COMMAND_TIMEOUT_SECONDS=600` 超时经 `start_new_session`
+  进程组 `SIGKILL`（连子进程一起杀），杜绝命令刷屏耗尽内存或永不返回。
+- **`iterate --json --version` 严格机读**：纯 JSON 单行输出（无 banner、exit 0），供脚本判读。
+- **所有权标记缺失/损坏**：`personalize` 告警而非静默跳过（非 UTF-8 读取不崩溃）。
+- **忽略匹配**：`_matches_ignore` 用 `fnmatchcase` 全平台大小写敏感；`_safe_extractall`
+  Python<3.12 回退路径拒绝 symlink/hardlink/绝对路径成员。
+- **安装器 fail-closed（ReleaseIntegrityError）**：校验和缺失/下载失败/校验不匹配一律
+  exit 1、不落文件、绝不打印 "Update complete."；纯网络失败才回退本地源；`_parse_checksum`
+  非 UTF-8 不崩溃。npm 安装器 null 退出码归一 1、`runCommand` 10 分钟超时 + 1 MiB 尾部缓冲；
+  `_argmax`/`_is_async_command`/`_output_mode_validate` 均拒绝非法值。
+- **配置写入原子性**：`set_config_values` 校验失败回滚并恢复原始字节、无 `.tmp` 残留；
+  `interactive_config` 遇损坏现有 config 拒绝（返回 1）且文件原样；`install_command`
+  多助手部分失败逐个报告（exit 1）；`publish_qoder._copy_tracked_tree` 仅拷贝已跟踪文件，
+  特批 untracked/scratch/dev/harness 一律不进入产物。
+
+### 测试 / Tests
+
+- 新增回归覆盖：`tests/test_guard.py`（分块 drain、超时杀进程、非 UTF-8 报错不崩溃）、
+  `tests/test_install_script.py`（EOF/非 UTF-8/校验和 fail-closed/绝对路径/符号链接拒绝）、
+  `tests/test_validate.py`（`validate_dimensions` 非 UTF-8 不崩溃）、
+  `tests/test_publish_qoder.py`（`_copy_tracked_tree` 只含已跟踪文件）、
+  `tests/test_onboarding.py`（corrupt config `status --json` 返回 1、upsert 原子性）。
+
+---
+
 ## [3.4.2] — 2026-09-18
 
 ### 修复 / Fixes
