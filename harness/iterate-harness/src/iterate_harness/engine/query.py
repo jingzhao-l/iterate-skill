@@ -451,6 +451,22 @@ def _session_permission_override(tool_metadata: dict[str, object] | None) -> str
     return None
 
 
+def _coerce_nonneg_int(value: object, *, default: int) -> int:
+    """Safely coerce a model-supplied integer slot, falling back on garbage.
+
+    A malformed value (``"1.5"``, ``"abc"``, nested dict) must never make a
+    *successful* tool call get re-recorded as an error — the caller runs the
+    containment path after ``_record_tool_carryover``.
+    """
+    try:
+        coerced = int(str(value))  # int("1.5")/None raises — handled below
+    except (TypeError, ValueError):
+        return default
+    if coerced < 0 or coerced > 10_000_000:
+        return default
+    return coerced
+
+
 def _record_tool_carryover(
     context: QueryContext,
     *,
@@ -466,8 +482,8 @@ def _record_tool_carryover(
     if resolved_file_path is not None:
         _remember_active_artifact(context.tool_metadata, resolved_file_path)
     if tool_name == "read_file" and resolved_file_path is not None:
-        offset = int(str(tool_input.get("offset") or 0))
-        limit = int(str(tool_input.get("limit") or 200))
+        offset = _coerce_nonneg_int(tool_input.get("offset"), default=0)
+        limit = _coerce_nonneg_int(tool_input.get("limit"), default=200)
         _remember_read_file(
             context.tool_metadata,
             path=resolved_file_path,
@@ -1305,7 +1321,22 @@ async def _execute_tool_call(
                         "reason": decision.reason,
                     },
                 )
-            confirmed = await context.permission_prompt(tool_name, decision.reason)
+            try:
+                confirmed = await asyncio.wait_for(
+                    context.permission_prompt(tool_name, decision.reason),
+                    timeout=PAUSE_CHANNEL_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                # No answer within the intervention window: fail closed. The
+                # pause menus above resolve a hung channel the same way so a
+                # dropped/detached UI can never leave the query wedged on an
+                # unanswered deny-by-default prompt.
+                log.warning(
+                    "permission prompt timed out after %ss for %s; denying",
+                    PAUSE_CHANNEL_TIMEOUT_SECONDS,
+                    tool_name,
+                )
+                confirmed = False
             if not confirmed:
                 log.debug("permission denied by user for %s", tool_name)
                 return ToolResultBlock(
