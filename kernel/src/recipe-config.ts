@@ -11,7 +11,11 @@ export type RecipeStepKind = z.infer<typeof RecipeStepKindSchema>;
 
 export const RecipeStepSchema = z.strictObject({
   kind: RecipeStepKindSchema,
-  params: z.record(z.unknown())
+  // Two-argument `z.record`: valid on the zod 3 this package pins *and* on zod 4,
+  // which made the key type mandatory. The fork of opencode runs zod 4, and its
+  // typecheck caught this as `TS2554: Expected 2-3 arguments, but got 1` — a
+  // latent break waiting for the day this package's zod is bumped.
+  params: z.record(z.string(), z.unknown())
 });
 export type RecipeStep = z.infer<typeof RecipeStepSchema>;
 
