@@ -105,6 +105,8 @@ export {
 
 export { canonicalJson } from "./canonical-json.js";
 
+export { decisionOutcomeFromEvidence, decisionSummaryFromEvidence } from "./evidence-decision.js";
+
 export {
   DECISION_LOG_CODES,
   DecisionLogDraftSchema,
