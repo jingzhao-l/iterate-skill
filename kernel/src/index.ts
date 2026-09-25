@@ -103,4 +103,24 @@ export {
   parseRecipeConfig
 } from "./parse.js";
 
+export { canonicalJson } from "./canonical-json.js";
+
+export {
+  DECISION_LOG_CODES,
+  DecisionLogDraftSchema,
+  KernelDecisionLogError,
+  appendDecisionLogEntry,
+  buildDecisionLogEntry,
+  decisionLogEntryHash,
+  decisionLogHead,
+  newDecisionEntryId,
+  readDecisionLog,
+  serializeDecisionLogEntry,
+  verifyDecisionLogText,
+  type AppendedDecisionLogEntry,
+  type DecisionLogDraft,
+  type DecisionLogVerification,
+  type KernelDecisionLogCode
+} from "./decision-log.js";
+
 export { KernelSchemaError, type KernelSchemaIssue } from "./errors.js";
