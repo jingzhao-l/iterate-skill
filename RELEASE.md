@@ -991,6 +991,35 @@ stamp 不匹配会自动重装到新 tag。
 >        meta-review changed-only 覆盖、并发/确定性 id/triage/prune/context realpath、
 >        nudge 身份回退）、typecheck + typecheck:client + build + build:client 干净。
 
+>         **3.5.7 发布记录（2026-09-25）**：dsh `0.1.7-rc.2` 升级 + 规范脚本回归修复批次。
+>         **上游 dsh**：rc.1→rc.2 为纯增量、无破坏性变更，`dshReleases` 声明扩到
+>         `0.1.7-rc.2: compatible`；四包（tools/util-values/agent/session/jobs）升级
+>         （旧 lockfile pin rc.1 致 ERESOLVE，删 lock+node_modules 后 clean install）。
+>         新增 `ask.displayReason`（`dsh-tools`）/ `toolHistory()`（`dsh-session`）均为
+>         dsh 内部面，插件未消费，无需适配。**缺陷修复（审查 + 脚本实测）**：① 关键——
+>         skill-prompt 两份规范 workflow 脚本（dry-run + normal）把 `const reviewersOk`
+>         声明在 `do{}` 块内、循环后读取 → 每次运行在首轮审查后抛
+>         `ReferenceError: reviewersOk is not defined`（vm 沙箱实测复现，`npm test`
+>         新增 5 个规范脚本运行时执行回归测试：dry-run 收敛 / normal 收敛清 checkpoint /
+>         resume 报告真实轮次 / schema-retry 重跑不破坏轮次簿记）；② normal 模式
+>         resume 轮次簿记——`rounds.length >= r` 索引在 `startRound > 1` 时失效
+>         （retry 轮会重复 push 而非替换、`roundsExecuted`/checkpoint round/report round
+>         少报真实轮次），改 `roundSlot` 游标 + `lastRound`（resume round 4 即收敛时
+>         报 `roundsExecuted:4` 而非 `1`）；③ decision-log entry-count 缓存失效——
+>         append 侧 `entryCountCache` 以路径为键、假设"同字节数⇒同条数"，prune
+>         temp+rename 重写后未失效，同字节数重写会让下次 append 报错 `entryCount`，
+>         新增 `invalidateLogCountCache()` 并在 prune 重写循环调用（+确定性同字节数
+>         回归测试）。主仓库 `e0ff172`（push 遇 pre-push ruff 门禁：被用户在
+>         `tests/test_release_meta.py` 的未提交改动误触，经核实 HEAD 版本 ruff
+>         0.16.8 干净、本提交零 Python，按钩子文档 `--no-verify` 逃生口推送）；
+>         subtree split 仍 non-fast-forward，照例走 `.release/iterate-plugin` 替代
+>         路径（rsync 同步后提交 `8e056d7` 快进推送 `9dd8d7a..8e056d7`，树与主仓库
+>         subtree 完全一致）；npm `iterate-plugin@3.5.7` 已发布（latest=3.5.7，
+>         78 文件 / 358.9 kB，tarball 复核含 skill-prompt reviewersOk 修复、
+>         decision-log invalidateLogCountCache、prune 失效调用、dsh rc.2 依赖）。
+>         **验证**：typecheck + typecheck:client + build + build:client 干净，
+>         677 测试全过（+6）。
+
 ---
 
 ## 常见遗漏点（Checklist 之外）
