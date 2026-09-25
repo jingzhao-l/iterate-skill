@@ -13,6 +13,16 @@ export const SELECTOR_MAX_LENGTH = 512;
 
 export const EVIDENCE_SCHEMA_VERSION = "glasspane.evidence/0.1" as const;
 
+/**
+ * The schema label used before the Phase B freeze. P0 spec §4 keeps it
+ * read-compatible for ever ("冻结前历史值 0.1-draft 只读兼容"): packs archived
+ * under it carry the frozen body field for field — the frozen schema's own
+ * description still calls itself "schema v0.1-draft" — so the read path folds
+ * this label onto the frozen const instead of refusing them. Nothing on the
+ * write side may ever stamp it again.
+ */
+export const LEGACY_EVIDENCE_SCHEMA_VERSION = "glasspane.evidence/0.1-draft" as const;
+
 export const AttributionLevelSchema = z.enum(["soft", "strong", "weak"]);
 export type AttributionLevel = z.infer<typeof AttributionLevelSchema>;
 
@@ -198,3 +208,97 @@ export const EvidencePackSchema = z.strictObject({
   diagnosis: z.union([DiagnosisSchema, z.null()]).optional()
 });
 export type EvidencePack = z.infer<typeof EvidencePackSchema>;
+
+/* ------------------------------------------------------------------ *
+ * READ side only. The strict schema above stays the single write
+ * contract (nothing may be archived in a legacy shape), but a reader that
+ * applies it to the archives on a real machine refuses packs the engine
+ * itself produced, which makes the audit trail unreadable.
+ *
+ * What `normalizeEvidencePackForRead` folds, exhaustively — two shapes, each
+ * into a value the frozen schema already accepts, and every one of them only
+ * on a copy of the caller's object:
+ *
+ *   1. `schemaVersion` exactly equal to `LEGACY_EVIDENCE_SCHEMA_VERSION`
+ *      ("glasspane.evidence/0.1-draft"), the pre-freeze label, onto the frozen
+ *      const. Third labels — `glasspane.evidence/0.9-next`, a bare "0.1", a
+ *      non-string — are *not* folded and are refused. The fold is a validation
+ *      device only: it does not certify that the archive carried the frozen
+ *      label, so a consumer that renders the version must render the measured
+ *      label with the reading (mcp-shell's `gp_export_evidence` prints
+ *      `0.1-draft (read as glasspane.evidence/0.1)`), and the bytes on disk stay
+ *      untouched for `gp_last_evidence` to hand back verbatim.
+ *   2. `signals.pixelDiff` with the `bounds` *key absent*, which fills with
+ *      `null`. Only absence is repaired: `"bounds": 0`, `"bounds": "x"`, a
+ *      partial bounds object, and the same absence anywhere else (e.g.
+ *      `signals.handlerProbe`, `attribution.reason`) are refused — the frozen
+ *      contract keeps that key and allows null (§4.2) because the daemon's
+ *      synthesized Swift encoder used to drop the key whenever bounds was nil,
+ *      which is the commonest outcome of all ("no pixel changed"). The engine
+ *      now encodes explicit null; archives written before that still have to
+ *      read.
+ *
+ * Nothing else is tolerated: unknown keys, missing keys, patterns, enums and
+ * ranges all run through `EvidencePackSchema` unchanged.
+ *
+ * One known difference this read path cannot fix, because it is a producer bug
+ * and refusing is the honest outcome: the length rules count *different units*
+ * on the two sides. `z.string().max(n)` counts UTF-16 code units, while the
+ * Swift writer counts `Character`s and never bounds these fields at all
+ * (`StateEntry.key`/`before`/`after` and `HandlerRef.file` have no length rule
+ * in `EvidenceModels`), and the probe clamps at 1024 *characters*. For text
+ * outside the BMP — an emoji in a state value, a CJK-heavy handler name — the
+ * producer's count is smaller than zod's, so an archive the engine legitimately
+ * wrote is rejected here and surfaces as "engine and kernel schema drifted".
+ * The fix belongs where the bytes are made: `StateEntry`/`HandlerRef` on the
+ * Swift side and the probe's clamp must bound by the same unit the schema
+ * counts (UTF-16 code units, or UTF-8 bytes if the JSON Schema's `maxLength` is
+ * restated in bytes), not by grapheme clusters. Until then a pack carrying a
+ * multi-unit value over the cap fails closed here, which is a refusal to read,
+ * never a wrong reading.
+ * ------------------------------------------------------------------ */
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Brings a legacy-shaped pack into the frozen contract's shape so the strict
+ * schema can validate it unchanged. Pure: the caller's value is never mutated,
+ * and a pack that needs no repair is returned as-is.
+ */
+function normalizeEvidencePackForRead(input: unknown): unknown {
+  if (!isObjectRecord(input)) {
+    return input;
+  }
+  const foldsLegacyVersion = input.schemaVersion === LEGACY_EVIDENCE_SCHEMA_VERSION;
+  const signals = isObjectRecord(input.signals) ? input.signals : undefined;
+  const pixelDiff = signals === undefined ? undefined : signals.pixelDiff;
+  const fillsBounds =
+    isObjectRecord(pixelDiff) && signals !== undefined && !("bounds" in pixelDiff);
+  if (!foldsLegacyVersion && !fillsBounds) {
+    return input;
+  }
+  const next: Record<string, unknown> = { ...input };
+  if (foldsLegacyVersion) {
+    next.schemaVersion = EVIDENCE_SCHEMA_VERSION;
+  }
+  if (fillsBounds && signals !== undefined && isObjectRecord(pixelDiff)) {
+    next.signals = { ...signals, pixelDiff: { ...pixelDiff, bounds: null } };
+  }
+  return next;
+}
+
+/**
+ * Read-side contract: `EvidencePackSchema` behind the legacy normalisations
+ * documented above. The parsed value always matches the write-side shape, so
+ * consumers that *compare* packs (the audit session, signal predicates) never
+ * have to model the historical encodings — and consumers that *print* the label
+ * must print the one the archive carried alongside this reading, because the
+ * fold is not a claim that the bytes said so. Never use this to write a pack —
+ * use `EvidencePackSchema`.
+ */
+export const EvidencePackReadSchema = z.preprocess(
+  normalizeEvidencePackForRead,
+  EvidencePackSchema
+);

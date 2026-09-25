@@ -46,6 +46,7 @@ export {
   DiagnosisReportSchema,
   DiagnosisSchema,
   EvidencePackSchema,
+  EvidencePackReadSchema,
   type AttributionLevel,
   type CircuitBreakerLevel,
   type Selector,
@@ -97,6 +98,7 @@ export {
 
 export {
   parseEvidencePack,
+  parseEvidencePackRead,
   parseDecisionLogEntry,
   parseRecipeConfig
 } from "./parse.js";
