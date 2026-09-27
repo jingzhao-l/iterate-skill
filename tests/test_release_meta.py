@@ -52,16 +52,53 @@ def _npm_version() -> str:
     return str(data["version"])
 
 
-def test_four_version_sources_agree() -> None:
-    """pyproject.toml / CLI / SKILL.md / npm installer must all say the same version."""
+def _changelog_version() -> str:
+    """Read the first ``## [x.y.z]`` heading from CHANGELOG.md."""
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    for line in changelog.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## [") and "[3." in stripped:
+            end = stripped.find("]")
+            version = stripped[4:end]
+            if version.count(".") == 2:
+                return version
+    raise AssertionError("CHANGELOG.md must have a `## [x.y.z]` heading")
+
+
+def test_five_version_sources_agree() -> None:
+    """pyproject.toml / CLI / SKILL.md / npm installer / CHANGELOG must all agree."""
     versions = {
         "pyproject.toml": _pyproject_version(),
         "iterate_cli/__init__.py": _cli_version(),
         "SKILL.md frontmatter": _skill_version(),
         "npm-installer/package.json": _npm_version(),
+        "CHANGELOG.md": _changelog_version(),
     }
     unique = set(versions.values())
     assert len(unique) == 1, f"version sources drifted: {versions}"
+
+
+def test_changelog_version_chain_has_no_gaps() -> None:
+    """Every released minor version in CHANGELOG.md must have a heading.
+
+    A release-notes block that lost its ``## [x.y.z]`` heading (the 3.4.1
+    orphan) silently merges into the neighbouring release, so the patch
+    history is unreadable and the next version is mis-numbered. Lock the
+    invariant that the 3.x series is contiguous from 3.4.0 upward.
+    """
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    minors = set()
+    for line in changelog.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## [3."):
+            end = stripped.find("]")
+            parts = stripped[4:end].split(".")
+            if len(parts) == 3 and parts[0] == "3":
+                minors.add((int(parts[1]), int(parts[2])))
+    latest = max(minors)
+    expected = {(m, p) for m in range(4, latest[0] + 1) for p in range(latest[1] + 1)}
+    missing = sorted(expected - minors)
+    assert not missing, f"CHANGELOG.md is missing headings for 3.{missing}"
 
 
 def test_version_is_three_part_semver() -> None:
