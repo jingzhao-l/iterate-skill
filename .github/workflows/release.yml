@@ -44,12 +44,33 @@ jobs:
           # sub-projects (iterate-harness, iterate-plugin) and must NOT ship
           # in the skill release tarball (see 2.3.17 release notes).
           git archive --format=tar.gz --prefix=iterate-skill/ \
-            -o iterate-skill.tar.gz HEAD -- . ':!harness'
+            -o iterate-skill.tar.gz HEAD -- . ':!harness' ':!kernel' ':!tests' \
+            ':!.githooks' ':!badges'
 
       - name: Generate SHA256 checksums
         run: |
           sha256sum iterate-skill.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      - name: Sign tarball and checksums with GPG (best-effort)
+        # Only runs when the repo secrets GPG_PRIVATE_KEY/GPG_PASSPHRASE are
+        # set. Imports the signing key and emits detached ASCII-armored
+        # signatures (*.asc) alongside each release artifact, so consumers can
+        # verify authenticity, not just integrity. Skips silently otherwise.
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_INPUT_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
+          printf '%s\n' "allow-loopback-pinentry" >> "$HOME/.gnupg/gpg-agent.conf"
+          gpgconf --kill gpg-agent
+          printf '%s\n' "$GPG_INPUT_KEY" | gpg --batch --yes --import
+          for f in iterate-skill.tar.gz SHA256SUMS.txt; do
+            gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" --detach-sign --armor "$f"
+          done
+          ls -la ./*.asc
 
       - name: Upload tarball and checksums to release
         uses: softprops/action-gh-release@v2
@@ -58,6 +79,8 @@ jobs:
           files: |
             iterate-skill.tar.gz
             SHA256SUMS.txt
+            iterate-skill.tar.gz.asc
+            SHA256SUMS.txt.asc
 
   qoder-package:
     # Qoder distribution line only — runs for skill tags (v2.* / v3.*).
@@ -81,11 +104,26 @@ jobs:
       - name: Rebuild Qoder package
         run: python3 scripts/publish_qoder.py build --out iterate-qoder.zip
 
+      - name: Sign Qoder package with GPG (best-effort)
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_INPUT_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
+          printf '%s\n' "allow-loopback-pinentry" >> "$HOME/.gnupg/gpg-agent.conf"
+          gpgconf --kill gpg-agent
+          printf '%s\n' "$GPG_INPUT_KEY" | gpg --batch --yes --import
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" --detach-sign --armor iterate-qoder.zip
+
       - name: Upload Qoder package to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
-          files: iterate-qoder.zip
+          files: |
+            iterate-qoder.zip
+            iterate-qoder.zip.asc
 
   harness-wheel:
     # Harness distribution line only — runs for harness tags (v1.*).
@@ -130,11 +168,28 @@ jobs:
           ls -la harness/iterate-harness/dist
           python -m zipfile -l harness/iterate-harness/dist/*.whl | { grep -E "_frontend_web/|_frontend/" | head -20 || true; }
 
+      - name: Sign wheel with GPG (best-effort)
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_INPUT_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
+          printf '%s\n' "allow-loopback-pinentry" >> "$HOME/.gnupg/gpg-agent.conf"
+          gpgconf --kill gpg-agent
+          printf '%s\n' "$GPG_INPUT_KEY" | gpg --batch --yes --import
+          for f in harness/iterate-harness/dist/*.whl; do
+            gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" --detach-sign --armor "$f"
+          done
+
       - name: Upload wheel to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
-          files: harness/iterate-harness/dist/*.whl
+          files: |
+            harness/iterate-harness/dist/*.whl
+            harness/iterate-harness/dist/*.whl.asc
 
       - name: Publish wheel to PyPI (iff token configured)
         # The npm wrapper installs the harness by pip-resolving
