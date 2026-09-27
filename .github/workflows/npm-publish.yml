@@ -1,0 +1,61 @@
+name: npm publish (iterate-skill-installer)
+
+# Publishes the iterate-skill-installer npm package from the skill monorepo.
+#
+# Reason for CI: publication was a local `cd npm-installer && npm publish`
+# (RELEASE.md §1042-1049), which is neither provenance-capable nor auditable.
+# Moving it into GitHub Actions and adding `--provenance` lets npm attach a
+# cryptographically verifiable build origin (repo + workflow + tag) to every
+# release via a Trusted Publisher mapping:
+#
+#   package         -> repo(workflow file)
+#   iterate-skill-installer -> jingzhao-l/iterate-skill(.github/workflows/npm-publish.yml)
+#
+# Then `npm audit signatures` validates that the published artifact can be tied
+# to a build in the claimed repository (no OIDC token is ever needed at publish
+# time on a developer machine).
+#
+# Trigger gates: skill tags (v2.*/v3.*, the same gate as the .github release
+# jobs) plus manual dispatch. The skill installer ships standalone from
+# npm-installer/ and has NO dependency on any wheel/PyPI artifact, so it is safe
+# to run directly on the release event.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to publish from (optional; defaults to tagged event or default branch)
+        required: false
+        type: string
+
+permissions:
+  contents: read    # read the tagged tree; the workflow writes nothing back
+  id-token: write   # mint an OIDC token so `npm publish --provenance` can sign the package
+
+concurrency:
+  group: npm-publish-iterate-skill-installer
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v2') || startsWith(github.event.release.tag_name, 'v3') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish with provenance
+        working-directory: npm-installer
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

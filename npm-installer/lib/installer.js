@@ -36,12 +36,25 @@ const readline = require('node:readline');
 
 const GITHUB_OWNER = 'jingzhao-l';
 const GITHUB_REPO = 'iterate-skill';
-const RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+// NOTE: deliberately the *release list*, not `/releases/latest`.
+// `/releases/latest` resolves to "newest non-prerelease by published_at" for the
+// whole repository, and this repository also publishes releases for the
+// harness/plugin sub-projects, which carry no iterate-skill.tar.gz. When such a
+// release is the most recently published one, `/releases/latest` returns it and
+// every install aborts with "Release is missing the iterate-skill.tar.gz asset."
+// Listing releases and picking the newest one that actually carries both assets
+// is immune to what any other release in the repo was published last.
+const RELEASES_API_URL =
+  `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases?per_page=100`;
 
 // Release asset filenames — named constants so the magic strings are not
 // scattered through the download / verify pipeline.
 const TARBALL_ASSET_NAME = 'iterate-skill.tar.gz';
 const CHECKSUMS_ASSET_NAME = 'SHA256SUMS.txt';
+// Detached ASCII-armored GPG signature over the tarball, published alongside
+// it in the release. When a local `gpg` binary is available the installer
+// verifies authenticity (not just integrity) against the embedded signing key.
+const TARBALL_SIGNATURE_ASSET_NAME = 'iterate-skill.tar.gz.asc';
 
 // Hard cap on a single curl download: a misbehaving CDN or a corrupt release
 // must never hang the installer forever.
@@ -72,6 +85,69 @@ let CURL_SUPPORTS_FAIL_WITH_BODY = null; // lazily probed once
 // Package version read from package.json at runtime so the --version/-v flag
 // and the published npm version always stay in sync.
 const VERSION = require('../package.json').version;
+
+// ASCII-armored GPG public key of the iterate-skill signing identity
+// (uid: jingzhao-l (sign-github) <ET_lin@outlook.com>, key
+// 0929EA31DF4F7429F63FC53189D88B1D043A1298). The release tarball `.asc`
+// signature is verified against THIS key. It must stay in sync with the
+// GPG_PRIVATE_KEY repo secret used by `.github/workflows/release.yml` to sign
+// the release artifacts — if the release is re-keyed, this constant must be
+// updated in the same release.
+const ITERATE_SIGNING_PUBLIC_KEY = [
+  '-----BEGIN PGP PUBLIC KEY BLOCK-----',
+  '',
+  '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',
+  'YVXa4IEQs7aBxKO+n+T2AvUYiKQ=',
+  '=DYXk',
+  '-----END PGP PUBLIC KEY BLOCK-----',
+].join('\n');
 
 const ITERATE_BANNER = [
   '██╗████████╗███████╗██████╗  █████╗ ████████╗███████╗',
@@ -272,6 +348,52 @@ function sha256File(filePath) {
     stream.on('end', () => resolve(hash.digest('hex')));
     stream.pipe(hash);
   });
+}
+
+// Best-effort GPG authenticity verification of a downloaded artifact against
+// the embedded signing key. Returns one of:
+//   'verified'    — `gpg` present and the detached signature is valid.
+//   'invalid'     — `gpg` present, but the signature did not verify (key
+//                    mismatch or tampered signature). Reported loudly, never
+//                    silently ignored.
+//   'unavailable' — no `gpg` binary, or the public key could not be imported.
+//                    The caller treats this as non-blocking because SHA256
+//                    already guarantees integrity; GPG adds authenticity as a
+//                    defense-in-depth layer, not the only gate.
+// Runs inside an isolated temporary GNUPGHOME so the end user's own keyring and
+// gpg-agent are never touched or modified.
+function verifyGpgDetachedSignature(artifactPath, signaturePath, publicKeyArmor, tmpDir) {
+  const gpgHome = path.join(tmpDir, 'gnupg');
+  fs.mkdirSync(gpgHome, { recursive: true, mode: 0o700 });
+  const keyPath = path.join(tmpDir, 'iterate-skill-pubkey.asc');
+  fs.writeFileSync(keyPath, publicKeyArmor, 'utf8');
+
+  const importResult = spawnSync(
+    'gpg',
+    ['--homedir', gpgHome, '--batch', '--yes', '--quiet', '--no-autostart', '--import', keyPath],
+    { encoding: 'utf8' }
+  );
+  if (importResult.error) {
+    const detail = importResult.error.code === 'ENOENT' ? 'gpg binary not found' : importResult.error.message;
+    return { status: 'unavailable', detail };
+  }
+  if (importResult.status !== 0) {
+    return { status: 'invalid', detail: (importResult.stderr || '').trim() || 'failed to import the signing key' };
+  }
+
+  const verifyResult = spawnSync(
+    'gpg',
+    ['--homedir', gpgHome, '--batch', '--quiet', '--no-autostart', '--verify', signaturePath, artifactPath],
+    { encoding: 'utf8' }
+  );
+  if (verifyResult.error) {
+    return { status: 'unavailable', detail: `gpg launch failed: ${verifyResult.error.message}` };
+  }
+  // gpg exit 0 = good signature; 1 = bad signature; 2 = fatal (bad key usage).
+  if (verifyResult.status === 0) {
+    return { status: 'verified', detail: (verifyResult.stderr || '').trim() };
+  }
+  return { status: 'invalid', detail: (verifyResult.stderr || '').trim() || `gpg exited ${verifyResult.status}` };
 }
 
 function parseChecksums(text) {
@@ -826,12 +948,36 @@ async function main(options = {}) {
   ]);
 
   info('Fetching latest release from GitHub...');
-  let release;
+  let releases;
   try {
-    release = await fetchJson(RELEASE_API_URL, token);
+    releases = await fetchJson(RELEASES_API_URL, token);
   } catch (err) {
     error(`Could not fetch release info: ${err.message}`);
     hint('You can set GITHUB_TOKEN for higher API rate limits.');
+    return 1;
+  }
+
+  // The list endpoint returns releases newest-published first. Select the first
+  // that is a stable release carrying BOTH assets we need, so a release from
+  // another sub-project (or one whose assets are still uploading) is skipped
+  // rather than mistaken for the latest skill release.
+  const release = Array.isArray(releases)
+    ? releases.find(
+        (r) =>
+          r &&
+          !r.draft &&
+          !r.prerelease &&
+          Array.isArray(r.assets) &&
+          r.assets.some((a) => a && a.name === TARBALL_ASSET_NAME) &&
+          r.assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME)
+      )
+    : releases;
+
+  if (!release) {
+    error(
+      `No published release in the last 100 carries a ${TARBALL_ASSET_NAME} + ${CHECKSUMS_ASSET_NAME} asset pair.`
+    );
+    hint('This is usually a GitHub API rate limit; retry with GITHUB_TOKEN set.');
     return 1;
   }
 
@@ -844,6 +990,9 @@ async function main(options = {}) {
 
   const tarballAsset = release.assets?.find((a) => a.name === TARBALL_ASSET_NAME);
   const checksumAsset = release.assets?.find((a) => a.name === CHECKSUMS_ASSET_NAME);
+  // Optional `.asc` signature; its absence only downgrades authenticity to
+  // integrity (see the best-effort verify below), never fails the install.
+  const signatureAsset = release.assets?.find((a) => a.name === TARBALL_SIGNATURE_ASSET_NAME);
 
   if (!tarballAsset) {
     error(`Release is missing the ${TARBALL_ASSET_NAME} asset.`);
@@ -905,6 +1054,38 @@ async function main(options = {}) {
       `\x1b[32m✓\x1b[0m Version: ${tag}`,
       `\x1b[32m✓\x1b[0m SHA256 checksum verified`,
     ]);
+
+    // GPG authenticity check (best-effort, defense-in-depth). The release also
+    // publishes a detached ASCII-armored signature over the tarball. When a
+    // `gpg` binary is present we verify it against the embedded signing key: a
+    // *valid* signature upgrades the release from "integrity-guaranteed" to
+    // "authenticity-guaranteed". If gpg is unavailable we degrade to a warning
+    // (SHA256 already guards integrity); if gpg IS present but the signature
+    // fails, we still install but report it loudly — a failed signature here is
+    // almost always a key-rotation lag, never a hidden fault.
+    if (signatureAsset) {
+      const signaturePath = path.join(tmpDir, TARBALL_SIGNATURE_ASSET_NAME);
+      try {
+        await downloadFile(signatureAsset.browser_download_url, signaturePath, token, {
+          maxBytes: CHECKSUMS_MAX_BYTES,
+        });
+        const sig = verifyGpgDetachedSignature(tarballPath, signaturePath, ITERATE_SIGNING_PUBLIC_KEY, tmpDir);
+        if (sig.status === 'verified') {
+          success('GPG signature verified.');
+        } else if (sig.status === 'invalid') {
+          warning(
+            `GPG signature could NOT be verified (${sig.detail}).\n` +
+              '  SHA256 integrity still passed; re-run after the release key is rotated if this persists.'
+          );
+        } else {
+          warning(
+            `gpg not available (${sig.detail}); skipping signature check — SHA256 integrity still enforced.`
+          );
+        }
+      } catch (err) {
+        warning(`Could not download/verify the GPG signature (${err.message}); SHA256 integrity still enforced.`);
+      }
+    }
 
     info('Extracting release...');
     const sourceDir = path.join(tmpDir, 'source');
