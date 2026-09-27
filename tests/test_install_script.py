@@ -551,13 +551,15 @@ class _FakeResp:
 
 class TestFetchReleaseInfo:
     def test_success_returns_info_and_no_error(self, monkeypatch):
-        payload = {
-            "tag_name": "v1.2.3",
-            "assets": [
-                {"name": "iterate-skill.tar.gz", "browser_download_url": "https://x/tar"},
-                {"name": "SHA256SUMS.txt", "browser_download_url": "https://x/sha"},
-            ],
-        }
+        payload = [
+            {
+                "tag_name": "v1.2.3",
+                "assets": [
+                    {"name": "iterate-skill.tar.gz", "browser_download_url": "https://x/tar"},
+                    {"name": "SHA256SUMS.txt", "browser_download_url": "https://x/sha"},
+                ],
+            }
+        ]
         resp = _FakeResp(json.dumps(payload).encode("utf-8"))
 
         def fake_urlopen(request, timeout=None):
@@ -619,7 +621,12 @@ class TestFetchReleaseInfo:
         assert error and "connection error" in error
 
     def test_missing_tarball_asset_reports_reason(self, monkeypatch):
-        payload = {"tag_name": "v1", "assets": [{"name": "other.tar.gz", "browser_download_url": "x"}]}
+        payload = [
+            {
+                "tag_name": "v1",
+                "assets": [{"name": "other.tar.gz", "browser_download_url": "x"}],
+            }
+        ]
         resp = _FakeResp(json.dumps(payload).encode("utf-8"))
 
         def fake_urlopen(request, timeout=None):
@@ -629,6 +636,110 @@ class TestFetchReleaseInfo:
         info, error = install._fetch_latest_release_info(None)
         assert info is None
         assert error and "iterate-skill.tar.gz" in error
+
+    def test_skips_newer_release_without_tarball(self, monkeypatch):
+        """A newer harness/plugin release must not shadow the skill release.
+
+        Regression: this repo publishes releases for the harness and plugin
+        sub-projects, which carry no ``iterate-skill.tar.gz``. The old
+        ``/releases/latest`` endpoint returns "newest non-prerelease by
+        published_at" for the whole repository, so once such a release was
+        published last, *every* install failed with "release has no
+        iterate-skill.tar.gz asset". Selection is now asset-aware.
+        """
+        payload = [
+            {
+                "tag_name": "v2.1.5",
+                "assets": [{"name": "SHA256SUMS.txt", "browser_download_url": "https://x/sha"}],
+            },
+            {
+                "tag_name": "v3.4.2",
+                "assets": [
+                    {"name": "iterate-skill.tar.gz", "browser_download_url": "https://x/tar"},
+                    {"name": "SHA256SUMS.txt", "browser_download_url": "https://x/sha"},
+                ],
+            },
+        ]
+        resp = _FakeResp(json.dumps(payload).encode("utf-8"))
+
+        def fake_urlopen(request, timeout=None):
+            return resp
+
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
+        info, error = install._fetch_latest_release_info(None)
+        assert error is None
+        assert info is not None
+        assert info["tag"] == "v3.4.2", "must skip the tarball-less release"
+
+    def test_skips_draft_and_prerelease(self, monkeypatch):
+        payload = [
+            {
+                "tag_name": "v9.9.9",
+                "draft": True,
+                "assets": [
+                    {"name": "iterate-skill.tar.gz", "browser_download_url": "https://x/tar"},
+                ],
+            },
+            {
+                "tag_name": "v9.9.8",
+                "prerelease": True,
+                "assets": [
+                    {"name": "iterate-skill.tar.gz", "browser_download_url": "https://x/tar"},
+                ],
+            },
+            {
+                "tag_name": "v9.9.7",
+                "assets": [
+                    {"name": "iterate-skill.tar.gz", "browser_download_url": "https://x/tar"},
+                ],
+            },
+        ]
+        resp = _FakeResp(json.dumps(payload).encode("utf-8"))
+
+        def fake_urlopen(request, timeout=None):
+            return resp
+
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
+        info, error = install._fetch_latest_release_info(None)
+        assert error is None
+        assert info is not None
+        assert info["tag"] == "v9.9.7"
+
+    def test_uses_release_list_endpoint_not_latest(self, monkeypatch):
+        """The installer must not query ``/releases/latest``.
+
+        That endpoint is release-line agnostic and, for a repo that also
+        publishes harness/plugin releases, can resolve to a release with no
+        skill tarball — a 100% install failure rate.
+        """
+        seen: list[str] = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append(request.full_url)
+            payload = [
+                {
+                    "tag_name": "v1.2.3",
+                    "assets": [
+                        {
+                            "name": "iterate-skill.tar.gz",
+                            "browser_download_url": "https://x/tar",
+                        },
+                    ],
+                }
+            ]
+            return _FakeResp(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.setattr(install, "_urlopen", fake_urlopen)
+        install._fetch_latest_release_info(None)
+        assert seen
+        assert all("/releases/latest" not in u for u in seen), seen
+        assert any("/releases?per_page=" in u for u in seen), seen
+
+    def test_select_skill_release_rejects_non_list_payload(self):
+        """A non-list payload must not be treated as a usable release list."""
+        assert install._select_skill_release({"tag_name": "v1"}) is None
+        assert install._select_skill_release(None) is None
+        assert install._select_skill_release("nope") is None
 
 
 class TestDownloadBytes:
@@ -1521,7 +1632,8 @@ class TestPromptHelpers:
         assert install.prompt_text("q", input_func=lambda p: "v") == "v"
 
     def test_prompt_text_eof_returns_default_or_empty(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)
+        def eof(_p):
+            raise EOFError
         assert install.prompt_text("q", default="d", input_func=eof) == "d"
         assert install.prompt_text("q", input_func=eof) == ""
 
@@ -1530,7 +1642,8 @@ class TestPromptHelpers:
         assert install.prompt_int("q", input_func=lambda p: "12") == 12
 
     def test_prompt_int_eof_uses_default_or_raises(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)
+        def eof(_p):
+            raise EOFError
         assert install.prompt_int("q", default=5, input_func=eof) == 5
         with pytest.raises(EOFError):
             install.prompt_int("q", input_func=eof)
@@ -1544,22 +1657,26 @@ class TestPromptHelpers:
         assert install.prompt_bool("q", default=True, input_func=lambda p: "n") is False
 
     def test_prompt_bool_eof_keeps_default(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)
+        def eof(_p):
+            raise EOFError
         assert install.prompt_bool("q", default=True, input_func=eof) is True
         assert install.prompt_bool("q", default=False, input_func=eof) is False
 
     def test_prompt_choice_eof_uses_default_or_empty(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)
+        def eof(_p):
+            raise EOFError
         assert install.prompt_choice("q", ["a", "b"], default="b", input_func=eof) == "b"
         assert install.prompt_choice("q", ["a", "b"], input_func=eof) == ""
 
     def test_prompt_dimensions_eof_keeps_current(self):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)
+        def eof(_p):
+            raise EOFError
         assert install.prompt_dimensions(["correctness"], input_func=eof) == ["correctness"]
         assert install.prompt_dimensions([], input_func=eof) == install.DIMENSION_CHOICES
 
     def test_upgrade_confirmation_eof_declines(self, tmp_path: Path):
-        eof = lambda _p: (_ for _ in ()).throw(EOFError)
+        def eof(_p):
+            raise EOFError
         assert (
             install._ask_upgrade_confirmation("cursor", tmp_path / "dst", "Cursor", eof)
             is False
