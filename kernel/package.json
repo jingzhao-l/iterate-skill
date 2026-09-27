@@ -2,7 +2,7 @@
   "name": "@iterate/kernel",
   "version": "0.1.0-draft.1",
   "private": true,
-  "description": "iterate ecosystem shared kernel: schema truth source + dual-language contracts (Phase A)",
+  "description": "iterate ecosystem shared kernel: schemas, the evidence->decision transcription, the decision-log audit chain and public validators. Verification reasoning stays in the engine; this layer transcribes.",
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -10,6 +10,46 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./canonical-json": {
+      "types": "./dist/canonical-json.d.ts",
+      "default": "./dist/canonical-json.js"
+    },
+    "./decision-log": {
+      "types": "./dist/decision-log.d.ts",
+      "default": "./dist/decision-log.js"
+    },
+    "./decision-log-entry": {
+      "types": "./dist/decision-log-entry.d.ts",
+      "default": "./dist/decision-log-entry.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "default": "./dist/errors.js"
+    },
+    "./evidence-decision": {
+      "types": "./dist/evidence-decision.d.ts",
+      "default": "./dist/evidence-decision.js"
+    },
+    "./evidence-pack": {
+      "types": "./dist/evidence-pack.d.ts",
+      "default": "./dist/evidence-pack.js"
+    },
+    "./index": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./parse": {
+      "types": "./dist/parse.d.ts",
+      "default": "./dist/parse.js"
+    },
+    "./recipe-config": {
+      "types": "./dist/recipe-config.d.ts",
+      "default": "./dist/recipe-config.js"
+    },
+    "./schemas": {
+      "types": "./dist/schemas.d.ts",
+      "default": "./dist/schemas.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
@@ -17,18 +57,24 @@
   },
   "files": [
     "dist",
-    "schemas"
+    "schemas",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "zod": "3.25.76"
+    "zod": ">=3.25.76 <5"
   },
   "devDependencies": {
     "@types/node": "26.5.1",
     "ajv": "8.20.0",
     "typescript": "5.9.3"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   }
 }
