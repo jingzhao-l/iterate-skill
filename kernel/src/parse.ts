@@ -6,6 +6,12 @@ import {
   type EvidencePack
 } from "./evidence-pack.js";
 import { DecisionLogEntrySchema, type DecisionLogEntry } from "./decision-log-entry.js";
+import {
+  DimensionContextInputSchema,
+  DimensionContextSchema,
+  type DimensionContext,
+  type DimensionContextInput
+} from "./dimension-context.js";
 import { RecipeConfigSchema, type RecipeConfig } from "./recipe-config.js";
 
 function schemaError(label: string, error: z.ZodError): KernelSchemaError {
@@ -53,4 +59,12 @@ export function parseDecisionLogEntry(input: unknown): DecisionLogEntry {
 
 export function parseRecipeConfig(input: unknown): RecipeConfig {
   return parseOrThrow(RecipeConfigSchema, input, "recipe config");
+}
+
+export function parseDimensionContext(input: unknown): DimensionContext {
+  return parseOrThrow(DimensionContextSchema, input, "dimension context");
+}
+
+export function parseDimensionContextInput(input: unknown): DimensionContextInput {
+  return parseOrThrow(DimensionContextInputSchema, input, "dimension context input");
 }
