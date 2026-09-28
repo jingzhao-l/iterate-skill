@@ -180,10 +180,12 @@ class StartRequest(BaseModel):
     mode: Literal["review", "run", "resume"] = "review"
     changed: bool = False
     ref: str = "HEAD"
-    #: Human-in-the-loop override for this run (the WebUI keeps the
-    #: permission_mode compatible with a fully unattended loop by default).
-    #: ``default`` falls back to the configured/credential mode.
-    permission_mode: Literal["full_auto", "plan", "default"] = "full_auto"
+    #: Human-in-the-loop posture for this run. Defaults to ``default`` (defer
+    #: to the configured/credential mode) so launching a loop from the
+    #: auxiliary channel cannot silently escalate a console the operator
+    #: configured to ask before writing. ``full_auto`` writes without asking;
+    #: ``plan`` pauses on every write.
+    permission_mode: Literal["full_auto", "plan", "default"] = "default"
 
 
 class SendMessageRequest(BaseModel):
@@ -234,6 +236,22 @@ class ChatRunStatus(BaseModel):
     #: launched from the WebUI was in ``full_auto`` — i.e. that the auxiliary
     #: channel had silently granted the loop write access without asking.
     permission_mode: str = "full_auto"
+    #: Set when *another* process (typically the console) holds this project's
+    #: run lease. The WebUI used to report ``idle`` in that case and offer to
+    #: start a competing loop; this tells the operator who actually owns it.
+    driver: RunDriver | None = None
+
+
+class RunDriver(BaseModel):
+    """The other front end that currently owns a project's iterate loop."""
+
+    role: str = "unknown"
+    """``console`` (CLI/TUI) or ``webui``."""
+
+    pid: int = 0
+    host: str = ""
+    acquired_at: float = 0.0
+    """Unix seconds when that process took the lease."""
 
 
 __all__ = [
@@ -247,6 +265,7 @@ __all__ = [
     "FindingsTriageRequest",
     "OperationResult",
     "ReportView",
+    "RunDriver",
     "RunState",
     "RunSummary",
     "SendMessageRequest",

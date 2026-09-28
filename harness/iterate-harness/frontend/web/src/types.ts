@@ -223,8 +223,19 @@ export interface ChatRunStatus {
   /** The permission posture this run is under. Surfaced so the operator can
    * see whether the loop writes without asking. */
   permission_mode?: PermissionMode;
+  /** Set when another process (usually the console) holds this project's run
+   * lease. Without it the dashboard read "空闲 · 等待启动" for a project the
+   * TUI was actively iterating, and invited a second writer. */
+  driver?: RunDriver | null;
   error: string | null;
   message: string;
+}
+
+export interface RunDriver {
+  role: string;
+  pid: number;
+  host: string;
+  acquired_at: number;
 }
 
 export type PermissionMode = "full_auto" | "plan" | "default";

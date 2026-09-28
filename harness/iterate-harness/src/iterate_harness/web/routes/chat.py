@@ -90,8 +90,12 @@ async def start_run(
 
 @router.get("/chat/status", response_model=ChatRunStatus)
 async def chat_status() -> ChatRunStatus:
-    """Live run-state snapshot for the chat panel."""
-    return run_manager.status()
+    """Live run-state snapshot for the chat panel.
+
+    Includes the cross-process run lease probe, so a project the console is
+    iterating reports its real driver instead of a misleading ``idle``.
+    """
+    return await run_manager.astatus()
 
 
 @router.get("/chat/history", response_model=list[ChatMessage])

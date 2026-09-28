@@ -197,19 +197,81 @@ class TestRuns:
         body = client.get("/api/v1/runs/findings", params={"project_root": str(tmp_path)}).json()
         # a.py sql-injection deduped across rounds → 3 unique findings
         assert body["total"] == 3
-        assert body["page"] == 3
+        # ``page`` used to be ``len(page)`` — a count under a name that reads
+        # like a page index. It is now ``returned``/``truncated`` so a client
+        # can tell "this is the whole set" from "this is the first 500".
+        assert "page" not in body
+        assert body["returned"] == 3
+        assert body["offset"] == 0
+        assert body["truncated"] is False
 
         high = client.get(
             "/api/v1/runs/findings",
             params={"project_root": str(tmp_path), "severity": "high"},
         ).json()
         assert high["total"] == 1
+        assert high["truncated"] is False
 
         dim = client.get(
             "/api/v1/runs/findings",
             params={"project_root": str(tmp_path), "dimension": "code_review"},
         ).json()
         assert dim["total"] == 2
+
+    def test_findings_reports_truncation_and_offset(self, client: TestClient, tmp_path: Path):
+        """A paginated response must admit that rows are missing.
+
+        The console previously advertised the *unpaginated* total while its
+        pager could only reach the first ``limit`` rows, so a large backlog
+        was silently untriaged past the cut.
+        """
+        log = tmp_path / ".iterate" / "decision-log.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "timestamp": "2026-01-01T00:00:00Z",
+            "round": 1,
+            "type": "review_result",
+            "data": {
+                "findings": [
+                    {
+                        "file": f"src/mod_{i}.py",
+                        "line": i + 1,
+                        "dimension": "code_review",
+                        "severity": "medium",
+                    }
+                    for i in range(7)
+                ]
+            },
+        }
+        log.write_text(
+            json.dumps(payload) + "\n" + json.dumps(payload) + "\n", encoding="utf-8"
+        )
+
+        first = client.get(
+            "/api/v1/runs/findings",
+            params={"project_root": str(tmp_path), "limit": 3, "offset": 0},
+        ).json()
+        assert first["total"] == 7
+        assert first["returned"] == 3
+        assert first["truncated"] is True
+
+        last = client.get(
+            "/api/v1/runs/findings",
+            params={"project_root": str(tmp_path), "limit": 3, "offset": 6},
+        ).json()
+        assert last["returned"] == 1
+        assert last["truncated"] is False
+
+        middle = client.get(
+            "/api/v1/runs/findings",
+            params={"project_root": str(tmp_path), "limit": 3, "offset": 3},
+        ).json()
+        assert middle["returned"] == 3
+        assert middle["truncated"] is True
+        # Pages must not overlap: the 4th row is neither in page 1 nor page 3.
+        assert [f["line"] for f in first["findings"]] == [1, 2, 3]
+        assert [f["line"] for f in middle["findings"]] == [4, 5, 6]
+        assert [f["line"] for f in last["findings"]] == [7]
 
     def test_latest_report(self, client: TestClient, tmp_path: Path):
         populate_log(tmp_path)

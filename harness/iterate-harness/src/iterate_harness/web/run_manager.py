@@ -31,8 +31,15 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ..iterate.run_lock import (
+    ROLE_WEBUI,
+    RunLease,
+    RunLeaseConflictError,
+    claim_run_lease,
+    foreign_driver,
+)
 from .hub import hub
-from .schemas import ChatRunStatus, RunState, SelectOption, WaitingKind
+from .schemas import ChatRunStatus, RunDriver, RunState, SelectOption, WaitingKind
 from .security import AuditLog
 
 #: Python 3.10 compatibility — ``datetime.UTC`` is only available in 3.11+.
@@ -192,6 +199,8 @@ class RunManager:
         self.last_message: str = ""
         self._chat_dir: Path | None = None
         self._bundle: Any = None
+        #: Cross-process run lease held by this run (see iterate.run_lock).
+        self._lease: RunLease | None = None
         self._task: asyncio.Task[Any] | None = None
         self._request_registry: dict[str, asyncio.Future[Any]] = {}
         self._assistant_buffer: str = ""
@@ -226,6 +235,19 @@ class RunManager:
         """
         if permission_mode not in ("full_auto", "plan", "default"):
             raise RunManagerError(f"未知的 permission_mode：{permission_mode}")
+        # Cross-process guard. The in-process ``self.state`` check below only
+        # knows about runs this WebUI server started; a loop driven by the
+        # console (the primary front end) is invisible to it, so the operator
+        # could open the WebUI on a project the TUI was iterating, see
+        # ``idle``, and start a *second* loop — two writers on ``.iterate/``
+        # and on git. The shared lease is the same guard for both front ends.
+        driver = foreign_driver(project_root)
+        if driver is not None:
+            raise RunManagerError(
+                f"检测到另一个 iterate 循环正在运行（{driver.describe()}）。"
+                "WebUI 是辅助干预通道，不能并发启动第二个循环；"
+                "请在原终端停止，或等待其结束后再启动。"
+            )
         async with self._lock:
             if self.state in ("starting", "running", "paused"):
                 raise RunManagerError("已有运行中的 iterate 循环，请先停止或等待结束")
@@ -313,8 +335,13 @@ class RunManager:
             return await self._stop()
         raise RunManagerError(f"未知控制动作：{action}")
 
-    def status(self) -> ChatRunStatus:
-        """Build the current run status snapshot (for the REST endpoint)."""
+    def status(self, *, driver: RunDriver | None = None) -> ChatRunStatus:
+        """Build the current run status snapshot (for the REST endpoint).
+
+        ``driver`` is the *other* front end's claim on this project, when the
+        caller looked one up (see :meth:`astatus`); it is passed in rather
+        than read here so the lease probe never blocks the event loop.
+        """
         waiting_for = self.waiting_for
         state: RunState = "paused" if (self.state == "running" and waiting_for != "none") else self.state
         permission: dict[str, Any] | None = None
@@ -343,9 +370,33 @@ class RunManager:
             options=select_options,
             permission=permission,
             permission_mode=self.permission_mode,
+            driver=driver,
             error=self.error,
             message=self.last_message,
         )
+
+    async def astatus(self) -> ChatRunStatus:
+        """Status snapshot including the other front end's run lease.
+
+        The lease probe is a small file read, but it is disk I/O on a path
+        polled by the dashboard, so it runs in a worker thread.
+        """
+        root = self.project_root
+        driver: RunDriver | None = None
+        if root:
+            try:
+                lease = await asyncio.to_thread(foreign_driver, root)
+            except Exception as exc:  # noqa: BLE001 - advisory only
+                log.warning("foreign driver probe failed: %s", exc)
+                lease = None
+            if lease is not None:
+                driver = RunDriver(
+                    role=lease.role,
+                    pid=lease.pid,
+                    host=lease.host,
+                    acquired_at=lease.acquired_at,
+                )
+        return self.status(driver=driver)
 
     def history(self) -> list[dict[str, Any]]:
         """Return the persisted human-interaction transcript (oldest first)."""
@@ -399,6 +450,18 @@ class RunManager:
         # clears references that still point at *this* run. A fresh run started
         # immediately after this one ends must not have its handle clobbered.
         task_handle = asyncio.current_task()
+        # Hold the project's cross-process run lease for the whole run so a
+        # console-driven loop and a WebUI-driven loop can never both be
+        # writing. Entered before the kickoff build so a conflicting claim
+        # fails the run rather than starting it.
+        lease_ctx = claim_run_lease(project_root, role=ROLE_WEBUI)
+        try:
+            self._lease = lease_ctx.__enter__()
+        except RunLeaseConflictError as exc:
+            self._lease = None
+            await self._publish_chat("system", str(exc), kind="error")
+            await self._set_state("stopped", message=str(exc))
+            return
         try:
             kickoff, rounds = self._build_kickoff(project_root, mode, changed, ref)
             try:
@@ -519,6 +582,15 @@ class RunManager:
                 await asyncio.shield(self._clear_stopping_if_owned(run_id))
             except asyncio.CancelledError:
                 self._stopping = True
+            # Release the shared run lease last, so the project is never
+            # unclaimed while a second front end is still watching for it.
+            # ``__exit__`` only unlinks a lease that still names this
+            # process, so a reclaimed-and-retaken lease survives.
+            try:
+                lease_ctx.__exit__(None, None, None)
+            except Exception as exc:  # noqa: BLE001 - best-effort release
+                log.warning("run lease release failed: %s", exc)
+            self._lease = None
 
     async def _render_event(self, event: Any) -> None:
         """Translate engine stream events into chat/progress hub events."""
