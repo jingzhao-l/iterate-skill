@@ -120,6 +120,12 @@ export default function Dashboard(): React.JSX.Element {
   } else if (chatState === "paused") {
     bannerLabel = "暂停 · 等待输入";
     bannerKind = "paused";
+  } else if (chatState === "pausing") {
+    bannerLabel = "暂停中 · 将在下一轮边界生效";
+    bannerKind = "paused";
+  } else if (chatState === "stopping") {
+    bannerLabel = "停止中…";
+    bannerKind = "stopped";
   } else if (chatState === "stopped") {
     bannerLabel = "已停止";
     bannerKind = "stopped";
@@ -173,20 +179,27 @@ export default function Dashboard(): React.JSX.Element {
             <button
               className="btn"
               onClick={() => void handleControl("resume")}
-              disabled={controlling}
-              title="恢复运行"
+              disabled={controlling || chatStatus?.waiting_for !== "user_select"}
+              title={
+                chatStatus?.waiting_for === "user_select"
+                  ? "恢复运行"
+                  : "当前是提问/权限请求，请直接在下方回答（继续仅用于选择菜单）"
+              }
             >
               继续
             </button>
           )}
-          {(chatState === "running" || chatState === "paused") && (
+          {(chatState === "running" ||
+            chatState === "paused" ||
+            chatState === "pausing" ||
+            chatState === "stopping") && (
             <button
               className="btn danger"
               onClick={() => setConfirmStop(true)}
-              disabled={controlling}
+              disabled={controlling || chatState === "stopping"}
               title="停止运行（保留决策日志，可 resume）"
             >
-              停止
+              {chatState === "stopping" ? "停止中…" : "停止"}
             </button>
           )}
         </div>

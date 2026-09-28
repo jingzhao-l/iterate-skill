@@ -28,6 +28,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import routes as route_modules
 from . import events as events_module
+from .run_manager import RunManagerError
+from .security import allowed_roots, set_allowed_roots
 from iterate_harness import __version__
 
 log = logging.getLogger(__name__)
@@ -108,8 +110,26 @@ def create_app(project_root: str | Path | None = None, *, token: str | None = No
     # Expose the resolved project root to routes via app state.
     resolved_root = str(Path(project_root).resolve()) if project_root else ""
     app.state.project_root = resolved_root
+    # Pin the roots the API may touch *when the app was started for a specific
+    # project*. Without the pin, every route's ``project_root`` parameter is an
+    # unrestricted selector: holding the token let a client point the console
+    # at any directory on the box (config writes, checkpoint clears, report
+    # reads, ``git worktree remove``). ``create_app()`` with no root is the
+    # embedding/test mode where every request names its own root, so it stays
+    # unpinned; ``serve()`` always passes the concrete root.
+    set_allowed_roots([resolved_root] if resolved_root else None)
+    app.state.allowed_roots = sorted(allowed_roots())
     # Empty string means "authentication disabled"; serve() always sets it.
     app.state.webui_token = token or ""
+
+    @app.exception_handler(RunManagerError)
+    async def _run_manager_error(
+        _request: Request, exc: RunManagerError
+    ) -> JSONResponse:
+        # One error contract for the whole API: the frontend reads
+        # ``detail`` for string errors, so every 4xx carries a human message
+        # the operator can act on instead of a bare "HTTP 409".
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     # Protect every /api/v1 route behind the access token (when one is set).
     @app.middleware("http")

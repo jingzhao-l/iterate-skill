@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +25,49 @@ _TASK_RESTART_NOTICE = "[IterateHarness] Agent task restarted; prior interactive
 #: without bound (disk-exhaustion guard). The file oscillates between the cap
 #: and 2× the cap between trims.
 _OUTPUT_CAP_BYTES = 8 * 1024 * 1024
+
+#: Grace period between the cooperative stop signal and SIGKILL.
+_STOP_GRACE_SECONDS = 3.0
+#: How long ``stop_task`` waits for the watcher to publish the final record.
+_WATCHER_DRAIN_SECONDS = 3.0
+#: Upper bound on retained (terminal) task records. Older terminal records are
+#: evicted so a long swarm session cannot grow the manager without limit.
+_MAX_TERMINAL_RECORDS = 200
+
+
+def _terminate_signal() -> signal.Signals:
+    """Return the cooperative stop signal for this platform."""
+    return signal.SIGTERM if hasattr(signal, "SIGTERM") else signal.SIGINT
+
+
+def _signal_process_tree(
+    process: asyncio.subprocess.Process,
+    sig: signal.Signals,
+    *,
+    ignore_missing: bool = False,
+) -> None:
+    """Signal a task's whole process group, not just the direct child.
+
+    Tasks are spawned with ``start_new_session=True``, so each one leads its
+    own process group. Signalling only ``process`` would leave every grandchild
+    (a dev server, a watcher, a ``bash -c`` helper) running after the task is
+    reported "killed" — unowned code still mutating the repo and burning tokens.
+    """
+    pid = process.pid
+    if pid is None:
+        return
+    try:
+        os.killpg(os.getpgid(pid), sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        if ignore_missing:
+            return
+        # No process group (already reaped, or the platform refused): fall back
+        # to the direct child.
+        try:
+            process.send_signal(sig)
+        except (ProcessLookupError, OSError, ValueError) as exc:
+            if not ignore_missing:
+                log.debug("Could not signal task process %s: %s", pid, exc)
 
 
 def _trim_output_front(path: Path) -> None:
@@ -235,7 +279,7 @@ class BackgroundTaskManager:
         return task
 
     async def stop_task(self, task_id: str) -> TaskRecord:
-        """Terminate a running task."""
+        """Terminate a running task (and its whole process group)."""
         task = self._require_task(task_id)
         process = self._processes.get(task_id)
         if process is None:
@@ -243,23 +287,44 @@ class BackgroundTaskManager:
                 return task
             raise ValueError(f"Task {task_id} is not running")
 
-        process.terminate()
+        # Mark the record killed BEFORE signalling the process. The watcher task
+        # resumes on process exit and publishes the terminal state; if it got
+        # there first it would overwrite "killed" with "failed" (a SIGTERM
+        # exit code is non-zero) and fire the completion listeners with a
+        # misleading failure — which unregisters agent listeners and makes the
+        # coordinator wait forever for a task it deliberately stopped.
+        task.status = "killed"
+        task.ended_at = time.time()
+
+        _signal_process_tree(process, _terminate_signal())
         try:
-            await asyncio.wait_for(process.wait(), timeout=3)
+            await asyncio.wait_for(asyncio.shield(process.wait()), timeout=_STOP_GRACE_SECONDS)
         except asyncio.TimeoutError:
-            process.kill()
+            _signal_process_tree(process, signal.SIGKILL, ignore_missing=True)
             await process.wait()
         await _close_process_stdin(process)
 
-        task.status = "killed"
-        task.ended_at = time.time()
-        return task
+        # Let the watcher publish the final record (return_code + listeners)
+        # before returning, so callers never observe a half-finalized task.
+        waiter = self._waiters.get(task_id)
+        if waiter is not None and not waiter.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(waiter), timeout=_WATCHER_DRAIN_SECONDS
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                log.debug("Task %s watcher did not settle in time after stop", task_id)
+        return self._require_task(task_id)
 
     async def write_to_task(self, task_id: str, data: str) -> None:
         """Write one line to task stdin, auto-resuming local agents when needed."""
         task = self._require_task(task_id)
         payload = _encode_task_worker_payload(data)
-        async with self._input_locks[task_id]:
+        # ``setdefault`` (not ``[...]``): a task whose spawn failed keeps its
+        # record but has no lock left, and the coordinator's recovery path
+        # (send_message right after a failed spawn) must not blow up with a
+        # bare KeyError.
+        async with self._input_locks.setdefault(task_id, asyncio.Lock()):
             process = await self._ensure_writable_process(task)
             stdin = process.stdin
             if stdin is None:
@@ -333,6 +398,28 @@ class BackgroundTaskManager:
         await self._notify_completion_listeners(task)
         self._processes.pop(task_id, None)
         self._waiters.pop(task_id, None)
+        self._evict_old_terminal_records()
+
+    def _evict_old_terminal_records(self) -> None:
+        """Drop the oldest terminal records once the cap is exceeded.
+
+        A long swarm session spawns one record per agent; without a bound the
+        manager (and ``task_list``) grows without limit. Only *terminal*
+        records are evicted, and only after their process is gone, so a live
+        task can never be dropped.
+        """
+        terminal = [
+            task
+            for task in self._tasks.values()
+            if task.status in {"completed", "failed", "killed"} and task.id not in self._processes
+        ]
+        if len(terminal) <= _MAX_TERMINAL_RECORDS:
+            return
+        terminal.sort(key=lambda item: item.ended_at or item.created_at)
+        for task in terminal[: len(terminal) - _MAX_TERMINAL_RECORDS]:
+            self._tasks.pop(task.id, None)
+            self._output_locks.pop(task.id, None)
+            self._input_locks.pop(task.id, None)
 
     async def _copy_output(self, task_id: str, process: asyncio.subprocess.Process) -> None:
         if process.stdout is None:
@@ -341,7 +428,7 @@ class BackgroundTaskManager:
             chunk = await process.stdout.read(4096)
             if not chunk:
                 return
-            async with self._output_locks[task_id]:
+            async with self._output_locks.setdefault(task_id, asyncio.Lock()):
                 path = self._tasks[task_id].output_file
                 # Bound the on-disk output under the same lock that guards
                 # every append: a runaway worker must never fill the disk and
@@ -389,6 +476,10 @@ class BackgroundTaskManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=merged_env,
+                # Own process group: a stop must reach every descendant, and a
+                # Ctrl-C at the terminal must not race the harness' own
+                # teardown into a half-signalled group.
+                start_new_session=True,
             )
         else:
             assert task.command is not None
@@ -399,6 +490,7 @@ class BackgroundTaskManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=merged_env,
+                start_new_session=True,
             )
         self._processes[task_id] = process
         self._waiters[task_id] = asyncio.create_task(
@@ -434,7 +526,39 @@ class BackgroundTaskManager:
         task.return_code = None
         with task.output_file.open("ab") as handle:
             handle.write(_TASK_RESTART_NOTICE.encode("utf-8"))
-        return await self._start_process(task.id)
+        try:
+            return await self._start_process(task.id)
+        except Exception:
+            # Same rule as the initial spawn: never leave a record that says
+            # "running" with no process behind it. Such a ghost can never
+            # reach a terminal state, so task_stop raises "not running" and
+            # every waiter hangs.
+            task.status = "failed"
+            task.ended_at = time.time()
+            task.return_code = -1
+            task.metadata["status_note"] = "Restart failed: the task process could not be started."
+            self._waiters.pop(task.id, None)
+            self._output_locks.pop(task.id, None)
+            self._input_locks.pop(task.id, None)
+            self._generations.pop(task.id, None)
+            self._notify_terminal_sync(task)
+            raise
+
+    def _notify_terminal_sync(self, task: TaskRecord) -> None:
+        """Fire completion listeners for a task that never got to run.
+
+        Used by the spawn-failure paths, where no watcher exists to do it.
+        Listeners are sync/async callables; only the sync ones can run here —
+        an async listener is scheduled so the loop can await it later.
+        """
+        snapshot = replace(task, metadata=dict(task.metadata))
+        for listener_id, listener in list(self._completion_listeners.items()):
+            try:
+                maybe_awaitable = listener(snapshot)
+                if maybe_awaitable is not None:
+                    asyncio.ensure_future(maybe_awaitable)
+            except Exception:
+                log.exception("Task completion listener %s failed for task %s", listener_id, task.id)
 
     async def _notify_completion_listeners(self, task: TaskRecord) -> None:
         snapshot = replace(task, metadata=dict(task.metadata))

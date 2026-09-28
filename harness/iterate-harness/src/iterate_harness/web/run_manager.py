@@ -112,6 +112,18 @@ def _has_ascii_marker(text: str, markers: frozenset[str]) -> bool:
     return re.search(rf"\b(?:{needle})\b", text, re.IGNORECASE) is not None
 
 
+#: ASCII idioms that *open* with a negation word but mean approval. ``no
+#: problem, go ahead`` is an approval; without this carve-out the deny markers
+#: ``no`` / ``not`` matched it, the harness refused the write, and the UI showed
+#: nothing — a denial the user never gave. The CJK equivalent (没问题 / 没关系)
+#: is handled by :data:`_APPROVAL_IDIOM_STARTING_WITH_NEGATION`.
+_APPROVAL_IDIOM_STARTING_WITH_ASCII_NEGATION = re.compile(
+    r"\b(?:no|not)\s+(?:an?\s+|any\s+)?(?:problem|issues?|problematic|worries|"
+    r"worried|big\s+deal|deal)\b",
+    re.IGNORECASE,
+)
+
+
 def _has_cjk_marker(text: str, markers: frozenset[str]) -> bool:
     """True if any CJK marker appears as a substring in ``text``."""
     return any(m in text for m in markers if not m.isascii())
@@ -164,7 +176,7 @@ class RunManager:
         self.state: RunState = "idle"
         self.run_id: str = ""
         self.mode: str = ""
-        self.permission_mode: str = "full_auto"
+        self.permission_mode: str = "default"
         self.project_root: str = ""
         self.round: int = 0
         self.new_findings: int = 0
@@ -199,7 +211,7 @@ class RunManager:
         mode: str,
         changed: bool,
         ref: str,
-        permission_mode: str = "full_auto",
+        permission_mode: str = "default",
     ) -> str:
         """Validate state and launch a new iterate loop in the background.
 
@@ -207,9 +219,10 @@ class RunManager:
         run is already active or the kickoff cannot be built.
 
         ``permission_mode`` selects the human-in-the-loop posture for *this*
-        run: ``full_auto`` (default — the WebUI is unattended-friendly and a
-        prompt must never stall the loop), ``plan`` (pause on every write),
-        or ``default`` (fall back to the configured/credential mode).
+        run: ``full_auto`` (write without asking), ``plan`` (pause on every
+        write), or ``default`` (defer to the configured mode). ``default`` is
+        the default precisely so the auxiliary channel does not silently
+        escalate the posture of a console the operator configured to ask.
         """
         if permission_mode not in ("full_auto", "plan", "default"):
             raise RunManagerError(f"未知的 permission_mode：{permission_mode}")
@@ -329,6 +342,7 @@ class RunManager:
             question=self.question,
             options=select_options,
             permission=permission,
+            permission_mode=self.permission_mode,
             error=self.error,
             message=self.last_message,
         )
@@ -378,7 +392,7 @@ class RunManager:
         changed: bool,
         ref: str,
         run_id: str,
-        permission_mode: str = "full_auto",
+        permission_mode: str = "default",
     ) -> None:
         bundle: Any = None
         # Capture the task this coroutine runs under so the finally block only
@@ -489,7 +503,7 @@ class RunManager:
             if still_owner_task:
                 try:
                     await asyncio.shield(
-                        hub.publish(
+                        self._publish_hub(
                             "run-state",
                             {"state": "stopped", "message": self.last_message or "iterate 循环已结束"},
                         )
@@ -532,7 +546,7 @@ class RunManager:
                 + (" — 已收敛" if event.converged else "")
             )
             await self._publish_chat("system", summary, kind="progress")
-            await hub.publish(
+            await self._publish_hub(
                 "progress-update",
                 {
                     "round": event.round,
@@ -588,7 +602,7 @@ class RunManager:
         await self._publish_chat(
             "assistant", f"请求权限：{tool_name} — {reason}", kind="permission"
         )
-        await hub.publish(
+        await self._publish_hub(
             "run-state",
             {
                 "state": "paused",
@@ -601,6 +615,16 @@ class RunManager:
             return await asyncio.wait_for(future, timeout=_PERMISSION_TIMEOUT)
         except asyncio.TimeoutError:
             log.warning("permission request %s timed out; denying", request_id)
+            # Say so. A silently auto-denied permission is indistinguishable
+            # from the user having said "no": the pending buttons vanish, the
+            # card flips back to 运行中, and the refusal is attributed to
+            # someone who never refused. The question/select twins already
+            # publish a notice here.
+            await self._publish_chat(
+                "system",
+                f"权限请求超时未答复（{_PERMISSION_TIMEOUT:.0f}s），已按拒绝继续。",
+                kind="error",
+            )
             return False
         finally:
             async with self._lock:
@@ -611,7 +635,7 @@ class RunManager:
                 if not self._stopping:
                     self.state = "running"
             if not self._stopping:
-                await hub.publish("run-state", {"state": "running", "waitingFor": "none"})
+                await self._publish_hub("run-state", {"state": "running", "waitingFor": "none"})
 
     async def _ask_user_prompt(self, question: str) -> str:
         request_id = uuid4().hex
@@ -627,7 +651,7 @@ class RunManager:
             self.question = question
             self.state = "paused"
         await self._publish_chat("assistant", question, kind="question")
-        await hub.publish(
+        await self._publish_hub(
             "run-state", {"state": "paused", "waitingFor": "user_prompt", "question": question}
         )
         try:
@@ -656,7 +680,7 @@ class RunManager:
                 if not self._stopping:
                     self.state = "running"
             if not self._stopping:
-                await hub.publish("run-state", {"state": "running", "waitingFor": "none"})
+                await self._publish_hub("run-state", {"state": "running", "waitingFor": "none"})
 
     async def _ask_user_select(self, title: str, options: list[dict[str, Any]]) -> str:
         # A stop request while running resolves here: the engine reaches the
@@ -675,7 +699,7 @@ class RunManager:
             self.options = options
             self.state = "paused"
         await self._publish_chat("assistant", title, kind="select")
-        await hub.publish(
+        await self._publish_hub(
             "run-state",
             {
                 "state": "paused",
@@ -712,7 +736,7 @@ class RunManager:
                 if not self._stopping:
                     self.state = "running"
             if not self._stopping:
-                await hub.publish("run-state", {"state": "running", "waitingFor": "none"})
+                await self._publish_hub("run-state", {"state": "running", "waitingFor": "none"})
 
     # ------------------------------------------------------------------
     # Control operations
@@ -729,7 +753,15 @@ class RunManager:
             if not callable(pause_requested):
                 raise RunManagerError("当前运行不支持暂停")
             pause_requested()
+            # Publish the pending transition so the badge and the control
+            # buttons react immediately; the engine confirms with
+            # ``paused`` once the round boundary is reached.
+            self.state = "pausing"
             self.last_message = "已请求暂停，将在下一轮边界生效"
+        await self._publish_hub(
+            "run-state",
+            {"state": "pausing", "message": "已请求暂停，将在下一轮边界生效"},
+        )
         await self._publish_chat("system", "已请求暂停，将在下一轮边界生效", kind="status")
         if self.project_root:
             AuditLog(self.project_root).record("run.pause", self.run_id)
@@ -755,13 +787,28 @@ class RunManager:
 
     async def _stop(self) -> dict[str, Any]:
         async with self._lock:
+            task = self._task
+            has_live_task = task is not None and not task.done()
+            # Nothing to stop. Returning ok here told the operator the stop was
+            # accepted and left `last_message = "正在停止…"` pinned for the rest
+            # of the session, so the status card read "空闲 / 正在停止…" forever.
+            # An intervention channel must report the truth: say there is no
+            # run, and leave no state behind.
+            if not has_live_task and not self._request_registry:
+                if self.state not in ("starting", "running", "paused", "pausing", "stopping"):
+                    raise RunManagerError("当前没有运行中的循环，无需停止")
             # Skip already-resolved futures so a repeated stop click returns
             # ok instead of raising InvalidStateError → 500.
             pending = [f for f in self._request_registry.values() if not f.done()]
             waiting = self.waiting_for
             self._stopping = True
             self._stopping_by = self.run_id
+            # "stopping" until the task actually exits (or the pending request
+            # resolves). Without it the card showed "运行中" while the run was
+            # already being torn down.
+            self.state = "stopping"
             self.last_message = "正在停止…"
+        await self._publish_hub("run-state", {"state": "stopping", "message": "正在停止…"})
         if pending:
             if waiting == "user_select":
                 try:
@@ -850,7 +897,15 @@ class RunManager:
         if normalized in _DENY_WORDS:
             return False
 
-        # 2. Check for denial markers first — a single explicit negation wins
+        # 2. An idiomatic approval that merely opens with "no"/"not" ("no
+        # problem", "not a problem") must not be read as a negation; strip the
+        # idiom before any marker check so both halves are judged on merit
+        # ("no problem, but do not touch the tests" still denies).
+        idiom = _APPROVAL_IDIOM_STARTING_WITH_ASCII_NEGATION.sub(" ", normalized)
+        if idiom.strip():
+            normalized = idiom
+
+        # 3. Check for denial markers first — a single explicit negation wins
         # over any approval mention. ASCII deny words ("no", "not", "never")
         # must match as whole words so ordinary words like "notebook" or
         # "another" are never misread as denials (design §18.3 UX).
@@ -859,7 +914,7 @@ class RunManager:
         ):
             return False
 
-        # 3. Check for Chinese negation prefixes directly negating an approval
+        # 4. Check for Chinese negation prefixes directly negating an approval
         # word. "不同意" / "不批准" → denial. But idiomatic approvals that
         # merely contain a negation character ("没问题" / "没关系" = "no
         # problem") must be left to the approval check below instead of being
@@ -880,14 +935,14 @@ class RunManager:
         if any(_cjk_negation_before_approval(word) for word in words):
             return False
 
-        # 4. Check for any approval marker. ASCII approval words must match as
+        # 5. Check for any approval marker. ASCII approval words must match as
         # whole words too, so e.g. "no approval" does not count as approval.
         if _has_ascii_marker(normalized, _APPROVE_MARKERS) or _has_cjk_marker(
             normalized, _APPROVE_MARKERS
         ):
             return True
 
-        # 5. Default: no clear signal → safer to deny.
+        # 6. Default: no clear signal → safer to deny.
         return False
 
     def _build_kickoff(
@@ -941,12 +996,24 @@ class RunManager:
         if text:
             await self._publish_chat("assistant", text, kind="text")
 
+    async def _publish_hub(
+        self, type: str, data: dict[str, Any], *, project_root: str | None = None
+    ) -> None:
+        """Publish one event, scoped to a project root.
+
+        Every publish goes through here so a tab watching another project can
+        never receive this run's run-state / chat / progress traffic. The root
+        defaults to the one this run belongs to.
+        """
+        scope = project_root if project_root is not None else (self.project_root or None)
+        await hub.publish(type, data, project_root=scope)
+
     async def _set_state(self, state: RunState, *, message: str = "") -> None:
         async with self._lock:
             self.state = state
             if message:
                 self.last_message = message
-        await hub.publish("run-state", {"state": state, "message": message})
+        await self._publish_hub("run-state", {"state": state, "message": message})
 
     async def _publish_chat(
         self, role: str, content: str, kind: str = "text"
@@ -964,7 +1031,7 @@ class RunManager:
                 await asyncio.to_thread(self._append_chat_entry, path, entry)
             except OSError as exc:
                 log.warning("web chat history write failed: %s", exc)
-        await hub.publish("chat-message", entry)
+        await self._publish_hub("chat-message", entry)
         return entry
 
     @staticmethod
@@ -978,7 +1045,7 @@ class RunManager:
 
     async def _publish_tool(self, content: str) -> None:
         # Live tool activity is broadcast but never persisted (ephemeral).
-        await hub.publish(
+        await self._publish_hub(
             "chat-message",
             {
                 "id": uuid4().hex,
@@ -992,7 +1059,7 @@ class RunManager:
     def _reset(self, project_root: str) -> None:
         self.run_id = ""
         self.mode = ""
-        self.permission_mode = "full_auto"
+        self.permission_mode = "default"
         self.project_root = project_root
         self.round = 0
         self.new_findings = 0

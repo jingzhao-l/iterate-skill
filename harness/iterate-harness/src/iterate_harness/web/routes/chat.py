@@ -18,12 +18,15 @@ SSE stream via the in-process :mod:`~iterate_harness.web.hub` (see
 
 from __future__ import annotations
 
+import asyncio
+
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..run_manager import RunManagerError, run_manager
+from ..security import allowed_roots, root_is_allowed
 from ..schemas import (
     ChatMessage,
     ChatRunStatus,
@@ -46,6 +49,19 @@ def _resolve_project(request: Request, project_root: str) -> str:
     root = Path(resolved)
     if not root.is_dir():
         raise HTTPException(status_code=404, detail=f"Project root not found: {root}")
+    if not root.is_dir():
+        raise HTTPException(status_code=404, detail=f"Project root not found: {root}")
+    # ``project_root`` is caller-controlled, so containment inside the root is
+    # not enough on its own: without this the parameter *selects* the root, and
+    # a valid token granted read/write over any directory on the machine.
+    if not root_is_allowed(root):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Project root is outside the roots this WebUI serves: {root}. "
+                f"Allowed: {', '.join(sorted(allowed_roots())) or '(none)'}"
+            ),
+        )
     return str(root.resolve())
 
 
@@ -81,7 +97,9 @@ async def chat_status() -> ChatRunStatus:
 @router.get("/chat/history", response_model=list[ChatMessage])
 async def chat_history() -> list[ChatMessage]:
     """Persisted human-interaction transcript (oldest first, capped)."""
-    entries = run_manager.history()
+    # Off the loop: history() reads and parses the whole web-chat.jsonl, and a
+    # blocking read in a coroutine stalls every concurrent stream/run.
+    entries = await asyncio.to_thread(run_manager.history)
     messages: list[ChatMessage] = []
     for entry in entries:
         if not isinstance(entry, dict):

@@ -16,7 +16,15 @@ from pydantic import BaseModel, Field
 OperationStatus = Literal["ok", "conflict", "error"]
 
 #: Live iterate loop states (design §18.3 run state machine).
-RunState = Literal["idle", "starting", "running", "paused", "stopped"]
+#:
+#: ``pausing`` / ``stopping`` are the *pending-transition* states. A pause or a
+#: stop only takes effect at the next round boundary or task-cancel, which can
+#: be minutes away; without a state for the request, the badge kept reading
+#: "运行中" after the operator clicked, and the answer to "did my click
+#: register?" was a toast that vanished in three seconds.
+RunState = Literal[
+    "idle", "starting", "running", "paused", "pausing", "stopping", "stopped"
+]
 
 #: What kind of user input the loop is currently waiting for.
 WaitingKind = Literal["none", "user_prompt", "user_select", "permission"]
@@ -221,6 +229,11 @@ class ChatRunStatus(BaseModel):
     permission: dict[str, Any] | None = None
     error: str | None = None
     message: str = ""
+    #: The permission posture this run is actually under. It was tracked in the
+    #: manager but never surfaced, so an operator could not tell that a run they
+    #: launched from the WebUI was in ``full_auto`` — i.e. that the auxiliary
+    #: channel had silently granted the loop write access without asking.
+    permission_mode: str = "full_auto"
 
 
 __all__ = [

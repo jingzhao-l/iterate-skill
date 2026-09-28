@@ -300,7 +300,13 @@ async def build_runtime(
             default_model=settings.model,
         ),
     )
-    engine_max_turns = settings.max_turns if (enforce_max_turns or max_turns is not None) else None
+    # The configured cap is the default, not a CLI-only override: discarding
+    # ``settings.max_turns`` in the interactive path silently disabled the one
+    # runaway-loop guard a user can set from config, while ``/turns show``
+    # still advertised the (never enforced) value. ``enforce_max_turns`` keeps
+    # its distinct meaning: re-apply the saved cap after every run, which
+    # would otherwise undo an explicit ``/turns unlimited``.
+    engine_max_turns = max_turns if max_turns is not None else settings.max_turns
     system_prompt_text = build_runtime_system_prompt(
         settings,
         cwd=cwd,
