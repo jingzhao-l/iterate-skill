@@ -461,15 +461,34 @@ def run_guard_precheck(project_root: Path, paths: list[str], dry_run: bool = Fal
     result.passed = True
 
     # 1. Target paths exist.
-    resolved_targets = [str((project_root / p).resolve()) if not Path(p).is_absolute() else str(Path(p).resolve()) for p in paths]
-    missing = []
-    for target, resolved in zip(paths, resolved_targets):
-        if not Path(resolved).exists():
-            missing.append(target)
+    # Keep (target, resolved) *pairs* end-to-end: filtering a bare list of
+    # resolved paths would silently misalign it against ``paths`` in the
+    # existence check below, reporting one filename for another's verdict.
+    project_root_resolved = project_root.resolve()
+    target_pairs: list[tuple[str, Path]] = [
+        (p, (Path(p) if Path(p).is_absolute() else project_root / p).resolve()) for p in paths
+    ]
+    # Refuse targets that escape the project root, even when the user passed an
+    # absolute path: ``run_guard_precheck`` guards edits inside the project, so
+    # an out-of-tree target is a misconfiguration, not a legitimate one.
+    in_root_pairs: list[tuple[str, Path]] = []
+    for target, resolved in target_pairs:
+        if resolved.is_relative_to(project_root_resolved):
+            in_root_pairs.append((target, resolved))
+        else:
+            result.items.append(
+                (
+                    "targets within project root",
+                    False,
+                    f"outside project root: {target!r} resolves to {str(resolved)!r}",
+                )
+            )
+            result.passed = False
+    missing = [target for target, resolved in in_root_pairs if not resolved.exists()]
     if missing:
         result.items.append(("targets exist", False, "missing: " + ", ".join(missing)))
         result.passed = False
-    else:
+    elif len(in_root_pairs) == len(paths):
         result.items.append(("targets exist", True, f"{len(paths)} path(s) present"))
 
     # 2. Git worktree clean (only when inside a git repo).

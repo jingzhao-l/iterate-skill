@@ -82,6 +82,69 @@ class TestGuardPrecheck:
         assert result.passed is False
         assert any(label == "targets exist" and not ok for label, ok, _ in result.items)
 
+    def test_target_escaping_project_root_fails(self, tmp_path) -> None:
+        """A target resolving outside the project root must fail pre-check.
+
+        The guard exists to certify that edits stay inside the project, so an
+        out-of-tree target (``../`` escape or an absolute path elsewhere) is a
+        misconfiguration and must never earn a green light.
+        """
+        project = _make_project(tmp_path)
+        (tmp_path / "outside.txt").write_text("x", encoding="utf-8")
+        result = run_guard_precheck(project, ["../outside.txt"])
+        assert result.passed is False
+        hit = [d for label, ok, d in result.items if label == "targets within project root"]
+        assert hit, "out-of-tree target must be reported"
+        assert "outside.txt" in hit[0]
+
+    def test_absolute_target_outside_project_root_fails(self, tmp_path) -> None:
+        """The escape check must also cover absolute paths passed verbatim."""
+        project = _make_project(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("x", encoding="utf-8")
+        result = run_guard_precheck(project, [str(outside)])
+        assert result.passed is False
+        assert any(
+            label == "targets within project root" and not ok for label, ok, _ in result.items
+        )
+
+    def test_absolute_target_inside_project_root_passes(self, tmp_path) -> None:
+        """An absolute path that *is* inside the root stays legitimate."""
+        project = _make_project(tmp_path)
+        target = project / "a.txt"
+        target.write_text("x", encoding="utf-8")
+        result = run_guard_precheck(project, [str(target)])
+        assert result.passed is True
+
+    def test_out_of_tree_target_does_not_misalign_missing_report(self, tmp_path) -> None:
+        """Escaped targets must be dropped without shifting the missing list.
+
+        Regression: the escape filter used to rebuild a bare list of resolved
+        paths and then ``zip`` it against the original ``paths``, so with
+        ``[present, escape, missing]`` the "missing" verdict was attributed to
+        the *escape* filename and the genuinely missing file went unreported.
+        """
+        project = _make_project(tmp_path)
+        (project / "present.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "outside.txt").write_text("x", encoding="utf-8")
+        result = run_guard_precheck(
+            project, ["present.txt", "../outside.txt", "missing.txt"]
+        )
+        assert result.passed is False
+        detail = next(d for label, _, d in result.items if label == "targets exist")
+        assert "missing.txt" in detail, f"real missing file not reported: {detail!r}"
+        assert "outside.txt" not in detail, f"escaped file leaked into report: {detail!r}"
+
+    def test_all_targets_escaping_suppresses_spurious_exists_pass(self, tmp_path) -> None:
+        """When every target escapes, no vacuous "N path(s) present" green item."""
+        project = _make_project(tmp_path)
+        (tmp_path / "outside.txt").write_text("x", encoding="utf-8")
+        result = run_guard_precheck(project, ["../outside.txt"])
+        assert result.passed is False
+        assert not any(
+            label == "targets exist" and ok for label, ok, _ in result.items
+        ), "must not claim targets exist when none were in-root"
+
     def test_missing_manifest_fails(self, tmp_path) -> None:
         project = _make_project(tmp_path)
         _write_config(project, _base_config())  # validation.commands.python configured
