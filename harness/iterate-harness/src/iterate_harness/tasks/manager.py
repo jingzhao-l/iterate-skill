@@ -504,7 +504,22 @@ class BackgroundTaskManager:
     ) -> asyncio.subprocess.Process:
         process = self._processes.get(task.id)
         if process is not None and process.stdin is not None and process.returncode is None:
-            return process
+            # ``returncode`` is only set after the watcher's ``wait()``
+            # resolves, so for a while after the child exits the record still
+            # "looks" writable while its stdin pipe is already dead. Writing
+            # there succeeds (the OS buffers the line) and the payload is
+            # silently lost — no BrokenPipeError, so the restart path below
+            # never fires and the follow-up message evaporates. Resolve the
+            # exit state synchronously: if the process is really gone the
+            # shared ``wait()`` future returns now and we fall through to the
+            # restart, giving the follow-up a fresh stdin.
+            try:
+                await asyncio.wait_for(asyncio.shield(process.wait()), timeout=0)
+            except asyncio.TimeoutError:
+                # Still genuinely running.
+                return process
+            # Process exited behind our back; fall through to restart.
+            process = self._processes.get(task.id)
         if task.type not in {"local_agent", "remote_agent", "in_process_teammate"}:
             raise ValueError(f"Task {task.id} does not accept input")
         return await self._restart_agent_task(task)
