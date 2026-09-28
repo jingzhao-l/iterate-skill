@@ -184,6 +184,67 @@ async def test_skill_todo_and_config_tools(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_tool_rejects_keys_outside_allowed_scope(tmp_path: Path, monkeypatch):
+    """Regression: the config tool is scoped to a fixed allow-list of keys.
+    Credential-bearing keys (``api_key`` etc.) and unknown settings must not be
+    settable through the agent-facing tool."""
+    monkeypatch.setenv("ITERATE_CONFIG_DIR", str(tmp_path / "config"))
+
+    for key, value in (("auth", "x"), ("hooks", '{"x":1}'), ("no_such_key", "1")):
+        result = await ConfigTool().execute(
+            ConfigToolInput(action="set", key=key, value=value),
+            ToolExecutionContext(cwd=tmp_path),
+        )
+        assert result.is_error is True
+        assert "not in the allowed set" in result.output
+
+    # The stored settings still have defaults -- nothing was written.
+    from iterate_harness.config.settings import load_settings
+
+    assert load_settings().model is not None
+
+
+@pytest.mark.asyncio
+async def test_config_tool_coerces_numeric_values_from_argv_strings(tmp_path: Path, monkeypatch):
+    """Regression: ``config set max_tokens 5000`` arrives as the string "5000";
+    without coercion the numeric setting holds a str and breaks later math."""
+    monkeypatch.setenv("ITERATE_CONFIG_DIR", str(tmp_path / "config"))
+    from iterate_harness.config.settings import load_settings
+
+    result = await ConfigTool().execute(
+        ConfigToolInput(action="set", key="max_tokens", value="5000"),
+        ToolExecutionContext(cwd=tmp_path),
+    )
+    assert result.is_error is False
+    assert result.output == "Updated max_tokens"
+    settings = load_settings()
+    assert settings.max_tokens == 5000
+    assert isinstance(settings.max_tokens, int)
+
+
+def test_config_show_redacts_secret_like_values():
+    """Regression: a plain settings dump includes credentials (api_key, secret,
+    password, credentials). ``show`` must deep-redact them so the model never
+    sees them, while ordinary config values stay readable."""
+    from iterate_harness.tools.config_tool import _redact
+
+    payload = {
+        "api_key": "sk-real-key",
+        "auth": {"secret_key": "shush", "password": "pw"},
+        "provider": {"credentials": "tok-123"},
+        "theme": "dark",
+        "model": "claude-test",
+    }
+    redacted = _redact(payload)
+    assert redacted["api_key"] == "<redacted>"
+    assert redacted["auth"]["secret_key"] == "<redacted>"
+    assert redacted["auth"]["password"] == "<redacted>"
+    assert redacted["provider"]["credentials"] == "<redacted>"
+    assert redacted["theme"] == "dark"
+    assert redacted["model"] == "claude-test"
+
+
+@pytest.mark.asyncio
 async def test_skill_tool_rejects_user_only_skills(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ITERATE_CONFIG_DIR", str(tmp_path / "config"))
     skills_dir = tmp_path / "config" / "skills"
