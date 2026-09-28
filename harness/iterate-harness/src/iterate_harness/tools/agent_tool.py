@@ -79,6 +79,17 @@ class AgentTool(BaseTool[AgentToolInput]):
             command=arguments.command,
             system_prompt=agent_def.system_prompt if agent_def else None,
             permissions=agent_def.permissions if agent_def else [],
+            # Forward the definition's tool posture to the spawned teammate.
+            # Without this a definition's ``tools`` allow-list and
+            # ``disallowed_tools`` deny-list stopped at the definition: the
+            # subagent inherited the parent's full registry, so a
+            # read-only "Explore" agent could still write files.
+            allowed_tools=list(agent_def.tools) if agent_def and agent_def.tools else None,
+            denied_tools=(
+                list(agent_def.disallowed_tools)
+                if agent_def and agent_def.disallowed_tools
+                else None
+            ),
             task_type=cast(AgentTaskType, arguments.mode),
             # Worker inherits the leader's defensive kernel (design §20.5):
             # a ``code``-mode leader spawns ``code`` workers so each subagent

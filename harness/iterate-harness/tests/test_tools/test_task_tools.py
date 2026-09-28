@@ -246,3 +246,64 @@ async def test_agent_tool_supports_remote_and_teammate_modes(tmp_path: Path, mon
         assert record is not None
         assert record.type == mode
         await _wait_for_terminal_task(task_id)
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_forwards_definition_tool_posture_to_spawn(tmp_path: Path):
+    """Regression: the agent definition's ``tools`` allow-list and
+    ``disallowed_tools`` deny-list must be forwarded into
+    ``TeammateSpawnConfig.allowed_tools``/``denied_tools``. Both lists were
+    previously dropped at the definition boundary, so a read-only "Explore"
+    agent inherited the parent's full registry and could still write files.
+    """
+    from unittest.mock import patch
+
+    from iterate_harness.coordinator.agent_definitions import AgentDefinition
+    from iterate_harness.swarm.registry import BackendRegistry
+    from iterate_harness.swarm.types import SpawnResult
+
+    captured: dict[str, object] = {}
+
+    class FakeSubprocessExecutor:
+        type = "subprocess"
+
+        async def spawn(self, config):
+            captured["config"] = config
+            return SpawnResult(
+                success=True,
+                backend_type="subprocess",
+                task_id="spawned-1",
+                agent_id="readonly-worker@default",
+            )
+
+    fake_def = AgentDefinition(
+        name="readonly-worker",
+        description="read only",
+        tools=["read_file", "grep", "glob_tool", "skill"],
+        disallowed_tools=["write_file", "edit_file", "bash"],
+    )
+
+    registry = BackendRegistry()
+    registry.register_backend(FakeSubprocessExecutor())
+    # Patch the exact globals dict the imported AgentTool.execute resolves.
+    # Patches-by-dotted-string reach the CURRENT sys.modules entry, but the
+    # swarm import-regression tests re-import iterate_harness.tools mid-run,
+    # leaving this AgentTool class bound to an older module object.
+    execute_globals = AgentTool.execute.__globals__
+    with (
+        patch.dict(execute_globals, {"get_backend_registry": lambda: registry}),
+        patch.dict(execute_globals, {"get_agent_definition": lambda name: fake_def}),
+    ):
+        result = await AgentTool().execute(
+            AgentToolInput(
+                description="readonly",
+                prompt="inspect",
+                subagent_type="readonly-worker",
+            ),
+            ToolExecutionContext(cwd=tmp_path),
+        )
+
+    assert not result.is_error, result.output
+    config = captured["config"]
+    assert config.allowed_tools == ["read_file", "grep", "glob_tool", "skill"]
+    assert config.denied_tools == ["write_file", "edit_file", "bash"]

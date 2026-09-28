@@ -225,8 +225,19 @@ def build_teammate_query_context(config: TeammateSpawnConfig) -> Any | None:
 
     try:
         settings = load_settings()
+        # Enforce the definition's tool posture. Both lists were previously
+        # carried on the spawn config with no consumer, so an in-process
+        # teammate declared "read-only" got the full registry and could
+        # write. Merged the same way the leader's own CLI flags are.
+        tool_overrides: dict[str, object] = {}
+        if config.allowed_tools:
+            tool_overrides["allowed_tools"] = list(config.allowed_tools)
+        if config.denied_tools:
+            tool_overrides["denied_tools"] = list(config.denied_tools)
         if config.model:
-            settings = settings.merge_cli_overrides(model=config.model)
+            tool_overrides["model"] = config.model
+        if tool_overrides:
+            settings = settings.merge_cli_overrides(**tool_overrides)
         api_client = _resolve_api_client_from_settings(settings)
         cwd = str(Path(config.cwd).expanduser().resolve())
         system_prompt = config.system_prompt or build_runtime_system_prompt(
