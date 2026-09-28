@@ -2781,6 +2781,12 @@ def main(
         help="Output format with --print: text (default), json, or stream-json",
         rich_help_panel="Output",
     ),
+    admin_opt_in: bool = typer.Option(
+        False,
+        "--admin-opt-in",
+        help="With --print: explicitly allow local-management slash commands (/config, /login, /permissions, ...). Off by default — remote invocations must opt in.",
+        rich_help_panel="Output",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -3073,6 +3079,7 @@ def main(
                 verbose=verbose or None,
                 allowed_tools=allowed_tools,
                 disallowed_tools=disallowed_tools,
+                admin_opt_in=admin_opt_in,
             )
         )
         return
