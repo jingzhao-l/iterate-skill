@@ -97,10 +97,40 @@ export {
 } from "./recipe-config.js";
 
 export {
+  DIMENSION_ID_PATTERN,
+  DIMENSION_ID_MAX_LENGTH,
+  DIMENSION_LABEL_MAX_LENGTH,
+  DIMENSION_FOCUS_MAX_LENGTH,
+  DIMENSION_MIN_PLANNED,
+  DIMENSION_MAX_PLANNED,
+  DIMENSION_MAX_OPERATION_IDS,
+  DIMENSION_CONTEXT_CODES,
+  PlannedDimensionSchema,
+  DimensionEvidenceSchema,
+  DimensionStatusSchema,
+  DimensionContextEntrySchema,
+  DimensionContextTotalsSchema,
+  DimensionContextSchema,
+  DimensionContextInputSchema,
+  KernelDimensionError,
+  dimensionContext,
+  formatDimensionContext,
+  type DimensionEvidence,
+  type DimensionStatus,
+  type DimensionContextEntry,
+  type DimensionContextTotals,
+  type DimensionContext,
+  type DimensionContextInput,
+  type KernelDimensionCode
+} from "./dimension-context.js";
+
+export {
   parseEvidencePack,
   parseEvidencePackRead,
   parseDecisionLogEntry,
-  parseRecipeConfig
+  parseRecipeConfig,
+  parseDimensionContext,
+  parseDimensionContextInput
 } from "./parse.js";
 
 export { canonicalJson } from "./canonical-json.js";
