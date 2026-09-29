@@ -68,7 +68,7 @@
 
 三者的关系：**skill**（本仓库核心交付物）面向任意 AI 助手的对话式迭代；**harness** 面向无头 / CI 场景的同一闭环引擎实现；**plugin** 把 harness 的运行时体验接入 dsh。配置（`iterate.config.yaml`）与维度体系在三者间完全一致——理解其一即可举一反三。
 
-**相关项目：[GlassPane](https://github.com/jingzhao-l/GlassPane)。** [`kernel/`](kernel) 里的 JSON Schema 契约层（`@iterate/kernel`）同时也是 GlassPane 所讲的方言——它是 macOS 上面向 AI 代理的运行时验证引擎：代理经 MCP 动手，GlassPane 返回"界面到底变了没有"的证据（无障碍树与像素差异、归因结论、可回滚检查点）。iterate 回答"这段代码对不对"，GlassPane 回答"那次操作真的生效了吗"。它刻意保持独立：不读 `iterate.config.yaml`，也走自己的发布线。
+**相关项目：[GlassPane](https://github.com/jingzhao-l/GlassPane)。** [`kernel/`](kernel) 里的 JSON Schema 契约层（`iterate-kernel`）同时也是 GlassPane 所讲的方言——它是 macOS 上面向 AI 代理的运行时验证引擎：代理经 MCP 动手，GlassPane 返回"界面到底变了没有"的证据（无障碍树与像素差异、归因结论、可回滚检查点）。iterate 回答"这段代码对不对"，GlassPane 回答"那次操作真的生效了吗"。它刻意保持独立：不读 `iterate.config.yaml`，也走自己的发布线。
 
 其中，harness 与 plugin 也可脱离本仓库独立安装使用：
 

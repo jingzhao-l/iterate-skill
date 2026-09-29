@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 /**
  * The JSON Schema files under schemas/ are the single source of truth for the
  * C35 dual-language contract. They are loaded at module init from the
- * package-local schemas/ directory so that consumers of @iterate/kernel
+ * package-local schemas/ directory so that consumers of iterate-kernel
  * always see the same schema objects that the engine-side tests validate
  * against (never an embedded copy).
  */
