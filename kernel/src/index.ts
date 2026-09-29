@@ -1,5 +1,5 @@
 /**
- * @iterate/kernel — Phase A
+ * iterate-kernel — Phase A
  *
  * Shared kernel of the iterate ecosystem, temporarily hosted in the
  * GlassPane repository (5.8 R43). The JSON Schema files under schemas/ are
