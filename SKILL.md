@@ -309,12 +309,14 @@ Summary
 iterate onboard      # 交互式向导（多路引导：首次/非首次自动分支）
 iterate personalize  # 个性化配置（项目中途追加约束，9 步向导）
 iterate personalize --clear [--yes]  # 清空所有个性化配置（结构化规则 + ITERATE.md 相关段落）
-iterate status       # 查看 onboarding 状态和漂移检测
 iterate show         # 只读查看合并后的配置与个性化详情（支持 --json）
 iterate refresh      # 增量刷新（保留用户手写区；支持 --json / --dry-run --json 结构化报告）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
 iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查；--strict 将 warning 一并判失败；--fix 安全修复；--json / --json-out 结构化输出）
 iterate status       # 查看 onboarding 状态和漂移检测（--json 含 onboarded、config_exists/config_ok、drift_detected 与明细列表）
+iterate guard pre-check [targets...]   # 编辑前静态校验（目标存在/工作区干净/manifest 就绪；只读，从不执行命令；--json）
+iterate guard post-check [targets...]  # 编辑后执行 validation.commands 并核对结果（--dry-run 只预览命令不执行；--json）
+iterate invariant      # 项目级不变量校验（--dry-run 预览；--json）
 iterate fingerprint verify  # 校验 manifest 指纹漂移（--json）
 iterate config       # 非交互式查看全部可设配置值（支持 --json）
 iterate config get <key>   # 读取单个配置项的解析值（支持 --json，输出 {"key": value}）
@@ -581,11 +583,16 @@ If no issues are found, return { "findings": [], "readFiles": [...] }.
 
 安装脚本会自动复制 `SKILL.md`、配置、维度定义、校验脚本和模板到对应目录；`--ai all` 一次性安装到所有支持的助手目录。
 
-常用 CLI 选项：
-- `--force`：覆盖已存在的 skill 文件。
-- `--global`：安装到用户主目录（如 `~/.trae/skills/iterate/`），供所有项目复用。
+常用 CLI 选项（`scripts/install.py`，均需与子命令搭配）：
+- `install --ai <assistant>|all`：指定安装目标；**非交互（管道/CI）下必填**，否则无法提问。
+- `install --force`：覆盖已存在的 skill 文件。
+- `install --global`：安装到用户主目录（如 `~/.trae/skills/iterate/`），供所有项目复用。
+- `install --dry-run`：只打印将要拷贝的内容，不落盘。
+- `install --target <dir>`：指定安装根目录（默认当前项目）。
 - `uninstall --yes`：卸载已安装的 skill；不加 `--yes` 时会要求二次确认。
-- `update`：检测已安装的助手并从 GitHub 最新 release 下载源码刷新文件；下载失败时回退到本地源码。
+- `update --yes`：从 GitHub 最新 release 下载源码刷新文件，跳过确认；**非交互（管道/CI）下必填**，否则会以"检测到非交互 stdin"退出 1。
+- `update`（不带 `--yes`）：同上，但交互确认；下载失败时回退到本地源码。
+- `--list` / `--interactive`：列出支持的助手 / 进入交互选择。
 
 #### 按模块/目录拆分 / Split by Module or Directory
 

@@ -106,3 +106,63 @@ def test_version_is_three_part_semver() -> None:
     version = _pyproject_version()
     pattern = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$")
     assert pattern.match(version), f"version {version!r} is not X.Y.Z semver"
+
+def _documented_examples() -> list[str]:
+    """Return every ``iterate ...`` example line inside a fenced code block.
+
+    Only fenced blocks are scanned so prose mentioning ``iterate status`` does
+    not count as a command entry. The trailing ``# comment`` is stripped, so
+    two lines that differ only in their comment still register as the same
+    invocation.
+    """
+    skill = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    examples: list[str] = []
+    in_fence = False
+    for line in skill.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("iterate "):
+            examples.append(stripped.split("#", 1)[0].rstrip())
+    return examples
+
+
+def test_skill_md_command_list_matches_the_parser() -> None:
+    """Every command SKILL.md shows must exist, and none may be duplicated.
+
+    Regression: the CLI reference listed ``iterate status`` twice (once bare,
+    once with its ``--json`` notes) while ``guard`` and ``invariant`` — both
+    shipped subcommands — were absent, so the documented surface neither
+    matched the parser nor listed each command once.
+    """
+    import argparse
+
+    from iterate_cli.cli import _build_parser
+
+    parser = _build_parser()
+    subaction = next(
+        a
+        for a in parser._actions
+        if isinstance(a, argparse._SubParsersAction)
+    )
+    available = set(subaction.choices)
+
+    examples = _documented_examples()
+    assert examples, "SKILL.md has no fenced `iterate <command>` examples"
+
+    documented = [line.split()[1] for line in examples]
+    unknown = sorted({c for c in documented if c not in available})
+    assert not unknown, f"SKILL.md documents commands the parser lacks: {unknown}"
+
+    # The two that were missing entirely.
+    for required in ("guard", "invariant"):
+        assert required in documented, f"SKILL.md never shows `iterate {required}`"
+
+    # No invocation may be shown twice. Keyed on the whole command line so the
+    # legitimate variants (`config` / `config get` / `config set`, and
+    # `guard pre-check` / `guard post-check`) do not read as duplicates.
+    duplicates = sorted({line for line in examples if examples.count(line) > 1})
+    assert not duplicates, f"SKILL.md shows these lines twice: {duplicates}"
