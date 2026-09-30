@@ -1614,15 +1614,17 @@ def _report_update_outcome(
         return 0
 
     if outcome.assistants_unknown:
+        # List the real registry, not `assistants_updated`: run_update returns
+        # *before* updating any assistant when a name is unknown, so
+        # `assistants_updated` was always empty here and the user was sent to
+        # `--help` instead of the very list they needed to fix their typo.
+        import iterate_cli.updater as _updater_registry
+
         tui.error(
             f"{title_prefix}Unknown assistant name(s): "
             f"{', '.join(sorted(outcome.assistants_unknown))}. "
             "Valid assistants: "
-            + (
-                ", ".join(sorted(outcome.assistants_updated))
-                if outcome.assistants_updated
-                else "see `iterate update --help`"
-            )
+            + ", ".join(sorted(_updater_registry.ASSISTANT_SKILL_DIRS))
             + "."
         )
         return 1
@@ -1688,9 +1690,14 @@ def _cmd_update(
         return 2
 
     if check_only:
+        # Forward `assistants` here too: dropping it meant a mistyped name
+        # (e.g. `--assistants cluade`) exited 0 on the read-only `--check`
+        # while the very same typo is a hard error on the apply path, which
+        # also made the `outcome.assistants_unknown` term below unreachable.
         outcome = updater_mod.run_update(
             project_root=project_root,
             check_only=True,
+            assistants=assistants,
         )
         if json_output:
             print(json.dumps(outcome.to_dict(), ensure_ascii=False, indent=2))
@@ -1710,10 +1717,16 @@ def _cmd_update(
         outcome = updater_mod.run_update(
             project_root=project_root,
             check_only=True,
+            assistants=assistants,
         )
         if outcome.unreachable:
             tui.error(f"\nCould not check for updates: {outcome.download_error}")
             return 1
+        if outcome.assistants_unknown:
+            # Same reason as the `--check` branch: refuse the mistyped name
+            # before prompting for confirmation, instead of asking the user to
+            # confirm an update that is guaranteed to fail.
+            return _report_update_outcome(outcome, json_output=False, title_prefix="\n")
         if outcome.up_to_date:
             tui.success(f"\nYou are running the latest version ({outcome.current}).")
             return 0

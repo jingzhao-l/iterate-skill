@@ -1182,3 +1182,81 @@ def test_report_json_up_to_date_returns_zero(capsys, monkeypatch) -> None:
     outcome = UpdateOutcome(current="3.4.0", latest="3.4.0", up_to_date=True)
     code = _report_json(outcome, capsys, monkeypatch)
     assert code == 0
+
+# ---------------------------------------------------------------------------
+# update CLI: --assistants forwarding + the "valid assistants" list
+# ---------------------------------------------------------------------------
+
+
+def test_check_only_forwards_assistants_to_run_update(tmp_path, monkeypatch) -> None:
+    """`iterate update --check --assistants <name>` must validate the names.
+
+    Regression: the ``--check`` branch called ``run_update`` without
+    ``assistants=``, so a typo exited 0 on ``--check`` while the very same
+    typo is a hard error (exit 1) on the apply path — and the
+    ``outcome.assistants_unknown`` term in the return expression was
+    unreachable.
+    """
+    from iterate_cli import cli
+
+    seen: dict[str, object] = {}
+
+    def fake_run_update(**kwargs):
+        seen.update(kwargs)
+        return UpdateOutcome(current="3.4.0", latest="3.4.0", check_only=True, up_to_date=True)
+
+    monkeypatch.setattr(cli, "_cmd_update", cli._cmd_update)
+    import iterate_cli.updater as updater_mod
+
+    monkeypatch.setattr(updater_mod, "run_update", fake_run_update)
+    rc = cli._cmd_update(tmp_path, check_only=True, assistants=["cursor"])
+    assert rc == 0
+    assert seen.get("assistants") == ["cursor"]
+
+
+def test_check_only_rejects_unknown_assistant_name(tmp_path, monkeypatch) -> None:
+    """A mistyped assistant name must fail the read-only check too."""
+    from iterate_cli import cli
+
+    def fake_run_update(*, project_root, check_only, assistants=None, **kwargs):
+        unknown = [
+            name for name in (assistants or []) if name not in updater.ASSISTANT_SKILL_DIRS
+        ]
+        return UpdateOutcome(
+            current="3.4.0",
+            latest="3.4.0",
+            check_only=True,
+            up_to_date=True,
+            assistants_unknown=unknown,
+        )
+
+    import iterate_cli.updater as updater_mod
+
+    monkeypatch.setattr(updater_mod, "run_update", fake_run_update)
+    rc = cli._cmd_update(tmp_path, check_only=True, json_output=True, assistants=["cluade"])
+    assert rc == 1
+
+
+def test_unknown_assistant_error_lists_real_assistants(capsys, monkeypatch) -> None:
+    """The error must name valid assistants, not send the user to --help.
+
+    Regression: the message interpolated ``outcome.assistants_updated``, but
+    ``run_update`` returns *before* updating anything when a name is unknown,
+    so that list was always empty and the branch always printed the
+    "see `iterate update --help`" placeholder — withholding the list at
+    exactly the moment it is needed.
+    """
+    from iterate_cli import cli
+    import iterate_cli.updater as updater_mod
+
+    outcome = UpdateOutcome(
+        current="3.4.0",
+        latest="3.4.1",
+        assistants_unknown=["cluade"],
+    )
+    rc = cli._report_update_outcome(outcome, json_output=False)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "cluade" in err
+    # At least one real assistant name must be listed.
+    assert any(name in err for name in updater_mod.ASSISTANT_SKILL_DIRS), err
