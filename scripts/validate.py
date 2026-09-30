@@ -207,12 +207,23 @@ def load_schema(schema_path: Path) -> dict[str, Any]:
 
     Raises:
         FileNotFoundError: 若 schema 文件不存在。
-        ValueError: 若 schema 文件内容不是合法 JSON。
+        ValueError: 若 schema 文件内容不是合法 JSON，或不是 UTF-8 编码。
     """
     if not schema_path.exists():
         raise FileNotFoundError(f"Schema file not found: {schema_path}")
     try:
-        return json.loads(schema_path.read_text(encoding="utf-8"))
+        text = schema_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # A schema saved as GBK/Latin-1 is a real condition a user hits, not a
+        # crash: report it as a schema problem so the caller degrades the same
+        # way it does for malformed JSON, instead of dumping a traceback.
+        raise ValueError(
+            f"Schema file {schema_path} is not valid UTF-8: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise ValueError(f"Schema file {schema_path} could not be read: {exc}") from exc
+    try:
+        return json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON in schema file {schema_path}: {exc}") from exc
 
@@ -665,8 +676,17 @@ def validate_config(
 
     try:
         config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        # Reported in-band like every other config problem. Uncaught, a
+        # config saved in a non-UTF-8 encoding (GBK/Shift-JIS/Latin-1) killed
+        # the whole validation run with a traceback instead of naming the file.
+        errors.append(f"Configuration is not valid UTF-8: {path} ({exc})")
+        return errors
     except yaml.YAMLError as exc:
         errors.append(f"Invalid YAML: {exc}")
+        return errors
+    except OSError as exc:
+        errors.append(f"Configuration could not be read: {path} ({exc})")
         return errors
 
     if not isinstance(config, dict):

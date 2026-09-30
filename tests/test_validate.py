@@ -400,6 +400,72 @@ class TestCommandIsWhitelisted:
         assert any("contains shell metacharacters" in e for e in errors)
 
 
+class TestNonUtf8Inputs:
+    """A non-UTF-8 file must be reported, never crash the whole run.
+
+    Regression: both the config and the schema were decoded with
+    ``read_text(encoding="utf-8")`` outside the error-collecting try block, so a
+    config saved as GBK/Shift-JIS/Latin-1 escaped as an unhandled
+    ``UnicodeDecodeError`` traceback instead of a named diagnostic.
+    """
+
+    def test_non_utf8_config_is_reported_not_raised(
+        self, tmp_path: Path, schema_path: Path
+    ) -> None:
+        path = tmp_path / "iterate.config.yaml"
+        # GBK-encoded Chinese text: valid bytes, invalid UTF-8.
+        path.write_bytes("project:\n  name: 迭代项目\n".encode("gbk"))
+        errors = validate.validate_config(path, schema_path)
+        assert errors, "a non-UTF-8 config must produce a diagnostic"
+        assert any("not valid UTF-8" in e for e in errors), errors
+
+    def test_non_utf8_config_does_not_hide_other_files(
+        self, tmp_path: Path, schema_path: Path
+    ) -> None:
+        """The bad file is named; validation of the run still completes."""
+        bad = tmp_path / "iterate.config.yaml"
+        bad.write_bytes("project:\n  name: 迭代\n".encode("gbk"))
+        errors = validate.validate_config(bad, schema_path)
+        assert len(errors) == 1, errors
+
+    def test_latin1_config_is_reported(self, tmp_path: Path, schema_path: Path) -> None:
+        path = tmp_path / "iterate.config.yaml"
+        path.write_bytes(b"project:\n  name: caf\xe9\n")  # latin-1 'café'
+        errors = validate.validate_config(path, schema_path)
+        assert any("not valid UTF-8" in e for e in errors), errors
+
+    def test_non_utf8_schema_raises_value_error(self, tmp_path: Path) -> None:
+        """``load_schema``'s documented contract is ValueError, not a crash."""
+        schema = tmp_path / "config.schema.json"
+        schema.write_bytes(b'{"type": "object", "title": "\xe9"}')
+        with pytest.raises(ValueError, match="not valid UTF-8"):
+            validate.load_schema(schema)
+
+    def test_non_utf8_schema_is_degraded_not_fatal(self, tmp_path: Path) -> None:
+        """A bad schema must not abort validation of an otherwise good config."""
+        schema = tmp_path / "config.schema.json"
+        schema.write_bytes(b'{"title": "\xe9"}')
+        config = tmp_path / "iterate.config.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "project": {"name": "demo"},
+                    "validation": {"commands": {"python": ["pytest -q"]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        errors = validate.validate_config(config, schema)
+        assert any("schema" in e.lower() for e in errors), errors
+
+    def test_valid_utf8_config_still_passes(self, tmp_path: Path) -> None:
+        """The added guards must not reject ordinary UTF-8."""
+        config = tmp_path / "iterate.config.yaml"
+        config.write_text("project:\n  name: 迭代项目\n", encoding="utf-8")
+        errors = validate.validate_config(config)
+        assert not [e for e in errors if "UTF-8" in e], errors
+
+
 class TestValidateConfig:
     def test_valid_config(self, tmp_path: Path, valid_config: dict[str, Any], schema_path: Path) -> None:
         path = tmp_path / "iterate.config.yaml"
