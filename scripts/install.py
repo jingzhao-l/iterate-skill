@@ -231,8 +231,17 @@ def _frame_box(title: str, lines: list[str]) -> None:
 
 GITHUB_REPO_OWNER = "jingzhao-l"
 GITHUB_REPO_NAME = "iterate-skill"
-RELEASE_API_URL = (
-    f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
+# NOTE: this is deliberately the *release list*, not `/releases/latest`.
+# `/releases/latest` means "newest non-prerelease by published_at" across the
+# whole repository, and this repository also publishes releases for the
+# harness/plugin sub-projects, which carry no skill tarball. When such a
+# release is the most recently published one, `/releases/latest` returns it and
+# every install fails with "release has no iterate-skill.tar.gz asset".
+# Listing releases and picking the newest one that actually *carries* the
+# tarball is immune to whatever else was published last.
+RELEASES_API_URL = (
+    f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}"
+    "/releases?per_page=100"
 )
 CHECKSUMS_ASSET_NAME = "SHA256SUMS.txt"
 EXPECTED_TARBALL_FILENAME = "iterate-skill.tar.gz"
@@ -1267,6 +1276,33 @@ def uninstall_command(
     return 0
 
 
+def _select_skill_release(releases: object) -> dict[str, object] | None:
+    """Pick the newest published release that actually carries the skill tarball.
+
+    Args:
+        releases: Decoded ``/releases`` list payload from the GitHub API.
+
+    Returns:
+        The first release object (API order is newest-published first) that is
+        not a draft, not a prerelease, and ships ``iterate-skill.tar.gz``; or
+        None when the list holds no such release.
+    """
+    if not isinstance(releases, list):
+        return None
+    for release in releases:
+        if not isinstance(release, dict):
+            continue
+        if release.get("draft") or release.get("prerelease"):
+            continue
+        assets = release.get("assets")
+        if not isinstance(assets, list):
+            continue
+        names = {asset.get("name") for asset in assets if isinstance(asset, dict)}
+        if EXPECTED_TARBALL_FILENAME in names:
+            return release
+    return None
+
+
 def _fetch_latest_release_info(
     token: str | None,
 ) -> tuple[dict[str, str] | None, str | None]:
@@ -1277,7 +1313,7 @@ def _fetch_latest_release_info(
     (HTTP status such as 401 for an invalid token, timeout, DNS failure, ...)
     so the caller can surface it instead of a generic "could not reach GitHub".
     """
-    request = urllib.request.Request(RELEASE_API_URL, method="GET")
+    request = urllib.request.Request(RELEASES_API_URL, method="GET")
     request.add_header("Accept", "application/vnd.github+json")
     request.add_header("X-GitHub-Api-Version", "2022-11-28")
     if token:
@@ -1301,7 +1337,7 @@ def _fetch_latest_release_info(
                         f"byte safety cap (downloaded {total} bytes)"
                     )
                 chunks.append(chunk)
-            data = json.loads(b"".join(chunks).decode("utf-8"))
+            payload = json.loads(b"".join(chunks).decode("utf-8"))
     except urllib.error.HTTPError as exc:
         reason = f"GitHub API returned HTTP {exc.code}"
         if exc.code == 401:
@@ -1320,8 +1356,15 @@ def _fetch_latest_release_info(
     except json.JSONDecodeError as exc:
         return None, f"GitHub API returned invalid JSON: {exc}"
 
-    if not isinstance(data, dict):
+    if not isinstance(payload, list):
         return None, "GitHub API returned an unexpected payload shape"
+
+    data = _select_skill_release(payload)
+    if data is None:
+        return None, (
+            f"no published release in the last 100 carries an "
+            f"{EXPECTED_TARBALL_FILENAME} asset"
+        )
 
     tag = data.get("tag_name")
     if not isinstance(tag, str):

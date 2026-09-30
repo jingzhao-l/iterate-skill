@@ -52,7 +52,18 @@ from iterate_cli import __version__
 
 GITHUB_REPO_OWNER = "jingzhao-l"
 GITHUB_REPO_NAME = "iterate-skill"
-RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
+# NOTE: deliberately the *release list*, not `/releases/latest`.
+# `/releases/latest` resolves to "newest non-prerelease by published_at" for the
+# whole repository, and this repository also publishes releases for the
+# harness/plugin sub-projects that carry no skill tarball. When such a release
+# is the most recently published one, the single-release endpoint returns a
+# version from the wrong release line, so the comparison below sees e.g.
+# "2.1.5" as "latest" and a 3.x install concludes it is already up to date and
+# never offers the 3.x release that actually carries the tarball.
+RELEASES_API_URL = (
+    f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}"
+    "/releases?per_page=100"
+)
 
 TARBALL_ASSET_NAME = "iterate-skill.tar.gz"
 CHECKSUMS_ASSET_NAME = "SHA256SUMS.txt"
@@ -91,6 +102,10 @@ _TAG_VERSION_KEYS = ("tag_name", "name")
 
 #: sha256sum file matcher: ``<hex digest> <spaces> [*]<filename>``.
 _CHECKSUM_LINE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(\S.*)$", re.MULTILINE)
+
+#: Windows drive-letter prefix (``C:`` / ``c:``) of an archive member or link
+#: target. Such a path is "relative" by POSIX rules yet absolute on Windows.
+_DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:")
 
 #: Well-known assistant skill-dir layouts. MUST stay identical to
 #: ``scripts/install.py`` ``SUPPORTED_AI`` — a cross-source sync test in
@@ -179,13 +194,61 @@ def normalize_version(raw: object) -> str | None:
     return match.group(0) if match else None
 
 
-def _version_tuple(version: str) -> tuple[int, int, int]:
-    numbers = [int(part) for part in re.findall(r"\d+", version) if part]
+#: Pre-release suffix, e.g. the ``-rc1`` of ``1.0.0-rc1``. Only matched
+#: directly after a numeric component so an ordinary ``3.0.0`` is not mistaken
+#: for a pre-release. Ordered per PEP 440: dev < alpha < beta < rc < final.
+_PRERELEASE_PATTERN = re.compile(
+    r"(?<=\d)[-._]?(?P<kind>alpha|beta|preview|pre|rc|dev|a|b|c)[-._]?(?P<num>\d*)",
+    re.IGNORECASE,
+)
+_PRERELEASE_RANK: dict[str, int] = {
+    "dev": 0,
+    "a": 1,
+    "alpha": 1,
+    "b": 2,
+    "beta": 2,
+    "c": 3,
+    "rc": 3,
+    "pre": 3,
+    "preview": 3,
+}
+
+
+def _version_tuple(version: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Build a sort key for ``version``.
+
+    A pre-release used to sort *equal* to its final version, because only the
+    first three digit groups were read: ``1.0.0-rc1`` collapsed to
+    ``(1, 0, 0)``, so a user on that pre-release compared equal to ``1.0.0``,
+    was told "you are running the latest version" and was never offered the
+    release that supersedes it.
+
+    Returns ``((major, minor, patch), prerelease_key)`` where a final release
+    gets ``(1,)`` and a pre-release gets ``(0, rank, number)``, so a final
+    release always outranks any pre-release of the same numbers (PEP 440).
+
+    Only the first three components are compared, preserving the documented
+    behaviour that a trailing extra segment (``3.3.1.1``) is ignored.
+    """
+    raw = str(version).strip()
+    match = _PRERELEASE_PATTERN.search(raw)
+    if match is None:
+        release_text, prerelease_key = raw, (1,)
+    else:
+        # The pre-release digits must NOT feed the release numbers: without
+        # this, "1.0.0-rc1" parsed as (1, 0, 0, 1) and therefore sorted *above*
+        # the final "1.0.0" it is supposed to precede. Slice off the suffix
+        # (the match starts at its separator) before reading the numbers.
+        release_text = raw[: match.start()]
+        kind = match.group("kind").lower()
+        num = match.group("num")
+        prerelease_key = (0, _PRERELEASE_RANK.get(kind, 3), int(num) if num else 0)
+    numbers = [int(part) for part in re.findall(r"\d+", release_text)]
     if not numbers:
         raise ValueError(f"not a version string: {version!r}")
     while len(numbers) < 3:
         numbers.append(0)
-    return (numbers[0], numbers[1], numbers[2])
+    return (numbers[0], numbers[1], numbers[2]), prerelease_key
 
 
 def compare_versions(current: str, latest: str) -> int:
@@ -261,7 +324,7 @@ def fetch_latest_release(
     fetch: Callable[..., _Fetched] | None = None,
     timeout: float = HTTP_TIMEOUT_SECONDS,
 ) -> tuple[ReleaseInfo | None, str | None]:
-    """Discover the latest published release.
+    """Discover the latest published release that carries the skill tarball.
 
     Returns ``(info, error_reason)`` — ``error_reason`` is None on success;
     on failure ``info`` is None and ``error_reason`` explains why. The
@@ -270,7 +333,7 @@ def fetch_latest_release(
     fetcher = fetch if fetch is not None else _default_fetch
     try:
         response = fetcher(
-            RELEASE_API_URL,
+            RELEASES_API_URL,
             timeout=timeout,
             headers={
                 "Accept": "application/vnd.github+json",
@@ -299,32 +362,65 @@ def fetch_latest_release(
     except ValueError as exc:
         return None, f"GitHub API returned invalid JSON: {exc}"
 
-    tag = None
     if isinstance(payload, dict):
-        for key in _TAG_VERSION_KEYS:
-            tag = normalize_version(payload.get(key))
-            if tag is not None:
-                break
-    if tag is None:
-        return None, "GitHub API response is missing a vX.Y.Z version"
+        # Tolerate a single-release payload shape for injected fetchers.
+        candidates: list[object] = [payload]
+    elif isinstance(payload, list):
+        candidates = payload
+    else:
+        return None, "GitHub API returned an unexpected payload shape"
 
+    tag: str | None = None
     tarball_url: str | None = None
     checksum_url: str | None = None
-    assets = payload.get("assets") if isinstance(payload, dict) else None
-    if isinstance(assets, list):
-        for item in assets:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name")
-            url = item.get("browser_download_url")
-            if not isinstance(url, str):
-                continue
-            if name == TARBALL_ASSET_NAME:
-                tarball_url = url
-            elif name == CHECKSUMS_ASSET_NAME:
-                checksum_url = url
-    if not isinstance(tarball_url, str):
-        return None, f"latest release has no {TARBALL_ASSET_NAME} asset"
+    saw_versioned_release = False
+    # The list endpoint returns releases newest-published first; take the first
+    # that both parses to a version and ships the tarball, so a release from
+    # another sub-project (or one mid-upload, with no assets yet) is skipped
+    # instead of being mistaken for the latest skill release.
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("draft") or candidate.get("prerelease"):
+            continue
+        candidate_tag: str | None = None
+        for key in _TAG_VERSION_KEYS:
+            candidate_tag = normalize_version(candidate.get(key))
+            if candidate_tag is not None:
+                break
+        if candidate_tag is None:
+            continue
+        saw_versioned_release = True
+        candidate_tarball: str | None = None
+        candidate_checksum: str | None = None
+        assets = candidate.get("assets")
+        if isinstance(assets, list):
+            for item in assets:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                url = item.get("browser_download_url")
+                if not isinstance(url, str):
+                    continue
+                if name == TARBALL_ASSET_NAME:
+                    candidate_tarball = url
+                elif name == CHECKSUMS_ASSET_NAME:
+                    candidate_checksum = url
+        if not isinstance(candidate_tarball, str):
+            continue
+        tag, tarball_url, checksum_url = candidate_tag, candidate_tarball, candidate_checksum
+        break
+
+    if tag is None or not isinstance(tarball_url, str):
+        # Distinguish "the payload held no versioned release at all" from
+        # "releases exist but none of them is a skill release" — the second is
+        # the real-world case when another sub-project owns the newest
+        # published release, and it deserves a specific diagnostic.
+        if not saw_versioned_release:
+            return None, "GitHub API response is missing a vX.Y.Z version"
+        return None, (
+            f"no published release in the last 100 carries an {TARBALL_ASSET_NAME} asset"
+        )
     return (
         ReleaseInfo(tag=tag, tarball_url=tarball_url, checksum_url=checksum_url),
         None,
@@ -417,11 +513,27 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
             raise tarfile.TarError(
                 f"refusing path traversal member: {member.name!r}"
             )
+        # Windows drive-letter members (e.g. ``C:/evil``) survive the checks
+        # above: ``os.path.normpath("C:/evil")`` stays ``C:/evil``, so it is
+        # neither absolute (no leading slash) nor traversal-bearing. On Windows
+        # such a member extracts outside the intended root, so refuse it on
+        # every platform to keep the guard platform-independent.
+        if _DRIVE_LETTER_RE.match(normalized):
+            raise tarfile.TarError(
+                f"refusing drive-letter member: {member.name!r}"
+            )
         if member.issym() or member.islnk():
             link = member.linkname.replace("\\", "/")
             if link.startswith(("/", "\\")):
                 raise tarfile.TarError(
                     f"refusing absolute link target: {member.name!r} -> {member.linkname!r}"
+                )
+            # A drive-letter link target is neither absolute (no leading slash)
+            # nor traversal-bearing, so the two checks either side of this one
+            # would let the link escape the root on Windows.
+            if _DRIVE_LETTER_RE.match(link):
+                raise tarfile.TarError(
+                    f"refusing drive-letter link target: {member.name!r} -> {member.linkname!r}"
                 )
             norm_link = os.path.normpath(link)
             if norm_link.startswith("..") or "/../" in f"/{norm_link}":

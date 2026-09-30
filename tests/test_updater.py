@@ -22,7 +22,7 @@ from iterate_cli.updater import (
     INSTALL_METHOD_PIP,
     INSTALL_METHOD_SOURCE,
     OPTIONAL_RELEASE_PATHS,
-    RELEASE_API_URL,
+    RELEASES_API_URL,
     REQUIRED_RELEASE_PATHS,
     TARBALL_ASSET_NAME,
     UpdateOutcome,
@@ -60,7 +60,9 @@ def _release_payload(tag: str = "v9.9.9") -> bytes:
             },
         ],
     }
-    return json.dumps(payload).encode("utf-8")
+    # A LIST: the updater now queries /releases (not /releases/latest) so a
+    # harness/plugin release cannot shadow the skill release.
+    return json.dumps([payload]).encode("utf-8")
 
 
 def build_release_tree(root: Path, *, include_optional: bool = True) -> Path:
@@ -95,7 +97,7 @@ def make_fetch(
     tag: str = "v9.9.9",
 ) -> tuple[updater._Fetched, dict[str, bytes]]:
     """Return ``(fetcher, url->body map)`` simulating the GitHub API + assets."""
-    urls: dict[str, bytes] = {RELEASE_API_URL: _release_payload(tag)}
+    urls: dict[str, bytes] = {RELEASES_API_URL: _release_payload(tag)}
     tarball_url = "https://example.invalid/iterate-skill.tar.gz"
     checksum_url = "https://example.invalid/SHA256SUMS.txt"
     if tarball is not None:
@@ -178,14 +180,131 @@ def test_fetch_latest_release_missing_version() -> None:
 
 
 def test_fetch_latest_release_missing_tarball_asset() -> None:
-    payload = json.dumps({"tag_name": "v9.9.9", "assets": []}).encode()
+    payload = json.dumps([{"tag_name": "v9.9.9", "assets": []}]).encode()
 
     def fetch(url: str, *, timeout: float, headers: dict[str, str]):
         return updater._Fetched(status=200, body=payload)
 
     release, error = fetch_latest_release(fetch=fetch)
     assert release is None
-    assert "no iterate-skill.tar.gz asset" in (error or "")
+    assert "iterate-skill.tar.gz asset" in (error or "")
+
+
+def test_fetch_latest_release_skips_release_without_tarball() -> None:
+    """A newer harness/plugin release must not shadow the skill release.
+
+    Regression: this repository publishes releases for the harness and plugin
+    sub-projects, which carry no ``iterate-skill.tar.gz``. ``/releases/latest``
+    is "newest non-prerelease by published_at" for the WHOLE repository, so
+    once such a release was published last the updater resolved it, found no
+    tarball, and every ``iterate update`` failed (and the version comparison saw
+    "2.1.5" as latest, so a 3.x install was told it was already up to date).
+    """
+    harness_release = {
+        "tag_name": "v2.1.5",
+        "assets": [
+            {"name": CHECKSUMS_ASSET_NAME, "browser_download_url": "https://example.invalid/s"},
+        ],
+    }
+    skill_release = {
+        "tag_name": "v9.9.9",
+        "assets": [
+            {"name": TARBALL_ASSET_NAME, "browser_download_url": "https://example.invalid/t"},
+            {"name": CHECKSUMS_ASSET_NAME, "browser_download_url": "https://example.invalid/s"},
+        ],
+    }
+    payload = json.dumps([harness_release, skill_release]).encode()
+
+    def fetch(url: str, *, timeout: float, headers: dict[str, str]):
+        return updater._Fetched(status=200, body=payload)
+
+    release, error = fetch_latest_release(fetch=fetch)
+    assert error is None
+    assert release is not None
+    assert release.tag == "9.9.9", "must pick the release that carries the tarball"
+
+
+def test_fetch_latest_release_skips_draft_and_prerelease() -> None:
+    """Drafts and prereleases are never selected as the latest release."""
+
+    def _rel(tag: str, **extra) -> dict:
+        return {
+            "tag_name": tag,
+            "assets": [
+                {
+                    "name": TARBALL_ASSET_NAME,
+                    "browser_download_url": "https://example.invalid/t",
+                },
+                {
+                    "name": CHECKSUMS_ASSET_NAME,
+                    "browser_download_url": "https://example.invalid/s",
+                },
+            ],
+            **extra,
+        }
+
+    payload = json.dumps(
+        [_rel("v9.9.9", draft=True), _rel("v9.9.8", prerelease=True), _rel("v9.9.7")]
+    ).encode()
+
+    def fetch(url: str, *, timeout: float, headers: dict[str, str]):
+        return updater._Fetched(status=200, body=payload)
+
+    release, error = fetch_latest_release(fetch=fetch)
+    assert error is None
+    assert release is not None
+    assert release.tag == "9.9.7"
+
+
+def test_fetch_latest_release_never_uses_releases_latest_endpoint() -> None:
+    """The updater must not query ``/releases/latest``.
+
+    That endpoint is release-line agnostic and can hand back a harness/plugin
+    release with no skill tarball.
+    """
+    seen: list[str] = []
+
+    def fetch(url: str, *, timeout: float, headers: dict[str, str]):
+        seen.append(url)
+        return updater._Fetched(status=200, body=_release_payload("v9.9.9"))
+
+    fetch_latest_release(fetch=fetch)
+    assert seen, "expected at least one request"
+    assert all("/releases/latest" not in u for u in seen), seen
+    assert any("/releases?per_page=" in u for u in seen), seen
+
+
+def test_fetch_latest_release_reports_unexpected_payload_shape() -> None:
+    """A scalar/None payload yields a clean error instead of an exception."""
+
+    def fetch(url: str, *, timeout: float, headers: dict[str, str]):
+        return updater._Fetched(status=200, body=b'"just a string"')
+
+    release, error = fetch_latest_release(fetch=fetch)
+    assert release is None
+    assert error and "payload shape" in error
+
+
+def test_version_tuple_prerelease_sorts_below_final() -> None:
+    """A pre-release must sort strictly below the final release it precedes."""
+    assert compare_versions("1.0.0-rc1", "1.0.0") == 1
+    assert compare_versions("1.0.0", "1.0.0-rc1") == -1
+    assert compare_versions("1.0.0-rc1", "1.0.0-rc1") == 0
+    assert compare_versions("1.0.0-rc1", "1.0.0-rc2") == 1
+    assert compare_versions("1.0.0-alpha1", "1.0.0-beta1") == 1
+    assert compare_versions("1.0.0-dev1", "1.0.0-alpha1") == 1
+    assert compare_versions("1.0.0a1", "1.0.0") == 1
+
+
+def test_version_tuple_prerelease_digits_do_not_leak_into_release() -> None:
+    """The pre-release number must not be read as a 4th release component.
+
+    Regression: reading the digits first made ``1.0.0-rc1`` parse as
+    ``(1, 0, 0, 1)``, which sorts ABOVE the final ``1.0.0`` it must precede.
+    """
+    assert updater._version_tuple("1.0.0-rc1") == ((1, 0, 0), (0, 3, 1))
+    assert updater._version_tuple("1.0.0") == ((1, 0, 0), (1,))
+    assert updater._version_tuple("1.0.0-rc12") == ((1, 0, 0), (0, 3, 12))
 
 
 def test_fetch_latest_release_invalid_json() -> None:
@@ -789,6 +908,70 @@ def test_safe_extractall_rejects_symlink_absolute_target(tmp_path) -> None:
         pytest.raises(tarfile.TarError, match="absolute link target"),
     ):
         updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_rejects_drive_letter_member(tmp_path) -> None:
+    """A Windows drive-letter member name must be refused.
+
+    ``os.path.normpath("C:/evil")`` stays ``C:/evil``: it is neither absolute
+    (no leading ``/``) nor traversal-bearing, so the relative-path checks pass
+    and the member would extract outside the root on Windows.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("C:/evil")
+        info.size = 0
+        tar.addfile(info)
+    buf.seek(0)
+    with (
+        tarfile.open(fileobj=buf, mode="r:gz") as tar,
+        pytest.raises(tarfile.TarError, match="drive-letter member"),
+    ):
+        updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_rejects_lowercase_drive_letter_member(tmp_path) -> None:
+    """The drive-letter check is case-insensitive (``c:`` is a drive too)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("c:/evil")
+        info.size = 0
+        tar.addfile(info)
+    buf.seek(0)
+    with (
+        tarfile.open(fileobj=buf, mode="r:gz") as tar,
+        pytest.raises(tarfile.TarError, match="drive-letter member"),
+    ):
+        updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_rejects_symlink_drive_letter_target(tmp_path) -> None:
+    """A symlink whose link target is a drive letter must be refused."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "C:/evil"
+        tar.addfile(info)
+    buf.seek(0)
+    with (
+        tarfile.open(fileobj=buf, mode="r:gz") as tar,
+        pytest.raises(tarfile.TarError, match="drive-letter link target"),
+    ):
+        updater._safe_extractall(tar, tmp_path)
+
+
+def test_safe_extractall_accepts_regular_relative_member(tmp_path) -> None:
+    """The drive-letter guard must not reject ordinary members."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("iterate-skill/SKILL.md")
+        info.size = 0
+        tar.addfile(info)
+    buf.seek(0)
+    with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+        updater._safe_extractall(tar, tmp_path)
+    assert (tmp_path / "iterate-skill" / "SKILL.md").exists()
 
 
 def test_safe_extractall_rejects_symlink_escaping_target(tmp_path) -> None:
