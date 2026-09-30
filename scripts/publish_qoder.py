@@ -37,9 +37,19 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 MAX_PACKAGE_BYTES = 50 * 1024 * 1024  # 50 MB (Qoder upper limit)
 
-# The canonical skill-body extraction mirrors the release manual: exclude the
-# independent harness/plugin sub-projects. Everything else is user-extendable.
-MANDATORY_EXCLUDES = ("harness",)
+# The canonical skill-body extraction must match the release tarball produced
+# by .github/workflows/release.yml:
+#
+#   git archive HEAD -- . ':!harness' ':!kernel' ':!tests' ':!.githooks' ':!badges'
+#
+# `harness/` and `kernel/` are independent sub-projects with their own release
+# lines and must never ride along in a skill package. `tests/`, `.githooks/`
+# and `badges/` are development artifacts. Previously only `harness` was
+# excluded, so a Qoder package silently carried a second sub-project
+# (~600 MB of kernel sources plus the repo's own test suite) and the release
+# tarball and the marketplace package disagreed about what "the skill" is.
+# Everything else stays user-extendable.
+MANDATORY_EXCLUDES = ("harness", "kernel", "tests", ".githooks", "badges")
 
 # Dev/share artifacts that are git-tracked but never part of the skill body.
 DEFAULT_EXCLUDES = (".trae-html-share-packages",)
