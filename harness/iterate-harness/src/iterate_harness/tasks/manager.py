@@ -124,6 +124,10 @@ class BackgroundTaskManager:
         self._input_locks: dict[str, asyncio.Lock] = {}
         self._generations: dict[str, int] = {}
         self._completion_listeners: dict[str, CompletionListener] = {}
+        # In-process tasks have no subprocess; each one carries an async abort
+        # callback (the swarm backend's graceful shutdown) so stop_task and
+        # write_to_task can route to it instead of a stdin pipe.
+        self._in_process_aborts: dict[str, Callable[[], Awaitable[None]]] = {}
 
     async def create_shell_task(
         self,
@@ -285,6 +289,21 @@ class BackgroundTaskManager:
         if process is None:
             if task.status in {"completed", "failed", "killed"}:
                 return task
+            abort = self._in_process_aborts.get(task_id)
+            if abort is not None:
+                # In-process teammate: request cancellation through the swarm
+                # backend's graceful shutdown, then finalize as killed (same
+                # observable result as the subprocess stop semantics).
+                try:
+                    await abort()
+                except Exception:
+                    log.exception("In-process abort for task %s failed", task_id)
+                if task.status not in {"completed", "failed", "killed"}:
+                    task.status = "killed"
+                    task.ended_at = time.time()
+                self._in_process_aborts.pop(task_id, None)
+                await self._notify_completion_listeners(task)
+                return task
             raise ValueError(f"Task {task_id} is not running")
 
         # Mark the record killed BEFORE signalling the process. The watcher task
@@ -319,6 +338,14 @@ class BackgroundTaskManager:
     async def write_to_task(self, task_id: str, data: str) -> None:
         """Write one line to task stdin, auto-resuming local agents when needed."""
         task = self._require_task(task_id)
+        if task.type == "in_process_teammate" and (
+            task_id in self._in_process_aborts or task.metadata.get("agent_id")
+        ):
+            # In-process teammate: there is no stdin pipe. Route the payload to
+            # the agent's file-based mailbox, which its query loop drains
+            # between turns — the swarm backend's messaging contract.
+            await self._write_in_process_mailbox(task, data)
+            return
         payload = _encode_task_worker_payload(data)
         # ``setdefault`` (not ``[...]``): a task whose spawn failed keeps its
         # record but has no lock left, and the coordinator's recovery path
@@ -341,6 +368,28 @@ class BackgroundTaskManager:
                     raise ValueError(f"Task {task_id} does not accept input") from None
                 stdin.write(payload)
                 await stdin.drain()
+
+    async def _write_in_process_mailbox(self, task: TaskRecord, data: str) -> None:
+        """Route an input line to an in-process teammate's file-based mailbox."""
+        agent_id = task.metadata.get("agent_id") or ""
+        if not agent_id:
+            raise ValueError(
+                f"Task {task.id} is an in-process teammate without an identity; cannot deliver input"
+            )
+        from iterate_harness.swarm.mailbox import MailboxMessage, TeammateMailbox
+
+        team = task.metadata.get("team") or (agent_id.split("@", 1)[1] if "@" in agent_id else "")
+        message = MailboxMessage(
+            id=uuid4().hex,
+            type="user_message",
+            sender="leader",
+            recipient=agent_id,
+            payload={"content": data},
+            timestamp=time.time(),
+        )
+        mailbox = TeammateMailbox(team_name=team, agent_id=agent_id)
+        await mailbox.write(message)
+        log.debug("Routed input to in-process teammate %s via mailbox", agent_id)
 
     def read_task_output(self, task_id: str, *, max_bytes: int = 12000) -> str:
         """Return the tail of a task's output file (bounded read, never loads
@@ -368,6 +417,91 @@ class BackgroundTaskManager:
             self._completion_listeners.pop(listener_id, None)
 
         return _unregister
+
+    def register_in_process_task(
+        self,
+        task_id: str,
+        *,
+        task_type: TaskType,
+        description: str,
+        cwd: str,
+        prompt: str | None = None,
+        agent_id: str = "",
+        team: str = "",
+        abort: Callable[[], Awaitable[None]] | None = None,
+    ) -> TaskRecord:
+        """Register a task that executes in-process (no subprocess).
+
+        The in-process swarm backend (:class:`~iterate_harness.swarm.in_process.InProcessBackend`)
+        runs teammates as asyncio Tasks inside the harness; they never appear
+        in ``_processes``/``_waiters``, so without a record here the console's
+        task tools could not list, poll, nudge, or stop them. Registering a
+        record makes an in-process teammate look exactly like a subprocess
+        teammate to the operation surface:
+
+        - ``task_list`` / ``task_get`` see it and watch its status transitions.
+        - ``write_to_task`` routes input to its file-based mailbox.
+        - ``stop_task`` invokes *abort* (the backend's graceful shutdown) and
+          finalizes the record as ``killed``.
+
+        Args:
+            task_id: The backend-assigned id (``in_process_<hex>``).
+            task_type: Record label (``in_process_teammate`` for swarm spawns).
+            description: Short human-readable description.
+            cwd: Working directory of the in-process task.
+            prompt: The teammate's kickoff prompt (recorded for diagnostics).
+            agent_id: Fully-qualified identity (``name@team``) — enables the
+                mailbox write path.
+            team: Team name (derived from *agent_id* when omitted).
+            abort: Async callback that requests cancellation of the task.
+        """
+        record = TaskRecord(
+            id=task_id,
+            type=task_type,
+            status="running",
+            description=description,
+            cwd=cwd,
+            output_file=get_tasks_dir() / f"{task_id}.log",
+            prompt=prompt,
+            created_at=time.time(),
+        )
+        if agent_id:
+            record.metadata["agent_id"] = agent_id
+        if team:
+            record.metadata["team"] = team
+        self._tasks[task_id] = record
+        if abort is not None:
+            self._in_process_aborts[task_id] = abort
+        log.debug("Registered in-process task %s (type=%s)", task_id, task_type)
+        return record
+
+    async def mark_in_process_terminal(
+        self,
+        task_id: str,
+        *,
+        status: TaskStatus,
+        return_code: int | None = None,
+    ) -> None:
+        """Publish the terminal state of an in-process task.
+
+        Mirror of the subprocess watcher's finalization: a deliberately
+        ``killed`` status is preserved (a stop must not be overwritten by the
+        task's own exit path), the end time is stamped, the abort mapping is
+        dropped, and the completion listeners fire so hooks (SUBAGENT_STOP)
+        behave identically to subprocess teammates.
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        if task.status == "killed":
+            return
+        task.status = status
+        task.ended_at = time.time()
+        if return_code is not None:
+            task.return_code = return_code
+        self._in_process_aborts.pop(task_id, None)
+        await self._notify_completion_listeners(task)
+        self._evict_old_terminal_records()
 
     async def _watch_process(
         self,

@@ -127,6 +127,25 @@ async def test_glob_tool_accepts_absolute_patterns(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_glob_tool_bounds_fallback_materialization(tmp_path: Path, monkeypatch):
+    """The Python fallback must never materialize the whole match set: only the
+    first ``limit`` matches are collected (then sorted), so a huge workspace
+    cannot blow up memory or wall-time."""
+    monkeypatch.setattr("iterate_harness.tools.glob_tool.shutil.which", lambda _: None)
+    context = ToolExecutionContext(cwd=tmp_path)
+    for index in range(12):
+        (tmp_path / f"f{index:02d}.py").write_text("x\n", encoding="utf-8")
+
+    result = await GlobTool().execute(GlobToolInput(pattern="*.py", limit=4), context)
+    lines = result.output.splitlines()
+    assert len(lines) == 4
+    assert lines == sorted(lines)
+    # The bounded walk returns 4 distinct entries from the 12 files (subset,
+    # not necessarily the globally-smallest 4 — isolation matters more).
+    assert set(lines) <= {f"f{index:02d}.py" for index in range(12)}
+
+
+@pytest.mark.asyncio
 async def test_bash_tool_runs_command(tmp_path: Path):
     result = await BashTool().execute(
         BashToolInput(command="printf 'hello'"),

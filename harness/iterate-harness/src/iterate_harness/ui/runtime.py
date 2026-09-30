@@ -307,7 +307,15 @@ async def build_runtime(
     # still advertised the (never enforced) value. ``enforce_max_turns`` keeps
     # its distinct meaning: re-apply the saved cap after every run, which
     # would otherwise undo an explicit ``/turns unlimited``.
-    engine_max_turns = max_turns if max_turns is not None else settings.max_turns
+    #
+    # An explicit cap always wins. Otherwise the default cap (``settings.max_turns``,
+    # default 200) applies to enforcing surfaces (``--print``) but NOT to a plain
+    # interactive console, which stays unbounded-by-default — max-turns is an
+    # *optional* cap for interactive use (CLI help) and the turns selector
+    # presents "unlimited" as the active choice there.
+    engine_max_turns = max_turns if max_turns is not None else (
+        settings.max_turns if enforce_max_turns else None
+    )
     system_prompt_text = build_runtime_system_prompt(
         settings,
         cwd=cwd,

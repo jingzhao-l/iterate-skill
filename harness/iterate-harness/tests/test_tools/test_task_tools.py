@@ -198,6 +198,48 @@ async def test_send_message_swarm_path_uses_subprocess_backend(
 
 
 @pytest.mark.asyncio
+async def test_send_message_routes_to_active_in_process_teammate(
+    tmp_path: Path, monkeypatch
+):
+    """SendMessageTool must deliver to an active in-process teammate via its
+    mailbox instead of raising 'No active subprocess'."""
+    monkeypatch.setenv("ITERATE_DATA_DIR", str(tmp_path / "data"))
+    context = ToolExecutionContext(cwd=tmp_path)
+
+    from iterate_harness.swarm.registry import get_backend_registry
+    from iterate_harness.swarm.types import TeammateSpawnConfig
+    from iterate_harness.tools.send_message_tool import SendMessageTool, SendMessageToolInput
+
+    registry = get_backend_registry()
+    executor = registry.get_executor("in_process")
+    spawn = await executor.spawn(
+        TeammateSpawnConfig(
+            name="rcvr",
+            team="myteam",
+            prompt="wait",
+            cwd=str(tmp_path),
+            parent_session_id="s",
+        )
+    )
+    assert spawn.success is True
+
+    result = await SendMessageTool().execute(
+        SendMessageToolInput(task_id="rcvr@myteam", message="ping"),
+        context,
+    )
+    assert result.is_error is False
+    assert "Sent message" in result.output
+
+    from iterate_harness.swarm.mailbox import TeammateMailbox
+
+    mailbox = TeammateMailbox(team_name="myteam", agent_id="rcvr@myteam")
+    messages = await mailbox.read_all(unread_only=False)
+    assert any(m.payload.get("content") == "ping" for m in messages)
+
+    await executor.shutdown("rcvr@myteam", force=True, timeout=2.0)
+
+
+@pytest.mark.asyncio
 async def test_agent_tool_creates_missing_team_when_team_argument_is_provided(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ITERATE_DATA_DIR", str(tmp_path / "data"))
     get_team_registry()._teams.clear()
@@ -245,6 +287,9 @@ async def test_agent_tool_supports_remote_and_teammate_modes(tmp_path: Path, mon
         record = get_task_manager().get_task(task_id)
         assert record is not None
         assert record.type == mode
+        # The requested mode must select the matching execution transport.
+        expected_backend = "in_process" if mode == "in_process_teammate" else "subprocess"
+        assert f"backend={expected_backend}" in result.output
         await _wait_for_terminal_task(task_id)
 
 

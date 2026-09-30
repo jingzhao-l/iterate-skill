@@ -40,7 +40,7 @@ class AgentToolInput(BaseModel):
 
 
 class AgentTool(BaseTool[AgentToolInput]):
-    """Spawn a local agent subprocess."""
+    """Spawn a background agent task (subprocess or in-process teammate)."""
 
     name = "agent"
     description = "Spawn a local background agent task."
@@ -62,12 +62,26 @@ class AgentTool(BaseTool[AgentToolInput]):
         team = arguments.team or "default"
         agent_name = arguments.subagent_type or "agent"
 
-        # Use subprocess backend so spawned agents are registered in
-        # BackgroundTaskManager and are pollable by the task tools.
-        # in_process tasks return asyncio-internal IDs that task tools
-        # cannot query, and subprocess is always available on all platforms.
+        # Pick the execution backend from the requested mode. In-process
+        # teammates run as asyncio Tasks inside this process (low overhead,
+        # shared memory) and are registered with the BackgroundTaskManager by
+        # InProcessBackend.spawn, so the task tools keep working for them.
+        # local_agent / remote_agent use the subprocess transport so they are
+        # pollable via BackgroundTaskManager and available on every platform.
         registry = get_backend_registry()
-        executor = registry.get_executor("subprocess")
+        if arguments.mode == "in_process_teammate":
+            try:
+                executor = registry.get_executor("in_process")
+            except KeyError:
+                # Platform without in-process mailbox support (rare): fall back
+                # to the pollable subprocess transport; the caller still sees a
+                # task record regardless of transport.
+                logger.warning(
+                    "in_process backend unavailable; falling back to subprocess transport"
+                )
+                executor = registry.get_executor("subprocess")
+        else:
+            executor = registry.get_executor("subprocess")
 
         config = TeammateSpawnConfig(
             name=agent_name,
