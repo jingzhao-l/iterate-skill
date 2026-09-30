@@ -52,11 +52,22 @@ def _should_show_banner(args: argparse.Namespace) -> bool:
     """Determine whether the ASCII banner should be shown.
 
     Banner is disabled by ``--no-banner`` or the ``ITERATE_NO_BANNER``
-    environment variable (any non-empty value).
+    environment variable (any non-empty value), and by a redirected (non-TTY)
+    stdout.
+
+    The TTY gate is required, not merely polite: the banner is eight lines of
+    block art printed to **stdout**, so without it a piped command captured
+    the whole art block ahead of the answer. That directly contradicted the
+    promise two lines below the call site — "a bare ``iterate <version>`` line
+    is emitted on non-TTY stdout so scripts can parse ``iterate --version``" —
+    and broke the same capture for ``iterate config get KEY``, which SKILL.md
+    documents as *the* way to read a single value.
     """
     if getattr(args, "no_banner", False):
         return False
-    return not os.environ.get("ITERATE_NO_BANNER", "").strip()
+    if os.environ.get("ITERATE_NO_BANNER", "").strip():
+        return False
+    return sys.stdout.isatty()
 
 
 def _force_utf8_stdio() -> None:

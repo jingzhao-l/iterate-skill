@@ -230,18 +230,38 @@ class TestShouldShowBanner:
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
 
-    def test_default_shows_banner(self, monkeypatch) -> None:
+    def test_default_shows_banner_on_tty(self, monkeypatch) -> None:
         monkeypatch.delenv("ITERATE_NO_BANNER", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         assert cli._should_show_banner(self._args()) is True
 
     def test_no_banner_flag_disables(self, monkeypatch) -> None:
         monkeypatch.delenv("ITERATE_NO_BANNER", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         assert cli._should_show_banner(self._args(no_banner=True)) is False
 
     def test_env_var_disables(self, monkeypatch) -> None:
         monkeypatch.setenv("ITERATE_NO_BANNER", "1")
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         assert cli._should_show_banner(self._args()) is False
 
-    def test_empty_env_var_keeps_banner(self, monkeypatch) -> None:
+    def test_empty_env_var_keeps_banner_on_tty(self, monkeypatch) -> None:
         monkeypatch.setenv("ITERATE_NO_BANNER", "")
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         assert cli._should_show_banner(self._args()) is True
+
+    def test_redirected_stdout_disables_banner(self, monkeypatch) -> None:
+        """A pipe must never receive the eight-line ASCII banner.
+
+        Regression: it was written to stdout regardless of redirection, so
+        `v=$(iterate --version)` captured block art plus the version line,
+        contradicting the call site's own promise of a bare parseable line.
+        """
+        monkeypatch.delenv("ITERATE_NO_BANNER", raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+        assert cli._should_show_banner(self._args()) is False
+
+    def test_redirected_stdout_beats_an_empty_env_var(self, monkeypatch) -> None:
+        monkeypatch.setenv("ITERATE_NO_BANNER", "")
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+        assert cli._should_show_banner(self._args()) is False

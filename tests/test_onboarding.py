@@ -2112,12 +2112,41 @@ class TestCLIVersion:
         assert "iterate" in captured.out
         assert "██" not in captured.out
 
-    def test_version_flag_shows_banner_by_default(self, capsys) -> None:
+    def test_version_flag_shows_banner_on_tty(self, capsys, monkeypatch) -> None:
+        """The banner is a TTY decoration and is shown on an interactive shell."""
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         capsys.readouterr()
         ret = cli_main(["--version"])
         assert ret == 0
         captured = capsys.readouterr()
         assert "██" in captured.out
+
+    def test_version_flag_piped_stdout_is_one_bare_line(self, capsys, monkeypatch) -> None:
+        """Redirected `--version` must be parseable by a shell assignment.
+
+        Regression: the banner went to stdout before any isatty() check, so
+        `v=$(iterate --version)` captured eight lines of block art plus the
+        version — directly contradicting the promise at the call site that "a
+        bare `iterate <version>` line is emitted on non-TTY stdout so scripts
+        can parse it".
+        """
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+        capsys.readouterr()
+        ret = cli_main(["--version"])
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert out == f"iterate {__version__}\n", repr(out)
+        assert "\u2588" not in out
+
+    def test_version_flag_piped_stdout_has_no_banner_even_with_json_off(
+        self, capsys, monkeypatch
+    ) -> None:
+        """The non-JSON --version path must also honour the TTY gate."""
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+        capsys.readouterr()
+        assert cli_main(["--version"]) == 0
+        out = capsys.readouterr().out
+        assert out.splitlines() == [f"iterate {__version__}"]
 
     def test_version_flag_json_output(self, capsys) -> None:
         # `--json --version` honours the structured-output contract of the other
