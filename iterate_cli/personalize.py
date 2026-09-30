@@ -98,7 +98,14 @@ KNOWN_SAFE_COMMAND_PREFIXES: tuple[str, ...] = (
     "ruff", "flake8", "pylint", "mypy", "bandit",
     "black", "isort", "pyupgrade",
     "coverage", "pytest-cov", "pip-audit",
-    "npm", "pnpm", "yarn", "npx",
+    # NOTE: `npx` is deliberately absent. `npx <pkg>` downloads and runs a
+    # package from the npm registry, so allowing it lets a committed or
+    # drift-polluted iterate.config.yaml run arbitrary remote code under
+    # `subprocess.run(..., shell=True)` in CI or on a teammate's machine —
+    # the exact outcome this allowlist exists to prevent. Subcommands that run
+    # *local* repo scripts (`npm run build`, `npm test`) stay allowed; the
+    # registry-executing verbs are refused via _REMOTE_EXEC_VERBS.
+    "npm", "pnpm", "yarn",
     "tsc", "eslint", "prettier", "jest", "vitest", "ava", "mocha",
     "swift", "swiftc", "xcodebuild", "swift test",
     "cargo", "rustc",
@@ -167,12 +174,35 @@ def _operator_extra_prefixes() -> tuple[str, ...]:
     return tuple(dict.fromkeys(safe))
 
 
+#: Subcommands of an allowlisted JS package manager that download and execute
+#: code from a remote registry instead of running something already in the repo.
+#: ``npm exec`` is the same verb as ``npx``; ``pnpm dlx`` / ``yarn dlx`` /
+#: ``bun x`` are the same idea. They are equivalent to ``curl … | sh``, so they
+#: are refused even though the parent binary is allowlisted. Only the verb
+#: matters, so ``npm exec`` is caught whatever flags follow it.
+_REMOTE_EXEC_VERBS: dict[str, frozenset[str]] = {
+    "npm": frozenset({"exec", "x"}),
+    "pnpm": frozenset({"dlx", "exec"}),
+    "yarn": frozenset({"dlx"}),
+    "bun": frozenset({"x", "exec"}),
+}
+
+
 def _is_known_safe_command(cmd: str) -> bool:
     """Return True if cmd starts with a known safe tool prefix."""
     stripped = cmd.strip()
     if not stripped:
         return False
-    first_token = stripped.split(None, 1)[0]
+    tokens = stripped.split()
+    first_token = tokens[0]
+    # A JS package manager invoked with a remote-execution verb is NOT safe even
+    # though the bare binary is allowlisted: ``npm exec <pkg>`` downloads and
+    # runs <pkg>. Reject before the prefix allowlist is consulted, otherwise
+    # ``npx``-style remote execution would be persisted into a committed
+    # iterate.config.yaml and run under shell=True in CI.
+    remote_verbs = _REMOTE_EXEC_VERBS.get(first_token)
+    if remote_verbs is not None and len(tokens) > 1 and tokens[1] in remote_verbs:
+        return False
     operator_prefixes = _operator_extra_prefixes()
     # Handle "python -m pytest" style invocations: accept if the
     # *effective* tool (after -m) is whitelisted.
