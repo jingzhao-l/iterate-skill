@@ -528,7 +528,16 @@ def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
             "`iterate reonboard` to regenerate the file."
         )
     e_start = existing_md.find(USER_START_MARKER)
-    e_end = existing_md.find(USER_END_MARKER)
+    # Take the LAST occurrence of the end marker on both sides. A user-owned
+    # block may legitimately contain the literal marker text in its own
+    # content, and the freshly rendered content embeds user-supplied values
+    # (description, goal, tech stack) that may contain it too. Using `find`
+    # would match that earlier occurrence, splice the block mid-file and then
+    # re-append the tail — duplicating generated sections and corrupting
+    # ITERATE.md on every subsequent refresh. Mirrors
+    # ``_replace_user_owned_section`` and ``has_valid_user_owned_markers``,
+    # which both use rfind.
+    e_end = existing_md.rfind(USER_END_MARKER)
 
     # Generate fresh content with default user section, reusing the previous
     # completion timestamp so an unchanged refresh is a byte-for-byte no-op.
@@ -546,7 +555,7 @@ def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
             "refresh aborted."
         )
     f_start = fresh.find(USER_START_MARKER)
-    f_end = fresh.find(USER_END_MARKER)
+    f_end = fresh.rfind(USER_END_MARKER)
 
     # Splice the verbatim user block into the regenerated AI-maintained parts.
     return fresh[:f_start] + user_block + fresh[f_end + len(USER_END_MARKER):]

@@ -633,6 +633,81 @@ AI content
         assert "Custom Code Conventions" in result
 
 
+def _ai_area_headings(md: str) -> list[str]:
+    """Headings from the AI-maintained area of a generated ITERATE.md.
+
+    The user-owned block is excluded: its content is expected to be replaced
+    wholesale by the caller's version, so its headings legitimately disappear.
+    """
+    start = md.find(USER_START_MARKER)
+    if start == -1:
+        area = md
+    else:
+        area = md[:start]
+    return [line for line in area.splitlines() if line.startswith("## ")]
+
+
+class TestGenerateRefreshedMdMarkerDuplication:
+    """The end marker must be matched with rfind on both sides of the splice.
+
+    ``find`` matches the *first* occurrence. A user-owned block that documents
+    the marker convention itself (or any other section that echoes it) makes
+    that first occurrence land inside the block, so the splice cut the block in
+    half and then re-appended the tail — duplicating every generated section
+    that followed and growing the file on each refresh.
+    """
+
+    def test_user_block_containing_the_end_marker_does_not_duplicate(
+        self, fake_project: Path
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        original_md = generate_iterate_md(data)
+
+        # Insert a copy of the end marker inside the user's own prose.
+        start = original_md.find(USER_START_MARKER)
+        end = original_md.rfind(USER_END_MARKER)
+        poisoned = (
+            original_md[:start + len(USER_START_MARKER)]
+            + f"\n## Rules\nWhen writing markers, write {USER_END_MARKER} "
+            "to close the block.\nNever use var.\n"
+            + original_md[end:]
+        )
+
+        refreshed = generate_refreshed_md(data, poisoned)
+
+        # Exactly two end markers survive: the one the user wrote in prose plus
+        # the single real one closing the block. A `find`-based splice would cut
+        # the block at the prose occurrence and re-append the tail, yielding
+        # three and duplicating the generated sections in between.
+        assert refreshed.count(USER_END_MARKER) == 2, "end marker duplicated"
+        assert refreshed.count(USER_START_MARKER) == 1
+        assert "Never use var" in refreshed
+
+        # No generated heading may appear more often than it does in freshly
+        # generated content: this is what actually broke before.
+        baseline = generate_iterate_md(data)
+        for heading in _ai_area_headings(baseline):
+            assert refreshed.count(heading) == baseline.count(heading), (
+                f"generated section {heading!r} was duplicated"
+            )
+
+    def test_refresh_is_idempotent_with_poisoned_block(self, fake_project: Path) -> None:
+        """A second refresh over an already-refreshed file must be a no-op."""
+        data = _build_onboarding_data(fake_project)
+        original_md = generate_iterate_md(data)
+        start = original_md.find(USER_START_MARKER)
+        end = original_md.rfind(USER_END_MARKER)
+        poisoned = (
+            original_md[:start + len(USER_START_MARKER)]
+            + f"\n## Rules\nSee {USER_END_MARKER} above.\n"
+            + original_md[end:]
+        )
+
+        once = generate_refreshed_md(data, poisoned)
+        twice = generate_refreshed_md(data, once)
+        assert once == twice, "refresh kept mutating the file"
+
+
 class TestGenerateRefreshedMd:
     def test_preserves_user_content(self, fake_project: Path) -> None:
         data = _build_onboarding_data(fake_project)
