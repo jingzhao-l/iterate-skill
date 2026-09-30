@@ -26,6 +26,7 @@ import json
 import re
 import shutil
 import sys
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1062,8 +1063,15 @@ def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]
             if d not in seen:
                 deduped.append(d)
                 seen.add(d)
-        if len(deduped) != len(dims):
-            fixes.append(f"dimensions: removed {len(dims) - len(deduped)} duplicate(s).")
+        # Count duplicates against the *string-only* list. Comparing against the
+        # pre-filter `dims` conflated the two removal causes and made the
+        # user-facing fix log state a falsehood about their own config:
+        # ['a', 'b', 123] reported "removed 1 duplicate" with zero duplicates,
+        # and ['a', 'a', ['x']] reported "removed 2 duplicates" for one.
+        string_entries = sum(1 for d in dims if isinstance(d, str))
+        duplicates = string_entries - len(deduped)
+        if duplicates:
+            fixes.append(f"dimensions: removed {duplicates} duplicate(s).")
         if not deduped:
             deduped = list(CANONICAL_DIMENSIONS)
             fixes.append("dimensions: empty, restored canonical defaults.")
@@ -1167,7 +1175,15 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
         return True, []
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = config_path.with_name(f"{CONFIG_YAML}.doctorfix-{timestamp}")
+    # The random suffix matters: the timestamp has one-second granularity, so
+    # two `doctor --fix` runs inside the same second (a CI retry loop, a shell
+    # `for` over configs, two terminals) resolved to the same backup path and
+    # the second copy2 overwrote the first — destroying the only pre-fix copy
+    # of a file the fix is about to rewrite. Matches the convention already
+    # used by configcmd (salt) and refresh (uuid).
+    backup_path = config_path.with_name(
+        f"{CONFIG_YAML}.doctorfix-{timestamp}-{uuid.uuid4().hex[:6]}"
+    )
     try:
         shutil.copy2(config_path, backup_path)
         atomic_write(

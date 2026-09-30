@@ -351,6 +351,41 @@ class TestApplySafeFixes:
         assert new_config["dimensions"] == ["correctness", "security"]
         assert any("duplicate" in f for f in fixes)
 
+    def test_duplicate_count_excludes_non_string_removals(self) -> None:
+        """The reported duplicate count must be about duplicates only.
+
+        Regression: the count compared the deduped list against the *pre-filter*
+        list, so it folded two unrelated removal causes into one number and
+        reported a falsehood about the user's own config.
+        """
+        config = _base_config()
+        # One duplicate, plus a non-string that is dropped separately.
+        config["dimensions"] = ["correctness", "correctness", 123]
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["dimensions"] == ["correctness"]
+        dup_fixes = [f for f in fixes if "duplicate" in f]
+        assert dup_fixes, fixes
+        assert "removed 1 duplicate(s)" in dup_fixes[0], dup_fixes
+
+    def test_duplicate_count_not_inflated_by_non_string_removals(self) -> None:
+        """A non-string entry must never inflate the duplicate count.
+
+        Regression: this claimed two duplicates for a config with one.
+        """
+        config = _base_config()
+        config["dimensions"] = ["correctness", "correctness", ["x"]]
+        new_config, fixes = apply_safe_fixes(config)
+        assert new_config["dimensions"] == ["correctness"]
+        dup_fixes = [f for f in fixes if "duplicate" in f]
+        assert "removed 1 duplicate(s)" in dup_fixes[0], dup_fixes
+
+    def test_no_duplicate_message_when_only_non_strings_removed(self) -> None:
+        """Dropping a non-string is not a duplicate removal."""
+        config = _base_config()
+        config["dimensions"] = ["correctness", 123]
+        _, fixes = apply_safe_fixes(config)
+        assert not [f for f in fixes if "duplicate" in f], fixes
+
     def test_empty_dimensions_restored(self) -> None:
         config = _base_config()
         config["dimensions"] = []
@@ -435,6 +470,40 @@ class TestRunDoctorFix:
         # Re-running doctor reports no dimensions warning.
         report = run_doctor(project)
         assert not any(f.check == "dimensions" and f.severity == "warn" for f in report.findings)
+
+    def test_two_fixes_in_same_second_keep_both_backups(self, tmp_path) -> None:
+        """Backups must not collide within the same second.
+
+        Regression: the backup name carried only a second-resolution timestamp,
+        so two ``doctor --fix`` runs inside one second (a CI retry loop, a shell
+        for-loop over configs, two terminals) resolved to the same path and the
+        second copy2 overwrote the first — destroying the only pre-fix copy of
+        a file the fix was about to rewrite.
+        """
+        project = _make_project(tmp_path)
+        for index in range(2):
+            config = _base_config()
+            config["dimensions"] = ["correctness", "correctness"]
+            _write_config(project, config)
+            ok, fixes = run_doctor_fix(project)
+            assert ok and fixes
+
+        backups = list(project.glob(f"{CONFIG_YAML}.doctorfix-*"))
+        assert len(backups) == 2, f"expected 2 distinct backups, got {backups}"
+
+    def test_backup_name_has_entropy_beyond_the_timestamp(self, tmp_path) -> None:
+        """The backup name must not be a pure timestamp."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimensions"] = ["correctness", "correctness"]
+        _write_config(project, config)
+        assert run_doctor_fix(project)[0]
+
+        (backup,) = project.glob(f"{CONFIG_YAML}.doctorfix-*")
+        suffix = backup.name[len(CONFIG_YAML) + len(".doctorfix-"):]
+        # <timestamp>-<entropy>; the part after the last dash must be non-empty.
+        assert "-" in suffix, suffix
+        assert suffix.rsplit("-", 1)[1].strip(), suffix
 
     def test_noop_when_clean(self, tmp_path) -> None:
         project = _make_project(tmp_path)
