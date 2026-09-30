@@ -5271,6 +5271,66 @@ class TestShowCommand:
         assert "config" in report
         assert report["personalization"]["protected_paths"] == ["legacy/**"]
 
+    @staticmethod
+    def _break_the_config(fake_project: Path) -> None:
+        """Make iterate.config.yaml exist but be unparseable."""
+        (fake_project / "iterate.config.yaml").write_text(
+            "project: [unterminated\n", encoding="utf-8"
+        )
+
+    def test_show_corrupt_config_exits_one_like_status(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """`show` and `status` must agree on the same broken config.
+
+        Regression: both commands rendered the identical condition, but `show`
+        unconditionally returned 0 while `status` returned 1 — so a CI job
+        watching `show` stayed green over a config nobody could read.
+        """
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        self._break_the_config(fake_project)
+        capsys.readouterr()
+
+        assert cli_main(["show", "-p", str(fake_project), "--no-banner"]) == 1
+        assert cli_main(["status", "-p", str(fake_project), "--no-banner"]) == 1
+
+    def test_show_corrupt_config_json_exits_one_with_parseable_body(
+        self, fake_project: Path, capsys
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        self._break_the_config(fake_project)
+        capsys.readouterr()
+
+        ret = cli_main(["show", "--json", "-p", str(fake_project), "--no-banner"])
+        assert ret == 1
+        payload = json.loads(capsys.readouterr().out)  # still one JSON document
+        assert payload["config_error"] is True
+
+    def test_show_corrupt_config_tui_names_the_remedy(
+        self, fake_project: Path, capsys
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        self._break_the_config(fake_project)
+        capsys.readouterr()
+
+        assert cli_main(["show", "-p", str(fake_project), "--no-banner"]) == 1
+        out = capsys.readouterr().out
+        assert "unreadable" in out
+        assert "doctor" in out
+
+    def test_show_healthy_config_still_exits_zero(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """The new failure path must not fire on a valid config."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        capsys.readouterr()
+        assert cli_main(["show", "-p", str(fake_project), "--no-banner"]) == 0
+        assert cli_main(["show", "--json", "-p", str(fake_project), "--no-banner"]) == 0
+
     def test_show_without_personalization(self, fake_project: Path, capsys) -> None:
         data = _build_onboarding_data(fake_project)
         write_onboarding_outputs(data, fake_project)

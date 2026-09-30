@@ -216,8 +216,27 @@ def render_show(data: dict[str, Any], json_output: bool = False) -> int:
         json_output: When True, emit JSON instead of TUI text.
 
     Returns:
-        Exit code: 0 on success (inspection is always a valid operation).
+        Exit code: 0 on success; 1 when the config exists but could not be
+            read, matching ``iterate status`` for the same condition.
     """
+    # `status --json` already returns 1 for "config exists but is unparseable",
+    # and the comment there spells out why: otherwise CI gating on the command
+    # never notices a broken config. `show` accepted the same broken config and
+    # returned 0, so the two commands contradicted each other on an identical
+    # condition — a job watching `show` reported green while the config was
+    # unreadable.
+    if data.get("config_error"):
+        if json_output:
+            print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+            return 1
+        tui.intro("Iterate Skill — Show")
+        tui.warning(
+            "iterate.config.yaml is missing or unreadable — showing an empty "
+            "config. Run `iterate doctor` for details."
+        )
+        tui.hint("Run `iterate doctor --fix` to repair it.", indent=2)
+        return 1
+
     if json_output:
         print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
         return 0
