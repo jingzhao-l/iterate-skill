@@ -6,8 +6,8 @@ normal paths, error paths, and boundary scenarios.
 
 from __future__ import annotations
 
-import hashlib
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -2188,6 +2188,9 @@ class TestJsonStdoutIsExactlyOneDocument:
 
     def test_refresh_json_no_human_text_on_stdout(self, tmp_path) -> None:
         code, out = self._run(["refresh", "--json"], tmp_path)
+        # Same input as the lone-JSON test above, so it must fail the same way;
+        # pinning it here keeps `code` meaningful instead of discarded.
+        assert code == 1
         assert "\u26a0" not in out, out
         assert "Onboarding not yet completed" not in out, out
 

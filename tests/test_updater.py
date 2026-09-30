@@ -1246,8 +1246,8 @@ def test_unknown_assistant_error_lists_real_assistants(capsys, monkeypatch) -> N
     "see `iterate update --help`" placeholder — withholding the list at
     exactly the moment it is needed.
     """
-    from iterate_cli import cli
     import iterate_cli.updater as updater_mod
+    from iterate_cli import cli
 
     outcome = UpdateOutcome(
         current="3.4.0",

@@ -15,7 +15,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from iterate_cli.personalize import (  # noqa: E402
+from iterate_cli.personalize import (
     KNOWN_SAFE_COMMAND_PREFIXES,
     _is_known_safe_command,
     validate_extra_command,
