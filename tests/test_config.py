@@ -437,6 +437,45 @@ class TestConfigJson:
         assert "max_rounds" in payload
         assert set(payload) <= set(SETTABLE_KEYS)
 
+    def test_get_single_key_json_with_date_scalar(self, tmp_path, capsys) -> None:
+        """An unquoted ISO date must serialize instead of raising TypeError.
+
+        Regression: PyYAML resolves ``goal: 2024-06-01`` to a ``datetime.date``,
+        which ``json.dumps`` cannot encode. ``--json`` promises a parseable
+        object, so this crashed with a raw
+        ``TypeError: Object of type date is not JSON serializable``.
+        """
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["goal"] = "ship the thing"
+        _write_config(project, config)
+        # Write the date form directly so PyYAML infers datetime.date.
+        raw = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
+        raw = raw.replace("goal: ship the thing", "goal: 2024-06-01")
+        (project / CONFIG_YAML).write_text(raw, encoding="utf-8")
+
+        code = cli_main(
+            ["config", "get", "goal", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {"goal": "2024-06-01"}
+
+    def test_get_all_keys_json_with_date_scalar(self, tmp_path, capsys) -> None:
+        """The all-keys summary must also survive a date-typed scalar."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["goal"] = "ship the thing"
+        _write_config(project, config)
+        raw = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
+        raw = raw.replace("goal: ship the thing", "goal: 2024-06-01")
+        (project / CONFIG_YAML).write_text(raw, encoding="utf-8")
+
+        code = cli_main(["config", "--json", "-p", str(project), "--no-banner"])
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["goal"] == "2024-06-01"
+
     def test_set_json_confirms_and_stdout_is_clean(self, tmp_path, capsys) -> None:
         project = _make_project(tmp_path)
         _write_config(project, _base_config())

@@ -306,7 +306,11 @@ def run_config_get(
         if json_output:
             # Key always the canonical flat name, even when the user typed
             # the dotted alias, so JSON consumers can map it back reliably.
-            print(json.dumps({spec.name: value}, ensure_ascii=False))
+            # ``default=str`` is required, not cosmetic: PyYAML resolves an
+            # unquoted ISO date (``goal: 2024-06-01``) to a datetime.date,
+            # which json.dumps cannot encode. ``--json`` promises a parseable
+            # object, so a date-typed scalar must serialize, not traceback.
+            print(json.dumps({spec.name: value}, ensure_ascii=False, default=str))
         else:
             print(_format_value(value))
         return 0
@@ -343,6 +347,7 @@ def run_config_get(
             json.dumps(
                 {name: _read(spec) for name, spec in SETTABLE_KEYS.items()},
                 ensure_ascii=False,
+                default=str,
             )
         )
         return 0
@@ -458,7 +463,7 @@ def run_config_set(
 
     if json_output:
         # Keep stdout clean for scripts/CI: only the JSON confirmation object.
-        print(json.dumps({"key": key, "value": parsed}, ensure_ascii=False))
+        print(json.dumps({"key": key, "value": parsed}, ensure_ascii=False, default=str))
         return 0
     tui.success(f"{key} set to {_format_value(parsed)}.")
     tui.hint(f"Backup written to {backup_path.name}.", indent=2)
