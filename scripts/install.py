@@ -2368,8 +2368,17 @@ def prompt_int_in_range(
     default: int | None = None,
     input_func: InputFunc = input,
 ) -> int:
-    """Ask the user for an integer constrained to [min_value, max_value]."""
+    """Ask the user for an integer constrained to [min_value, max_value].
+
+    An out-of-range ``default`` is clamped into range before prompting.
+    Otherwise an empty answer (Enter, or EOF — both of which return the
+    default) fails the range check, re-prompts with the same default, and
+    fails again forever: an unreachable prompt the user can only escape with
+    Ctrl-C. The clamp makes the default itself always acceptable.
+    """
     full_question = f"{question} ({min_value}-{max_value})"
+    if default is not None:
+        default = max(min_value, min(default, max_value))
     while True:
         value = prompt_int(full_question, default, input_func=input_func)
         if min_value <= value <= max_value:

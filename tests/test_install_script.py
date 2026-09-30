@@ -1652,6 +1652,45 @@ class TestPromptHelpers:
         calls = iter(["99", "3"])
         assert install.prompt_int_in_range("q", 1, 10, 5, input_func=lambda p: next(calls)) == 3
 
+    def test_prompt_int_in_range_accepts_out_of_range_default(self):
+        """An empty answer must not loop forever on an out-of-range default.
+
+        Regression: the caller passes ``config.get("max_rounds", 7)``, so a
+        hand-edited config with a value outside [MIN_ROUNDS, MAX_ROUNDS] made
+        every Enter return that default, fail the range check, re-prompt with
+        the same default, and fail again — an unreachable prompt escapable only
+        with Ctrl-C. The default is clamped instead.
+        """
+        prompts = []
+
+        def empty(prompt):
+            prompts.append(prompt)
+            return ""
+
+        assert install.prompt_int_in_range("Max rounds", 1, 10, 99, input_func=empty) == 10
+        assert len(prompts) == 1, prompts
+
+    def test_prompt_int_in_range_clamps_low_default(self):
+        prompts = []
+
+        def empty(prompt):
+            prompts.append(prompt)
+            return ""
+
+        assert install.prompt_int_in_range("Max rounds", 1, 10, -5, input_func=empty) == 1
+        assert len(prompts) == 1, prompts
+
+    def test_prompt_int_in_range_out_of_range_default_survives_eof(self):
+        """EOF also yields the default, so it must be clamped too."""
+
+        def eof(_p):
+            raise EOFError
+
+        assert install.prompt_int_in_range("Max rounds", 1, 10, 99, input_func=eof) == 10
+
+    def test_prompt_int_in_range_in_range_default_untouched(self):
+        assert install.prompt_int_in_range("Max rounds", 1, 10, 5, input_func=lambda p: "") == 5
+
     def test_prompt_bool(self):
         assert install.prompt_bool("q", default=True, input_func=lambda p: "") is True
         assert install.prompt_bool("q", default=True, input_func=lambda p: "n") is False
