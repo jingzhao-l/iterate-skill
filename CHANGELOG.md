@@ -56,6 +56,8 @@
 
 ---
 
+## [3.4.1] — 2026-09-16
+
 ### 修复 / Fixes
 
 - **`iterate update` 子进程超时生效（F28）**：`updater._run_command` 先前只把 `timeout` 参数接住却从未传给 `subprocess.run` —— `GIT_TIMEOUT_SECONDS`（120s）与 `PIP_TIMEOUT_SECONDS`（600s）是花瓶常量，`git pull --ff-only` / `pip install` 一旦挂起，整个 `iterate update` 会无限阻塞；现生产默认 runner 真正以 `timeout=` 传给 `subprocess.run`，`subprocess.TimeoutExpired` 转成可读的 `RuntimeError`（清晰报错指令与超时时长），注入的测试 runner 保持原 `(argv)` 契约不变。
