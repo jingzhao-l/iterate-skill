@@ -121,12 +121,32 @@ class DoctorReport:
     def has_warnings(self) -> bool:
         return any(f.severity == "warn" for f in self.findings)
 
-    def to_dict(self) -> dict[str, Any]:
-        """Structured representation for ``--json`` output."""
+    def to_dict(self, *, strict: bool = False) -> dict[str, Any]:
+        """Structured representation for ``--json`` output.
+
+        Args:
+            strict: Mirrors ``doctor --strict``, under which warnings also make
+                the process exit 1.
+
+        Returns:
+            The report payload. ``healthy`` is defined as ``exit code == 0``,
+            so it must account for ``--strict``: computing it from
+            ``has_errors()`` alone meant a warnings-only report under
+            ``--strict`` printed ``"healthy": true`` while the process exited 1,
+            so `jq .healthy` and `$?` disagreed about the same run. The raw
+            signals are reported alongside it so no information is lost.
+        """
+        has_errors = self.has_errors()
+        has_warnings = self.has_warnings()
+        blocking = has_errors or (strict and has_warnings)
         return {
             "project": self.project,
             "skill_version": SKILL_VERSION,
-            "healthy": not self.has_errors(),
+            "healthy": not blocking,
+            "blocking": blocking,
+            "strict": strict,
+            "has_errors": has_errors,
+            "has_warnings": has_warnings,
             "fixes": list(self.fixes),
             "findings": [
                 {
@@ -1232,7 +1252,7 @@ def render_report(report: DoctorReport, json_output: bool = False, strict: bool 
     """
     blocking = report.has_errors() or (strict and report.has_warnings())
     if json_output:
-        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        print(json.dumps(report.to_dict(strict=strict), ensure_ascii=False, indent=2))
         return 1 if blocking else 0
 
     tui.intro(f"Iterate Skill — Doctor / {report.project}")

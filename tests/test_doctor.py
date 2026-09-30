@@ -448,6 +448,58 @@ class TestApplySafeFixes:
 # ---------------------------------------------------------------------------
 
 
+class TestStrictJsonConsistency:
+    """``healthy`` must agree with the exit code under ``--strict``.
+
+    Regression: `healthy` was computed from `has_errors()` only, so a
+    warnings-only report under `--strict` printed `"healthy": true` while the
+    process exited 1 — `jq .healthy` and `$?` disagreed about the same run.
+    """
+
+    @staticmethod
+    def _warnings_only_report():
+        """A report carrying a warning but no error."""
+        return _report_with("warn")
+
+    def test_warnings_only_strict_exits_one_but_report_says_unhealthy(
+        self, capsys
+    ) -> None:
+        report = self._warnings_only_report()
+        assert report.has_warnings() and not report.has_errors()
+
+        rc = render_report(report, json_output=True, strict=True)
+        payload = json.loads(capsys.readouterr().out)
+
+        assert rc == 1, "strict + warnings must exit 1"
+        assert payload["healthy"] is False, "healthy must match the exit code"
+        assert payload["blocking"] is True
+        assert payload["strict"] is True
+
+    def test_warnings_only_non_strict_stays_healthy(self, capsys) -> None:
+        report = self._warnings_only_report()
+        rc = render_report(report, json_output=True, strict=False)
+        payload = json.loads(capsys.readouterr().out)
+
+        assert rc == 0, "without --strict, warnings are not blocking"
+        assert payload["healthy"] is True
+        assert payload["blocking"] is False
+
+    def test_raw_signals_survive_the_simplification(self, capsys) -> None:
+        report = self._warnings_only_report()
+        render_report(report, json_output=True, strict=True)
+        payload = json.loads(capsys.readouterr().out)
+
+        assert payload["has_warnings"] is True
+        assert payload["has_errors"] is False
+
+    def test_errors_still_unhealthy_without_strict(self, capsys) -> None:
+        report = _report_with("error")
+        rc = render_report(report, json_output=True, strict=False)
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 1
+        assert payload["healthy"] is False
+
+
 class TestRunDoctorFix:
     def test_repairs_and_writes_backup(self, tmp_path) -> None:
         project = _make_project(tmp_path)
