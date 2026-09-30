@@ -345,8 +345,23 @@ def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
     """
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
+        return
+    except ProcessLookupError:
+        # The group is already gone (the command exited between the timeout
+        # firing and this call). Nothing left to kill.
+        return
+    except OSError:
+        # killpg failed for some other reason (e.g. EPERM, or the pid was not a
+        # group leader). Fall through to killing just the leader.
+        pass
+    try:
         proc.kill()
+    except (ProcessLookupError, OSError):
+        # The leader exited while we were falling back. This is the normal
+        # outcome of a command that finished just as the timeout hit — letting
+        # ProcessLookupError escape here turned a benign race in the timeout
+        # path into an unhandled traceback out of `iterate guard`.
+        pass
 
 
 def _run_command(command: str, project_root: Path) -> tuple[int, str]:

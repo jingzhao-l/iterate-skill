@@ -681,3 +681,91 @@ class TestCommandExecutionBoundaries:
         result = run_guard_postcheck(project, None)
         assert result.passed is False
         assert any("timed out" in detail for _, _, detail in result.items)
+
+
+# ---------------------------------------------------------------------------
+# _kill_process_tree — the timeout path must never raise
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    """Stand-in for ``subprocess.Popen``; each test assigns ``.kill`` itself."""
+
+    def __init__(self, pid: int = 4242) -> None:
+        self.pid = pid
+        self.kill_called = False
+
+    def kill(self) -> None:
+        self.kill_called = True
+
+
+class TestKillProcessTree:
+    """Killing a command that exits exactly as the timeout fires must not raise.
+
+    Regression: the ``except (OSError, ProcessLookupError): proc.kill()``
+    fallback called ``proc.kill()`` unguarded. When the leader exited between
+    the timeout firing and the fallback, ``Popen.kill`` itself raises
+    ``ProcessLookupError``, so a benign race in the timeout path escaped as an
+    unhandled traceback out of ``iterate guard`` instead of reporting a
+    timeout.
+    """
+
+    def test_group_kill_succeeds_without_touching_leader(self, monkeypatch) -> None:
+        import iterate_cli.guard as guard_mod
+
+        calls: list[tuple[int, int]] = []
+        monkeypatch.setattr(guard_mod.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+        monkeypatch.setattr(guard_mod.os, "getpgid", lambda pid: pid)
+
+        proc = _FakeProc()
+        proc.kill = lambda: pytest.fail("leader kill must not be used when killpg works")
+        guard_mod._kill_process_tree(proc)  # type: ignore[arg-type]
+        assert calls, "killpg should have been attempted"
+
+    def test_group_already_gone_is_swallowed(self, monkeypatch) -> None:
+        import iterate_cli.guard as guard_mod
+
+        def boom(_pgid, _sig):
+            raise ProcessLookupError("no such process group")
+
+        monkeypatch.setattr(guard_mod.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(guard_mod.os, "killpg", boom)
+
+        proc = _FakeProc()
+        proc.kill = lambda: pytest.fail("nothing left to kill")
+        guard_mod._kill_process_tree(proc)  # type: ignore[arg-type]
+
+    def test_leader_exits_during_fallback_is_swallowed(self, monkeypatch) -> None:
+        import iterate_cli.guard as guard_mod
+
+        def deny(_pgid, _sig):
+            raise PermissionError("not permitted")
+
+        monkeypatch.setattr(guard_mod.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(guard_mod.os, "killpg", deny)
+
+        proc = _FakeProc()
+
+        def dead_kill() -> None:
+            raise ProcessLookupError("leader already exited")
+
+        proc.kill = dead_kill
+        # Must not raise.
+        guard_mod._kill_process_tree(proc)  # type: ignore[arg-type]
+
+    def test_permission_error_on_fallback_is_swallowed(self, monkeypatch) -> None:
+        import iterate_cli.guard as guard_mod
+
+        def deny(_pgid, _sig):
+            raise PermissionError("not permitted")
+
+        monkeypatch.setattr(guard_mod.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(guard_mod.os, "killpg", deny)
+
+        proc = _FakeProc()
+
+        def denied_kill() -> None:
+            raise PermissionError("nope")
+
+        proc.kill = denied_kill
+        guard_mod._kill_process_tree(proc)  # type: ignore[arg-type]
