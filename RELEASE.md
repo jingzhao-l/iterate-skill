@@ -733,6 +733,50 @@ stamp 不匹配会自动重装到新 tag。
       > `iterate-harness@2.2.0` 已发布（registry 传播约 90s，latest=2.2.0）。端到端验证：
       > `npm install -g iterate-harness && ih --version` = `iterate_harness 2.2.0`。
       >
+      > **2.5.0 发布记录（2026-09-30）**：整轮「审查 → 修复 → UX 评审 → 缺口补齐」的结果。
+      > 主体是 WebUI 操作台 + 辅助干预通道这一层的真实缺口补齐，另含引擎 / swarm / 任务层一批
+      > 正确性修复。**① Web/后端**：SSE 帧带单调 `id:`（重连时 `Last-Event-ID` 有意义，缺口两侧
+      > 都能感知）；hub 订阅登记所属事件循环 + 僵尸订阅回收（`_MAX_SUBSCRIBERS=64`）；config
+      > 读改写 OCC（版本号 = `sha256(原始字节)` 前 16 hex，校验之后、备份/审计之前比对）；`/chat/reset`
+      > 强制 `confirm=true` 并审计 `run.reset`；兜底 JSON 500 处理；query token 只用于
+      > `/api/v1/events`；`_publish_tool` 经 `_publish_chat` 落盘。**② 前端**：SSE 401 判定 →
+      > `unauthorized` 终态（先用带 `Authorization` 头探 `/api/v1/status`）、config 版本回传、
+      > `pausing`/`stopping` 文案 + `state-pending` 脉冲；新增 `sseReconnect.test.ts`（8 例）。
+      > **③ 引擎 / swarm / 任务层**：见 `CHANGELOG.md` 2.5.0 条目。版本号在 `__init__.py` /
+      > `npm/package.json` / `frontend/web/package.json`（+ lock）/ `CHANGELOG.md` 同步至 2.5.0。
+      > 校验 2242 pytest passed + 7 skipped（3.13 与 3.10 双版本）、58 npm 包装器测试、
+      > 前端 `tsc --noEmit` + vitest 21 passed、ruff / mypy 干净。发布仓 CI（3.10 / 3.11 /
+      > quality / typecheck / npm wrapper）全绿，其中 **`Python tests (3.10)` 抓到真实回归**：
+      > `hooks/executor.py` 里 `async with asyncio.timeout(...)` 是 3.11+ 专有，3.10 上
+      > `AttributeError` 被同一个 `try/except` 吞掉、所有 prompt/agent hook 静默降级为
+      > 「hook failed」——改用 `asyncio.wait_for` + 内层 `_collect()` 闭包，并补
+      > `tests/test_py310_compat.py`（AST 静态门禁 + 植入违规/合法同形码自测，因为本机 3.13
+      > 永远抓不到 3.11+ API 误用）。走 `.release/iterate-harness` 替代路径同步（`9f16995`、
+      > `b16634d`）并推送。
+      > **发版过程本身修掉两个真实问题**：① `release.yml` 自 `54afd1c` 起就**整体失效**——
+      > GPG 步骤用 `if: ${{ secrets.GPG_PRIVATE_KEY != '' }}`，而 `secrets` 上下文在 `if:` 里
+      > 不可用（这正是 `fd72b39` 把 PyPI 开关挪进 run 脚本踩过的坑，后续 PR 又原样引入）。
+      > 症状是 GitHub 侧工作流注册名退化成文件路径、每次 push 只留一条 0 job 的 failure 记录，
+      > 最后一次真正成功运行停在 **v2.4.1（9-25）**——即「release 事件不可靠」的真正成因；
+      > 已改为在 run 脚本里判空跳过（与 PyPI 步骤一致），签名 `.asc` 也随之真正产出。② 「建
+      > Release」这一步一直需要**可写 token**（本机 keychain 凭据在自动化上下文里读不出来，
+      > `security find-generic-password -w` 直接 rc=36，gh 只能匿名读公开仓库、POST 一律 401）；
+      > 而即使用 GITHUB_TOKEN 建了 Release 也无用——GitHub 会抑制 GITHUB_TOKEN 引发的
+      > 工作流触发，`release: published` 不会来，手工兜底 `gh workflow run` /
+      > `workflows/release.yml/dispatches` 同样 403。于是把 tag 路径并进 `release.yml`
+      > （`push: tags: v*`，第一个 step 用 GITHUB_TOKEN 幂等建 Release、说明文字取 annotated
+      > tag 的 message、轻量 tag 回落 `--generate-notes`，其余 14 个 step 原样跑）：推 tag 即
+      > 一次幂等重发布，全程无需任何机器持有可写 token。
+      > GitHub Release v2.5.0 已建（tag 指向修复后的提交），release.yml 构建
+      > `iterate_harness-2.5.0-py3-none-any.whl`（850,269 字节）+ `.asc` 签名 + `.sha256`
+      > 上传 release + 自动发布 PyPI 2.5.0（已验证 PyPI latest=2.5.0）；npm
+      > `iterate-harness@2.5.0` 已发布（registry 传播约 3 分钟，latest=2.5.0）。端到端验证：
+      > ① `npm install -g iterate-harness && ih --version` = `iterate_harness 2.5.0`（包装器私有
+      > venv `~/.iterate-harness-npm/venv` 内 `pip list` 为 `iterate-harness 2.5.0`，走 PyPI
+      > 通道，非 dev 路径）；② release 资产 `.sha256` 与本地重算一致、wheel 内含
+      > `_frontend_web/dist` 与 `_frontend/`；③ 官方源 `pip install iterate-harness==2.5.0` 后
+      > `ih --version` = `iterate_harness 2.5.0`。
+      >
       > **2.0.1 发布记录（2026-09-04）**：v2.0 后首个补丁版——修复 `config_loader.py`
       > `invariants` 配置段未被解析的关键 bug（此前 `effective.config.invariants` 恒为 `None`，
       > code 模式防御式内核收不到项目不变量、只能回退 `validation.commands`；现已正确解析
