@@ -5,6 +5,144 @@
 
 ---
 
+## [3.4.4] — 2026-09-30
+
+本轮为无人值守的全量复检（Bugbot 式代码评审 + UX/功能缺口评审），共 24 个提交，
+全部为修复与文档变更，无新增功能（因此为 patch 版本）。
+
+### 修复 / Fixes — 安装与发布链路
+
+- **安装器版本解析（阻断级）**：三处安装器均调用 `/releases/latest`，该端点返回
+  「最新发布」而非「最新携带安装包的发布」——线上实测指向 `v2.1.5`（仅有
+  `SHA256SUMS.txt`），导致**安装 100% 失败**、`iterate update` 永远报告"已是最新"。
+  `updater.RELEASES_API_URL` 与 `scripts/install.py` 改查 `/releases?per_page=100`
+  并挑选第一个真正携带 `iterate-skill.tar.gz` 的发布（`_select_skill_release`），
+  离线发布（draft/prerelease）与版本回退均有独立报错文案。实测：旧逻辑取
+  `v2.1.5`，新逻辑取 `v3.4.2`。
+- **命令注入：拒绝包管理器远程执行动词**：`personalize` 的安全命令白名单
+  （`KNOWN_SAFE_COMMAND_PREFIXES`）按**前缀**匹配，`npx` 在列意味着
+  `npx -y evil` 只要出现在配置里就会以 `shell=True` 执行任意代码。已将 `npx`
+  移出白名单，并新增 `_REMOTE_EXEC_VERBS` 闸门拦截 `npm exec`/`npm x`、
+  `pnpm dlx`/`pnpm exec`、`yarn dlx`、`bun x`/`bun exec`；`npm run build`、
+  `npm test` 等本地脚本仍然放行。
+- **tar 解压拒绝 Windows 盘符成员**：`C:/evil` 这类成员在 POSIX 下既非绝对路径、
+  也不含 `..`，两道既有防线全部漏过。新增 `_DRIVE_LETTER_RE` 于解压前拦截。
+- **npm 安装器传输后大小校验**：`TARBALL_MAX_BYTES` 此前只在 curl 阶段生效，
+  新增 `enforceDownloadedSize()` 在传输完成后按落盘体积复核，超限即删除并失败。
+- **Qoder 包排除 `kernel/` 等目录**：`publish_qoder.MANDATORY_EXCLUDES` 对齐
+  `release.yml` 的路径排除（`harness`/`kernel`/`tests`/`.githooks`/`badges`），
+  此前这些目录会混入发布产物。
+- **`validate` 非 UTF-8 配置就地报告**：`load_schema`/配置读取改抛 `ValueError`
+  并输出可读错误，不再抛原始 `UnicodeDecodeError` traceback。
+
+### 修复 / Fixes — CLI 输出契约（`--json` 与退出码）
+
+- **`--json` 的 stdout 恒为单个可解析文档**：
+  - `refresh --json` 先向 **stdout** 打印人类警告再打印 JSON，令
+    `iterate refresh --json | jq` 直接解析失败；警告仅在非 `--json` 路径输出。
+  - `config --json`、`config get KEY --json` 在配置缺失/键名未知时输出**空**
+    stdout，而同一函数的"中间节不是映射"分支却输出 `{"error": ...}`——一个命令
+    两套契约；现已统一为 `{"error": ...}`。
+  - 任意子命令 `-p /nonexistent` 同样只给退出码不给 JSON，已补上。
+- **`doctor --json` 的 `healthy` 与退出码一致**：此前 `healthy` 只看
+  `has_errors()`，而退出码用 `errors or (strict and warnings)`，于是
+  `doctor --strict` 下"仅告警"报告打印 `"healthy": true` 却退出 1，
+  `jq .healthy` 与 `$?` 对同一次运行给出相反结论。现 `healthy` 定义为
+  `exit code == 0`，并同时输出 `blocking`/`strict`/`has_errors`/`has_warnings`，
+  不丢信息；未加 `--strict` 时取值不变。
+- **`show` 与 `status` 对损坏配置给出同一结论**：两者的渲染条件完全相同，
+  但 `show` 无条件返回 0、`status` 返回 1（其注释写明理由：否则 CI 会把坏配置
+  当成功）。挂 `show` 的流水线因此一直是绿的。现 `show` 亦退出 1，TUI 路径
+  并给出处置建议。
+- **`config set` 用法错误退出 2**：裸 `iterate`、交互命令带 `--json`、
+  `update --json` 缺 `--yes` 均返回 2（"你调用错了"），而
+  `config set KEY` 缺 `VALUE` 返回 1（"操作失败"），自动化无法区分。
+  现统一为 2；**操作性**失败（如 `max_rounds 999`）仍为 1，测试已钉住两侧。
+- **ASCII 横幅不再污染重定向输出**：横幅是 8 行块状字符，此前在任何 isatty
+  检查之前写入 stdout，于是 `v=$(iterate --version)` 捕获到 8 行艺术字加版本号，
+  与调用点自己写的"非 TTY stdout 只输出一行裸 `iterate <version>`"直接矛盾，
+  也破坏了 SKILL.md 推荐的 `iterate config get KEY` 捕获用法。横幅现仅在交互
+  终端显示。
+- **`--json` 帮助文本补全命令清单**：`iterate --help` 只列了
+  `status/show/doctor/refresh/config`，但 `guard`、`invariant`、`fingerprint`、
+  `update`（以及 `--version`）同样支持，脚本作者会误以为不支持。现全部列出，
+  并写明"除交互命令外，失败路径也保证 stdout 只有一个 JSON 文档"。
+
+### 修复 / Fixes — 非交互（CI/管道）场景下的提示
+
+- **`personalize --clear` 不再对管道抛 EOF**：此前无护栏地调用 `input()`，
+  管道 stdin 触发 EOF 后落入通用处理器，提示"输入已结束（Ctrl+D / EOF）"却不提
+  `--yes`——而 `--yes` 正是为此存在的。现与 `iterate update` 一致：先检测
+  非交互 stdin 并提示 `Pass --yes to confirm ...`，再画提示符。
+- **`install.py` 非交互提示点明处置**：`update` 缺 `--yes` 时只报
+  "Update cancelled."，`install` 缺 `--ai` 时只报"No assistants selected.
+  Installation cancelled."，均未说明是 stdin 导致、也未点出 `--yes` /
+  `--ai <name>` / `--ai all`。现两类均先给出诊断再给标志位。
+- **`guard pre-check --dry-run` 不再假装预览**：`pre-check` 是静态校验、从不
+  执行命令，却打印 "guard-pre: DRY-RUN preview (nothing executed)"，暗示常规路径
+  会执行、且该标志改变了结果；其帮助文本也承诺"预览将要执行的确切命令"，
+  是 `pre-check` 无法兑现的承诺。现改为如实说明（"guard-pre is read-only ..."），
+  并把帮助文案的作用域限定到 `post-check`。JSON 负载中的 `dry_run` 字段保持不变。
+
+### 修复 / Fixes — 正确性
+
+- **`config --json` 序列化日期类型**：date/datetime 值直接 `json.dumps` 抛
+  `TypeError`，三处输出点补 `default=str`。
+- **`iterate update --check --assistants` 每条路径都校验**：此前 `--check` 分支
+  与交互"先检查后确认"分支跳过校验，拼错的名字（如 `cluade`）静默退出 0；
+  错误信息现在直接列出 `updater.ASSISTANT_SKILL_DIRS` 而非指向 `--help`。
+- **`generate_refreshed_md` 末尾标记用 `rfind`**：用户自有的结束标记若在文件中
+  出现多次，`find` 命中第一处导致标记重复、其后内容被吞。
+- **`doctor --fix` 重复计数与备份命名**：重复数此前把整条字符串条目也算进
+  差值（报出比实际多的数字）；备份名改为 `文件名-时间戳-随机 6 位十六进制`，
+  同一秒内的多次修复不再互相覆盖。
+- **`guard` 超时杀进程路径不再抛异常**：`proc.kill()` 在进程已退出时抛
+  `ProcessLookupError`（`OSError` 子类），会以 traceback 掩盖真正的超时结论；
+  现 `killpg` 与 `proc.kill` 分别兜底。
+- **`prompt_int_in_range` 越界默认值改为夹取**：`default` 超出 `[min, max]` 时
+  既不接受也不拒绝，陷入无限循环（回退该修复会让测试套件挂死）。
+- **`uninstall` 目标去重与逐项容错**：`claude`/`claude-code` 同指向
+  `.claude/skills/iterate`（`gemini`/`gemini-cli` 同理），`--ai all` 时第一个别名
+  删完、第二个别名撞上"无 SKILL.md 标记"的防御复检，于是一次**完全成功**的卸载
+  却打印 "Skipped 2 target(s) that did not look like iterate-skill installations."。
+  现按目标目录去重；`shutil.rmtree` 亦加护栏，单个只读/锁死目录不再以原始
+  traceback 中断其余目标，部分失败退出码为 1。
+- **安装摘要框按显示列而非字符数填充**：`_frame_box` 用 `len()` 计算填充，CJK
+  字形占两列却只算一列，右边框 `│` 溢出、上下横线差一列。新增本地
+  `_display_width`（与 `iterate_cli.tui` 同算法，因该脚本必须在安装前独立运行
+  而无法依赖 `iterate_cli`）。
+- **下载量徽章脚本容忍 HTTP 帧错误**：`http.client.HTTPException`
+  （`IncompleteRead`/`BadStatusLine`/`LineTooLong`）既非 `OSError` 也非
+  `ValueError`，截断响应会以 traceback 打断整个更新，恰好放弃了"复用上次已提交
+  数值"这条为该场景而写的回退路径。现已一并捕获，`fetch_json` 文档亦声明该类型。
+
+### 重构 / Refactor
+
+- `generator._guess_dir_purpose` 移除从未被读取的 `scan` 形参，唯一调用方一并更新。
+
+### 测试 / Tests
+
+- 新增 `tests/test_command_safety.py`（9 例：远程执行动词拦截、`npx` 移除、
+  本地 `npm run`/`test` 仍放行）。
+- `tests/test_updater.py` 发布夹具改为 JSON **列表**以匹配新端点，并补 6 例发布
+  选择 + 4 例盘符路径。
+- `tests/test_install_script.py` 新增：卸载别名去重与逐项容错（4）、摘要框对齐
+  （5）与显示宽度（6）、越界默认值夹取（4，回退修复会挂死）、非交互提示点明
+  标志位（2）、非 UTF-8 输入（6）。
+- `tests/test_onboarding.py` 新增：`--version` 重定向输出为单行裸值（2）、
+  `--json` stdout 单文档契约（4）、`show`/`status` 损坏配置一致（4）、
+  `personalize --clear` 非交互拒绝与 `--yes` 穿透（2）。
+- `tests/test_config.py` 新增：`--json` 错误对象契约（3）与用法/操作退出码分工（2）。
+- `tests/test_doctor.py` 新增 `TestStrictJsonConsistency`（4）；
+  `tests/test_guard.py` 新增 dry-run 语义（3）；`tests/test_tui.py` 新增
+  `TestJsonHelpText`（3）与横幅 TTY 闸门（2）；`tests/test_update_downloads_badge.py`
+  新增 HTTP 帧错误回退（1）。
+- 全量 `pytest tests/ -q` 1236 通过；`ruff check .` 通过；
+  `npm test --prefix npm-installer` 通过；24 个提交逐一通过 ruff 与
+  全量 `.py` 语法校验，且均不含 `harness/`、`kernel/` 路径。
+
+---
+
 ## [3.4.3] — 2026-09-19
 
 ### 修复 / Fixes
