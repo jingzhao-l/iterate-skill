@@ -17,6 +17,7 @@ warning) so the badge never shows a misleading partial sum.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import ssl
@@ -136,7 +137,17 @@ def _read_bounded(resp: _FileLikeRead) -> bytes:
 
 
 def fetch_json(url: str) -> object:
-    """GET a JSON endpoint, raising on any network/decode failure."""
+    """GET a JSON endpoint, raising on any network/decode failure.
+
+    Raises:
+        OSError: ``urllib`` errors — connection refused, DNS, TLS, timeout.
+        ValueError: malformed JSON in the body.
+        http.client.HTTPException: HTTP framing problems
+            (``IncompleteRead``, ``BadStatusLine``, ``LineTooLong``) when the
+            server's response is truncated or garbled. Callers must catch this
+            alongside the two above if they intend to fall back to the
+            previously committed value — it is not an ``OSError``.
+    """
     context = ssl.create_default_context()
     headers = {"User-Agent": USER_AGENT}
     if _is_skillhub_url(url):
@@ -223,7 +234,12 @@ def main() -> int:
     for source, (url, _) in SOURCES.items():
         try:
             fetched[source] = fetch_json(url)
-        except (OSError, ValueError) as exc:  # network/decode failures must not break the run
+        # http.client.HTTPException (IncompleteRead, BadStatusLine, LineTooLong)
+        # is neither OSError nor ValueError: a truncated or garbled response
+        # escaped this guard as a raw traceback and killed the whole run,
+        # forfeiting the very fallback below. The point of catching here is to
+        # keep the last good badge instead.
+        except (OSError, ValueError, http.client.HTTPException) as exc:
             print(f"warning: {source} fetch failed: {exc}")
             fetched[source] = None
 

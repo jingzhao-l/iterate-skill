@@ -299,6 +299,43 @@ class TestMain:
         assert data["total"] == 2664
         assert "warnings" in data
 
+    def test_main_falls_back_to_previous_on_http_framing_failure(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A truncated response must not kill the run.
+
+        Regression: `http.client.HTTPException` is neither OSError nor
+        ValueError, so an IncompleteRead from a truncated response escaped the
+        guard as a raw traceback and aborted the whole update — forfeiting the
+        "reuse the previously committed value" fallback that exists for exactly
+        this case, and killing the hourly workflow instead of writing a warning.
+        """
+        import http.client
+
+        target = tmp_path / "downloads.json"
+        target.write_text(
+            json.dumps({"clawhub": 845, "skillhub": 254, "npm": 1464, "total": 2563}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(udb, "BADGES_FILE", str(target))
+
+        def failing_fetch(url: str) -> object:
+            if "npmjs" in url:
+                raise http.client.IncompleteRead(b"partial", None)
+            if "clawhub.ai" in url:
+                return _clawhub_payload(900)
+            if "skillhub" in url:
+                return _skillhub_payload(300)
+            raise AssertionError(f"unexpected url: {url}")
+
+        monkeypatch.setattr(udb, "fetch_json", failing_fetch)
+        assert udb.main() == 0, "an HTTP framing error must be treated as an upstream outage"
+        with open(target, encoding="utf-8") as handle:
+            data = json.load(handle)
+        assert data["npm"] == 1464, "must fall back to the committed value"
+        assert data["total"] == 2664
+        assert any("npm" in warning for warning in data.get("warnings", []))
+
     def test_main_keeps_file_when_counts_unresolvable(
         self, tmp_path: Path, monkeypatch
     ) -> None:
