@@ -242,7 +242,45 @@ class TestControl:
 
 
 class TestReset:
-    def test_reset_returns_idle(self, client: TestClient):
-        body = client.post("/api/v1/chat/reset")
+    def test_reset_requires_confirm(self, client: TestClient, tmp_path):
+        """Reset tears down a live run, so it is a secondary-confirm operation
+        like every other mutating route (a stray click / replayed request must
+        not kill the loop)."""
+        body = client.post("/api/v1/chat/reset", params={"project_root": str(tmp_path)})
+        assert body.status_code == 422
+        assert "confirm=true" in body.json()["detail"]
+
+    def test_reset_returns_idle(self, client: TestClient, tmp_path):
+        body = client.post(
+            "/api/v1/chat/reset",
+            params={"project_root": str(tmp_path), "confirm": "true"},
+        )
         assert body.status_code == 200
-        assert body.json() == {"ok": True, "status": "idle"}
+        assert body.json() == {"ok": True, "status": "idle", "cancelledRunId": ""}
+
+    def test_reset_is_audited(self, client: TestClient, tmp_path):
+        body = client.post(
+            "/api/v1/chat/reset",
+            params={"project_root": str(tmp_path), "confirm": "true"},
+        )
+        assert body.status_code == 200
+        audit = (tmp_path / ".iterate" / "web-audit.jsonl").read_text(encoding="utf-8")
+        assert "run.reset" in audit
+
+    def test_reset_audited_entry_names_the_cancelled_run(self, client: TestClient, tmp_path, monkeypatch):
+        """The audit entry must identify the run it tore down — ``reset()``
+        clears ``run_id``, so the id has to be captured before the reset."""
+        monkeypatch.setattr(run_manager_module.run_manager, "run_id", "run-cancelled-1")
+        client.post(
+            "/api/v1/chat/reset",
+            params={"project_root": str(tmp_path), "confirm": "true"},
+        )
+        audit = (tmp_path / ".iterate" / "web-audit.jsonl").read_text(encoding="utf-8")
+        assert "run-cancelled-1" in audit
+
+    def test_reset_unknown_project_root_404(self, client: TestClient, tmp_path):
+        body = client.post(
+            "/api/v1/chat/reset",
+            params={"project_root": str(tmp_path / "nope"), "confirm": "true"},
+        )
+        assert body.status_code == 404

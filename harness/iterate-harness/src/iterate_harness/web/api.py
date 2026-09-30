@@ -59,17 +59,29 @@ def _frontend_dir() -> Path | None:
     return None
 
 
+#: Route that may authenticate via the ``?token=`` query parameter. Only the
+#: SSE stream needs it: ``EventSource`` cannot attach an ``Authorization``
+#: header, so the token has to ride on the URL for that one endpoint. Every
+#: other route must use the header, which keeps the token out of URLs, proxy
+#: /access logs, and browser history for ordinary API calls.
+_QUERY_TOKEN_PATH = f"{API_PREFIX}/events"
+
+
 def _extract_request_token(request: "Request") -> str:
     """Return the access token from the request, if any.
 
     Accepts ``Authorization: Bearer <token>`` (used by the frontend fetch
-    wrapper) and the ``?token=<token>`` query parameter (required for the
-    EventSource stream, which cannot set custom headers).
+    wrapper) and, for the SSE stream only, the ``?token=<token>`` query
+    parameter (required for the ``EventSource`` stream, which cannot set custom
+    headers). The query parameter is ignored on every other route so a token
+    pasted into an ordinary request URL is not honoured.
     """
     authorization = request.headers.get("authorization", "")
     if authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
-    return request.query_params.get("token", "")
+    if request.url.path.rstrip("/") == _QUERY_TOKEN_PATH:
+        return request.query_params.get("token", "")
+    return ""
 
 
 def _guard_api(token: str, request: "Request") -> JSONResponse | None:
@@ -130,6 +142,23 @@ def create_app(project_root: str | Path | None = None, *, token: str | None = No
         # ``detail`` for string errors, so every 4xx carries a human message
         # the operator can act on instead of a bare "HTTP 409".
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(Exception)
+    async def _unhandled_error(
+        request: Request, exc: Exception
+    ) -> JSONResponse:
+        # A bug in any route must surface as the same {"detail": ...} JSON
+        # contract the frontend already decodes, not Starlette's default plain
+        # "Internal Server Error" text/plain body. Without this the console's
+        # fetch wrapper tried to ``response.json()`` on a non-JSON 500, the
+        # decode failed, and the operator saw a bare "HTTP 500" with no clue
+        # what broke. The traceback still goes to the server log; only the
+        # exception type + message are echoed to the local console.
+        log.exception("unhandled WebUI error on %s %s", request.method, request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal error: {type(exc).__name__}: {exc}"},
+        )
 
     # Protect every /api/v1 route behind the access token (when one is set).
     @app.middleware("http")

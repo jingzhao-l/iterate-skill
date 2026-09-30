@@ -11,9 +11,11 @@ Roles:
   (``permission_prompt`` / ``ask_user_prompt`` / ``ask_user_select``) with
   Web versions that broadcast the question over the hub and await the
   answer posted through :meth:`RunManager.send_message`.
-- Persist a human-interaction-only chat transcript to
-  ``.iterate/web-chat.jsonl`` (design §18.3) and broadcast ``chat-message`` /
-  ``run-state`` / ``progress-update`` hub events for the SSE stream.
+- Persist a human-interaction transcript to
+  ``.iterate/web-chat.jsonl`` (design §18.3) — including tool-activity lines,
+  so the chat panel can rebuild the full transcript on load/reconnect — and
+  broadcast ``chat-message`` / ``run-state`` / ``progress-update`` hub events
+  for the SSE stream.
 
 The engine itself is reused unchanged (plus a tiny nudge-injection hook on
 :class:`~iterate_harness.iterate.loop_policy.IterateLoopPolicy`); no loop
@@ -1116,17 +1118,13 @@ class RunManager:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     async def _publish_tool(self, content: str) -> None:
-        # Live tool activity is broadcast but never persisted (ephemeral).
-        await self._publish_hub(
-            "chat-message",
-            {
-                "id": uuid4().hex,
-                "role": "system",
-                "kind": "tool",
-                "content": content,
-                "timestamp": datetime.now(UTC).isoformat(),
-            },
-        )
+        # Persist like every other chat entry. Tool activity used to be
+        # broadcast live only, and the chat panel rebuilds its transcript from
+        # ``GET /chat/history`` on every (re)connect and on page load — so a
+        # connection blip, a reload, or a second tab made every "▶ 调用工具 X"
+        # line the operator had already seen vanish, leaving a run that looked
+        # like it had done nothing at all.
+        await self._publish_chat("system", content, kind="tool")
 
     def _reset(self, project_root: str) -> None:
         self.run_id = ""

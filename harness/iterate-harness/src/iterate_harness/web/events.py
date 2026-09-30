@@ -173,8 +173,31 @@ def _decision_log_tail(log_path: Path, cursor: int) -> tuple[list[dict[str, Any]
         return [], 0
 
 
+def _sse_frame(event_type: str, data: Any, event_id: int | None = None) -> str:
+    """Render one Server-Sent Event frame.
+
+    ``id:`` is emitted for every event so a reconnecting ``EventSource`` sends
+    the last id it saw back in ``Last-Event-ID``, which lets the stream (and
+    the client) reason about gaps instead of silently restarting from nothing.
+    The frame order (``id`` → ``event`` → ``data``) matches the SSE spec; the
+    id is a plain integer counter maintained by :func:`_event_generator`.
+    """
+    lines: list[str] = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event_type}")
+    lines.append(f"data: {json.dumps(data, ensure_ascii=False)}")
+    return "\n".join(lines) + "\n\n"
+
+
 async def _event_generator(project_root: Path, stream_all: bool) -> Any:
-    """Async generator interleaving hub events with periodic file snapshots."""
+    """Async generator interleaving hub events with periodic file snapshots.
+
+    Each emitted event carries a monotonically increasing ``id:`` so a
+    reconnecting ``EventSource`` can send ``Last-Event-ID`` back and both sides
+    can detect a gap (and so the browser can resume rather than treat the
+    stream as wholly new).
+    """
     log_path = project_root / ".iterate" / "decision-log.jsonl"
     try:
         cursor = 0 if not log_path.exists() else log_path.stat().st_size
@@ -188,6 +211,7 @@ async def _event_generator(project_root: Path, stream_all: bool) -> Any:
     # watching project B mirror project A's run state and chat.
     queue = await hub.subscribe(str(project_root))
     last_flush = 0.0
+    event_id = 0
     try:
         while True:
             # 1) Drain live hub events (chat / run-state / progress) promptly.
@@ -195,7 +219,8 @@ async def _event_generator(project_root: Path, stream_all: bool) -> Any:
             #    steady event stream can never starve the status push.
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=_HUB_WAKEUP)
-                yield f"event: {event.type}\ndata: {json.dumps(event.data, ensure_ascii=False)}\n\n"
+                event_id += 1
+                yield _sse_frame(event.type, event.data, event_id)
             except asyncio.TimeoutError:
                 pass
 
@@ -207,16 +232,15 @@ async def _event_generator(project_root: Path, stream_all: bool) -> Any:
             if now - last_flush >= _POLL_INTERVAL:
                 last_flush = now
                 status = await asyncio.to_thread(_build_status_payload, project_root)
-                yield f"event: status\ndata: {json.dumps(status, ensure_ascii=False)}\n\n"
+                event_id += 1
+                yield _sse_frame("status", status, event_id)
                 if stream_all:
                     entries, cursor = await asyncio.to_thread(
                         _decision_log_tail, log_path, cursor
                     )
                     if entries:
-                        yield (
-                            "event: decision-log\n"
-                            f"data: {json.dumps(entries, ensure_ascii=False)}\n\n"
-                        )
+                        event_id += 1
+                        yield _sse_frame("decision-log", entries, event_id)
     finally:
         await hub.unsubscribe(queue)
 

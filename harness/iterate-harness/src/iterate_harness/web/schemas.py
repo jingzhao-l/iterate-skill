@@ -103,6 +103,15 @@ class ConfigView(BaseModel):
     effective: dict[str, Any] = Field(default_factory=dict)
     providers: dict[str, Any] = Field(default_factory=dict)
     active_profile: str = ""
+    version: str = ""
+    """Content hash of the on-disk config, used for optimistic concurrency.
+
+    ``PUT /config`` accepts the version the editor loaded; if the file changed
+    on disk in the meantime the write is rejected with ``409`` instead of
+    silently clobbering a concurrent edit (e.g. the operator hand-edited the
+    YAML in their editor while the WebUI form was open). Empty when the file
+    does not exist yet.
+    """
 
 
 class ReportView(BaseModel):

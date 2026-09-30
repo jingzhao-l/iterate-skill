@@ -9,7 +9,8 @@ into the WebUI REST surface:
 - ``POST /chat/message`` — send a chat message (answer a pending request, or
   nudge a running loop).
 - ``POST /chat/control`` — pause / resume / stop the loop.
-- ``POST /chat/reset`` — cancel any live run and return to idle (safety hatch).
+- ``POST /chat/reset`` — cancel any live run and return to idle (safety hatch;
+  mutating, so it requires ``confirm=true`` and is audited).
 
 Live progress / run-state transitions / chat messages are pushed over the
 SSE stream via the in-process :mod:`~iterate_harness.web.hub` (see
@@ -26,7 +27,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..run_manager import RunManagerError, run_manager
-from ..security import allowed_roots, root_is_allowed
+from ..security import AuditLog, allowed_roots, root_is_allowed
 from ..schemas import (
     ChatMessage,
     ChatRunStatus,
@@ -139,10 +140,33 @@ async def control_run(
 
 
 @router.post("/chat/reset", response_model=dict[str, Any])
-async def reset_run() -> dict[str, Any]:
-    """Cancel any live run and return to idle (safety hatch, also used by tests)."""
+async def reset_run(
+    request: Request,
+    project_root: str = Query("", description="Project root (defaults to app/CWD)"),
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Cancel any live run and return to idle (safety hatch, also used by tests).
+
+    This tears down a live loop and throws away the in-memory run state, so it
+    is guarded like every other mutating route: it requires ``confirm=true``
+    and records an audit entry naming the run it cancelled. Without the audit
+    entry, a reset that killed a run mid-round was invisible in
+    ``.iterate/web-audit.jsonl`` — the only trace was a stopped run the operator
+    could not explain.
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=422,
+            detail="reset requires confirm=true (secondary confirmation)",
+        )
+    # Resolve the root before resetting: ``run_manager.reset()`` clears
+    # ``project_root``/``run_id``, and the audit entry needs both the run it
+    # cancelled and the project whose journal records it.
+    root = _resolve_project(request, project_root)
+    run_id = run_manager.run_id
     await run_manager.reset()
-    return {"ok": True, "status": "idle"}
+    AuditLog(root).record("run.reset", run_id or "(no active run)", summary={"project": root})
+    return {"ok": True, "status": "idle", "cancelledRunId": run_id}
 
 
 __all__ = ["router"]
