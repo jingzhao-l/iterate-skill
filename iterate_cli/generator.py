@@ -626,7 +626,7 @@ def _render_module_map(data: OnboardingData) -> str:
     lines.append("|---|---|")
 
     for d in scan.top_level_dirs:
-        purpose = _guess_dir_purpose(d, scan)
+        purpose = _guess_dir_purpose(d)
         lines.append(f"| `{d}/` | {purpose} |")
 
     if scan.has_specs:
@@ -639,7 +639,7 @@ def _render_module_map(data: OnboardingData) -> str:
     return "\n".join(lines)
 
 
-def _guess_dir_purpose(dir_name: str, scan: ScanResult) -> str:
+def _guess_dir_purpose(dir_name: str) -> str:
     """Guess the purpose of a top-level directory by name."""
     purpose_map = {
         "src": "源码 / Source code",
