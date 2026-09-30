@@ -1417,6 +1417,86 @@ class TestInstallCommand:
 
 
 # --------------------------------------------------------------------------- #
+# _frame_box / _display_width
+# --------------------------------------------------------------------------- #
+
+def _row_widths(text: str) -> list[int]:
+    """Column width of each output row (wide glyphs count as 2)."""
+    import unicodedata
+    return [
+        sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in row)
+        for row in text.rstrip().split("\n")
+    ]
+
+
+class TestFrameBox:
+    """Every row of the framed box must span the same number of columns.
+
+    The pads were computed with ``len()``, which counts characters rather than
+    terminal columns, so a summary line containing CJK text (project names,
+    assistant labels supplied by the user) overflowed the right-hand border and
+    pushed each ``│`` one column right per wide glyph.
+    """
+
+    def _render(self, lines, monkeypatch, capsys, title="Installation Summary") -> str:
+        # Force the plain-text branch so the assertion reads real output
+        # instead of going through rich's own layout engine.
+        monkeypatch.setattr(install, "_RICH_AVAILABLE", False)
+        install._frame_box(title, lines)
+        return capsys.readouterr().out
+
+    def test_cjk_rows_align(self, monkeypatch, capsys) -> None:
+        out = self._render(["项目 1：iterate-skill", "已安装到 .claude/skills/iterate"], monkeypatch, capsys)
+        widths = _row_widths(out)
+        assert len(set(widths)) == 1, f"rows have different widths: {widths}\n{out}"
+
+    def test_mixed_cjk_and_ascii_rows_align(self, monkeypatch, capsys) -> None:
+        out = self._render(["项目 1：iterate-skill", "project 1"], monkeypatch, capsys)
+        widths = _row_widths(out)
+        assert len(set(widths)) == 1, f"rows have different widths: {widths}\n{out}"
+
+    def test_pure_ascii_rows_align(self, monkeypatch, capsys) -> None:
+        out = self._render(["project 1", "installed to .claude"], monkeypatch, capsys)
+        widths = _row_widths(out)
+        assert len(set(widths)) == 1, widths
+
+    def test_wide_title_rows_align(self, monkeypatch, capsys) -> None:
+        out = self._render(["项目"], monkeypatch, capsys, title="安装摘要 Installation")
+        widths = _row_widths(out)
+        assert len(set(widths)) == 1, widths
+
+    def test_no_content_still_aligns(self, monkeypatch, capsys) -> None:
+        out = self._render([], monkeypatch, capsys)
+        widths = _row_widths(out)
+        assert len(set(widths)) == 1, widths
+
+
+class TestDisplayWidth:
+    def test_ascii_is_one_column_each(self) -> None:
+        assert install._display_width("project 1") == 9
+
+    def test_cjk_is_two_columns_each(self) -> None:
+        assert install._display_width("项目") == 4
+
+    def test_mixed(self) -> None:
+        # "1：i" -> 1 + ：(2) + i = 4
+        assert install._display_width("1：i") == 4
+
+    def test_empty_is_zero(self) -> None:
+        assert install._display_width("") == 0
+
+    def test_control_characters_are_zero_width(self) -> None:
+        # Only the escape byte itself is skipped; callers strip the escape
+        # *sequence* separately (_strip_ansi) before measuring.
+        assert install._display_width("\x1b[31m") == 4
+        assert install._display_width("\x1b") == 0
+
+    def test_combining_marks_add_nothing(self) -> None:
+        # "e" + combining acute is still one column.
+        assert install._display_width("e\u0301") == 1
+
+
+# --------------------------------------------------------------------------- #
 # uninstall_command
 # --------------------------------------------------------------------------- #
 

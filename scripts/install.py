@@ -201,30 +201,80 @@ def _strip_markup(text: str) -> str:
     return re.sub(r"\[/?[a-zA-Z0-9_\-:. ]*\]", "", text)
 
 
+def _display_width(text: str) -> int:
+    """Terminal display columns of ``text`` (wide/CJK glyphs count as 2).
+
+    ``len()`` counts *characters*, but a CJK ideograph occupies two terminal
+    columns, so a frame padded with ``len()`` sits too close to the right edge
+    and its border glyphs shift. Mirrors ``iterate_cli.tui._display_width`` —
+    duplicated because this script must run before the skill is installed and
+    therefore cannot import from ``iterate_cli``.
+    """
+    width = 0
+    for ch in text:
+        cp = ord(ch)
+        # Control characters (C0, DEL, C1) render nothing and take no width.
+        if cp < 0x20 or 0x7F <= cp <= 0x9F:
+            continue
+        # Combining marks and variation selectors follow the previous character.
+        if (
+            0x0300 <= cp <= 0x036F
+            or 0xFE00 <= cp <= 0xFE0F
+            or 0xE0100 <= cp <= 0xE01EF
+        ):
+            continue
+        # East Asian wide/fullwidth: CJK ideographs, kana, Hangul, fullwidth
+        # forms and fullwidth punctuation.
+        if (
+            0x1100 <= cp <= 0x115F
+            or 0x2E80 <= cp <= 0xA4CF
+            or 0xAC00 <= cp <= 0xD7A3
+            or 0xF900 <= cp <= 0xFAFF
+            or 0xFE30 <= cp <= 0xFE4F
+            or 0xFF00 <= cp <= 0xFF60
+            or 0xFFE0 <= cp <= 0xFFE6
+        ):
+            width += 2
+            continue
+        # Emoji and pictographs render as two columns in most terminals.
+        if 0x1F000 <= cp <= 0x1FAFF:
+            width += 2
+            continue
+        width += 1
+    return width
+
+
 def _frame_box(title: str, lines: list[str]) -> None:
     """Print a skills.sh-style framed box.
 
     Uses single-line box drawing characters so the frame stays aligned
     across terminals that render these glyphs consistently.
+
+    Every pad is computed from display columns rather than ``len()``: the
+    summary lines carry project paths and names the user supplies, which for a
+    Chinese project include CJK text, and padding by character count left the
+    right-hand ``│`` overflowing the top/bottom border by one column per wide
+    glyph.
     """
     visible_lines = [_strip_markup(_strip_ansi(line)) for line in lines]
-    max_len = max(len(title), *(len(line) for line in visible_lines), 1)
+    widths = [_display_width(title)] + [_display_width(line) for line in visible_lines]
+    max_len = max(*widths, 1)
     inner_width = max_len + 2
 
-    top = f"┌─ {title} {'─' * max(0, inner_width - len(title) - 2)}┐"
+    top = f"┌─ {title} {'─' * max(0, inner_width - _display_width(title) - 2)}┐"
     bottom = f"└{'─' * (inner_width + 1)}┘"
 
     if _RICH_AVAILABLE:
         _CONSOLE.print(f"[iterate.primary]{top}[/]")
         for line, visible in zip(lines, visible_lines):
-            padding = " " * (inner_width - len(visible))
+            padding = " " * (inner_width - _display_width(visible))
             _CONSOLE.print(f"[iterate.primary]│[/] {line}{padding}[iterate.primary]│[/]")
         _CONSOLE.print(f"[iterate.primary]{bottom}[/]")
     else:
         print(top)
         for line, visible in zip(lines, visible_lines):
             plain_line = _strip_markup(line)
-            padding = " " * (inner_width - len(visible))
+            padding = " " * (inner_width - _display_width(visible))
             print(f"│ {plain_line}{padding}│")
         print(bottom)
 
