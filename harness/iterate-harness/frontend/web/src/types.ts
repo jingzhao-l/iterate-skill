@@ -118,6 +118,9 @@ export interface ConfigView {
   effective: Record<string, unknown>;
   providers: Record<string, Record<string, unknown>>;
   active_profile: string;
+  // Content hash of the on-disk config, echoed by GET /config and sent back on
+  // PUT so a concurrent edit is rejected (409) instead of silently clobbered.
+  version: string;
 }
 
 export interface ReportView {

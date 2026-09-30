@@ -184,11 +184,22 @@ export const api = {
   config: (projectRoot?: string): Promise<ConfigView> =>
     request<ConfigView>(`/config${buildQuery(projectRoot)}`),
 
-  saveConfig: (config: Record<string, unknown>, projectRoot?: string): Promise<OperationResult> =>
-    request<OperationResult>(`/config${buildQuery(projectRoot, { confirm: "true" })}`, {
-      method: "PUT",
-      body: JSON.stringify(config),
-    }),
+  // ``expectedVersion`` is the ``version`` returned by the GET the editor was
+  // built from. When the file changed on disk in the meantime the backend
+  // answers 409 instead of overwriting the other edit; the editor then reloads
+  // and the operator re-applies their change.
+  saveConfig: (
+    config: Record<string, unknown>,
+    projectRoot?: string,
+    expectedVersion?: string,
+  ): Promise<OperationResult> =>
+    request<OperationResult>(
+      `/config${buildQuery(projectRoot, { confirm: "true", expectedVersion })}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(config),
+      },
+    ),
 
   reports: (projectRoot?: string): Promise<ReportView[]> =>
     request<ReportView[]>(`/reports${buildQuery(projectRoot)}`),
@@ -229,6 +240,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ action }),
     }),
+
+  // Safety hatch: cancel a live run and return to idle. Mutating, so it always
+  // carries the secondary-confirm flag (and is audited server-side).
+  chatReset: (projectRoot?: string): Promise<{ ok: boolean; status: string }> =>
+    request<{ ok: boolean; status: string }>(
+      `/chat/reset${buildQuery(projectRoot, { confirm: "true" })}`,
+      { method: "POST" },
+    ),
 
   // ---- Workspaces (design §17.3 P4) ----
   workspaces: (projectRoot?: string): Promise<WorkspaceView[]> =>
