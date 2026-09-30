@@ -265,3 +265,72 @@ class TestShouldShowBanner:
         monkeypatch.setenv("ITERATE_NO_BANNER", "")
         monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
         assert cli._should_show_banner(self._args()) is False
+
+
+class TestJsonHelpText:
+    """``iterate --help`` must name every command that accepts ``--json``.
+
+    Regression: the help listed only "status/show/doctor/refresh/config", so a
+    script author reading it would wrongly conclude that
+    `iterate guard pre-check --json`, `invariant`, `fingerprint` and `update`
+    had no structured mode — all four do (verified against the subparsers).
+    """
+
+    JSON_CAPABLE = (
+        "status",
+        "show",
+        "doctor",
+        "refresh",
+        "config",
+        "guard",
+        "invariant",
+        "fingerprint",
+        "update",
+    )
+
+    @staticmethod
+    def _help_text() -> str:
+        return cli._build_parser().format_help()
+
+    @staticmethod
+    def _json_option_help() -> str:
+        """The unwrapped `--json` option string, independent of wrapping.
+
+        `format_help()` hard-wraps to the terminal width, so grepping a line of
+        it for a command name breaks whenever the sentence happens to wrap
+        between two commands.
+        """
+        parser = cli._build_parser()
+        for action in parser._actions:
+            if "--json" in getattr(action, "option_strings", []):
+                return action.help or ""
+        raise AssertionError("the global --json flag is missing")
+
+    def test_every_json_capable_command_is_listed(self) -> None:
+        json_help = self._json_option_help()
+        for command in self.JSON_CAPABLE:
+            assert command in json_help, (
+                f"`--json` help does not mention `{command}`: {json_help!r}"
+            )
+
+    def test_help_still_notes_that_interactive_commands_reject_it(self) -> None:
+        assert "interactive" in self._help_text().lower()
+
+    def test_the_flag_really_exists_on_each_listed_subcommand(self) -> None:
+        """The help must not promise a flag a subcommand lacks."""
+        import argparse
+
+        parser = cli._build_parser()
+        subactions = [
+            a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+        ]
+        assert subactions, "expected subparsers"
+        choices = subactions[0].choices
+        for command in self.JSON_CAPABLE:
+            assert command in choices, command
+            flags = {
+                opt
+                for action in choices[command]._actions
+                for opt in getattr(action, "option_strings", [])
+            }
+            assert "--json" in flags, f"`{command}` does not accept --json"

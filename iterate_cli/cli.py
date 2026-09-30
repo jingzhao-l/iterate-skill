@@ -301,8 +301,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         default=False,
-        help="Emit structured JSON for status/show/doctor/refresh/config instead "
-        "of TUI output (interactive commands reject it).",
+        help="Emit structured JSON instead of TUI output for status, show, "
+        "doctor, refresh, config, guard, invariant, fingerprint and update "
+        "(and for --version). Interactive commands (onboard/personalize/"
+        "reonboard) reject it; on every other path stdout holds exactly one "
+        "JSON document, including on failure.",
     )
     parser.add_argument(
         "-p",
