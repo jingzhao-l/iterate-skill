@@ -140,7 +140,15 @@ def main(argv: list[str] | None = None) -> int:
     project_root = Path(args.project).resolve()
 
     if not project_root.is_dir():
-        tui.error(f"Error: project directory not found: {project_root}")
+        # `--json` must put the error on stdout: a script piping
+        # `iterate status --json | jq` to a missing/typo'd project path got an
+        # empty body plus a bare exit 1, while a corrupt config in the *same*
+        # command did emit {"error": ...}. One command, one contract.
+        message = f"project directory not found: {project_root}"
+        if getattr(args, "json", False):
+            print(json.dumps({"error": message}, ensure_ascii=False))
+        else:
+            tui.error(f"Error: {message}")
         return 1
 
     # Structured (JSON) output must not be polluted by the ASCII banner.
@@ -901,9 +909,13 @@ def _cmd_refresh(
         return payload
 
     if not is_onboarding_complete(project_root):
-        tui.warning("Onboarding not yet completed. Run 'iterate onboard' first.")
+        # stdout must be exactly one JSON document under --json; the human
+        # warning on the same stream made `iterate refresh --json | jq` die
+        # with a parse error, since tui.warning() writes to stdout.
         if json_output:
             print(json.dumps(_json("onboarding not completed"), ensure_ascii=False))
+        else:
+            tui.warning("Onboarding not yet completed. Run 'iterate onboard' first.")
         return 1
 
     if dry_run:

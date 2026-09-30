@@ -7,6 +7,8 @@ normal paths, error paths, and boundary scenarios.
 from __future__ import annotations
 
 import hashlib
+import contextlib
+import io
 import json
 import sys
 from pathlib import Path
@@ -2159,6 +2161,48 @@ class TestCLIVersion:
         assert data["command"] == "version"
         assert data["version"] == __version__
         assert "██" not in captured.out
+
+
+class TestJsonStdoutIsExactlyOneDocument:
+    """Under ``--json``, stdout must contain exactly one parseable document.
+
+    Regression: `refresh --json` printed the human warning
+    "Onboarding not yet completed..." to stdout *before* the JSON, so
+    `iterate refresh --json | jq` died with a parse error — the very consumer
+    the flag exists for.
+    """
+
+    @staticmethod
+    def _run(args, tmp_path) -> tuple[int, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cli_main(args + ["-p", str(tmp_path), "--no-banner"])
+        return code, out.getvalue()
+
+    def test_refresh_json_on_unproject_is_lone_json(self, tmp_path) -> None:
+        code, out = self._run(["refresh", "--json"], tmp_path)
+        assert code == 1
+        payload = json.loads(out)  # must not raise
+        assert payload["ok"] is False
+        assert payload["error"] == "onboarding not completed"
+
+    def test_refresh_json_no_human_text_on_stdout(self, tmp_path) -> None:
+        code, out = self._run(["refresh", "--json"], tmp_path)
+        assert "\u26a0" not in out, out
+        assert "Onboarding not yet completed" not in out, out
+
+    def test_refresh_non_json_still_prints_the_warning(self, tmp_path) -> None:
+        """Suppression must be scoped to --json, not remove the message."""
+        code, out = self._run(["refresh"], tmp_path)
+        assert code == 1
+        assert "Onboarding not yet completed" in out
+
+    def test_missing_project_dir_json_emits_error_object(self) -> None:
+        """A precondition failure is still a JSON error, not empty stdout."""
+        code, out = self._run(["status", "--json"], Path("/definitely/not/here"))
+        assert code == 1
+        payload = json.loads(out)
+        assert "project directory not found" in payload["error"]
 
 
 class TestCLIGlobalFlagsAfterSubcommand:

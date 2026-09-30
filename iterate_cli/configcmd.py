@@ -262,7 +262,17 @@ def run_config_get(
     """
     config = _resolved_config(project_root)
     if config is None:
-        tui.error("iterate.config.yaml is missing or unreadable. Run 'iterate onboard' first.")
+        # `--json` promises "stdout is one JSON object", so a precondition
+        # failure must be expressed as {"error": ...} on stdout. Emitting
+        # nothing left scripts reading `config get KEY --json` with an empty
+        # body and a bare exit code, while the malformed-section failure in the
+        # very same function *did* emit a JSON error — two contracts for one
+        # command.
+        message = "iterate.config.yaml is missing or unreadable. Run 'iterate onboard' first."
+        if json_output:
+            print(json.dumps({"error": message}, ensure_ascii=False))
+        else:
+            tui.error(message)
         return 1
 
     def _read(spec: ConfigKeySpec) -> Any:
@@ -280,7 +290,11 @@ def run_config_get(
     if key is not None:
         spec = _resolve_key(key)
         if spec is None:
-            tui.error(f"Unknown config key {key!r}. Use `iterate config` to list keys.")
+            message = f"Unknown config key {key!r}. Use `iterate config` to list keys."
+            if json_output:
+                print(json.dumps({"error": message}, ensure_ascii=False))
+            else:
+                tui.error(message)
             return 1
         value = _read(spec)
         if value is _MALFORMED:

@@ -476,6 +476,36 @@ class TestConfigJson:
         payload = json.loads(capsys.readouterr().out)
         assert payload["goal"] == "2024-06-01"
 
+    def test_missing_config_json_emits_error_object(self, tmp_path, capsys) -> None:
+        """`--json` means "stdout is JSON", including on precondition failure.
+
+        Regression: a missing config printed a human error to stderr and left
+        stdout *empty* (exit 1), while the malformed-section failure in the
+        same function did emit {"error": ...} — one command, two contracts.
+        """
+        project = _make_project(tmp_path)  # no iterate.config.yaml written
+        code = cli_main(["config", "--json", "-p", str(project), "--no-banner"])
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "iterate.config.yaml is missing" in payload["error"]
+
+    def test_missing_config_json_get_emits_error_object(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        code = cli_main(["config", "get", "goal", "--json", "-p", str(project), "--no-banner"])
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "iterate.config.yaml is missing" in payload["error"]
+
+    def test_unknown_key_json_emits_error_object(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            ["config", "get", "nope", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "Unknown config key" in payload["error"]
+
     def test_set_json_confirms_and_stdout_is_clean(self, tmp_path, capsys) -> None:
         project = _make_project(tmp_path)
         _write_config(project, _base_config())
