@@ -1372,12 +1372,16 @@ def _cmd_config(
     from iterate_cli.configcmd import run_config_get, run_config_set
 
     if action == "set":
+        # Usage errors must be exit 2 everywhere (bare `iterate`, `--json` on
+        # an interactive command, `update --json` without `--yes` all use 2), so
+        # automation can tell "you invoked it wrong" apart from "the operation
+        # failed". These two were the only ones returning 1 for a bad call.
         if key is None:
             tui.error("Usage: iterate config set KEY VALUE")
-            return 1
+            return 2
         if value is None:
             tui.error("Usage: iterate config set KEY VALUE")
-            return 1
+            return 2
         return run_config_set(project_root, key, value, json_output=json_output)
 
     # 'get' (explicit or implicit) lists all values when no key is given.

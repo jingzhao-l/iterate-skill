@@ -382,10 +382,15 @@ class TestConfigCli:
         project = _make_project(tmp_path)
         _write_config(project, _base_config())
         code = cli_main(["config", "set", "goal", "-p", str(project), "--no-banner"])
-        assert code == 1
+        assert code == 2, "a missing VALUE is a usage error, not a failed operation"
         assert "Usage" in capsys.readouterr().err
 
     def test_cli_set_invalid_value(self, tmp_path) -> None:
+        """A value that runs and is rejected stays exit 1 (operation failed).
+
+        Paired with the missing-VALUE test above, which is exit 2: usage
+        errors and operational failures must be distinguishable by code.
+        """
         project = _make_project(tmp_path)
         _write_config(project, _base_config())
         code = cli_main(
