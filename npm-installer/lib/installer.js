@@ -338,6 +338,40 @@ async function downloadFile(url, destPath, token, { progress = false, maxBytes =
   } else {
     await runCommand('curl', args);
   }
+  // `--max-filesize` is best-effort by curl's own documentation: it is only
+  // enforced when the server advertises a Content-Length, so a response sent
+  // with chunked transfer encoding streams to disk unbounded. Re-stat after the
+  // fact so the cap holds regardless of how the body was framed, and so a
+  // truncated-then-huge body cannot be hashed or extracted.
+  enforceDownloadedSize(destPath, maxBytes);
+}
+
+/**
+ * Fail closed when a completed download exceeds ``maxBytes``.
+ *
+ * The oversized file is removed so a later retry cannot silently reuse it.
+ * @param {string} destPath
+ * @param {number} maxBytes
+ */
+function enforceDownloadedSize(destPath, maxBytes) {
+  let size;
+  try {
+    size = fs.statSync(destPath).size;
+  } catch (err) {
+    // curl already reported a missing output file as a failure; nothing to
+    // check here, and re-reporting would mask the real error.
+    return;
+  }
+  if (size > maxBytes) {
+    try {
+      fs.unlinkSync(destPath);
+    } catch {
+      // Best effort: the size violation below is what the user must act on.
+    }
+    throw new InstallerError(
+      `Downloaded file is ${size} bytes, above the ${maxBytes} byte safety cap — refusing to proceed.`,
+    );
+  }
 }
 
 function sha256File(filePath) {
@@ -1166,6 +1200,7 @@ module.exports = {
   resolveInstallMode,
   askYesNo,
   parseChecksums,
+  enforceDownloadedSize,
   extractTarball,
   rejectLinkEntries,
   isGithubApiUrl,

@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode, parseChecksums, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, buildAuthFlags, InstallerError, runCommand, runPythonInstall } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums, enforceDownloadedSize, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, buildAuthFlags, InstallerError, runCommand, runPythonInstall } = require('../lib/installer');
 
 // 64-char lowercase hex digest, as sha256 actually produces.
 const H = 'a'.repeat(64);
@@ -37,6 +37,47 @@ function withHomeAndCwd(home, fn) {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   })();
+}
+
+/**
+ * Post-download size enforcement.
+ *
+ * curl's `--max-filesize` is documented as best-effort: it only applies when
+ * the server advertises a Content-Length. A response framed with chunked
+ * transfer encoding therefore streams to disk with no cap at all, so the
+ * installer re-stats the file after the transfer and fails closed.
+ */
+function testEnforceDownloadedSize() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iterate-size-'));
+  try {
+    const ok = path.join(dir, 'ok.bin');
+    fs.writeFileSync(ok, Buffer.alloc(10));
+    // Under the cap: accepted.
+    enforceDownloadedSize(ok, 1024);
+
+    // Exactly at the cap: accepted (the cap is exclusive only above).
+    const exact = path.join(dir, 'exact.bin');
+    fs.writeFileSync(exact, Buffer.alloc(1024));
+    enforceDownloadedSize(exact, 1024);
+
+    // One byte over: refused.
+    const big = path.join(dir, 'big.bin');
+    fs.writeFileSync(big, Buffer.alloc(1025));
+    assert.throws(
+      () => enforceDownloadedSize(big, 1024),
+      (err) => err instanceof InstallerError && /safety cap/.test(err.message),
+      'a file above the cap must raise InstallerError',
+    );
+    // The oversized payload is removed so a retry cannot reuse it.
+    assert.ok(!fs.existsSync(big), 'oversized download must be deleted');
+
+    // A missing file is left to curl's own error reporting, not double-reported.
+    enforceDownloadedSize(path.join(dir, 'never-written.bin'), 1024);
+
+    console.log('  ✓ enforceDownloadedSize rejects an uncapped/oversized download');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function run() {
@@ -348,6 +389,8 @@ async function run() {
   } finally {
     fs.rmSync(killSelf, { force: true });
   }
+
+  testEnforceDownloadedSize();
 
   console.log('mode.test.js: all runCommand/runPythonInstall hardening tests passed');
 }
