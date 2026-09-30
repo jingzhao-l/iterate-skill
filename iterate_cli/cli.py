@@ -513,7 +513,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "'pre-check' verifies targets exist / worktree is clean / manifests are "
         "ready before editing; 'post-check' executes exactly the configured "
         "validation.commands after editing. Exits non-zero on failure. "
-        "Use --dry-run to preview exact commands without executing them.",
+        "On 'post-check', --dry-run previews the exact commands instead of "
+        "executing them ('pre-check' never executes anything, so the flag only "
+        "labels its output there).",
     )
     guard_parser.add_argument(
         "guard_action",
@@ -536,7 +538,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Preview the exact commands that would run without executing anything.",
+        help="On 'post-check', preview the exact commands that would run "
+        "without executing them. 'pre-check' is read-only and never runs "
+        "commands, so there the flag only labels the report.",
     )
 
     invariant_parser = subparsers.add_parser(

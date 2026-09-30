@@ -801,7 +801,18 @@ def render_guard_result(result: GuardResult, json_output: bool = False) -> int:
         return EXIT_PASS if result.passed else EXIT_FAIL
 
     if result.dry_run:
-        tui.warning(f"{result.name}: DRY-RUN preview (nothing executed)", indent=2)
+        if result.name == "guard-pre":
+            # pre-check is static validation: it never runs a command, so a
+            # "DRY-RUN preview (nothing executed)" banner implied that the
+            # normal path *does* execute something, and made the no-op flag
+            # look like it changed the outcome. Say what is actually true.
+            tui.info(
+                "guard-pre is read-only: it never executes commands, "
+                "so --dry-run does not change what runs.",
+                indent=2,
+            )
+        else:
+            tui.warning(f"{result.name}: DRY-RUN preview (nothing executed)", indent=2)
     if result.passed:
         tui.success(f"{result.name}: PASS")
     else:

@@ -541,6 +541,48 @@ class TestRenderGuardResult:
         data = json.loads(capsys.readouterr().out)
         assert data["passed"] is False
 
+    def test_precheck_dry_run_says_it_is_read_only(
+        self, tmp_path, capsys
+    ) -> None:
+        """`guard pre-check --dry-run` must not imply it normally executes.
+
+        Regression: pre-check printed "guard-pre: DRY-RUN preview (nothing
+        executed)", suggesting the ordinary path *does* execute commands and
+        that the flag changed the outcome — pre-check is static validation and
+        never runs anything. The flag's help promised "preview the exact
+        commands that would run", which the sub-command cannot deliver.
+        """
+        project = _make_project(tmp_path)
+        result = run_guard_precheck(project, [], dry_run=True)
+        assert result.dry_run is True
+
+        code = render_guard_result(result, json_output=False)
+        out = capsys.readouterr().out
+        assert code == EXIT_PASS
+        assert "DRY-RUN preview" not in out, out
+        assert "read-only" in out
+
+    def test_postcheck_dry_run_keeps_the_preview_banner(
+        self, tmp_path, capsys
+    ) -> None:
+        """post-check really can execute, so its preview banner stays."""
+        project = _make_project(tmp_path)
+        result = run_guard_postcheck(project, None, dry_run=True)
+        render_guard_result(result, json_output=False)
+        out = capsys.readouterr().out
+        assert "DRY-RUN preview (nothing executed)" in out
+
+    def test_precheck_dry_run_still_reports_it_in_json(
+        self, tmp_path, capsys
+    ) -> None:
+        """The machine-readable payload keeps exposing dry_run untouched."""
+        project = _make_project(tmp_path)
+        result = run_guard_precheck(project, [], dry_run=True)
+        render_guard_result(result, json_output=True)
+        data = json.loads(capsys.readouterr().out)
+        assert data["dry_run"] is True
+        assert data["check"] == "guard-pre"
+
 
 # ---------------------------------------------------------------------------
 # CLI integration
