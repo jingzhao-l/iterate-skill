@@ -838,6 +838,18 @@ def _cmd_personalize_clear(
         import builtins
 
         from iterate_cli.wizard import _ask_yes_no
+        # Mirror `iterate update`: refuse before prompting rather than letting
+        # builtins.input() raise EOFError into the generic handler. The old
+        # path printed the question, hit EOF, then reported
+        # "Input ended (Ctrl+D / EOF), nothing was written" — which never
+        # mentions the `--yes` flag written for exactly this case, so a CI
+        # caller had no way to learn how to proceed.
+        if not _stdin_is_interactive():
+            tui.hint(
+                "Non-interactive stdin detected. Pass --yes to confirm "
+                "clearing personalization without a prompt."
+            )
+            return 1
 
         confirmed = _ask_yes_no(
             "确认清空所有个性化配置? / Confirm clearing all personalization?",

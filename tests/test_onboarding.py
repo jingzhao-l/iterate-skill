@@ -5425,7 +5425,9 @@ class TestPersonalizeClear:
             fake_project, PersonalizationData(protected_paths=["legacy/**"])
         )
 
-        # Simulate the user declining the confirmation prompt.
+        # Simulate the user declining the confirmation prompt. The prompt is
+        # now only reached on an interactive stdin, so the test has to say so.
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(
             "iterate_cli.wizard._ask_yes_no", lambda *a, **k: False
         )
@@ -5436,6 +5438,61 @@ class TestPersonalizeClear:
             (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
         )
         assert "personalization" in config  # untouched
+
+    def test_clear_without_yes_on_non_interactive_stdin_names_the_flag(
+        self, fake_project: Path, capsys, monkeypatch
+    ) -> None:
+        """A piped `personalize --clear` must say how to proceed, not hang.
+
+        Regression: it called input() unguarded, so stdin at EOF raised
+        EOFError into the generic handler, which reported "Input ended (Ctrl+D
+        / EOF), nothing was written" — never mentioning the `--yes` flag that
+        exists for exactly this case. A CI caller had no way to learn how to
+        proceed. `iterate update` already refused with a hint naming `--yes`.
+        """
+        from iterate_cli.personalize import save_personalization
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        save_personalization(
+            fake_project, PersonalizationData(protected_paths=["legacy/**"])
+        )
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        capsys.readouterr()
+
+        ret = cli_main(["personalize", "-p", str(fake_project), "--clear"])
+
+        assert ret == 1, "refusing to prompt must fail loudly, not exit 0"
+        out = capsys.readouterr().out
+        assert "--yes" in out, f"hint must name the flag: {out!r}"
+        assert "Non-interactive" in out
+        # Nothing was written.
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert "personalization" in config
+
+    def test_clear_with_yes_still_works_on_non_interactive_stdin(
+        self, fake_project: Path, capsys, monkeypatch
+    ) -> None:
+        """`--yes` must bypass the prompt on a pipe — the point of the flag."""
+        from iterate_cli.personalize import save_personalization
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        save_personalization(
+            fake_project, PersonalizationData(protected_paths=["legacy/**"])
+        )
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        capsys.readouterr()
+
+        ret = cli_main(["personalize", "-p", str(fake_project), "--clear", "--yes"])
+
+        assert ret == 0
+        config = yaml.safe_load(
+            (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
+        )
+        assert "personalization" not in config
 
     def test_clear_nothing_to_clear(self, fake_project: Path, capsys) -> None:
         data = _build_onboarding_data(fake_project)
