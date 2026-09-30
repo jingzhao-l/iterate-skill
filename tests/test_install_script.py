@@ -1497,6 +1497,105 @@ class TestDisplayWidth:
 
 
 # --------------------------------------------------------------------------- #
+# non-interactive prompts must name the flag that bypasses them
+# --------------------------------------------------------------------------- #
+
+
+class TestNonInteractiveHints:
+    """A pipe must be diagnosed, not mistaken for a user cancelling.
+
+    Both prompts below ended a piped run with a plain "cancelled" line, so the
+    caller never learned that stdin was the cause — nor that `--yes` / `--ai`
+    exist precisely to make the operation scriptable.
+    """
+
+
+    def test_update_on_non_interactive_stdin_names_the_yes_flag(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A piped `update` must say *why* it stopped and how to proceed.
+
+        Regression: the confirmation returned "declined" for a pipe as well as
+        for a real "n", so the caller only saw "Update cancelled." — never
+        learning that stdin was the cause, and never being pointed at `--yes`,
+        which exists for exactly this case. `iterate update` (the Python CLI)
+        already refused with a hint naming the flag.
+        """
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        # Pretend a checksum-carrying release is reachable so the code path
+        # that asks for confirmation is the one under test.
+        monkeypatch.setattr(
+            install,
+            "_fetch_latest_release_info",
+            lambda token=None: (
+                {
+                    "tag": "v9.9.9",
+                    "tarball_url": "https://example.invalid/iter.tar.gz",
+                    "checksum_url": "https://example.invalid/SHA256SUMS.txt",
+                },
+                None,
+            ),
+        )
+        monkeypatch.setattr(install, "_validate_github_token", lambda token: None)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        capsys.readouterr()
+
+        rc = install.update_command(
+            "trae", target, source, None, global_install=False, yes=False
+        )
+        out = capsys.readouterr().out
+
+        assert rc == 1, out
+        assert "--yes" in out, f"hint must name the flag: {out!r}"
+        assert "Non-interactive" in out
+        # The user-facing "cancelled" phrasing must be replaced, not added to.
+        assert "Update cancelled." not in out, out
+
+    def test_install_without_ai_on_non_interactive_stdin_names_the_ai_flag(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Omitting `--ai` on a pipe must not be reported as a user cancel.
+
+        The number-menu prompt has nobody reading it, so the run ended with
+        "No assistants selected. Installation cancelled." — which never states
+        that stdin was the reason or that `--ai <name>` / `--ai all` bypasses
+        the prompt entirely.
+        """
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        capsys.readouterr()
+
+        def eof(_prompt: str) -> str:
+            # What a real pipe gives: input() hits EOF immediately.
+            raise EOFError
+
+        rc = install.install_command(
+            None,
+            target,
+            dry_run=False,
+            source=source,
+            force=False,
+            global_install=False,
+            input_func=eof,
+        )
+        out = capsys.readouterr().out
+
+        assert rc == 1, out
+        assert "--ai" in out, f"hint must name the flag: {out!r}"
+        assert "Non-interactive" in out
+        assert "Installation cancelled." not in out, out
+
+# --------------------------------------------------------------------------- #
 # uninstall_command
 # --------------------------------------------------------------------------- #
 

@@ -1128,7 +1128,17 @@ def install_command(
     if ai is None:
         selected = interactive_select_assistants(effective_target, input_func)
         if not selected:
-            _hint("No assistants selected. Installation cancelled.")
+            # A dead-end for CI: the prompt above has no answers to read, so the
+            # caller only ever saw "cancelled" and never learned that stdin was
+            # the cause or that `--ai` bypasses the prompt entirely.
+            if not sys.stdin.isatty():
+                _hint(
+                    "Non-interactive stdin detected — cannot ask which "
+                    "assistants to install. Pass `--ai <assistant>` or "
+                    "`--ai all`."
+                )
+            else:
+                _hint("No assistants selected. Installation cancelled.")
             # Non-zero so the npx wrapper does not report a false success.
             return 1
         targets = selected
@@ -1847,9 +1857,17 @@ def update_command(
             return 1
         if not yes:
             confirmed = _safe_confirm("Continue? [y/N]: ", input_func, default=False)
+            if confirmed is None:
+                # Non-interactive stdin (CI/pipe/</dev/null). _safe_confirm
+                # returns None rather than raising EOFError, but reporting
+                # "Update cancelled." left the caller guessing *why* — and
+                # `--yes` is the flag written for exactly this case.
+                _hint(
+                    "Non-interactive stdin detected. Pass `update --yes` to "
+                    "update without a prompt."
+                )
+                return 1
             if confirmed is not True:
-                # Declined, or non-interactive stdin (CI/pipe) where asking
-                # would have hit EOFError — treat as declined and stop.
                 _hint("Update cancelled.")
                 return 1
         _hint("Downloading release source...")
