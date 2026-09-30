@@ -1439,6 +1439,92 @@ class TestUninstallCommand:
         assert install.uninstall_command("trae", target, global_install=False, yes=False, input_func=seq) == 1
         assert (target / ".trae" / "skills" / "iterate").exists()
 
+    def test_all_with_alias_targets_succeeds_without_false_skip(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Alias keys must not produce a false "did not look like" summary.
+
+        `claude` and `claude-code` both resolve to .claude/skills/iterate, as do
+        `gemini` / `gemini-cli`. With `--ai all`, the first alias deleted the
+        directory and the second then failed the defensive marker re-check, so
+        a perfectly clean uninstall printed "Skipped 2 target(s) that did not
+        look like iterate-skill installations." on success.
+        """
+        target = tmp_path / "proj"
+        target.mkdir()
+        for rel in (".claude/skills/iterate", ".gemini/skills/iterate"):
+            dest = target / rel
+            dest.mkdir(parents=True)
+            (dest / "SKILL.md").write_text("skill", encoding="utf-8")
+
+        rc = install.uninstall_command("all", target, global_install=False, yes=True)
+        out = capsys.readouterr().out
+
+        assert rc == 0, out
+        assert "did not look like iterate-skill installations" not in out, out
+        assert not (target / ".claude" / "skills" / "iterate").exists()
+        assert not (target / ".gemini" / "skills" / "iterate").exists()
+
+    def test_alias_only_target_is_uninstalled_once(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Requesting the second alias of an installed directory still works."""
+        target = tmp_path / "proj"
+        dest = target / ".claude" / "skills" / "iterate"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("skill", encoding="utf-8")
+
+        rc = install.uninstall_command("claude-code", target, global_install=False, yes=True)
+        assert rc == 0
+        assert not dest.exists()
+
+    def test_autodetect_aliased_install_does_not_report_skips(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Auto-detect mode must de-duplicate aliases too."""
+        target = tmp_path / "proj"
+        dest = target / ".claude" / "skills" / "iterate"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("skill", encoding="utf-8")
+
+        rc = install.uninstall_command(None, target, global_install=False, yes=True)
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "did not look like" not in out, out
+
+    def test_rmtree_failure_is_reported_not_raised(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable directory must not abort the remaining removals.
+
+        An uncaught OSError here left a traceback, no summary, and no notice
+        that the other assistants had already been removed.
+        """
+        target = tmp_path / "proj"
+        target.mkdir()
+        for rel in (".claude/skills/iterate", ".cursor/skills/iterate"):
+            dest = target / rel
+            dest.mkdir(parents=True)
+            (dest / "SKILL.md").write_text("skill", encoding="utf-8")
+
+        real_rmtree = install.shutil.rmtree
+        failed_dir = target / ".claude" / "skills" / "iterate"
+
+        def flaky_rmtree(path, *args, **kwargs):
+            if str(path) == str(failed_dir):
+                raise PermissionError(f"[Errno 13] Permission denied: {path}")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(install.shutil, "rmtree", flaky_rmtree)
+
+        rc = install.uninstall_command("all", target, global_install=False, yes=True)
+        out = capsys.readouterr().out
+
+        assert rc == 1, "a partial uninstall must report failure"
+        assert "Permission denied" in out
+        # The healthy target still got removed.
+        assert not (target / ".cursor" / "skills" / "iterate").exists()
+
     def test_none_installed_warns(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         _make_fake_source(tmp_path, monkeypatch)
         target = tmp_path / "proj"

@@ -1242,6 +1242,23 @@ def uninstall_command(
         _warning(f"No iterate-skill installation found in {effective_target}{mode_label}")
         return 1
 
+    # Several assistant keys are aliases for one directory (`claude` and
+    # `claude-code` both resolve to .claude/skills/iterate, likewise gemini).
+    # Without de-duplicating, `--ai all` deleted the directory once, then hit
+    # the defensive marker re-check for the second alias, reported it as
+    # "no SKILL.md marker, refusing to delete", and summed to
+    # "Skipped N target(s) that did not look like iterate-skill
+    # installations" — a false alarm printed on top of a fully successful
+    # uninstall. The first name wins so the confirmation list stays informative.
+    deduped: list[tuple[str, Path]] = []
+    seen_dirs: set[Path] = set()
+    for assistant, destination in existing:
+        if destination in seen_dirs:
+            continue
+        seen_dirs.add(destination)
+        deduped.append((assistant, destination))
+    existing = deduped
+
     if not yes:
         _tui_print("The following installations will be removed:", style="iterate.primary")
         for assistant, destination in existing:
@@ -1259,6 +1276,7 @@ def uninstall_command(
             return 1
 
     skipped: list[tuple[str, Path]] = []
+    failed: list[tuple[str, Path, str]] = []
     for assistant, destination in existing:
         if not _is_iterate_install_dir(destination):
             # Defensive re-check just before deletion; SKILL.md may have been
@@ -1267,11 +1285,22 @@ def uninstall_command(
             _warning(f"Skipped (no SKILL.md marker, refusing to delete): {destination}")
             skipped.append((assistant, destination))
             continue
-        shutil.rmtree(destination)
+        # One unreadable directory must not abort the whole uninstall: an
+        # uncaught OSError here left the user with a traceback, no summary, and
+        # no indication that the other assistants were in fact removed.
+        try:
+            shutil.rmtree(destination)
+        except OSError as exc:
+            _warning(f"Failed to remove {assistant}{mode_label}: {exc}")
+            failed.append((assistant, destination, str(exc)))
+            continue
         _success(f"Uninstalled {assistant}{mode_label}: {destination}")
 
     if skipped:
         _warning(f"Skipped {len(skipped)} target(s) that did not look like iterate-skill installations.")
+    if failed:
+        _warning(f"Failed to remove {len(failed)} target(s) — check file permissions.")
+        return 1
     _success("Uninstall complete.")
     return 0
 
