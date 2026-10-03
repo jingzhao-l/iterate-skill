@@ -53,15 +53,22 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Sign tarball and checksums with GPG (best-effort)
-        # Only runs when the repo secrets GPG_PRIVATE_KEY/GPG_PASSPHRASE are
-        # set. Imports the signing key and emits detached ASCII-armored
-        # signatures (*.asc) alongside each release artifact, so consumers can
-        # verify authenticity, not just integrity. Skips silently otherwise.
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        # Imports the signing key and emits detached ASCII-armored signatures
+        # (*.asc) alongside each release artifact, so consumers can verify
+        # authenticity, not just integrity. Skips silently when the repo
+        # secrets GPG_PRIVATE_KEY/GPG_PASSPHRASE are not set.
         env:
           GPG_INPUT_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          # `secrets` is rejected by GitHub's workflow parser inside `if:`
+          # (HTTP 422 "Unrecognized named-value: 'secrets'" — it made the whole
+          # workflow invalid, so no release since 2026-09-27 could run).
+          # `env:` still accepts it, so bind there and decide here instead.
+          if [ -z "$GPG_INPUT_KEY" ]; then
+            echo "GPG_PRIVATE_KEY not configured; skipping signing (best-effort)."
+            exit 0
+          fi
           mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
           printf '%s\n' "allow-loopback-pinentry" >> "$HOME/.gnupg/gpg-agent.conf"
           gpgconf --kill gpg-agent
@@ -105,11 +112,18 @@ jobs:
         run: python3 scripts/publish_qoder.py build --out iterate-qoder.zip
 
       - name: Sign Qoder package with GPG (best-effort)
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         env:
           GPG_INPUT_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          # `secrets` is rejected by GitHub's workflow parser inside `if:`
+          # (HTTP 422 "Unrecognized named-value: 'secrets'" — it made the whole
+          # workflow invalid, so no release since 2026-09-27 could run).
+          # `env:` still accepts it, so bind there and decide here instead.
+          if [ -z "$GPG_INPUT_KEY" ]; then
+            echo "GPG_PRIVATE_KEY not configured; skipping signing (best-effort)."
+            exit 0
+          fi
           mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
           printf '%s\n' "allow-loopback-pinentry" >> "$HOME/.gnupg/gpg-agent.conf"
           gpgconf --kill gpg-agent
@@ -169,11 +183,18 @@ jobs:
           python -m zipfile -l harness/iterate-harness/dist/*.whl | { grep -E "_frontend_web/|_frontend/" | head -20 || true; }
 
       - name: Sign wheel with GPG (best-effort)
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         env:
           GPG_INPUT_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          # `secrets` is rejected by GitHub's workflow parser inside `if:`
+          # (HTTP 422 "Unrecognized named-value: 'secrets'" — it made the whole
+          # workflow invalid, so no release since 2026-09-27 could run).
+          # `env:` still accepts it, so bind there and decide here instead.
+          if [ -z "$GPG_INPUT_KEY" ]; then
+            echo "GPG_PRIVATE_KEY not configured; skipping signing (best-effort)."
+            exit 0
+          fi
           mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
           printf '%s\n' "allow-loopback-pinentry" >> "$HOME/.gnupg/gpg-agent.conf"
           gpgconf --kill gpg-agent
