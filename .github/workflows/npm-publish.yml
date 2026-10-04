@@ -51,11 +51,31 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
+          # Node 20 ships npm 10, which predates OIDC trusted publishing
+          # (added in npm 11.5.1) — on Node 20 this job could only ever
+          # authenticate via NPM_TOKEN. Node 24 also puts us back on a
+          # non-EOL runtime (Node 20 went EOL 2026-04).
+          node-version: "24"
 
       - name: Publish with provenance
         working-directory: npm-installer
-        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # `setup-node`'s `registry-url` writes
+        # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` unconditionally.
+        # When the secret is unset that resolves to an *empty* token, and npm
+        # raises ENEEDAUTH ("need auth This command requires you to be logged
+        # in") before it ever attempts the OIDC exchange — so the Trusted
+        # Publisher mapping documented at the top of this file could never be
+        # reached. Emit the auth line ourselves: only when a token actually
+        # exists, and leave it absent otherwise so npm falls back to OIDC.
+        run: |
+          npm install -g npm@^11.5.1
+          echo "npm $(npm --version) on node $(node --version)"
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN present; authenticating with the token."
+            npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
+          else
+            echo "NPM_TOKEN unset; relying on OIDC trusted publishing."
+          fi
+          npm publish --provenance --access public
