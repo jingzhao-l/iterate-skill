@@ -75,6 +75,8 @@
 
 ## 5. 新增：质量门禁视图（Quality Gate View）
 
+> **实现状态（plugin 3.6.0）**：已实现——F8 页签实渲染会话流中的门禁证书（PASS/FAIL + 分维度评分条）；工作流收尾处 `iterate_quality_gate({operation:"compute"})` 持久化证书；`clear` 可重置陈旧门禁。
+
 - **功能**：显示项目门禁状态——各维度收敛度、验证通过率、整体 `PASS/FAIL` 与理由。
 - **数据来源**：来自 skill 3.0 写入的**机器可读质量证书**（JSON）与 harness 决策日志聚合；`iterate_status` / `iterate_history` 扩展输出门禁快照。
 - **UI 位置**：新增 `QualityGatePanel`，挂 `conversation.input.dock`（与收敛看板并列，或以新标签页并入 ObservatoryPanel）。
@@ -84,6 +86,8 @@
 
 ## 6. 新增：经验银行（Experience Bank）
 
+> **实现状态（plugin 3.6.0）**：已实现——F9 页签渲染经验条目（含采纳按钮 + 客户端搜索）；工作流在每轮验证通过后 `iterate_experience add` 沉淀经验；`remove` 可清理错误条目。
+
 - **功能**：浏览 / 搜索项目历史修复经验，命中高亮（"这次命中了第 N 条历史经验"），一键采纳。
 - **数据来源**：harness 2.0 经验库（跨会话沉淀的修复经验）+ 决策日志 + 修复注册表；skill 3.0 作为经验生产者写入。
 - **UI 位置**：新增 `ExperienceBankPanel`（可并入 ObservatoryPanel 新标签页）。
@@ -92,6 +96,8 @@
 ---
 
 ## 7. 新增：防御事件流（Defense Event Stream）
+
+> **实现状态（plugin 3.6.0）**：已实现——F10 页签渲染防御事件计数 + 事件流（标签跟随 `language`）；工作流在回滚 / 前置失败 / 不变量破坏处 `iterate_defense_events record`；`clear` 可清空事件流。
 
 - **功能**：在观测台新增"防御事件"标签页——前置校验失败、回滚、不变量违反、假设被证伪；每次触发都显示"防御住了什么"。
 - **数据来源**：harness 2.0 防御式内核事件（工具前置/后置校验结果、事务回滚、不变量违反、假设声明）经事件流推送；skill 3.0 `guard` / `invariant` 结果同步展示。
@@ -109,6 +115,8 @@
 ---
 
 ## 9. 跨会话趋势（从质量账本读取）
+
+> **实现状态（plugin 3.6.0）：部分实现**——单会话内跨轮对比已落地（观测台 F2 页签渲染跨轮对比表：每轮 findings / fixed / 严重度分布 / 验证结果，数据来自 report + `iterate_transcript` 的 `validations`）；跨会话对比经"磁盘快照拉取"指令通道可用（复制指令让模型调用 `iterate_history` 等只读工具并回显，再用导出 JSON 并排比较两次运行）。harness 趋势库（`trend_store`）直连仍未接入。
 
 - **功能**：从质量账本读取长期趋势——顽固问题、回归检测、收敛速度变化、经验命中率。
 - **数据来源**：harness 趋势库（`trend_store`）+ skill 3.0 质量账本；现有 StatsCard 趋势图升级为跨会话维度。
