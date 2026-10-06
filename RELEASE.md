@@ -845,7 +845,7 @@ stamp 不匹配会自动重装到新 tag。
 - [x] **1. 同步版本号**：编辑 `package.json`（含 `package-lock.json` 若已提交）。
 - [x] **2. 本地验证**：`cd harness/iterate-plugin && npm install && npm run typecheck && npm test`。
 - [x] **3. 提交并推送主仓库**：`git commit && git push origin main`。
-- [ ] **4. subtree 拆分到独立发布仓**：
+- [x] **4. subtree 拆分到独立发布仓**：
       ```bash
       # 若尚未配置 plugin 独立仓 remote（主仓库默认只有 origin / harness-origin）：
       git remote add plugin-origin https://github.com/jingzhao-l/iterate-plugin.git
@@ -1063,6 +1063,58 @@ stamp 不匹配会自动重装到新 tag。
 >         decision-log invalidateLogCountCache、prune 失效调用、dsh rc.2 依赖）。
 >         **验证**：typecheck + typecheck:client + build + build:client 干净，
 >         677 测试全过（+6）。
+>
+>         **3.6.0 发布记录（2026-10-07）**：dsh 0.2.1-alpha.1 升级 + 全面审计修复 +
+>         15 项 UX 缺口全量实现批次。**上游 dsh**：`dsh-v0.2.1-alpha.1`（2026-10-03
+>         发布）四包（dsh-tools/dsh-util-values/dsh-agent/dsh-jobs/dsh-session）+
+>         `@deepseek-ai/cordis 4.0.5-alpha.1` 升级，删 lock+node_modules clean install；
+>         `dshReleases` 兼容声明扩到 `0.2.0-rc.1`/`0.2.0-rc.2`/`0.2.1-alpha.1`；类型面
+>         diff 无破坏性变更触及本插件。**新能力接入**：`ask.displayReason`（审批理由
+>         zh/en 双语，deny reason 保持英文机器可读）、`presentResult`/`presentCall`
+>         卡片补全（review 终报/质量门禁/经验/断点/防御计数 + prune/triage pending 卡，
+>         新共享 helper `src/tools/present.ts`）。**审计修复（6 只读审查代理 ~120 项，
+>         分 8 批修复）**：关键——skill-prompt 两份规范脚本 `thisRound` 块级作用域
+>         ReferenceError×2（vm 沙箱回归测试）、`byDimension` 原型污染（parse/review
+>         两侧 Object.create(null)）、meta-review ROUND_GAP 不可信 round 的 CPU DoS
+>         （round 校验 + 跨度 500 + 最多 50 条明细）、evidence 分数行号过证据门
+>         （Number.isInteger）+ file_too_large/binary_file 错误码区分 + per-file 缓存、
+>         config 写路径严格校验（reviewer/reasoning_effort/dimensions 非空/
+>         validation.commands Record 形状/max_rounds≤100）+ `iterate_config write`
+>         纳入审批门控（关闸字段 WARNING 高亮）、resolveProjectRoot 与 `.iterate`
+>         realpath 包含性（symlink 逃逸拒绝）、prune checkpoint 新鲜度保全与拿不到
+>         跨进程锁拒绝重写、transcript `restoreThread`（>12 线程恢复不再丢弃错归）、
+>         `validations` capture 归一化（500 上限/坏行丢弃/幻影轮不预建）、decision-log
+>         计数 LRU(64) + 读失败透出、新增共享跨进程锁 `src/file-lock.ts`、
+>         `resolveMaxReviewRounds` 上界 clamp、triage known_intentional 总量上限
+>         （溢出 reported）与 WHOLE_FILE_LINE 单一来源、atomic-fs closeSync/fd 释放、
+>         index.ts 先挂钩子后注册工具（部分加载 fail-closed）+ 每工具注册隔离。
+>         **UX 15 缺口全量实现**：P0——启动 CTA 改自然语言启动指令（dsh 插件无
+>         command API，复制文本∈指令集锁定测试）、validation.commands 缺失 preflight
+>         fail-closed（`args.unverified` 显式放行 + zero-validation 结果不静默）、
+>         F8/F9/F10 工作流收尾接入（quality-gate compute / experience add /
+>         defense_events record）；P1——磁盘快照拉取按钮（六只读工具一键回显，
+>         空态区分"无数据/未拉取"）、运行中仪表盘（phase/轮次 + 隐藏启动按钮）、
+>         验证结果入 transcript 与 F6 UI（aborted_by_validation 高亮）、triage
+>         写回→回读闭环（apply 提为主按钮）、配置字段选择器（补 validation.commands
+>         空值警告，buildConfigEditInstruction 接线去死代码）、复制载荷对齐工具
+>         schema（iterate_fix 必填四参/resume 只带 operation/F8 带 JSON）；P2——
+>         导出补 qualityGate/experienceBank/defenseEvents/report、F2 单会话跨轮
+>         对比表、F1-F10 标签编号 + 数字键快捷键（1-9/0/-，焦点守卫）、client
+>         审计修复（剪贴板失败反馈、keydown 作用域、timer/disposer 清理、越界
+>         渲染）。**文档**：README 中英同步（兼容列表以 package.json 为真源 18 项、
+>         11 页签、新增"在 dsh 中使用 UI"小节、iterate_history 补 round/file 过滤、
+>         测试数去硬编码）、CHANGELOG 3.6.0 条目、DESIGN §9 标注部分实现。
+>         **发布**：主仓库提交 `a810786`（含 DESIGN；rebase 上游 badge 提交后推送）；
+>         subtree split（`29169cb`）再遇 non-fast-forward 老坑，照例走
+>         `.release/iterate-plugin` 替代路径——rsync 同步后**须恢复 `fbd9f81` 的
+>         repository/homepage/bugs 三字段指向独立仓**（provenance 绑定要求，此三字段
+>         为独立仓与主仓库 package.json 的既定差异，下次同步勿覆盖），npm install
+>         更新 node_modules 后工作区 1113 测试全绿，提交 `2e0890c` 快进推送
+>         `fbd9f81..2e0890c`；npm `iterate-plugin@3.6.0` 已发布（latest=3.6.0，
+>         82 文件 / 502.5 kB，tarball 复核含 `dist/file-lock.js`、
+>         `dist/tools/present.js`、重建 `lib/client.js` 227.1 kB）。**验证**：
+>         typecheck + typecheck:client + build + build:client 干净，1113 测试全过
+>         （677→1113，+436；连续 3 次全量运行无 flaky）。
 
 ---
 
