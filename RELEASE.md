@@ -1114,7 +1114,11 @@ stamp 不匹配会自动重装到新 tag。
 >         82 文件 / 502.5 kB，tarball 复核含 `dist/file-lock.js`、
 >         `dist/tools/present.js`、重建 `lib/client.js` 227.1 kB）。**验证**：
 >         typecheck + typecheck:client + build + build:client 干净，1113 测试全过
->         （677→1113，+436；连续 3 次全量运行无 flaky）。
+>         （677→1113，+436；连续 3 次全量运行无 flaky）。发布后另修独立仓
+>         `.github/workflows/npm-publish.yml`（`11198a9`）：对齐主仓 10/4 的
+>         ENEEDAUTH 修复——去掉 `registry-url`（空 token 会阻断 OIDC 交换）、
+>         条件写认证行、node 24 + npm ≥11.5.1，使 provenance 工作流可用
+>         （本版仍按清单本地 publish，latest=3.6.0 已生效）。
 
 ---
 
