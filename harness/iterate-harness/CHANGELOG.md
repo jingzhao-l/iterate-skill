@@ -6,6 +6,13 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **`iterate/evidence_transcription.py`**：kernel 转录契约（evidence 包 → 决策日志的
+  `outcome` 与 `summary`）在本仓的第二份实现。规则不是从 TypeScript 读的，而是从发布的
+  语料 `tests/kernel_fixtures/evidence-decision.ok-01.json` 读的——那条 fixture 自带规则
+  说明与 8 个用例（4 个真档案 + 4 个单字段派生），配套
+  `tests/test_iterate/test_evidence_transcription.py` 逐条比对；两侧任一实现改了映射而
+  另一侧没跟，就有一边 CI 变红。语料 pin 因此升到 `iterate-kernel@0.1.3`（0.1.2 里没有
+  这条 fixture），`scripts/check_kernel_fixtures.py` 的 registry 模式实测对着线上包过。
 - **`scripts/check_glasspane_channel.py`**：实测本机的 `glasspane-mcp` 能否被本 harness
   的 `McpClientManager` 连上、8 个必用 `gp_*` 工具是否在列表里、`gp_last_evidence` 回的
   证据包是否带着消费者要转录的四个字段。操作者命令，不是 pytest——产品不在就 exit 2
