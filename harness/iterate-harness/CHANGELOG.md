@@ -2,13 +2,32 @@
 
 All notable changes to iterate-harness should be recorded in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **跨语言对照测试不再恒 skip**（`tests/test_iterate/test_dimension_context.py`）：
+  `test_matches_the_kernel_fixture` 此前只在"碰巧有 kernel checkout 的机器"上找
+  fixture，找不到即 skip——实测 `19 passed, 1 skipped`，本仓唯一能证明 Python 半区
+  与 kernel TS 半区算的是同一件事的测试从来没跑过。现改为语料进仓
+  （`tests/kernel_fixtures/`，按 sha256 定版）、找不到即红。
+- **新增 `tests/test_iterate/test_kernel_fixtures.py`**：pin 与字节一致、每个条目必须
+  点名真实存在的消费者（不许有没人断言的契约数据）、`KERNEL_FIXTURES_DIR` 指向活
+  kernel 时两边字节必须一致；含负例（篡改一个字节、删一个文件、塞一个未定版文件都验过会红）。
+- **新增 `scripts/check_kernel_fixtures.py`**：`--source kernel/fixtures` 对着源码树查
+  （monorepo CI 用，零网络），默认模式对着 registry 发布的 `iterate-kernel@<pin>` 拉
+  tarball 查（split 仓的 CI 用）。
+- **更正 2.5.0 那条 `dimension_context` 的描述**：写的是"注入给评审与协调链路"，实测
+  该模块除自身与其测试外无任何 import，生产链路里没有它。接线是后续条目，不是既成事实。
+
 ## [2.5.0] - 2026-09-30
 
 ### Added
 
 - **`dimension_context` 工具**（`iterate/dimension_context.py`）：kernel 契约
-  `dimension_context` 的 Python 实现——把维度定义/证据要求注入给评审与协调链路，
-  配套 `tests/test_iterate/test_dimension_context.py`。
+  `dimension_context` 的 Python 实现——~~把维度定义/证据要求注入给评审与协调链路，~~
+  配套 `tests/test_iterate/test_dimension_context.py`。〔更正见 Unreleased：注入链路
+  从未发生，该模块除自身与其测试外无人 import；接线是后续工作。〕
 - **in-process 队友真正接进任务工具**（`swarm/in_process.py`、`tools/agent_tool.py`、
   `tools/send_message_tool.py`、`tasks/manager.py`）：`AgentTool` 按 `mode` 选后端
   （`in_process_teammate` → 进程内，缺失时回落子进程；`local_agent` /

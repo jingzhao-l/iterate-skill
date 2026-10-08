@@ -90,6 +90,21 @@ as `unplanned` — a reporter that quietly dropped it would be the failure this 
 consumer depends on, so a change to either is a minor-version change at minimum, and the
 fixtures in `fixtures/` are the executable statement of what the contract means.
 
+## The fixtures are the portable half of the contract
+
+`schemas/` and `fixtures/` ship in the tarball — `test/packaging.test.mjs` packs locally and
+refuses a corpus that did not make it into the artifact. Each fixture states its own rules in
+its `comment`, written so a second implementation can be coded from the file without reading the
+TypeScript. That is the only way this contract reaches the consumers that cannot import it:
+`iterate-harness` is Python and `glasspaned` is Swift.
+
+Those consumers do not read this package at runtime. They vendor a copy of the corpus pinned by
+sha256 — `iterate-harness/tests/kernel_fixtures/`, checked by its `scripts/check_kernel_fixtures.py`
+(`--source kernel/fixtures` inside the monorepo, registry mode in the split repo). Moving a fixture
+therefore means re-recording that pin in the same change, and the check fails in whichever
+direction the bytes disagree. A cross-implementation comparison that can be skipped silently is
+not a contract; it is a note nobody reads.
+
 ## Consumers
 
 Vendored or installed, a consumer's kernel is one of two things, and the difference is a
