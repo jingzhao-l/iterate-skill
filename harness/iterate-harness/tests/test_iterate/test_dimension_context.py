@@ -7,9 +7,11 @@ and must reproduce it byte for byte. If either side changes the arithmetic and
 the other does not, one of the two repos' CI goes red — which is the whole point
 of keeping the rules in a fixture rather than in prose.
 
-The fixture is read from the kernel checkout when one is available (via
-``KERNEL_FIXTURES_DIR`` or a sibling checkout) and skipped otherwise, so this
-suite still runs in an environment that only has the harness.
+The fixture is read from the vendored corpus in ``tests/kernel_fixtures`` (pinned
+by ``test_kernel_fixtures.py``), or from a live kernel checkout when
+``KERNEL_FIXTURES_DIR`` points at one. It is never skipped: an absent corpus is a
+failure, because a cross-implementation check that does not run is the one thing
+this file exists to do.
 """
 
 from __future__ import annotations
@@ -46,29 +48,38 @@ CANONICAL = [
 ]
 
 
-def _fixture_path() -> Path | None:
-    """Locate the kernel fixture, if this machine has the kernel checked out."""
+#: The vendored half of the kernel contract, pinned by ``test_kernel_fixtures.py``.
+KERNEL_CORPUS = Path(__file__).resolve().parents[1] / "kernel_fixtures"
+
+
+def _fixture_path() -> Path:
+    """Locate the kernel fixture. A missing corpus is a failure, never a skip.
+
+    A skipped cross-implementation check is the worst outcome this arrangement can
+    produce: the suite reports green while the one test that could prove the Python
+    and TypeScript halves agree has proven nothing. The corpus is vendored precisely
+    so that this test always has bytes to compare against; ``KERNEL_FIXTURES_DIR``
+    still overrides it, which is what the kernel repo's own CI uses to point the
+    comparison at its live ``kernel/fixtures``.
+    """
+    name = "dimension-context.ok-01.json"
     override = os.environ.get("KERNEL_FIXTURES_DIR")
-    candidates = []
-    if override:
-        candidates.append(Path(override) / "dimension-context.ok-01.json")
-    here = Path(__file__).resolve()
-    # .../harness/iterate-harness/tests/test_iterate/this_file
-    for up in (3, 4, 5):
-        root = here.parents[up]
-        candidates.append(root / "kernel" / "fixtures" / "dimension-context.ok-01.json")
-        candidates.append(root / "fixtures" / "dimension-context.ok-01.json")
+    candidates = [Path(override) / name] if override else []
+    candidates.append(KERNEL_CORPUS / name)
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    return None
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise AssertionError(
+        f"kernel fixture {name} is not present (looked in: {searched}). Restore it from "
+        "iterate-kernel's fixtures/ and re-pin its sha256 in "
+        "tests/kernel_fixtures/manifest.json — skipping this test is not a remedy."
+    )
 
 
 def test_matches_the_kernel_fixture() -> None:
     """This implementation reproduces the TypeScript one byte for byte."""
     path = _fixture_path()
-    if path is None:
-        pytest.skip("kernel fixture not present; set KERNEL_FIXTURES_DIR to run this")
 
     fixture = json.loads(path.read_text(encoding="utf-8"))
     raw_input = fixture["input"]
