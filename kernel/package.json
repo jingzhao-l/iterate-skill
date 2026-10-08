@@ -1,6 +1,6 @@
 {
   "name": "iterate-kernel",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "description": "iterate ecosystem shared kernel: schemas, the evidence->decision transcription, the decision-log audit chain and public validators. Verification reasoning stays in the engine; this layer transcribes.",
   "type": "module",
@@ -62,6 +62,7 @@
   "files": [
     "dist",
     "schemas",
+    "fixtures",
     "README.md"
   ],
   "scripts": {
