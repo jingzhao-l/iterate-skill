@@ -47,8 +47,11 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 def fetch_published(package: str, version: str, destination: Path) -> Path:
     """Download the published tarball for ``package@version`` (no install)."""
+    # npm pack writes into an existing directory only; a missing one surfaces as an
+    # ENOENT on the tarball path, which reads like "the package is not published".
+    destination.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["npm", "pack", f"{package}@{version}", "--pack-destination", str(destination)],
             check=True,
             capture_output=True,
@@ -60,6 +63,12 @@ def fetch_published(package: str, version: str, destination: Path) -> Path:
         raise SystemExit(
             f"npm pack {package}@{version} failed: {error.stderr.strip() or error.stdout.strip()}"
         )
+    # npm prints the path it wrote; fall back to a glob so a changed npm still works.
+    printed = result.stdout.strip().splitlines()
+    if printed:
+        candidate = Path(printed[-1])
+        if candidate.is_file():
+            return candidate
     tarballs = sorted(destination.glob(f"{package}-*.tgz"))
     if not tarballs:
         raise SystemExit(f"npm pack produced no tarball for {package}@{version}")
@@ -67,8 +76,15 @@ def fetch_published(package: str, version: str, destination: Path) -> Path:
 
 
 def unpack_fixtures(tarball: Path, destination: Path) -> Path:
+    destination.mkdir(parents=True, exist_ok=True)
     with tarfile.open(tarball, "r:gz") as archive:
-        archive.extractall(destination)
+        # The "data" filter refuses members that would escape the destination
+        # (absolute paths, ../ segments). Python before 3.11.4 has no filter
+        # argument, and this tarball comes from the registry — untrusted by default.
+        if hasattr(tarfile, "data_filter"):
+            archive.extractall(destination, filter="data")
+        else:
+            archive.extractall(destination)
     package_dir = destination / "package"
     if not package_dir.is_dir():
         raise SystemExit(f"{tarball} has no package/ root — unexpected artifact layout")
