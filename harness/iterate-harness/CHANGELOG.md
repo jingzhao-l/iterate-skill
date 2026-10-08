@@ -4,6 +4,13 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/check_glasspane_channel.py`**：实测本机的 `glasspane-mcp` 能否被本 harness
+  的 `McpClientManager` 连上、8 个必用 `gp_*` 工具是否在列表里、`gp_last_evidence` 回的
+  证据包是否带着消费者要转录的四个字段。操作者命令，不是 pytest——产品不在就 exit 2
+  明说"没测到"，不允许静默跳过。实测通过：16 工具可见，两个只读调用回真数据。
+
 ### Fixed
 
 - **跨语言对照测试不再恒 skip**（`tests/test_iterate/test_dimension_context.py`）：
