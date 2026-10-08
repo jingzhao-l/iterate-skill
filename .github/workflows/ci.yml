@@ -50,6 +50,34 @@ jobs:
       - name: Validate JSON schema is well-formed
         run: python -c "import json; json.load(open('config/config.schema.json'))"
 
+  kernel-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run kernel test suite
+        # The kernel's own suite is the C35 roundtrip gate: JSON Schema truth vs
+        # the zod mirror. Nothing else in this repo's CI runs it, so a kernel
+        # regression would otherwise land green.
+        working-directory: kernel
+        run: |
+          npm ci
+          npm test
+
+      - name: Check the harness' vendored corpus against these fixtures
+        # kernel/fixtures is the single source of truth for the cross-language
+        # contract; iterate-harness is Python and cannot import the package, so it
+        # vendors a sha256-pinned copy. A fixture moving here without re-recording
+        # that pin goes red at this step, in the same commit that moved it, instead
+        # of quietly leaving the two implementations asserting different bytes.
+        run: python3 harness/iterate-harness/scripts/check_kernel_fixtures.py --source kernel/fixtures
+
   npm-installer-test:
     runs-on: ubuntu-latest
     steps:
