@@ -15,6 +15,8 @@ export const DECISION_LOG_ENTRY_SCHEMA_ID =
   "https://schemas.iterate.dev/decision-log-entry-0.1-draft.json" as const;
 export const RECIPE_CONFIG_SCHEMA_ID =
   "https://schemas.iterate.dev/recipe-config-0.1-draft.json" as const;
+export const RUN_PLAN_SCHEMA_ID =
+  "https://schemas.iterate.dev/run-plan-0.1.json" as const;
 
 export interface JsonSchemaObject {
   readonly $id: string;
@@ -35,4 +37,8 @@ export const DECISION_LOG_ENTRY_JSON_SCHEMA: JsonSchemaObject = loadSchema(
 
 export const RECIPE_CONFIG_JSON_SCHEMA: JsonSchemaObject = loadSchema(
   "../schemas/recipe-config.schema.json"
+);
+
+export const RUN_PLAN_JSON_SCHEMA: JsonSchemaObject = loadSchema(
+  "../schemas/run-plan.schema.json"
 );

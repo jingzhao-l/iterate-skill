@@ -36,6 +36,7 @@ APIs it actually uses.
 | `evidence-decision` | the **transcription**: evidence (attribution level, circuit-breaker level, pass/fail/inconclusive) → a decision outcome and a human summary. It reads fields the engine already decided; it never infers. |
 | `decision-log-entry` / `decision-log` | the append-only decision-log entry and the `opID ↔ entry` hash chain that makes it auditable |
 | `dimension-context` / `parse` | the dimension-coverage transcription: a plan plus what the engine actually recorded → verified / unverified / unplanned, and one line to put in a summary. It validates id *shape*, never which ids exist — that list belongs to whoever configured the run. |
+| `run-plan` / `parse` | the plan that `dimension-context` needs and refuses to invent: which dimensions a run intends to cover, in the caller's order, with the declared source. It carries a **digest** (`rp_` + sha256 of the canonical form) so a ledger line can state which plan a run was held to, and a reader can notice the plan changed mid-run. Nothing here reads a config file — producing a plan is whoever configures the run's job, and that keeps the kernel from learning a consumer's file format. |
 | `errors` / `schemas` / `canonical-json` / `recipe-config` | `KernelSchemaError`, the JSON Schemas, canonical serialisation, recipe validation |
 
 ## A runnable example

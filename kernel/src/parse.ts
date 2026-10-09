@@ -13,6 +13,7 @@ import {
   type DimensionContextInput
 } from "./dimension-context.js";
 import { RecipeConfigSchema, type RecipeConfig } from "./recipe-config.js";
+import { RunPlanSchema, type RunPlan } from "./run-plan.js";
 
 function schemaError(label: string, error: z.ZodError): KernelSchemaError {
   const issues = error.issues.map((issue) => ({
@@ -59,6 +60,10 @@ export function parseDecisionLogEntry(input: unknown): DecisionLogEntry {
 
 export function parseRecipeConfig(input: unknown): RecipeConfig {
   return parseOrThrow(RecipeConfigSchema, input, "recipe config");
+}
+
+export function parseRunPlan(input: unknown): RunPlan {
+  return parseOrThrow(RunPlanSchema, input, "run plan");
 }
 
 export function parseDimensionContext(input: unknown): DimensionContext {

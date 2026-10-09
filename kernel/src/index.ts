@@ -10,9 +10,11 @@ export {
   EVIDENCE_PACK_SCHEMA_ID,
   DECISION_LOG_ENTRY_SCHEMA_ID,
   RECIPE_CONFIG_SCHEMA_ID,
+  RUN_PLAN_SCHEMA_ID,
   EVIDENCE_PACK_JSON_SCHEMA,
   DECISION_LOG_ENTRY_JSON_SCHEMA,
   RECIPE_CONFIG_JSON_SCHEMA,
+  RUN_PLAN_JSON_SCHEMA,
   type JsonSchemaObject
 } from "./schemas.js";
 
@@ -129,11 +131,26 @@ export {
   parseEvidencePackRead,
   parseDecisionLogEntry,
   parseRecipeConfig,
+  parseRunPlan,
   parseDimensionContext,
   parseDimensionContextInput
 } from "./parse.js";
 
 export { canonicalJson } from "./canonical-json.js";
+
+export {
+  RUN_PLAN_SCHEMA_VERSION,
+  RUN_PLAN_SOURCES,
+  RunPlanSchema,
+  RunPlanSourceSchema,
+  RunPlanSourceKindSchema,
+  plannedIds,
+  plannedDimensionsOf,
+  runPlanDigest,
+  type RunPlan,
+  type RunPlanSource,
+  type RunPlanSourceKind
+} from "./run-plan.js";
 
 export { decisionOutcomeFromEvidence, decisionSummaryFromEvidence } from "./evidence-decision.js";
 
