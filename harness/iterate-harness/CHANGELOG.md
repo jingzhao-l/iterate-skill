@@ -6,6 +6,15 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **`iterate/run_plan.py`：把 `iterate.config.yaml` 变成共享内核的 RunPlan 契约。** 维度
+  覆盖那套算法一直拒绝自己发明计划（是对的），而计划此前只活在这份配置里——GlassPane 侧
+  读不到，于是它的会话压缩永远渲染成"0/N verified"。本模块产出计划（scope 并集按人工书写
+  顺序、focus 取第一个声明它的 scope，两个 scope 各说一套时不拼成第三条没人写过的指令）、
+  算摘要（`rp_` + sha256，与 kernel/TS 同一规则的第二份实现，逐字对着已发布 fixture 的
+  `expectedDigest` 断言）、写文件（0600、拒相对路径、拒写引擎状态根、目录建不出来就报错，
+  且先验摘要再落盘——算不出的计划不会留下半份文件）。语料 pin 升到
+  `iterate-kernel@0.1.4`，新增 `run-plan.ok-01.json`。14 条测试、ruff 0.16.8、
+  mypy --strict 全过。
 - **`iterate/evidence_transcription.py`**：kernel 转录契约（evidence 包 → 决策日志的
   `outcome` 与 `summary`）在本仓的第二份实现。规则不是从 TypeScript 读的，而是从发布的
   语料 `tests/kernel_fixtures/evidence-decision.ok-01.json` 读的——那条 fixture 自带规则
