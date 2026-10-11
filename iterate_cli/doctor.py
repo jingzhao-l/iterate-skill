@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import shutil
 import sys
@@ -547,7 +548,19 @@ def _check_git_branch(report: DoctorReport, config: dict[str, Any]) -> None:
 
 
 def _check_validation_commands(report: DoctorReport, config: dict[str, Any]) -> None:
-    """validation.commands values must be non-empty lists of strings."""
+    """validation.commands values must be non-empty lists of strings.
+
+    Also cross-checks every command against the same known-safe prefix gate
+    ``guard`` enforces at execution time: a metachar-free but arbitrary
+    executable (``mytool --check``) passes the structural checks yet is
+    refused by ``guard pre-check``/``post-check`` — doctor used to report
+    "healthy" while guard deterministically failed, two gates disagreeing
+    about one config. And a warn (not error) is emitted when an onboarded
+    config declares no commands at all, mirroring guard's fail-closed
+    post-check reasoning without flipping healthy for brand-new projects.
+    """
+    from iterate_cli.guard import _command_is_safe as _command_is_safe_command
+
     validation = config.get("validation")
     if validation is not None and not isinstance(validation, dict):
         _err(
@@ -558,8 +571,21 @@ def _check_validation_commands(report: DoctorReport, config: dict[str, Any]) -> 
         )
         return
     commands = validation.get("commands") if validation else None
-    if commands is None:
-        _ok(report, "validation.commands", "no validation.commands configured (optional).")
+    if commands is None or commands == {}:
+        # run_doctor only reaches this check after onboarding (ITERATE.md)
+        # verified AND the config parsed, so this is an onboarded project
+        # with no validation commands — exactly the state guard post-check
+        # fails closed on. Warn (not error): the config is schema-valid.
+        # An explicit empty mapping is the SAME "nothing to verify" state as
+        # an absent key and must not be reported as a passing check.
+        _warn(
+            report,
+            "validation.commands",
+            "no validation.commands configured — `iterate guard post-check` "
+            "would fail closed.",
+            "Add validation.commands (or run `iterate onboard`) so the "
+            "pre-check/post-check gate has something to verify.",
+        )
         return
     if not isinstance(commands, dict):
         _err(
@@ -568,13 +594,37 @@ def _check_validation_commands(report: DoctorReport, config: dict[str, Any]) -> 
             "validation.commands must be a mapping of module -> list of commands.",
         )
         return
+    invalid: list[str] = []
+    unknown_tool: list[str] = []
     for module, cmds in commands.items():
         if isinstance(cmds, list) and cmds and all(isinstance(c, str) and c.strip() for c in cmds):
+            # Known-safe gate: report (not silently accept) commands guard
+            # will refuse at execution time. guard._command_is_safe is the
+            # authoritative check (metachar-free + known-safe tool prefix —
+            # it does NOT consult command_whitelist), so mirror it exactly
+            # instead of inventing a whitelist fallback that guard lacks.
+            if not _command_is_safe_command(str(cmds[0])):
+                unknown_tool.append(f"{module}: {cmds[0]!r}")
             continue
+        # Report every invalid module, not just the first: an operator fixing
+        # a multi-module config must see all violations in one run.
+        invalid.append(f"{module!r}")
+    if invalid:
         _err(
             report,
             "validation.commands",
-            f"validation.commands[{module!r}] must be a non-empty list of strings.",
+            "validation.commands entries must be non-empty lists of strings.",
+            "Invalid module(s): " + ", ".join(invalid[:SCHEMA_MAX_ERRORS]),
+        )
+        return
+    if unknown_tool:
+        _warn(
+            report,
+            "validation.commands",
+            "validation command(s) use a tool guard does not recognise as "
+            "known-safe — `iterate guard pre-check` will refuse them unless "
+            "covered by validation.command_whitelist.",
+            "; ".join(unknown_tool[:SCHEMA_MAX_ERRORS]),
         )
         return
     _ok(report, "validation.commands", "validation.commands module lists are valid.")
@@ -1034,7 +1084,16 @@ def _check_iterate_md_markers(report: DoctorReport, project_root: Path) -> None:
     iterate_md_path = project_root / ITERATE_MD
     try:
         content = iterate_md_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        # Unreadable/non-UTF-8 ITERATE.md must not vanish from the report:
+        # silently returning produced "onboarding ✓ + 0 marker findings" —
+        # a fake-complete healthy report for a file doctor could not read.
+        _warn(
+            report,
+            "iterate.md.markers",
+            "ITERATE.md exists but could not be read as UTF-8.",
+            f"{exc}. Re-save the file as UTF-8, then re-run `iterate doctor`.",
+        )
         return
     if not has_valid_user_owned_markers(content):
         _warn(
@@ -1221,19 +1280,31 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
     return True, fixes
 
 
-def export_report_json(report: DoctorReport, out_path: Path) -> None:
+def export_report_json(
+    report: DoctorReport, out_path: Path, *, strict: bool = False
+) -> None:
     """Write the structured DoctorReport to ``out_path`` as JSON.
 
     Args:
         report: The report to serialize.
         out_path: Destination file path (UTF-8, JSON with 2-space indent).
+        strict: Mirrors ``doctor --strict``. MUST be threaded through from the
+            CLI: exporting with the default ``strict=False`` while the process
+            itself exits 1 under ``--strict`` produced a file claiming
+            ``healthy: true`` for a run that failed — the exact contradiction
+            ``to_dict``'s docstring warns about, reintroduced on the export
+            path. The caller (``_cmd_doctor``) passes its own ``strict`` flag.
 
     Raises:
         OSError: When the file cannot be written.
     """
-    payload = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+    payload = json.dumps(
+        report.to_dict(strict=strict), ensure_ascii=False, indent=2
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(payload + "\n", encoding="utf-8")
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
+    tmp_path.write_text(payload + "\n", encoding="utf-8")
+    os.replace(tmp_path, out_path)
 
 
 def render_report(report: DoctorReport, json_output: bool = False, strict: bool = False) -> int:
@@ -1356,10 +1427,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="iterate doctor")
     parser.add_argument("-p", "--project", default=".", help="Project root directory.")
     parser.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Warnings also flip the exit code to 1 (parity with `iterate doctor`).",
+    )
+    parser.add_argument(
+        "--json-out",
+        default=None,
+        help="Also write the structured JSON report to this path.",
+    )
     args = parser.parse_args(argv)
 
-    report = run_doctor(Path(args.project).resolve())
-    return render_report(report, json_output=args.json)
+    project_root = Path(args.project).resolve()
+    report = run_doctor(project_root)
+    code = render_report(report, json_output=args.json, strict=args.strict)
+    if args.json_out:
+        try:
+            export_report_json(
+                report, Path(args.json_out).resolve(), strict=args.strict
+            )
+        except OSError as exc:
+            tui.error(f"doctor: failed to write JSON report to {args.json_out}: {exc}")
+            return 1
+    return code
 
 
 if __name__ == "__main__":

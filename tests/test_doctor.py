@@ -1336,3 +1336,249 @@ class TestRenderNextActionsInvariantsEnsure:
         render_report(report)
         out = capsys.readouterr().out
         assert "invariants 配置异常" in out
+
+# ---------------------------------------------------------------------------
+# validation.commands check: multi-module reporting, guard parity, empty=warn
+# ---------------------------------------------------------------------------
+
+
+class TestCheckValidationCommands:
+    def _config(self, validation) -> dict:
+        return {"validation": validation} if validation is not None else {}
+
+    def test_empty_commands_is_warn_not_error(self) -> None:
+        """An onboarded config with no commands: warn, but stay schema-valid.
+
+        guard post-check fails closed on this state; doctor must acknowledge
+        it (warn) WITHOUT flipping a brand-new project to unhealthy.
+        """
+        from iterate_cli.doctor import _check_validation_commands
+
+        report = DoctorReport("/fake")
+        _check_validation_commands(report, self._config({"commands": {}}))
+        assert not report.has_errors()
+        assert report.has_warnings()
+        assert any("fail closed" in f.message for f in report.findings)
+
+    def test_all_invalid_modules_reported_not_just_first(self) -> None:
+        from iterate_cli.doctor import _check_validation_commands
+
+        report = DoctorReport("/fake")
+        _check_validation_commands(
+            report,
+            self._config(
+                {"commands": {"python": "not-a-list", "go": 42, "rust": {}}}
+            ),
+        )
+        assert report.has_errors()
+        detail = next(
+            f.detail or ""
+            for f in report.findings
+            if f.check == "validation.commands" and f.severity == "error"
+        )
+        for module in ("python", "go", "rust"):
+            assert module in detail, f"{module!r} missing from {detail!r}"
+
+    def test_non_dict_commands_is_error(self) -> None:
+        from iterate_cli.doctor import _check_validation_commands
+
+        report = DoctorReport("/fake")
+        _check_validation_commands(
+            report, self._config({"commands": "pytest -q"})
+        )
+        assert report.has_errors()
+
+    def test_non_dict_validation_section_is_error(self) -> None:
+        from iterate_cli.doctor import _check_validation_commands
+
+        report = DoctorReport("/fake")
+        _check_validation_commands(report, {"validation": "bogus"})
+        assert report.has_errors()
+        assert any(
+            f.check == "validation.commands" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_known_safe_command_passes(self) -> None:
+        from iterate_cli.doctor import _check_validation_commands
+
+        report = DoctorReport("/fake")
+        _check_validation_commands(
+            report, self._config({"commands": {"python": ["pytest -q"]}})
+        )
+        assert not report.has_errors()
+        assert not report.has_warnings()
+
+    def test_unrecognised_tool_is_warn_not_silent_ok(self) -> None:
+        """`mytool --check` passes structure but guard will refuse it.
+
+        doctor must not report "healthy" for a config guard deterministically
+        fails — the two gates used to disagree.
+        """
+        from iterate_cli.doctor import _check_validation_commands
+
+        report = DoctorReport("/fake")
+        _check_validation_commands(
+            report, self._config({"commands": {"python": ["mytool --check"]}})
+        )
+        assert not report.has_errors()
+        assert report.has_warnings()
+        assert any("mytool" in (f.detail or "") for f in report.findings)
+
+    def test_metachar_command_is_error(self) -> None:
+        """The 6c safety net lives in the whitelist check, not this one.
+
+        `_check_validation_commands` only flags structure/known-safe-tool;
+        the shell-metacharacter rejection is `_check_commands_metachars`
+        (invoked from `_check_validation_whitelist`). Assert the full
+        pipeline so a metachar command can never reach a "healthy" report.
+        """
+        from iterate_cli.doctor import (
+            _check_validation_commands,
+            _check_validation_whitelist,
+        )
+
+        report = DoctorReport("/fake")
+        config = self._config({"commands": {"python": ["pytest; rm -rf /"]}})
+        _check_validation_commands(report, config)
+        _check_validation_whitelist(report, config)
+        assert report.has_errors()
+        assert any(
+            f.severity == "error" and "validation" in f.check
+            for f in report.findings
+        )
+
+
+# ---------------------------------------------------------------------------
+# ITERATE.md marker check: unreadable file must not vanish from the report
+# ---------------------------------------------------------------------------
+
+
+class TestCheckIterateMdMarkers:
+    def test_missing_markers_is_warning(self, tmp_path: Path) -> None:
+        from iterate_cli.doctor import _check_iterate_md_markers
+
+        report = DoctorReport("/fake")
+        (tmp_path / ITERATE_MD).write_text("# no markers here\n", encoding="utf-8")
+        _check_iterate_md_markers(report, tmp_path)
+        assert report.has_warnings()
+        assert not report.has_errors()
+
+    def test_valid_markers_is_ok(self, tmp_path: Path) -> None:
+        from iterate_cli.doctor import (
+            USER_END_MARKER,
+            USER_START_MARKER,
+            _check_iterate_md_markers,
+        )
+
+        report = DoctorReport("/fake")
+        (tmp_path / ITERATE_MD).write_text(
+            f"# doc\n{USER_START_MARKER}\nmanual\n{USER_END_MARKER}\n",
+            encoding="utf-8",
+        )
+        _check_iterate_md_markers(report, tmp_path)
+        assert not report.has_warnings()
+        assert not report.has_errors()
+
+    def test_non_utf8_file_is_warned_not_silent(self, tmp_path: Path) -> None:
+        """A file doctor cannot read must not produce a clean report.
+
+        Previously the read failure returned early with no finding, giving
+        "onboarding ✓ + 0 marker findings" for an unreadable file.
+        """
+        from iterate_cli.doctor import _check_iterate_md_markers
+
+        report = DoctorReport("/fake")
+        (tmp_path / ITERATE_MD).write_bytes(b"\xff\xfe\x00 invalid utf-8")
+        _check_iterate_md_markers(report, tmp_path)
+        assert report.has_warnings()
+        assert any("UTF-8" in f.message for f in report.findings)
+
+
+# ---------------------------------------------------------------------------
+# export_report_json: atomic write + strict parity with the process exit code
+# ---------------------------------------------------------------------------
+
+
+class TestExportReportJson:
+    def test_strict_is_threaded_through(self, tmp_path: Path) -> None:
+        """A --strict failing run must not export `healthy: true`.
+
+        The export path used to default to strict=False while the process
+        itself exited 1, writing a report that contradicted the exit code.
+        """
+        from iterate_cli.doctor import export_report_json
+
+        report = _report_with("ok", "warn")
+        out = tmp_path / "report.json"
+        export_report_json(report, out, strict=True)
+        payload = json.loads(out.read_text(encoding="utf-8"))
+        assert payload["healthy"] is False
+        assert payload["strict"] is True
+
+    def test_non_strict_warnings_report_healthy(self, tmp_path: Path) -> None:
+        from iterate_cli.doctor import export_report_json
+
+        report = _report_with("ok", "warn")
+        out = tmp_path / "report.json"
+        export_report_json(report, out, strict=False)
+        payload = json.loads(out.read_text(encoding="utf-8"))
+        assert payload["healthy"] is True
+        assert payload["strict"] is False
+
+    def test_writes_are_atomic_no_tmp_left_behind(self, tmp_path: Path) -> None:
+        from iterate_cli.doctor import export_report_json
+
+        out = tmp_path / "nested" / "report.json"
+        export_report_json(_report_with("ok"), out)
+        assert out.is_file()
+        leftovers = list(out.parent.glob("*.tmp"))
+        assert leftovers == [], f"temp files left behind: {leftovers}"
+
+    def test_overwrites_existing_report(self, tmp_path: Path) -> None:
+        from iterate_cli.doctor import export_report_json
+
+        out = tmp_path / "report.json"
+        out.write_text("stale", encoding="utf-8")
+        export_report_json(_report_with("error"), out)
+        payload = json.loads(out.read_text(encoding="utf-8"))
+        assert payload["healthy"] is False
+
+
+# ---------------------------------------------------------------------------
+# doctor standalone main(): --strict / --json-out wiring
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorStandaloneMain:
+    def test_strict_flags_export_and_exit_code(self, tmp_path: Path, capsys) -> None:
+        """doctor.main --strict --json-out must agree with each other."""
+        from iterate_cli.doctor import main as doctor_main
+
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["validation"] = {"commands": {}}
+        _write_config(project, config)
+        out = tmp_path / "report.json"
+        code = doctor_main(
+            ["-p", str(project), "--strict", "--json-out", str(out)]
+        )
+        capsys.readouterr()
+        payload = json.loads(out.read_text(encoding="utf-8"))
+        # The empty-commands finding is a warning; --strict makes it blocking,
+        # so both the process exit code and the exported file must say so.
+        assert payload["healthy"] is False
+        assert code == 1
+
+    def test_json_out_failure_returns_one(self, tmp_path: Path, capsys) -> None:
+        from iterate_cli.doctor import main as doctor_main
+
+        project = _make_project(tmp_path)
+        blocker = tmp_path / "blocker"
+        blocker.write_text("I am a file, not a directory\n", encoding="utf-8")
+        code = doctor_main(
+            ["-p", str(project), "--json-out", str(blocker / "report.json")]
+        )
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "failed to write JSON report" in captured.out + captured.err
