@@ -6,6 +6,21 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **`scripts/check_run_plan_channel.py`：把场景②的共享通道真跑一遍，而不是各自自证。**
+  本仓真生产者（`build_run_plan` + `write_run_plan`）用 GlassPane 自己的
+  `iterate.config.yaml`（`gui` scope）造一份计划，交给 fork 的
+  `readRunPlan()`（bun 直接 import 产品里那份 `kernel.ts`，不是抄本）读回来，比
+  id 序列与 `rp_` 摘要。实测一致：两侧都是 `rp_25c3aeece0fa54293448fe0a1525f45a24f01ae797a766a23c54911bf5a5c2fe`，9 个 id 顺序一致。
+  两道红是**跑出来的**，不是推理的：`GP_CHANNEL_SELFTEST=corrupt`（把维度数组重排——
+  字节仍然合法，schema 看不见）→ exit 1；`GP_CHANNEL_SELFTEST=mismatch`（另一侧回同一
+  份字节但少报一个 id）→ exit 1。第二条是关键：只比摘要的话这个分歧会被盖住，所以摘要
+  之外还比 id。没有 bun／没有 harness／配置读不出来 → exit 2 明说"没测到"，不允许
+  静默通过。
+  写的过程中修掉两处自己的错：`load_config` 收的是项目**根目录**而不是文件路径，
+  传错会按 API 返回 None、进而伪装成生产者的 AttributeError；`mismatch` 那条对照的守卫
+  写成 `and not their_ids`，那侧非空所以分支从没执行——"对照自己没跑"这件事是先被
+  rc=0 暴露的，不是被读代码读出来的。
+
 - **`iterate/convergence_policy.py`：收敛规则的 Python 半边。** kernel 在 0.1.5 里把
   「一轮跑完下一步是什么」定成了契约（熔断 > 轮次预算 > error > findings > 证据不全 >
   未测量 > converged），本模块是对着已发布语料 `convergence.ok-01.json` 的 `comment`
