@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.4.4
+version: 3.5.0
 permissions:
   file_read: true
   file_write: true
@@ -317,10 +317,12 @@ iterate status       # 查看 onboarding 状态和漂移检测（--json 含 onbo
 iterate guard pre-check [targets...]   # 编辑前静态校验（目标存在/工作区干净/manifest 就绪；只读，从不执行命令；--json）
 iterate guard post-check [targets...]  # 编辑后执行 validation.commands 并核对结果（--dry-run 只预览命令不执行；--json）
 iterate invariant      # 项目级不变量校验（--dry-run 预览；--json）
-iterate fingerprint verify  # 校验 manifest 指纹漂移（--json）
+iterate fingerprint verify  # 校验 manifest 指纹漂移（--json，退出码 0=无漂移 / 1=有漂移）
+iterate fingerprint list    # 只读列出上次记录的指纹基线（path + sha256，不重扫；--json）
 iterate config       # 非交互式查看全部可设配置值（支持 --json）
 iterate config get <key>   # 读取单个配置项的解析值（支持 --json，输出 {"key": value}）
 iterate config set <key> <value>  # 校验并写回单个配置项（自动备份；--json 输出确认对象）
+iterate config unset <key> # 删除该配置项并逐级剪掉空祖先节点（自动备份；key 不存在则不报错；--json）
 iterate update       # 自更新：SHA-256 校验后刷新助手技能目录 + 重装 CLI（--check 只对比版本；--yes 跳过确认；--assistants 限定刷新范围，未知助手名报错而非静默跳过）
 ```
 
@@ -330,7 +332,20 @@ CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适
 - **首次 onboarding**（无 ITERATE.md）：确认手动配置 → 基础 onboarding → 询问是否需要个性化配置。
 - **非首次 onboarding**（已有 ITERATE.md）：询问是否更新基础配置（不建议手动改）→ 询问是否进行个性化配置。
 
-`iterate config set <key> <value>` 的 `<key>`（扁平键，与 `iterate show` 输出的键一致）与点号路径别名（如 `git.use_worktree`、`reviewer.coverage_validation`）均可使用。
+`iterate config set <key> <value>` 的 `<key>`（扁平键，与 `iterate show` 输出的键一致）与点号路径别名（如 `git.use_worktree`、`reviewer.coverage_validation`）均可使用。`iterate config unset <key>` 反向操作：删除该键，若其父节点因此变空（如 `personalization` 下所有子项都被删）则连父节点一并剪掉，恢复到 schema 的默认语义；每次写入前自动备份到 `.iterate-backup/`（文件名带 `.configunset-` 时间戳）。若该键带注释（`# ...`），删除会一并移除注释并在 stderr 给出 warning，避免留下悬空注释。
+
+### 退出码约定 / Exit-Code Contract
+
+所有子命令遵循同一套退出码，便于脚本与 CI 门禁：
+
+| 退出码 | 含义 | 典型来源 |
+|---|---|---|
+| `0` | 成功 / 无问题 | `status` 已 onboard 且无漂移；`guard pre-check` 可开工；`fingerprint list` 已读出基线（即使为空） |
+| `1` | **业务失败**（命令按预期跑完，结论是"有问题"） | `guard`/`invariant` 返回 `FAIL`；`fingerprint verify` 检出漂移；`doctor --strict` 有 warning；`config set/unset` 的键/值非法；JSON 模式下配置无法解析 |
+| `2` | **用法错误**（argparse） | 未知子命令、未知动作（`fingerprint bogus`）、缺必填参数、`config` 的非法键名 |
+| `127` | 依赖缺失 | `tools/gpg-signing.sh` 找不到 `gh`/`gpg` |
+
+判读要点：**`2` 不要当作"有问题"去重试**——那是命令敲错了，重试只会得到同样的 `2`；**`1` 才是"结论为否"**，应当据此推进修复或回滚。`--json` 模式下 `1` 依然会输出结构化对象（含 `reason`/`errors` 字段），因此脚本可先解析 JSON 再看 `$?`，无需靠退出码区分错误类别。
 
 **个性化配置 / Personalization**：捕获 AI 扫描不到的项目专属约束（禁区、风险区、已知意图、维度定制等 9 类）。运行 `iterate personalize` 可在项目中途随时追加，无需重做 onboarding。`iterate personalize --clear` 可一次清空所有个性化（结构化规则 + `ITERATE.md` 用户区中的相关段落，需确认或加 `--yes` 跳过）。`iterate show` 可只读查看合并后的配置与个性化详情（`--json` 输出结构化数据供脚本/CI 使用）。详见 README。
 

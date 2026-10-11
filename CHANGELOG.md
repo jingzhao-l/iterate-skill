@@ -5,6 +5,179 @@
 
 ---
 
+## [3.5.0] — 2026-10-11
+
+本轮为无人值守的全量复检 + 修复 + 发版：4 个并行深评子代理产出约 45 条 findings，
+全部修复项均配有复现性单元测试（正常/异常/边界），另有 2 项新功能与 1 项文档补齐，
+因此为 minor 版本。评审范围限于 `iterate_cli/`、`npm-installer/`、`scripts/`、
+`templates/`、`tests/`、`config/`、`tools/`、`SKILL.md`、`pyproject.toml`、
+`CHANGELOG.md`；`harness/`（iterate-plugin、iterate-harness）不在发布范围内，
+其发现仅在报告中记录。
+
+### 新功能 / Features
+
+- **`iterate config unset <key>`**：`config` 此前只有 `get`/`set`，一旦
+  `config set` 写入了一个不当值（或向导预置了不想要的项），只能手工编辑 YAML——
+  而手工编辑既无 schema 校验、也无自动备份，且 `personalization.*` 下的嵌套结构
+  很容易删成残留空壳。新子命令删除指定叶子键，并在父节点因此变空时逐级向上剪除，
+  使配置回到 schema 的缺省语义；每次写入前自动备份（`.configunset-` 时间戳），
+  键不存在时视为已达成（幂等，退出 0），带注释的键在删除注释时给出 stderr warning。
+  用法错误退出 2、操作性失败退出 1，与既有约定一致。
+- **`iterate fingerprint list`**：`fingerprint` 此前只有 `verify`，其输出永远是
+  「当前 vs 基线」的差异，从不展示基线本身——看到 `changed: pyproject.toml` 时
+  无从得知记录时的 sha256，因而无法分辨真实漂移与初次录入错误。`list` 纯读
+  `onboarding.fingerprints`、不重扫，毫秒级返回，且在 `drift_check: false` 时
+  依然可用（`verify` 在该配置下是 unavailable）。`--json` 输出
+  `{project, available, count, drift_check_enabled, ignore_patterns,
+  fingerprints:[{path,sha256}]}`；未记录任何指纹（尚未 onboard）属正常状态
+  → 退出 0 并给出可执行提示，配置损坏属未知状态 → 退出 1 fail-closed。
+- **退出码约定文档化**：SKILL.md 新增「退出码约定 / Exit-Code Contract」小节，
+  统一 `0`（成功）、`1`（业务失败/结论为否）、`2`（用法错误，重试无用）、
+  `127`（依赖缺失）四档语义，并点明「`2` 不要当业务失败重试」这一判读要点。
+  此前各子命令的退出码散落在各自 help 文本里，跨命令无一致契约可依赖。
+
+### 修复 / Fixes — CLI 与配置
+
+- **`personalize` 写回 `ITERATE.md` 用户区不再截断**（HIGH）：`build_updated_
+  iterate_md` 用 `find`（首个匹配）定位用户区结束标记，而目标段落的正文中
+  同样出现该标记时会拼在**第一个**匹配处收尾，把其后的全部内容（含后续段落与
+  文件尾部）一并丢弃。改为 `rfind`（最后匹配）+ 委托给
+  `generator._replace_user_owned_section`，两条路径共用同一套定位逻辑。
+- **`merge_user_sections` 的合并边界按标题级别判定**（HIGH）：原实现以「任意
+  `## ` 开头的行」为边界，但个性化段落自身就含 `### 禁区 / Protected` 这类
+  h3 子标题，导致用户段落内部被提前切断；而真正的 h1 级用户章节（如
+  `# 我的项目约定`）又因不匹配 `## ` 而从未被清除，新旧内容叠加。改为边界 =
+  **标题级别 ≤ 被删段落自身级别**（新增 `_heading_level()`，识别 1–6 个 `#` +
+  空格；7 个以上或 `#` 后无空格不算标题）。
+- **`config set` 的错误分支统一走 `_set_error`**：各分支此前有的返回 1、有的
+  返回 2、有的打印后落回 0，自动化无法区分「键名写错」与「值不合法」。
+- **`refresh` 标量归一化**：`target_branch`/`review_scope`/`push_per_round`/
+  `language`/`dimensions` 读入时显式归一（含 `None` → 删除该键），
+  避免 YAML 里 `language:`（空值）被当作有效语言写回。
+- **`refresh` 的预览与写盘区分「文件不存在」与「读失败」**：原先两者都判为
+  「无旧配置」，于是一次权限错误会静默丢弃既有备份；`_write_refresh_outputs`
+  对缺失配置的备份改为静默跳过（本来就没有可备份的）。
+- **`full_reonboard` 先检查 USER-OWNED 标记**再调用向导，避免把用户的
+  `ITERATE.md` 用户区当作可覆盖内容重写。
+- **`doctor` 对 `validation.commands` 缺失与 `{}` 一视同仁判 warn**：与
+  guard 的 fail-closed 边界保持一致，但不因此把整体健康状态翻转为不健康
+  （「没配验证命令」是待办，不是故障）。
+- **`doctor` 多模块非法配置逐模块报告**，不再只报第一个。
+- **`doctor` 的 `_command_is_safe` 与 guard 侧镜像**，避免两处安全基线漂移。
+- **`doctor` 导出报告原子化**：`export_report_json(strict=...)` 先写临时文件再
+  `os.replace`，中途崩溃不再留下半截 JSON 供下游解析。
+- **`doctor` 主入口支持 `--strict` / `--json-out` 独立运行**。
+- **`show` 对漂移做三态输出**（disabled / unknown / none / drift），与 `status`
+  对齐；此前 `show` 对「漂移检查被配置关闭」与「无漂移」给出同一输出，
+  操作者无法区分「干净」与「没在检查」。
+- **`scan` 的静态检查目标按实际源码根定位**：`_detect_src_root` 探测 `src/`
+  布局，替换硬编码的 `ruff check src/` / `mypy src/`——平铺布局的项目此前
+  会得到一条必然失败的建议命令。
+- **`dimension_sets` 的 `normalize_dimension_sets` 支持 `on_drop` 回调**，
+  被丢弃的非法条目可逐条上报而非静默消失；`suggest_dimension_sets` 修复空种子。
+- **向导的 `command_whitelist` 拒绝标量字符串**（schema 要求 list），
+  `drift_ignore` 正确传入指纹采集，`dimension_sets` 的 on_drop 走 warning。
+- **`fingerprint.capture_fingerprints` 用 `tui.warning` 取代裸 `print`**，
+  与其余输出一致（裸 print 会穿透 `--json` 的 stdout 单文档契约）。
+
+### 修复 / Fixes — 更新器与护栏
+
+- **`updater` 复制前预检 REQUIRED 路径**：原先边复制边校验，缺失文件已有一半
+  落盘才失败，留下新旧混杂的助手技能目录。
+- **`update` 报告 `assistants_not_installed`**（`UpdateOutcome` 新字段 +
+  `to_dict` + TUI 提示）：请求刷新从未安装的助手时，此前静默成功，
+  操作者以为已刷新。
+- **错误详情截断改为保留尾部**（`_ERROR_DETAIL_MAX_BYTES = 2048`）：
+  构建/测试输出的结论（失败行）在末尾，保留头部会恰好截掉它。
+- **`guard` 的 `_drain` 环形缓冲按尾部保留**，且每行先截断到 160 字符再参与
+  保留判定——否则一条超宽噪声行就能把致命错误行挤出缓冲区
+  （新增 `test_overflow_keeps_tail_not_head`、
+  `test_wide_last_line_cannot_starve_the_final_error` 两条回归测试）。
+- **`guard` 超时改为 `proc.wait(timeout=10)` + 线程 `join(timeout=5)`**，
+  `_kill_process_tree` 对 `ProcessLookupError` 直接返回、对
+  `OSError`/`AttributeError` 回落到 `proc.kill()`——原先子进程已退出时会抛
+  未捕获异常，把一次「超时」升级成 traceback。
+
+### 修复 / Fixes — 安装与发布链路
+
+- **安装器 UTF-8 stdio**（`scripts/install.py`）：Windows 上 Python 默认用
+  cp1252/本地编码，打印中文横幅或中文项目名会抛 `UnicodeEncodeError`，
+  安装进行到一半直接中断。`main()` 入口先 `_reconfigure_stdio()`（best-effort，
+  流已关闭或不接受参数时跳过）。
+- **安装摘要的富文本转义**：rich 把 `[...]` 当样式标签解析并从输出中丢弃，
+  于是 `C:\[build]\skill`、`[404]` 这类用户可控路径/状态会凭空消失——操作者
+  看不到摘要本要展示的路径。只转义 message，不转义 style。
+- **校验失败分类**：checksum 文件**下载失败**（网络/HTTP/DNS）不再抛
+  `ReleaseIntegrityError`，改为丢弃未校验的 tarball 并回退到本地可信源，
+  与 tarball 下载失败的行为对齐——原先一次瞬时网络抖动会以「拒绝更新：校验失败」
+  终止整个更新，而实际上什么都没被校验过。「取到了但对不上」的真正完整性判定
+  仍然 fail-closed（no-entry / mismatch 照旧中止），release 完全没有
+  `SHA256SUMS.txt` 资产也照旧拒绝。
+- **安装器 `--version`**：此前 `npx iterate-skill-installer --version` 打印
+  usage error；现从 `pyproject.toml [project].version` 读取（避免与发版单一
+  真值源漂移），文件缺失/损坏时回退占位符而非抛异常。
+- **`scripts/validate.py` UTF-8 stdio**：Windows 默认 cp1252、POSIX 可能是
+  ISO-8859-1，而校验报错会引用配置值/维度名（其中常含中文），会把一次
+  「验证不通过」变成 traceback。
+- **Qoder 包字节确定性**（`publish_qoder._zip_dir`）：改为显式构造 `ZipInfo`，
+  固定 `date_time`（ZIP 最早可表示的 1980-01-01）、pin `create_system`/
+  `external_attr`。原先用 `archive.write`，它把每个文件的 mtime 写进条目，
+  于是 `touch` 或换一台机器 checkout 出来的同一份内容打出的 zip 字节不同、
+  SHA-256 漂移，而 docstring 恰恰声称「重复构建产出字节一致」。可执行位取自
+  文件自身的 `st_mode` 而非 `os.access`（后者看调用者身份，会让产物依赖
+  「谁运行的构建」）。
+- **`publish_qoder check` 的诊断走 stderr**：原先 `check pkg.zip > out` 会连同
+  失败信息一起吞掉，`check | grep ok` 也没法用来断言通过。
+- **npm 安装器 `runCommand` 杀掉整个进程组**：POSIX 下以 `detached` 让子进程
+  自成进程组，超时用 `process.kill(-pid, SIGKILL)` 杀整组。原先的
+  `child.kill('SIGKILL')` 只发信号给直接子进程，于是一个已经派生出 helper 的
+  pip/curl 在安装器报「超时」之后照样活着，继续占用 stdio 管道、继续下载/编译。
+- **npm 安装器 promise 必然结算**：leader 死了但孙进程继承并握着 stdio 管道时，
+  Node 不会派发 `close`，promise 永不结算——安装器恰恰在「超时已触发」之后
+  永久挂起。新增 `POST_KILL_SETTLE_MS`（5s）兜底 reject，`settle()` 做一次性
+  保护避免双重结算。
+- **`gpg-signing.sh` 的 `verify`/`audit` 返回真实退出码**：所有 `bad` 此前都是
+  纯打印，即使 secrets 缺失或发现 silent-skip 也 `exit 0`，CI 无法据此门禁——
+  而这恰恰是 `audit` 存在的理由（抓「看起来成功」的静默跳过），检查器自己成了
+  同一种静默成功。
+- **`gpg-signing.sh` 未知 target 不再静默成功**：`targets_filtered` 在
+  `< <(...)` 进程替换里运行，其 `exit 2` 只杀掉子 shell，父进程带着空目标列表
+  继续跑，于是 `gpg-signing.sh verify typo` 为 0 个仓库打印一份干净报告并
+  `exit 0`——最可能拼错的调用方式反而是唯一静默成功的那个。新增
+  `require_known_targets()` 在当前 shell 校验，并列出已知 target。
+- **`gpg-signing.sh` 的 `seed` 加 `trap 'stty echo' EXIT INT TERM`**：
+  在 `stty -echo` 与 `stty echo` 之间被 Ctrl-C 或 `set -e` 打断时，操作者的
+  终端会永久关闭回显，接下来输入的每个字符都不可见且无法恢复。
+- **`reviewer.scope_chunk_size` 补 `minimum: 1`**（`config/config.schema.json`
+  与 `iterate_cli/data/config.schema.json` 字节同步）：原先只声明 `type: integer`，
+  一个手改的 `scope_chunk_size: 0` 能通过 `iterate validate config`，进而把
+  full-scope 评审切成零大小的分块——产出一个「读了零个文件却报告成功」的空评审。
+  新增一条回归测试锁住两份 schema 字节一致，避免以后只改一份导致发布包内嵌的
+  schema 过期。
+
+### 测试 / Tests
+
+- 新增 `tests/test_personalize.py`（24 项）：rfind 拼接、标题级别边界
+  （h3 子标题不切断、h1 用户章节被清除）、丢弃条目 warning。
+- `tests/test_config.py` 扩充至 74 项，覆盖 `config unset` 的叶子删除、
+  祖先剪枝、注释剥离 warning、备份生成、JSON 契约。
+- `tests/test_install_script.py` 扩充至 191 项：stdio reconfigure 防御性、
+  富文本转义（rich 与非 rich 两条路径）、`--version` 与 pyproject 对齐、
+  校验下载失败回退 / 校验不匹配 fail-closed。
+- `tests/test_publish_qoder.py` 新增确定性 zip 四项（不同 mtime 字节一致、
+  成员有序且单一顶层、时间戳钉死、内容往返）与 check 流分离两项。
+- `tests/test_validate.py` 新增 `scope_chunk_size` 上下边界（0/-1 拒绝、
+  1/25/1000 通过、非整数拒绝、镜像字节一致）与 stdio reconfigure 两项。
+- `tests/test_drift_ignore.py` 新增 `fingerprint list` 七项（TUI、JSON 形状、
+  纯读不重扫、`drift_check` 关闭仍可用、空基线提示、损坏配置 fail-closed、
+  非法动作 exit 2）。
+- `npm-installer/test/mode.test.js` 新增两个进程组用例：孙进程落盘标记文件
+  证明其确实被杀；孙进程无视 SIGTERM 并握着管道证明 promise 仍在 12s 内结算。
+- `tools/gpg-signing.sh selftest` 新增两条断言锁住 `require_known_targets`
+  的退出码（0/2），沿用该文件自身的准则「没人见过它失败的检查器不值得信任」。
+
+---
+
 ## [3.4.4] — 2026-09-30
 
 本轮为无人值守的全量复检（Bugbot 式代码评审 + UX/功能缺口评审），共 24 个提交，
