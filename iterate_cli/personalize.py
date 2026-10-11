@@ -472,6 +472,26 @@ def _is_personalization_header(line: str) -> bool:
     return stripped in PERSONALIZATION_SECTION_HEADERS
 
 
+def _is_any_markdown_header(line: str) -> bool:
+    """True when ``line`` is an ATX heading at ANY level (``#`` .. ``######``).
+
+    Used as the "a new section starts here" boundary when skipping a
+    personalization section. Restricting the boundary to ``## `` silently
+    deleted a user's own h1/h3 sections that followed one.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("#"):
+        return False
+    # ATX headings are 1-6 hashes; 7+ is plain text per CommonMark. Require a
+    # space (or end) after the hash run so a shell-style comment (`# note`)
+    # inside user prose is not mistaken for a heading.
+    hashes = len(stripped) - len(stripped.lstrip("#"))
+    if hashes > 6:
+        return False
+    rest = stripped[hashes:]
+    return rest == "" or rest.startswith(" ")
+
+
 def merge_user_sections(existing_content: str, new_personalization_md: str) -> str:
     """Merge personalization-generated sections into existing user content.
 
@@ -496,8 +516,12 @@ def merge_user_sections(existing_content: str, new_personalization_md: str) -> s
             skip_until_next_header = True
             continue
 
-        if skip_until_next_header and line.strip().startswith("## "):
-            # Hit a new section header: stop skipping.
+        if skip_until_next_header and _is_any_markdown_header(line):
+            # Hit a new section header: stop skipping. ANY heading level counts,
+            # not just `## `: personalization sections are h2, so a boundary
+            # test of `startswith("## ")` kept skipping past a user's own
+            # `# Title` (h1) or `### Subsection` (h3) and deleted it from the
+            # user-owned section on the next `iterate personalize`.
             skip_until_next_header = False
             if _is_personalization_header(line):
                 # Another personalization section to remove.
@@ -582,18 +606,27 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     if not isinstance(raw, dict):
         return PersonalizationData()
 
+    # Names of structural entries that were dropped as malformed. These all
+    # used to be discarded silently, so a hand-edited config lost its
+    # risk_areas / known_intentional / protected_paths on the next
+    # `iterate personalize` (which rewrites the section) with exit 0 and no
+    # output — the operator's suppression list quietly evaporated.
+    dropped: list[str] = []
+
     # protected_paths must be a list of strings. A hand-edited config may hold
     # a scalar string (which would otherwise be iterated character-by-character
     # and persisted as a corrupt per-char list), so guard like every other list
     # field below.
     raw_protected = raw.get("protected_paths") or []
     if not isinstance(raw_protected, list):
+        dropped.append("protected_paths")
         raw_protected = []
     protected = [str(p) for p in raw_protected]
 
     risk_areas: list[RiskArea] = []
     raw_risk_areas = raw.get("risk_areas") or []
     if not isinstance(raw_risk_areas, list):
+        dropped.append("risk_areas")
         raw_risk_areas = []
     for item in raw_risk_areas:
         if isinstance(item, dict) and "path" in item:
@@ -603,10 +636,13 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
                     reason=str(item.get("reason", "")),
                 )
             )
+        else:
+            dropped.append("risk_areas[]")
 
     known: list[KnownIntentional] = []
     raw_known = raw.get("known_intentional") or []
     if not isinstance(raw_known, list):
+        dropped.append("known_intentional")
         raw_known = []
     for item in raw_known:
         if isinstance(item, dict) and "file" in item:
@@ -621,10 +657,13 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
                     reason=str(item.get("reason", "")),
                 )
             )
+        else:
+            dropped.append("known_intentional[]")
 
     dim_focus: list[DimensionFocusOverride] = []
     raw_dim_focus = raw.get("dimension_focus") or []
     if not isinstance(raw_dim_focus, list):
+        dropped.append("dimension_focus")
         raw_dim_focus = []
     for item in raw_dim_focus:
         if isinstance(item, dict) and "dimension" in item:
@@ -634,17 +673,21 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
                     focus=str(item.get("focus", "")),
                 )
             )
+        else:
+            dropped.append("dimension_focus[]")
 
     # fix_priority_order / forbidden_fixes must be lists of dimension ids.
     # Guard against a scalar string (which would otherwise be iterated
     # character-by-character) and non-list junk from a hand-edited config.
     raw_fix_order = raw.get("fix_priority_order") or []
     if not isinstance(raw_fix_order, list):
+        dropped.append("fix_priority_order")
         raw_fix_order = []
     fix_order = [str(d) for d in raw_fix_order]
 
     raw_forbidden = raw.get("forbidden_fixes") or []
     if not isinstance(raw_forbidden, list):
+        dropped.append("forbidden_fixes")
         raw_forbidden = []
     forbidden = [str(f) for f in raw_forbidden]
 
@@ -652,6 +695,7 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     # Prevents shell metacharacter injection via module key.
     raw_extra_cmds = raw.get("extra_validation_commands") or {}
     if not isinstance(raw_extra_cmds, dict):
+        dropped.append("extra_validation_commands")
         raw_extra_cmds = {}
     extra_cmds: dict[str, list[str]] = {}
     for module, cmds in raw_extra_cmds.items():
@@ -679,6 +723,16 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
                     )
             if valid:
                 extra_cmds[module_str] = valid
+
+    if dropped:
+        # One consolidated, de-duplicated line: the operator needs to know a
+        # re-save will not carry these over, before it happens.
+        names = ", ".join(sorted(set(dropped)))
+        tui.warning(
+            f"personalization 配置中有 {len(set(dropped))} 项格式非法已被忽略，"
+            f"重新保存时不会保留：{names}。请检查 iterate.config.yaml。",
+            indent=2,
+        )
 
     return PersonalizationData(
         protected_paths=protected,
@@ -964,8 +1018,7 @@ def build_updated_iterate_md(
         Updated ITERATE.md content, or None if no update is possible.
     """
     from iterate_cli.generator import (
-        USER_END_MARKER,
-        USER_START_MARKER,
+        _replace_user_owned_section,
         extract_user_owned_section,
         has_valid_user_owned_markers,
     )
@@ -979,8 +1032,6 @@ def build_updated_iterate_md(
         tui.warning(f"Could not read existing ITERATE.md: {exc}")
         return None
 
-    start_idx = content.find(USER_START_MARKER)
-    end_idx = content.find(USER_END_MARKER)
     if not has_valid_user_owned_markers(content):
         tui.warning(
             "ITERATE.md is present but its ownership markers are missing or "
@@ -990,12 +1041,18 @@ def build_updated_iterate_md(
         )
         return None
 
+    # Delegate to the canonical splice instead of re-deriving it here. This
+    # copy used content.find(USER_END_MARKER) while every other marker consumer
+    # (has_valid_user_owned_markers, extract_user_owned_section) uses rfind:
+    # user-owned text that itself contains the literal END marker string (a
+    # pasted HTML comment) made the validators agree the section was fine, then
+    # truncated the splice to the FIRST marker — silently deleting everything
+    # from that point to EOF on `iterate personalize`. It also left a stray
+    # blank line when the merged content was empty; the helper handles both.
     new_personalization_md = data.to_user_md_sections()
     existing_user_content = extract_user_owned_section(content)
     merged = merge_user_sections(existing_user_content, new_personalization_md)
-    before = content[: start_idx + len(USER_START_MARKER)]
-    after = content[end_idx:]
-    return f"{before}\n{merged}\n{after}"
+    return _replace_user_owned_section(content, merged)
 
 
 def save_personalization(
