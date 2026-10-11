@@ -1260,3 +1260,122 @@ def test_unknown_assistant_error_lists_real_assistants(capsys, monkeypatch) -> N
     assert "cluade" in err
     # At least one real assistant name must be listed.
     assert any(name in err for name in updater_mod.ASSISTANT_SKILL_DIRS), err
+
+
+# ---------------------------------------------------------------------------
+# update_assistant_dir pre-flight (no half-refreshed destination)
+# ---------------------------------------------------------------------------
+
+
+def test_update_assistant_dir_preflight_leaves_destination_untouched(
+    tmp_path,
+) -> None:
+    """A release missing a REQUIRED path must not half-refresh the target.
+
+    Previously the copies ran first and the missing-file check fired mid-loop,
+    leaving some dirs updated and others stale with no rollback.
+    """
+    source = _minimal_source(tmp_path / "src-tree")
+    (source / "SKILL.md").unlink()  # break the required set
+    destination = tmp_path / "skills" / "iterate"
+    (destination / "config").mkdir(parents=True)
+    pre_existing = destination / "config" / "config.schema.json"
+    pre_existing.write_text("pre-existing\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError):
+        update_assistant_dir(source, destination)
+
+    # Nothing was copied and nothing was removed: the destination is pristine.
+    assert pre_existing.read_text(encoding="utf-8") == "pre-existing\n"
+    assert not (destination / "templates").exists()
+
+
+def test_update_assistant_dir_optional_missing_still_succeeds(tmp_path) -> None:
+    source = _minimal_source(tmp_path / "src-tree")
+    for optional in OPTIONAL_RELEASE_PATHS:
+        target = source / optional
+        if target.is_file():
+            target.unlink()
+    destination = tmp_path / "skills" / "iterate"
+    update_assistant_dir(source, destination)
+    assert (destination / "SKILL.md").is_file()
+
+
+# ---------------------------------------------------------------------------
+# --assistants names that are valid but not installed
+# ---------------------------------------------------------------------------
+
+
+def test_run_update_reports_valid_but_not_installed_assistants(
+    tmp_path, monkeypatch
+) -> None:
+    """A valid --assistants name with no installed dir is surfaced, not silent."""
+    fetch = make_ok_fetch(tmp_path)
+    home, proj = _fake_home(tmp_path)  # only .claude installed
+    monkeypatch.setattr(updater, "detect_install_method", lambda: INSTALL_METHOD_PIP)
+
+    outcome = run_update(
+        project_root=proj,
+        home=home,
+        confirmed=True,
+        assistants=["gemini", "cursor"],
+        fetch=fetch,
+        runner=_ok_runner,
+    )
+    assert outcome.assistants_unknown == []  # both are valid registry keys
+    assert outcome.assistants_updated == []
+    assert outcome.assistants_not_installed == ["cursor", "gemini"]
+    payload = outcome.to_dict()
+    assert payload["assistants_not_installed"] == ["cursor", "gemini"]
+
+
+def test_run_update_not_installed_empty_when_something_matched(
+    tmp_path, monkeypatch
+) -> None:
+    fetch = make_ok_fetch(tmp_path)
+    home, proj = _fake_home(tmp_path)
+    monkeypatch.setattr(updater, "detect_install_method", lambda: INSTALL_METHOD_PIP)
+
+    outcome = run_update(
+        project_root=proj,
+        home=home,
+        confirmed=True,
+        assistants=["claude", "cursor"],
+        fetch=fetch,
+        runner=_ok_runner,
+    )
+    # claude matched → the run was not "nothing happened", so the
+    # not-installed list stays empty (cursor's absence is implied by
+    # assistants_updated == ["claude"]).
+    assert outcome.assistants_not_installed == []
+
+
+# ---------------------------------------------------------------------------
+# Error-detail truncation
+# ---------------------------------------------------------------------------
+
+
+def test_run_command_truncates_huge_detail() -> None:
+    big = "x" * 50_000
+
+    def runner(_argv):
+        import subprocess
+
+        return subprocess.CompletedProcess(["cmd"], 1, stdout="", stderr=big)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        updater._run_command(["cmd"], runner, 60, "test cmd")
+    message = str(excinfo.value)
+    assert len(message) < 10_000
+    assert "…(truncated)…" in message
+    assert message.endswith("x" * 100)  # the TAIL is kept, the head dropped
+
+
+def test_run_command_small_detail_not_truncated() -> None:
+    def runner(_argv):
+        import subprocess
+
+        return subprocess.CompletedProcess(["cmd"], 1, stdout="", stderr="boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        updater._run_command(["cmd"], runner, 60, "test cmd")

@@ -38,6 +38,7 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -91,6 +92,10 @@ MAX_EXTRACT_BYTES = 600 * 1024 * 1024  # total uncompressed (decompression-bomb 
 MAX_EXTRACT_MEMBER_BYTES = 300 * 1024 * 1024  # per-member cap
 GIT_TIMEOUT_SECONDS = 120
 PIP_TIMEOUT_SECONDS = 600
+
+# Cap on the failing-command detail embedded in an error message. A noisy
+# pip/pytest run can emit megabytes; the message only needs a diagnostic tail.
+_ERROR_DETAIL_MAX_BYTES = 2048
 
 INSTALL_METHOD_SOURCE = "source"
 INSTALL_METHOD_PIP = "pip"
@@ -593,14 +598,19 @@ def download_verified_release(
         extract_root.mkdir()
         with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tar:
             _safe_extractall(tar, extract_root)
-    except (tarfile.TarError, OSError, EOFError) as exc:
+        # The tarball is a ``git archive --prefix=iterate-skill/`` archive, so
+        # the extracted content lives under a single top-level directory (the
+        # source root for copy + pip reinstall). Listing inside the same
+        # try so a filesystem failure here also becomes "archive invalid"
+        # instead of an uncaught OSError escaping run_update's never-raise
+        # contract.
+        candidates = sorted(p for p in extract_root.iterdir() if p.is_dir())
+    except (tarfile.TarError, OSError, EOFError, ValueError, zlib.error) as exc:
+        # zlib.error: corrupt deflate stream. It is NOT a TarError/OSError
+        # subclass, so without this arm a damaged-but-correctly-checksummed
+        # archive would raise a raw traceback instead of a clean error.
         shutil.rmtree(temp_parent, ignore_errors=True)
         return None, f"release archive invalid: {exc}"
-
-    # The tarball is a ``git archive --prefix=iterate-skill/`` archive, so the
-    # extracted content lives under a single top-level directory (the source
-    # root for copy + pip reinstall).
-    candidates = sorted(p for p in extract_root.iterdir() if p.is_dir())
     if len(candidates) != 1:
         shutil.rmtree(temp_parent, ignore_errors=True)
         return None, "release archive has an unexpected top-level layout"
@@ -711,13 +721,21 @@ def update_assistant_dir(source: Path, destination: Path) -> None:
     """
     destination = Path(destination).resolve()
 
+    # Pre-flight the release BEFORE touching the destination. Copying paths one
+    # by one and only then discovering a missing required file left the target
+    # half-refreshed (some dirs new, some stale) with no rollback — the very
+    # inconsistency the caller's per-assistant error report implies is avoided.
+    # A missing OPTIONAL path is skipped below (as before); a missing REQUIRED
+    # one aborts with the destination untouched.
+    for relative in REQUIRED_RELEASE_PATHS:
+        if not (source / relative).exists():
+            raise FileNotFoundError(
+                f"required skill file missing in release: {relative}"
+            )
+
     for relative in REQUIRED_RELEASE_PATHS + OPTIONAL_RELEASE_PATHS:
         src = source / relative
         if not src.exists():
-            if relative in REQUIRED_RELEASE_PATHS:
-                raise FileNotFoundError(
-                    f"required skill file missing in release: {relative}"
-                )
             continue
         _copy_release_path(source, destination, relative)
 
@@ -764,14 +782,33 @@ def _default_runner(
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError, OSError):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        _kill_process_tree(proc)
         # Drain the pipes so a blocked child cannot wedge cleanup, then re-raise
         # so the caller converts TimeoutExpired into a readable error.
         with contextlib.suppress(Exception):
             proc.communicate()
         raise
     return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
+def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
+    """Best-effort kill of ``proc`` and its whole process group (POSIX only).
+
+    On Windows there is no ``os.killpg``/``signal.SIGKILL`` and the child is
+    not a group leader (``start_new_session`` is POSIX-only), so fall back to
+    ``proc.kill()`` instead of raising AttributeError out of the timeout path.
+    """
+    if os.name == "posix":
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except ProcessLookupError:
+            # Group already gone — nothing left to kill.
+            return
+        except (OSError, AttributeError):
+            pass
+    with contextlib.suppress(ProcessLookupError, OSError):
+        proc.kill()
 
 
 def _run_command(
@@ -793,6 +830,11 @@ def _run_command(
         raise RuntimeError(f"{what} failed to start: {error}") from error
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
+        # A failing pip/git/pytest run can dump megabytes into stderr; pasting
+        # all of it into the RuntimeError message makes the CLI's own error
+        # line unreadable (and huge in logs). Keep a diagnostic tail.
+        if len(detail) > _ERROR_DETAIL_MAX_BYTES:
+            detail = "…(truncated)… " + detail[-_ERROR_DETAIL_MAX_BYTES:]
         suffix = f": {detail}" if detail else ""
         raise RuntimeError(f"{what} failed (exit {result.returncode}){suffix}")
 
@@ -983,6 +1025,7 @@ class UpdateOutcome:
     assistants_updated: list[str] = field(default_factory=list)
     assistants_failed: list[tuple[str, str]] = field(default_factory=list)
     assistants_unknown: list[str] = field(default_factory=list)
+    assistants_not_installed: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Structured representation for ``--json`` output."""
@@ -1009,6 +1052,7 @@ class UpdateOutcome:
                 for name, reason in self.assistants_failed
             ],
             "assistants_unknown": self.assistants_unknown,
+            "assistants_not_installed": self.assistants_not_installed,
         }
 
 
@@ -1086,12 +1130,38 @@ def run_update(
         # Explicitly requested no assistants: skip the skill-dir refresh.
         targeted: list[tuple[str, Path]] = []
     else:
+        # Match by TARGET PATH, not by requested name: a destination shared by
+        # several assistant names (claude/claude-code, gemini/gemini-cli,
+        # aider/aiderdesk) is reported by detect_assistant_dirs under the
+        # first alias only, so filtering by name made a valid alias like
+        # `--assistants claude-code` match nothing and update zero dirs while
+        # still exiting 0. Requested aliases expand to the set of relative
+        # skill dirs they address; a detected dir matches when its own
+        # relative layout is one of those (same string comparison — both
+        # sides come from ASSISTANT_SKILL_DIRS).
+        requested_paths: set[str] | None = None
+        if assistants is not None:
+            requested_paths = {
+                ASSISTANT_SKILL_DIRS[name] for name in assistants
+            }
         detected = detect_assistant_dirs(project_root, home_path)
         targeted = [
             (name, path)
             for name, path in detected
-            if assistants is None or name in assistants
+            if assistants is None
+            or name in assistants
+            or (
+                requested_paths is not None
+                and ASSISTANT_SKILL_DIRS.get(name) in requested_paths
+            )
         ]
+        # Every requested name was VALID (unknown ones were refused above) yet
+        # matched no installed skill dir: exit 0 with an empty
+        # `assistants_updated` used to look like "everything updated". Surface
+        # the mismatch so the operator learns those assistants simply are not
+        # installed here, rather than assuming success.
+        if assistants and not targeted:
+            outcome.assistants_not_installed = sorted(set(assistants))
 
     extracted, dl_error = download_verified_release(release, fetch=fetch)
     if extracted is None:
