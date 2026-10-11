@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Refuse a commit that deletes tracked files nobody declared.
+#
+# WHY THIS EXISTS. On 2026-10-11 the shared main worktree of this repo lost 27 tracked
+# files from disk (another lane's worktree had been rewound to an older content while
+# HEAD kept moving). Nothing in the commit path noticed: the very next `git add -A &&
+# git commit` there would have recorded those losses as deliberate deletions, and a
+# published kernel contract would have vanished from main with a green CI on the commit
+# that removed it. Bytes in the worktree are not authority — a deletion is only safe
+# when the human or agent making the commit says which paths they mean.
+#
+# Two states are refused, and they are different problems:
+#   MISSING  — tracked files absent from the worktree but not staged as deleted. The
+#              tree is inconsistent with its own HEAD; fix the tree before committing
+#              anything, or the next `-A` commits the loss.
+#   STAGED   — deletions present in the index. These are often legitimate; what they may
+#              not be is silent. Name them in `ALLOW_DELETIONS`.
+#
+# Install (git does not load this directory by itself, same rule as pre-push):
+#   cp .githooks/pre-commit "$(git rev-parse --git-common-dir)/hooks/pre-commit"
+#
+# Deliberate escape hatch — one at a time, visible in the commit that uses it:
+#   ALLOW_DELETIONS="path/one,path/two" git commit …     # or ALLOW_DELETIONS='*'
+# The wildcard exists so a large intentional removal is possible, but naming paths is
+# the documented way; `git commit --no-verify` is not (it hides the deletion entirely).
+set -euo pipefail
+
+# A commit with nothing staged is not this guard's business (and this must never be the
+# reason an in-flight editor session cannot write a message).
+if git diff --cached --quiet --exit-code HEAD 2>/dev/null; then
+  exit 0
+fi
+
+staged_deletions=$(git diff --cached --diff-filter=D --name-only HEAD || true)
+missing=$(git ls-files --deleted || true)
+
+# A file staged as deleted is legitimately "missing" from the worktree; subtract it so
+# MISSING means "absent and not declared", not "part of this commit's intent".
+unsynced=""
+if [ -n "$missing" ]; then
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if ! printf '%s\n' "$staged_deletions" | grep -qxF -- "$path"; then
+      unsynced+="$path"$'\n'
+    fi
+  done <<< "$missing"
+fi
+
+if [ -z "$staged_deletions" ] && [ -z "$unsynced" ]; then
+  exit 0
+fi
+
+if [ -n "${ALLOW_DELETIONS:-}" ]; then
+  if [ "$ALLOW_DELETIONS" = "*" ]; then
+    echo "pre-commit: deletions allowed via ALLOW_DELETIONS='*' — the diff of this commit is the review." >&2
+    exit 0
+  fi
+  remaining=""
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case ",${ALLOW_DELETIONS}," in
+      *",${path},"*) ;;
+      *) remaining+="$path"$'\n' ;;
+    esac
+  done <<< "$(printf '%s\n%s\n' "$staged_deletions" "$unsynced" | sed '/^$/d')"
+  if [ -z "$remaining" ]; then
+    echo "pre-commit: declared deletions only — $(printf '%s\n' "$staged_deletions" "$unsynced" | sed '/^$/d' | wc -l | tr -d ' ') path(s), all named in ALLOW_DELETIONS." >&2
+    exit 0
+  fi
+  echo "pre-commit: ALLOW_DELETIONS does not cover every deletion. Undeclared:" >&2
+  printf '  %s\n' $remaining >&2
+  echo "  Remedy: add them to ALLOW_DELETIONS (comma-separated), or restore them:" >&2
+  echo "  git checkout HEAD -- $(printf '%s ' $remaining)" >&2
+  exit 1
+fi
+
+echo "pre-commit: this commit would delete tracked files, and no deletion was declared." >&2
+if [ -n "$staged_deletions" ]; then
+  echo "  In the index:" >&2
+  printf '    %s\n' $staged_deletions >&2
+fi
+if [ -n "$unsynced" ]; then
+  echo "  Missing from the worktree but NOT staged (the tree disagrees with HEAD):" >&2
+  printf '    %s\n' $unsynced >&2
+  echo "  That second set is what a later \`git add -A\` turns into a silent deletion." >&2
+fi
+echo "  Remedy — decide which of these two it is, then:" >&2
+echo "    unintended: git checkout HEAD --pathspec-from-file=<paths>   (restore, then commit)" >&2
+echo "    intended:   ALLOW_DELETIONS=\"<path>[,<path>…]\" git commit …  (name them; do not use --no-verify)" >&2
+exit 1

@@ -58,6 +58,34 @@ cp .githooks/pre-push .git/hooks/pre-push
 确知要绕过时（CI 仍会跑同一道门）：`git push --no-verify`，或 `SKIP_PREPUSH=1 git push`。
 门禁要求本地 ruff 与 `.github/workflows/ci.yml` 中的 pin 完全一致，否则报错并给出安装命令。
 
+## 提交前门禁（pre-commit：禁止未声明的删除）
+
+2026-10-11 出过一次事故：共享主 worktree 的工作区被回退到旧内容，27 个跟踪文件在盘上
+消失，而 HEAD 仍含着它们——`git status` 一片 ` D`，没有任何提交发现。那种状态下任何一次
+`git add -A && git commit` 都会把这些**丢失**记成**有意删除**，而 CI 只会验证删除之后的树
+是否自洽，永远绿。仓库附带 `.githooks/pre-commit` 拦两种形状：
+
+- 索引里有删除，但没被声明；
+- 跟踪文件在 worktree 里缺席、却没被暂存成删除（树与自身 HEAD 不一致——正是上面那种）。
+
+安装方式与 pre-push 相同（git 不自动加载仓库内 hooks 目录；装在 common dir 上对本仓所有
+worktree 生效）：
+
+```bash
+cp .githooks/pre-commit "$(git rev-parse --git-common-dir)/hooks/pre-commit"
+```
+
+误删就恢复：`git checkout HEAD --pathspec-from-file=<路径清单>`。确是要删就点名，别用
+`--no-verify`（那会把删除整个藏起来）：
+
+```bash
+ALLOW_DELETIONS="path/one,path/two" git commit …
+```
+
+对照实测（一次性 detached worktree，跑完即删）：暂存删除被拒且点名路径；
+`ALLOW_DELETIONS` 点名后放行；"文件在盘上消失但未暂存"这一形状被拒；恢复同一文件后同一
+提交照常通过；普通新增提交不受影响。
+
 ---
 
 ## 文档规范
