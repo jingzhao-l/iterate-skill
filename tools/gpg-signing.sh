@@ -77,6 +77,29 @@ targets_filtered() {
   done
 }
 
+# Validate target arguments BEFORE they are consumed via process substitution.
+#
+# `targets_filtered` exits 2 on an unknown name, but every caller feeds it as
+# `< <(targets_filtered ...)` — a subshell, so that `exit 2` kills only the
+# subshell and the parent keeps going with an empty target list. The result was
+# `gpg-signing.sh verify typo` printing a clean report for zero repos and
+# exiting 0: the one invocation most likely to be mistyped was the one that
+# silently succeeded. Call this first; it exits in the CURRENT shell.
+require_known_targets() {
+  local want t found
+  for want in "$@"; do
+    found=""
+    for t in "${TARGETS[@]}"; do
+      [ "${t%%|*}" = "$want" ] && found="$t"
+    done
+    if [ -z "$found" ]; then
+      say "error: unknown target '$want'"
+      say "known targets: $(printf '%s ' "${TARGETS[@]%%|*}")"
+      exit 2
+    fi
+  done
+}
+
 secret_scope() {  # $1 = env column
   [ -n "$1" ] && printf -- '--env\n%s\n' "$1" || true
 }
@@ -89,11 +112,17 @@ cmd_seed() {
   need gpg; need security
   say "This asks for your signing-key passphrase ONCE. It cannot be recovered"
   say "from gpg-agent's cache — only you can supply it."
+  # Restore echo on ANY exit from this function. Without the trap, Ctrl-C (or
+  # `set -e` firing) between `stty -echo` and `stty echo` left the operator's
+  # terminal with echo off for the rest of the session — the password they
+  # typed next was invisible, and nothing would turn it back on.
+  trap 'stty echo 2>/dev/null || true' EXIT INT TERM
   printf 'passphrase (input hidden): '
   local pass
   stty -echo 2>/dev/null || true
   IFS= read -r pass
   stty echo 2>/dev/null || true
+  trap - EXIT INT TERM
   printf '\n'
   [ -n "$pass" ] || { say "error: empty passphrase"; exit 2; }
 
@@ -142,11 +171,13 @@ cmd_install() {
 # presence and shape, and states the limit instead of implying more.
 cmd_verify() {
   need gh; need gpg
+  require_known_targets "$@"
+  local fails=0
   printf '\n== local key ==\n'
   if gpg --list-secret-keys "$KEY_GRIP_HINT" >/dev/null 2>&1; then
     ok "secret key present ($KEY_GRIP_HINT)"
   else
-    bad "no secret key $KEY_GRIP_HINT in the local keyring"
+    bad "no secret key $KEY_GRIP_HINT in the local keyring"; fails=1
   fi
   if security find-generic-password -s "$KEYCHAIN_SERVICE" -a private-key -w >/dev/null 2>&1; then
     ok "keychain entry '$KEYCHAIN_SERVICE' present"
@@ -169,7 +200,7 @@ cmd_verify() {
       fi
     fi
     for want in GPG_PRIVATE_KEY GPG_PASSPHRASE; do
-      if printf '%s' "$names" | grep -qx "$want"; then ok "$want"; else bad "$want missing${env:+ (environment '$env')}"; fi
+      if printf '%s' "$names" | grep -qx "$want"; then ok "$want"; else bad "$want missing${env:+ (environment '$env')}"; fails=1; fi
     done
     # A subproject inside a monorepo (iterate-harness lives in iterate-skill)
     # is not a checkout of its own; the config belongs to the enclosing repo.
@@ -183,6 +214,15 @@ cmd_verify() {
   are write-only) and whether the passphrase matches the key. A clean run means
   the plumbing is right, not that the next release will sign.
 NOTE
+  # A checker nobody has watched fail is a checker nobody can trust: every
+  # `bad` above used to be cosmetic, so `verify` exited 0 with missing secrets
+  # and CI could not gate on it.
+  if [ "$fails" -eq 0 ]; then
+    printf '\nverify: all checks passed\n'
+    return 0
+  fi
+  printf '\nverify: FAILED (see MISS lines above)\n' >&2
+  return 1
 }
 
 # ── local ────────────────────────────────────────────────────────────────────
@@ -234,6 +274,7 @@ cmd_local() {
 # unsigned release into a release that looks successful.
 cmd_audit() {
   need gh
+  require_known_targets "$@"
   printf '\n== silent-skip signing in release workflows ==\n'
   local repo dir env any=0 wf
   while IFS='|' read -r repo dir env; do
@@ -262,6 +303,15 @@ cmd_audit() {
   reference shape — it fails with a remedy instead. That difference is why its
   commits verify and the others' do not.
 NOTE
+  # Exit non-zero when a silent-skip was found, so CI/a pre-push hook can gate
+  # on it. Finding one and exiting 0 made `audit` a report nobody had to read —
+  # exactly the class of silent success the audit itself exists to catch.
+  if [ "$any" -eq 1 ]; then
+    printf '\naudit: FAILED (silent-skip signing found)\n' >&2
+    return 1
+  fi
+  printf '\naudit: passed\n'
+  return 0
 }
 
 # ── selftest ─────────────────────────────────────────────────────────────────
@@ -299,6 +349,20 @@ cmd_selftest() {
   rows="$( ( targets_filtered GlassPane 2>/dev/null ) || true )"
   case "$rows" in GlassPane\|*) ok "a known target resolves to its row" ;;
                 *) bad "known target did not resolve (got '$rows')"; fails=1 ;; esac
+
+  # `require_known_targets` is what actually guards the CALLERS: targets_filtered
+  # runs inside `< <(...)` process substitution, so its `exit 2` only killed the
+  # subshell and the parent carried on with zero repos — `verify typo` printed a
+  # clean report and exited 0. Assert it exits 2 in the current shell.
+  # `|| rc=$?` is required: under `set -e` a bare failing command aborts the
+  # selftest before `rc` is ever assigned (the file already documents this trap).
+  local rc
+  rc=0; ( require_known_targets definitely-not-a-repo ) >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq 2 ]; then ok "require_known_targets rejects an unknown target with exit 2"
+  else bad "require_known_targets exited $rc for an unknown target (want 2)"; fails=1; fi
+  rc=0; ( require_known_targets GlassPane ) >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then ok "require_known_targets accepts a known target"
+  else bad "require_known_targets rejected known target (exit $rc)"; fails=1; fi
 
   # The audit pattern must match a real silent-skip and NOT match the fixed
   # form. Built with printf rather than hand-escaped quoting: the YAML
