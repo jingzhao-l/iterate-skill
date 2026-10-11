@@ -148,7 +148,10 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "json", False):
             print(json.dumps({"error": message}, ensure_ascii=False))
         else:
-            tui.error(f"Error: {message}")
+            # tui.error already renders a ✗ prefix; a literal "Error: " here
+            # produced "✗ Error: ..." — the only spot in the codebase stacking
+            # both markers.
+            tui.error(message)
         return 1
 
     # Structured (JSON) output must not be polluted by the ASCII banner.
@@ -273,6 +276,17 @@ def _dispatch_command(
             json_output=getattr(args, "json", False),
             assistants=getattr(args, "assistants", None),
         )
+    if getattr(args, "json", False):
+        # A bare `iterate --json` (no subcommand) must not spray the human
+        # help text onto stdout: `iterate --json | jq` would choke on it.
+        # Emit the one JSON document the contract promises instead.
+        print(
+            json.dumps(
+                {"error": "no subcommand given", "hint": "run `iterate --help`"},
+                ensure_ascii=False,
+            )
+        )
+        return 2
     parser.print_help()
     # No subcommand given (bare `iterate`): this is a usage error, not success.
     return 2
@@ -480,20 +494,22 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Non-interactive config inspection and editing. With no "
         "action, prints every settable value; 'get KEY' prints one resolved "
         "value; 'set KEY VALUE' validates and writes one value with a "
-        "timestamped backup.",
+        "timestamped backup; 'unset KEY' removes one value so it falls back "
+        "to its documented default.",
     )
     config_parser.add_argument(
         "config_action",
         nargs="?",
-        choices=["get", "set"],
+        choices=["get", "set", "unset"],
         default=None,
-        help="Action to perform: 'get' (default when omitted) or 'set'.",
+        help="Action to perform: 'get' (default when omitted), 'set', or "
+        "'unset' (restore the documented default).",
     )
     config_parser.add_argument(
         "key",
         nargs="?",
         default=None,
-        help="Flat config key to read or write (omit to list all keys).",
+        help="Flat config key to read, write, or remove (omit to list all keys).",
     )
     config_parser.add_argument(
         "value",
@@ -1114,17 +1130,33 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     onboarded = is_onboarding_complete(project_root)
     config_path = project_root / CONFIG_YAML
     data["config_exists"] = config_path.is_file()
-    # Only load when both conditions hold: loading a config that is absent is a
-    # no-op, and a config file that exists but fails to parse must be
-    # distinguished from "no config" so the operator is not told the file is
-    # missing when it is actually corrupt.
+    # Load whenever the FILE exists — regardless of onboarding state. The old
+    # `onboarded and config_exists` gate meant "config present, ITERATE.md
+    # missing" (half-done onboarding, deleted ITERATE.md) reported
+    # config_ok=false for a file that was never even parsed, and made the two
+    # renderers disagree about the exit code. Parsing is what "config_ok"
+    # describes; onboarding is a separate axis.
     config = (
-        load_onboarding_config(project_root)
-        if onboarded and data["config_exists"]
-        else None
+        load_onboarding_config(project_root) if data["config_exists"] else None
     )
     data["config_ok"] = config is not None
     data["onboarded"] = onboarded
+
+    # Stable key set: these keys are emitted in EVERY payload (onboarded or
+    # not) so `--json` consumers can index them unconditionally instead of
+    # guarding each with `if key in payload`. Defaults mirror the "no config
+    # loaded" semantics.
+    data["completed_at"] = "unknown"
+    data["channel"] = "unknown"
+    data["skill_version"] = "unknown"
+    data["drift_check"] = True
+    data["fingerprints"] = 0
+    data["personalization_rules"] = 0
+    data["drift"] = "unknown"
+    data["drift_detected"] = None
+    data["drifted_added"] = []
+    data["drifted_removed"] = []
+    data["drifted_changed"] = []
 
     drift = None
     # Distinguish a parsed-but-empty config ({}) from a corrupt/absent one:
@@ -1198,6 +1230,12 @@ def _render_status_tui(
 
     if not data["onboarded"]:
         tui.warning("Status: Not onboarded")
+        if data["config_exists"] and not data["config_ok"]:
+            # Surface a corrupt config even pre-onboarding, and exit 1 to
+            # match the --json branch: one state, one exit code.
+            tui.error("Status: iterate.config.yaml is present but could not be parsed")
+            tui.hint("Run 'iterate doctor' for details.", indent=2)
+            return 1
         tui.hint("Run 'iterate onboard' to initialize.", indent=2)
         return 0
 
@@ -1285,15 +1323,21 @@ def _cmd_doctor(
         ok, fixes = run_doctor_fix(project_root)
         if not ok:
             if json_output:
-                # Match the DoctorReport JSON contract (project/skill_version/
-                # healthy/fixes/findings) so consumers can decode a failed
-                # --fix the same shape as a successful run.
+                # Match the FULL DoctorReport JSON contract (project/
+                # skill_version/healthy/blocking/strict/has_errors/
+                # has_warnings/fixes/findings) so consumers can decode a
+                # failed --fix with the same keys as a successful run — the
+                # hand-built payload previously omitted the boolean signals.
                 print(
                     json.dumps(
                         {
                             "project": str(project_root),
                             "skill_version": __version__,
                             "healthy": False,
+                            "blocking": True,
+                            "strict": strict,
+                            "has_errors": True,
+                            "has_warnings": False,
                             "fixes": [],
                             "findings": [
                                 {
@@ -1336,7 +1380,9 @@ def _cmd_doctor(
 
     if json_out:
         try:
-            export_report_json(report, Path(json_out).resolve())
+            export_report_json(
+                report, Path(json_out).resolve(), strict=strict
+            )
             if not json_output:
                 tui.hint(f"doctor: JSON report written to {json_out}")
         except OSError as exc:
@@ -1344,6 +1390,18 @@ def _cmd_doctor(
             return 1
 
     return code
+
+
+def _config_usage_error(message: str, json_output: bool) -> None:
+    """Emit a config-subcommand usage error honouring the ``--json`` contract.
+
+    ``--json`` promises "stdout holds exactly one JSON document" (see the
+    global ``--json`` help); a usage refusal must keep that promise so
+    ``iterate config set k --json | jq`` never sees an empty body.
+    """
+    if json_output:
+        print(json.dumps({"error": message}, ensure_ascii=False))
+    tui.error(message)
 
 
 def _cmd_config(
@@ -1356,36 +1414,61 @@ def _cmd_config(
     """Handle the 'config' subcommand — non-interactive config inspection/edit.
 
     ``iterate config`` prints every settable value, ``iterate config get [k]``
-    prints one (or all) resolved value(s), and ``iterate config set k v``
-    validates and writes a single value with a timestamped backup. With
-    ``--json``, read/get/set emit a structured JSON object on stdout (for
-    scripts/CI) instead of TUI lines.
+    prints one (or all) resolved value(s), ``iterate config set k v``
+    validates and writes a single value with a timestamped backup, and
+    ``iterate config unset k`` removes a value so it falls back to its
+    documented default. With ``--json``, read/get/set/unset emit a structured
+    JSON object on stdout (for scripts/CI) instead of TUI lines.
 
     Args:
         project_root: Project root directory.
-        action: The config action ("get", "set", or None to list all).
+        action: The config action ("get", "set", "unset", or None to list all).
         key: Flat config key to read or write (None to list all keys).
         value: Raw CLI value to write (only used with "set").
         json_output: When True, emit JSON objects instead of TUI output.
 
     Returns:
         Exit code: 0 on success, 1 on unknown key / invalid value / write
-        failure.
+        failure; 2 on usage errors (missing/extra positional arguments).
     """
-    from iterate_cli.configcmd import run_config_get, run_config_set
+    from iterate_cli.configcmd import (
+        run_config_get,
+        run_config_set,
+        run_config_unset,
+    )
 
     if action == "set":
         # Usage errors must be exit 2 everywhere (bare `iterate`, `--json` on
         # an interactive command, `update --json` without `--yes` all use 2), so
         # automation can tell "you invoked it wrong" apart from "the operation
         # failed". These two were the only ones returning 1 for a bad call.
-        if key is None:
-            tui.error("Usage: iterate config set KEY VALUE")
-            return 2
-        if value is None:
-            tui.error("Usage: iterate config set KEY VALUE")
+        if key is None or value is None:
+            _config_usage_error(
+                "Usage: iterate config set KEY VALUE", json_output
+            )
             return 2
         return run_config_set(project_root, key, value, json_output=json_output)
+
+    if action == "unset":
+        # Missing KEY (nothing to unset) or a stray VALUE (`unset k v` would
+        # otherwise silently ignore `v` and exit 0, exactly like `config get
+        # k stray` used to) are both invocation errors → exit 2.
+        if key is None or value is not None:
+            _config_usage_error(
+                "Usage: iterate config unset KEY  (unset takes no VALUE)",
+                json_output,
+            )
+            return 2
+        return run_config_unset(project_root, key, json_output=json_output)
+
+    if action == "get" and value is not None:
+        # `config get language stray` silently ignored the extra positional
+        # (it landed in `value`, which get never reads) and exited 0 — a
+        # mistyped command looked like a success to scripts. Refuse it.
+        _config_usage_error(
+            "Usage: iterate config get [KEY]  (get takes no VALUE)", json_output
+        )
+        return 2
 
     # 'get' (explicit or implicit) lists all values when no key is given.
     return run_config_get(project_root, key, json_output=json_output)
@@ -1462,8 +1545,12 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
         Exit code: 0 when no drift (or drift checking is unavailable), 1 when
         drift is detected.
     """
-    from iterate_cli.refresh import check_onboarding_drift
+    from iterate_cli.refresh import check_onboarding_drift, load_onboarding_config
 
+    # Load the config once and reuse: check_onboarding_drift loads it again
+    # internally (emitting its own parse error), and re-loading here to build
+    # the reason printed a SECOND identical error for a corrupt config.
+    config = load_onboarding_config(project_root)
     drift = check_onboarding_drift(project_root)
 
     if json_output:
@@ -1471,7 +1558,7 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
             # Distinguish the three reasons drift checking is unavailable
             # (mirroring doctor's drift check) so a JSON consumer can tell
             # "not onboarded" from "check disabled" from "no fingerprints yet".
-            reason = _drift_unavailable_reason(project_root, load_onboarding_config(project_root))
+            reason = _drift_unavailable_reason(project_root, config)
             print(
                 json.dumps(
                     {
@@ -1484,7 +1571,13 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
                     indent=2,
                 )
             )
-            return 0
+            # A corrupt config must FAIL CLOSED (exit 1): fingerprint is a
+            # verification gate, and the previous unconditional 0 let CI treat
+            # "config unreadable, drift unknown" as a pass while `status`/
+            # `show` exited 1 for the same state. Non-corrupt unavailability
+            # (not onboarded / disabled / no fingerprints) stays informational
+            # (exit 0) — drift is non-blocking there by design.
+            return 1 if "could not be parsed" in reason else 0
         print(
             json.dumps(
                 {
@@ -1507,14 +1600,14 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
 
     if drift is None:
         tui.info("Fingerprint verification unavailable.", indent=2)
-        reason = _drift_unavailable_reason(
-            project_root, load_onboarding_config(project_root)
-        )
+        reason = _drift_unavailable_reason(project_root, config)
         if "could not be parsed" in reason:
             # A corrupt config cannot be fixed by onboarding or by enabling
-            # drift_check; point at doctor instead of the generic hint.
+            # drift_check; point at doctor instead of the generic hint, and
+            # fail closed (exit 1) to match the JSON branch above.
             tui.hint("Run 'iterate doctor' to diagnose the config.", indent=4)
-        elif "disabled" in reason:
+            return 1
+        if "disabled" in reason:
             tui.hint(
                 "Enable drift_check in iterate.config.yaml to verify fingerprints.",
                 indent=4,
@@ -1577,6 +1670,12 @@ def _drift_unavailable_reason(
             if isinstance(config.get("onboarding"), dict)
             else {}
         )
+        # Onboarding state outranks every other reason: without a completed
+        # onboarding, `iterate refresh` refuses to run ("onboarding not
+        # completed"), so advertising "run `iterate refresh`" here would send
+        # the user to a command guaranteed to reject them.
+        if not is_onboarding_complete(project_root):
+            return reason
         if not onboarding.get("drift_check", True):
             reason = "drift check is disabled (drift_check: false)"
         else:
@@ -1679,9 +1778,23 @@ def _report_update_outcome(
             f"{title_prefix}Could not check for updates: {outcome.download_error}"
         )
         return 1
-    if outcome.check_only or outcome.up_to_date:
+    if outcome.up_to_date:
         tui.success(
             f"{title_prefix}You are running the latest version ({outcome.current})."
+        )
+        return 0
+    if outcome.check_only:
+        # `--check` with a NEWER release available must say so: the previous
+        # `check_only or up_to_date` branch printed "running the latest
+        # version" for every --check run, because run_update(check_only=True)
+        # returns early with up_to_date=False whenever an update exists.
+        # Exit stays 0 (check is informational; --json mirrors the same
+        # fields), but the message reflects reality.
+        tui.info(
+            f"{title_prefix}Update available: {outcome.current} → {outcome.latest}."
+        )
+        tui.hint(
+            "Run `iterate update --yes` to apply.", indent=2
         )
         return 0
     if outcome.cancelled:
@@ -1700,6 +1813,19 @@ def _report_update_outcome(
             tui.warning(
                 f"{title_prefix}CLI update failed: {outcome.cli_result.message}"
             )
+    if outcome.assistants_not_installed:
+        # A valid --assistants name that matched no installed skill dir used to
+        # produce a silent empty run (exit 0, no output) — indistinguishable
+        # from "updated everything". Tell the operator which names simply have
+        # no directory here.
+        names = ", ".join(outcome.assistants_not_installed)
+        tui.warning(
+            f"{title_prefix}Requested assistant(s) not installed here: {names}"
+        )
+        tui.hint(
+            "Run `iterate onboard` first to create those skill dirs.",
+            indent=2,
+        )
     if outcome.assistants_updated:
         names = ", ".join(outcome.assistants_updated)
         tui.success(f"{title_prefix}Assistant skill dirs updated: {names}")
@@ -1728,11 +1854,21 @@ def _cmd_update(
 
     # --json for a write operation requires --yes (non-interactive explicit consent).
     if json_output and not yes and not check_only:
-        tui.error(
+        # stdout must hold one JSON document on every path (the global --json
+        # contract); previously this refusal wrote only to stderr, leaving
+        # `iterate update --json | jq` with an empty body and a bare exit 2.
+        message = (
             "--json for `iterate update` requires --yes (a write operation "
             "must be explicitly confirmed). Use --check to read-only compare "
             "versions without --yes."
         )
+        print(
+            json.dumps(
+                {"error": message, "hint": "pass --yes or --check"},
+                ensure_ascii=False,
+            )
+        )
+        tui.error(message)
         return 2
 
     if check_only:

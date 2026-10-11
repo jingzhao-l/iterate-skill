@@ -28,6 +28,7 @@ from iterate_cli.configcmd import (
     _parse_reasoning_effort,
     run_config_get,
     run_config_set,
+    run_config_unset,
 )
 from iterate_cli.doctor import SKILL_VERSION
 from iterate_cli.refresh import CONFIG_YAML
@@ -536,3 +537,258 @@ class TestConfigJson:
         assert run_config_get(project, None, json_output=True) == 0
         payload = json.loads(capsys.readouterr().out)
         assert isinstance(payload, dict) and "dimensions" in payload
+
+
+# ---------------------------------------------------------------------------
+# config set --json error contract (stdout must carry one JSON document even
+# on failure, matching `config get`)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigSetJsonErrorContract:
+    def test_unknown_key_json_emits_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            ["config", "set", "nope", "x", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "Unknown config key" in payload["error"]
+
+    def test_invalid_value_json_emits_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            [
+                "config", "set", "reasoning_effort", "turbo",
+                "--json", "-p", str(project), "--no-banner",
+            ]
+        )
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "Invalid value" in payload["error"]
+
+    def test_missing_config_json_emits_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        code = cli_main(
+            ["config", "set", "goal", "x", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "not found" in payload["error"]
+
+    def test_corrupt_yaml_json_emits_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("a: [1, 2\nb: {\n", encoding="utf-8")
+        code = cli_main(
+            ["config", "set", "goal", "x", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "not valid YAML" in payload["error"]
+
+    def test_non_mapping_top_level_json_emits_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("- just\n- a\n- list\n", encoding="utf-8")
+        code = cli_main(
+            ["config", "set", "goal", "x", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "must be a mapping" in payload["error"]
+
+    def test_scalar_intermediate_json_emits_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["git"] = "legacy"
+        _write_config(project, config)
+        code = cli_main(
+            [
+                "config", "set", "git.use_worktree", "true",
+                "--json", "-p", str(project), "--no-banner",
+            ]
+        )
+        assert code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "intermediate field" in payload["error"]
+
+    def test_json_stdout_is_exactly_one_document_on_failure(
+        self, tmp_path, capsys
+    ) -> None:
+        """The whole --json promise: exactly one parsable JSON doc on stdout."""
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        cli_main(
+            ["config", "set", "nope", "x", "--json", "-p", str(project), "--no-banner"]
+        )
+        out = capsys.readouterr().out
+        # json.loads rejects trailing junk, so this proves there is exactly
+        # one document and nothing else on stdout.
+        json.loads(out)
+
+
+class TestConfigCommentsWarn:
+    def test_set_with_comments_emits_warning(self, tmp_path, capsys) -> None:
+        """Hand-written YAML comments are lost on `config set` — say so."""
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text(
+            "# review scope\nmax_rounds: 5\n", encoding="utf-8"
+        )
+        assert run_config_set(project, "max_rounds", "7") == 0
+        captured = capsys.readouterr()
+        assert "NOT preserved" in captured.out + captured.err
+        assert _read_config(project)["max_rounds"] == 7
+
+    def test_set_without_comments_no_warning(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        assert run_config_set(project, "max_rounds", "7") == 0
+        captured = capsys.readouterr()
+        assert "NOT preserved" not in captured.out + captured.err
+
+
+# ---------------------------------------------------------------------------
+# config unset
+# ---------------------------------------------------------------------------
+
+
+class TestConfigUnset:
+    def test_unset_top_level_key_restores_default(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["max_rounds"] = 12
+        _write_config(project, config)
+        assert run_config_unset(project, "max_rounds") == 0
+        assert "max_rounds" not in _read_config(project)
+
+    def test_unset_nested_key_prunes_empty_section(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["git"] = {"use_worktree": True}
+        _write_config(project, config)
+        assert run_config_unset(project, "git.use_worktree") == 0
+        result = _read_config(project)
+        # Leaf removed AND the now-empty `git:` section pruned (no litter).
+        assert "git" not in result
+
+    def test_unset_nested_key_keeps_sibling(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["git"] = {"use_worktree": True, "auto_merge": True}
+        _write_config(project, config)
+        assert run_config_unset(project, "git.use_worktree") == 0
+        result = _read_config(project)
+        assert result["git"] == {"auto_merge": True}
+
+    def test_unset_creates_backup(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["max_rounds"] = 12
+        _write_config(project, config)
+        assert run_config_unset(project, "max_rounds") == 0
+        backups = list(project.glob(f"{CONFIG_YAML}.configunset-*"))
+        assert len(backups) == 1
+
+    def test_unset_absent_key_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        assert run_config_unset(project, "max_rounds") == 1
+
+    def test_unset_unknown_key_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        assert run_config_unset(project, "nope") == 1
+
+    def test_unset_missing_config_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        assert run_config_unset(project, "max_rounds") == 1
+
+    def test_unset_corrupt_config_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("a: [1, 2\n", encoding="utf-8")
+        assert run_config_unset(project, "max_rounds") == 1
+
+    def test_unset_scalar_intermediate_is_error(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["git"] = "legacy"
+        _write_config(project, config)
+        assert run_config_unset(project, "git.use_worktree") == 1
+
+    def test_unset_json_success(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["max_rounds"] = 12
+        _write_config(project, config)
+        assert run_config_unset(project, "max_rounds", json_output=True) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["key"] == "max_rounds"
+        assert payload["removed"] is True
+        assert payload["previous_value"] == 12
+        assert payload["value"] == "default"
+
+    def test_unset_json_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        assert run_config_unset(project, "max_rounds", json_output=True) == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "nothing to unset" in payload["error"]
+
+    def test_unset_cli_roundtrip(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["max_rounds"] = 12
+        _write_config(project, config)
+        code = cli_main(
+            ["config", "unset", "max_rounds", "-p", str(project), "--no-banner"]
+        )
+        assert code == 0
+        assert "max_rounds" not in _read_config(project)
+
+    def test_unset_cli_missing_key_usage_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(["config", "unset", "-p", str(project), "--no-banner"])
+        assert code == 2
+        assert "Usage" in capsys.readouterr().err
+
+    def test_unset_cli_stray_value_usage_error(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            ["config", "unset", "max_rounds", "stray", "-p", str(project), "--no-banner"]
+        )
+        assert code == 2
+        assert "Usage" in capsys.readouterr().err
+
+    def test_unset_cli_usage_error_json(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            ["config", "unset", "max_rounds", "stray", "--json",
+             "-p", str(project), "--no-banner"]
+        )
+        assert code == 2
+        payload = json.loads(capsys.readouterr().out)
+        assert "Usage" in payload["error"]
+
+    def test_unset_then_get_reports_default(self, tmp_path, capsys) -> None:
+        """Round-trip: after unset, `config get` shows the documented default."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["language"] = "en"
+        _write_config(project, config)
+        assert run_config_unset(project, "language") == 0
+        capsys.readouterr()  # drain the unset confirmation lines
+        assert run_config_get(project, "language", json_output=False) == 0
+        assert capsys.readouterr().out.strip() == "default"
+
+    def test_unset_dotted_and_flat_alias_agree(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["atomic"] = {"max_lines": 5}
+        _write_config(project, config)
+        # The flat alias resolves to the same path as the dotted form.
+        assert run_config_unset(project, "atomic.max_lines") == 0
+        assert "atomic" not in _read_config(project)

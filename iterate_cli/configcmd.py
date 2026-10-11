@@ -388,25 +388,27 @@ def run_config_set(
 
     Returns:
         Exit code: 0 on success, 1 on unknown key / invalid value / write
-        failure.
+        failure. With ``json_output``, failures additionally emit
+        ``{"error": ...}`` on stdout so the one-JSON-document contract holds.
     """
     spec = _resolve_key(key)
     if spec is None:
-        tui.error(
-            f"Unknown config key {key!r}. Settable keys: {', '.join(SETTABLE_KEYS)}."
+        return _set_error(
+            f"Unknown config key {key!r}. Settable keys: {', '.join(SETTABLE_KEYS)}.",
+            json_output,
         )
-        return 1
 
     try:
         parsed = spec.validator(raw_value)
     except ConfigValueError as exc:
-        tui.error(f"Invalid value for {key!r}: {exc}")
-        return 1
+        return _set_error(f"Invalid value for {key!r}: {exc}", json_output)
 
     config_path = project_root / CONFIG_YAML
     if not config_path.is_file():
-        tui.error("iterate.config.yaml not found. Run 'iterate onboard' first.")
-        return 1
+        return _set_error(
+            "iterate.config.yaml not found. Run 'iterate onboard' first.",
+            json_output,
+        )
 
     # Single read/parse so the "is this a mapping?" check and the merge use
     # the exact same snapshot. load_config_strict collapses a malformed
@@ -415,24 +417,25 @@ def run_config_set(
     try:
         raw_text = config_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        tui.error(f"Cannot read {CONFIG_YAML}: {exc}")
-        return 1
+        return _set_error(f"Cannot read {CONFIG_YAML}: {exc}", json_output)
     try:
         parsed_doc = yaml.safe_load(raw_text)
     except yaml.YAMLError as exc:
-        tui.error(f"{CONFIG_YAML} is not valid YAML; refusing to write over it: {exc}")
-        return 1
+        return _set_error(
+            f"{CONFIG_YAML} is not valid YAML; refusing to write over it: {exc}",
+            json_output,
+        )
     if parsed_doc is None:
         config: dict[str, Any] = {}
     elif isinstance(parsed_doc, dict):
         config = parsed_doc
     else:
-        tui.error(
+        return _set_error(
             f"{CONFIG_YAML} top-level must be a mapping (dict), got "
             f"{type(parsed_doc).__name__}. Refusing to overwrite non-mapping "
-            "content; fix the file manually, then retry."
+            "content; fix the file manually, then retry.",
+            json_output,
         )
-        return 1
 
     section: Any = config
     for part in spec.path[:-1]:
@@ -443,12 +446,12 @@ def run_config_set(
             # A hand-edited scalar/list at an intermediate path segment (e.g.
             # `git: legacy`) would be silently clobbered to {} if we replaced
             # it here. Refuse instead so the operator fixes the file manually.
-            tui.error(
+            return _set_error(
                 f"Cannot set {key!r}: intermediate field {part!r} is "
                 f"{type(existing_part).__name__}, not a mapping. Fix "
-                f"{CONFIG_YAML} manually, then retry."
+                f"{CONFIG_YAML} manually, then retry.",
+                json_output,
             )
-            return 1
         section = section[part]
     if spec.path:
         section[spec.path[-1]] = parsed
@@ -466,19 +469,191 @@ def run_config_set(
             config, default_flow_style=False, allow_unicode=True, sort_keys=False
         )
     except yaml.YAMLError as exc:
-        tui.error(f"Cannot serialise {CONFIG_YAML}: {exc}")
-        return 1
+        return _set_error(f"Cannot serialise {CONFIG_YAML}: {exc}", json_output)
     try:
         shutil.copy2(config_path, backup_path)
         atomic_write(config_path, config_yaml)
     except OSError as exc:
-        tui.error(f"Failed to write {CONFIG_YAML}: {exc}")
-        return 1
+        return _set_error(f"Failed to write {CONFIG_YAML}: {exc}", json_output)
+
+    # Round-tripping through safe_dump CANNOT preserve hand-written YAML
+    # comments/anchors/formatting — they are silently erased on every
+    # successful set (the backup keeps them). Say so instead of letting the
+    # operator discover it in a diff.
+    if _config_has_comments(raw_text):
+        tui.warning(
+            "Note: YAML comments in iterate.config.yaml are NOT preserved by "
+            "`config set` (a full rewrite); see the timestamped backup."
+        )
 
     if json_output:
         # Keep stdout clean for scripts/CI: only the JSON confirmation object.
         print(json.dumps({"key": key, "value": parsed}, ensure_ascii=False, default=str))
         return 0
     tui.success(f"{key} set to {_format_value(parsed)}.")
+    tui.hint(f"Backup written to {backup_path.name}.", indent=2)
+    return 0
+
+
+def _set_error(message: str, json_output: bool) -> int:
+    """Emit a ``config set``/``config unset`` failure honouring ``--json``.
+
+    The global ``--json`` help promises "stdout holds exactly one JSON
+    document, including on failure"; every failure branch of
+    ``run_config_set`` used to write ONLY to stderr, so
+    ``iterate config set ... --json`` yielded an empty stdout body plus a bare
+    exit code — while ``config get``'s failure paths in this same module DID
+    emit ``{"error": ...}``. Two contracts for one command; this unifies them.
+    """
+    if json_output:
+        print(json.dumps({"error": message}, ensure_ascii=False))
+    tui.error(message)
+    return 1
+
+
+def _config_has_comments(text: str) -> bool:
+    """True when ``text`` contains at least one YAML comment line.
+
+    Best-effort (a ``#`` inside a quoted scalar also matches) — the warning is
+    advisory, never blocking.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or " #" in stripped:
+            return True
+    return False
+
+
+def run_config_unset(
+    project_root: Path, key: str, json_output: bool = False
+) -> int:
+    """Remove a config key so it falls back to its documented default.
+
+    The inverse of ``run_config_set``: ``config get`` renders an absent key as
+    ``default``, but until now there was no way to RETURN a key to that state
+    (set only accepted non-empty values), so a mistyped value could never be
+    un-set short of hand-editing the YAML.
+
+    Removes the leaf key, then prunes any ancestor section (e.g. ``git``) left
+    empty by the removal. A timestamped backup is taken first, exactly like
+    ``config set``.
+
+    Args:
+        project_root: Project root directory.
+        key: Flat config key (or dotted alias) to remove.
+        json_output: When True, emit a JSON confirmation instead of TUI lines.
+
+    Returns:
+        Exit code: 0 on success, 1 on unknown key / missing or corrupt config /
+        intermediate non-mapping / key not present.
+    """
+    spec = _resolve_key(key)
+    if spec is None:
+        return _set_error(
+            f"Unknown config key {key!r}. Settable keys: {', '.join(SETTABLE_KEYS)}.",
+            json_output,
+        )
+
+    config_path = project_root / CONFIG_YAML
+    if not config_path.is_file():
+        return _set_error(
+            "iterate.config.yaml not found. Run 'iterate onboard' first.",
+            json_output,
+        )
+    try:
+        raw_text = config_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return _set_error(f"Cannot read {CONFIG_YAML}: {exc}", json_output)
+    try:
+        parsed_doc = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        return _set_error(
+            f"{CONFIG_YAML} is not valid YAML; refusing to write over it: {exc}",
+            json_output,
+        )
+    if parsed_doc is None:
+        parsed_doc = {}
+    if not isinstance(parsed_doc, dict):
+        return _set_error(
+            f"{CONFIG_YAML} top-level must be a mapping (dict), got "
+            f"{type(parsed_doc).__name__}. Refusing to overwrite non-mapping "
+            "content; fix the file manually, then retry.",
+            json_output,
+        )
+    config: dict[str, Any] = parsed_doc
+
+    # Walk to the parent mapping, refusing a non-mapping intermediate the same
+    # way run_config_set does (removing through it would corrupt the file).
+    parent: Any = config
+    for part in spec.path[:-1]:
+        parent = parent.get(part)
+        if not isinstance(parent, dict):
+            return _set_error(
+                f"Cannot unset {key!r}: intermediate field {part!r} is not a "
+                f"mapping. Fix {CONFIG_YAML} manually, then retry.",
+                json_output,
+            )
+    target: dict[str, Any] = parent if spec.path else config
+    leaf = spec.path[-1] if spec.path else spec.name
+    if leaf not in target:
+        return _set_error(
+            f"{key!r} is not set in {CONFIG_YAML} (nothing to unset).",
+            json_output,
+        )
+    removed_value = target.pop(leaf)
+
+    # Prune ancestor sections left empty by the removal so unset does not
+    # leave `git: {}` litter behind. The default applies either way, but a
+    # clean file is what "unset" promises.
+    if spec.path:
+        chain: list[tuple[dict[str, Any], str]] = []
+        cursor: dict[str, Any] = config
+        for part in spec.path[:-1]:
+            chain.append((cursor, part))
+            nxt = cursor.get(part)
+            if not isinstance(nxt, dict):
+                break
+            cursor = nxt
+        for ancestor, part in reversed(chain):
+            child = ancestor.get(part)
+            if isinstance(child, dict) and not child:
+                del ancestor[part]
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    salt = uuid4().hex[:6]
+    backup_path = config_path.with_name(f"{CONFIG_YAML}.configunset-{timestamp}-{salt}")
+    try:
+        config_yaml = yaml.safe_dump(
+            config, default_flow_style=False, allow_unicode=True, sort_keys=False
+        )
+    except yaml.YAMLError as exc:
+        return _set_error(f"Cannot serialise {CONFIG_YAML}: {exc}", json_output)
+    try:
+        shutil.copy2(config_path, backup_path)
+        atomic_write(config_path, config_yaml)
+    except OSError as exc:
+        return _set_error(f"Failed to write {CONFIG_YAML}: {exc}", json_output)
+
+    if _config_has_comments(raw_text):
+        tui.warning(
+            "Note: YAML comments in iterate.config.yaml are NOT preserved by "
+            "`config unset` (a full rewrite); see the timestamped backup."
+        )
+
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "key": key,
+                    "removed": True,
+                    "previous_value": removed_value,
+                    "value": "default",
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return 0
+    tui.success(f"{key} unset — now falls back to its default.")
     tui.hint(f"Backup written to {backup_path.name}.", indent=2)
     return 0
