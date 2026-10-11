@@ -150,17 +150,47 @@ class TestMergeUserSections:
         assert "must survive" in merged
         assert "stale note" not in merged
 
-    def test_h3_boundary_is_respected(self) -> None:
-        from iterate_cli.personalize import CONVENTIONS_SECTION_HEADER
+    def test_h3_subheading_inside_section_is_not_a_boundary(self) -> None:
+        """A `###` INSIDE a personalization section belongs to it.
+
+        The sections render their own h3 sub-headings (e.g.
+        "### 禁区 / Protected"), so treating any h3 as a boundary would leave
+        that sub-section's body behind on clear/merge. The boundary is a
+        header at or ABOVE the removed section's own (h2) level.
+        """
+        from iterate_cli.personalize import RESTRICTED_SECTION_HEADER
+
+        existing = (
+            f"{RESTRICTED_SECTION_HEADER}\n\n"
+            "### 禁区 / Protected (不可修改 / Do not modify)\n\n"
+            "- `legacy/**`\n\n"
+            "# User Section\n\nkeep\n"
+        )
+        merged = merge_user_sections(existing, "")
+        assert "legacy/**" not in merged
+        assert "# User Section" in merged
+        assert "keep" in merged
+
+    def test_user_h3_after_section_survives(self) -> None:
+        """A user's own h3 following the personalization block also survives,
+        because the removed h2 section ends at the next h2-or-above.
+        """
+        from iterate_cli.personalize import (
+            CONVENTIONS_SECTION_HEADER,
+            RESTRICTED_SECTION_HEADER,
+        )
 
         existing = (
             f"{CONVENTIONS_SECTION_HEADER}\n\nstale conv\n\n"
-            "### Backend Group\n\nsurvives\n"
+            f"{RESTRICTED_SECTION_HEADER}\n\nstale restricted\n\n"
+            "# User Top\n\n### User Sub\n\nsurvives\n"
         )
         merged = merge_user_sections(existing, "")
-        assert "### Backend Group" in merged
-        assert "survives" in merged
         assert "stale conv" not in merged
+        assert "stale restricted" not in merged
+        assert "# User Top" in merged
+        assert "### User Sub" in merged
+        assert "survives" in merged
 
     def test_hash_line_in_markdown_is_a_boundary(self) -> None:
         """`# foo` IS an ATX h1 in Markdown, so it legitimately ends the skip.

@@ -205,6 +205,18 @@ def _detect_test_dir(scan: ScanResult) -> str:
     return "tests"
 
 
+def _detect_src_root(scan: ScanResult) -> str:
+    """Return the path prefix for lint/type-check commands.
+
+    A ``src/`` layout is common but far from universal — a flat project
+    (``app.py`` at the repo root, or a package directory like ``mypkg/``)
+    made the old hardcoded ``ruff check src/`` / ``mypy src/`` suggestions
+    fail on the very first validation run with "path does not exist". Fall
+    back to ``.`` (the project root) when no ``src`` directory was detected.
+    """
+    return "src/" if "src" in scan.top_level_dirs else "."
+
+
 def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
     """Suggest validation commands based on detected languages.
 
@@ -226,11 +238,12 @@ def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
     # execute the branch twice and overwrite the build-tool choice.
     java_handled = False
     test_dir = _detect_test_dir(scan)
+    src_root = _detect_src_root(scan)
     for lang in scan.detected_languages:
         if lang == "Python":
             commands["python"] = [
-                "ruff check src/",
-                "mypy src/ --ignore-missing-imports",
+                f"ruff check {src_root}",
+                f"mypy {src_root} --ignore-missing-imports",
                 f"pytest {test_dir} -x -q --timeout=60",
             ]
         elif lang in ("JavaScript/TypeScript", "TypeScript"):

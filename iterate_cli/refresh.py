@@ -180,6 +180,46 @@ def is_onboarding_complete(project_root: Path) -> bool:
     return (project_root / ITERATE_MD).is_file()
 
 
+def drift_unavailable_reason(
+    project_root: Path, config: dict[str, Any] | None
+) -> str:
+    """Return a machine-readable reason for "drift check unavailable".
+
+    Distinguishes "not onboarded" from "config corrupt" from "check disabled"
+    from "no fingerprints yet" so both the JSON payload and the TUI hint can
+    point the user at the right fix. Lives here (next to
+    ``check_onboarding_drift``) so ``status``, ``show`` and ``fingerprint``
+    cannot drift apart: ``show`` used to collapse all four cases into
+    "unknown", telling an operator who deliberately set ``drift_check: false``
+    that their state was indeterminate.
+    """
+    reason = "onboarding not completed"
+    config_path = project_root / CONFIG_YAML
+    if config_path.is_file() and config is None:
+        return "iterate.config.yaml exists but could not be parsed"
+    if config is not None:
+        onboarding = (
+            config.get("onboarding")
+            if isinstance(config.get("onboarding"), dict)
+            else {}
+        )
+        # Onboarding state outranks every other reason: without a completed
+        # onboarding, `iterate refresh` refuses to run ("onboarding not
+        # completed"), so advertising "run `iterate refresh`" here would send
+        # the user to a command guaranteed to reject them.
+        if not is_onboarding_complete(project_root):
+            return reason
+        if not onboarding.get("drift_check", True):
+            reason = "drift check is disabled (drift_check: false)"
+        else:
+            stored = onboarding.get("fingerprints") or []
+            if not isinstance(stored, list) or not stored:
+                reason = "no fingerprints recorded yet (run `iterate refresh` to capture them)"
+            else:
+                reason = "drift check unavailable"
+    return reason
+
+
 def check_onboarding_drift(project_root: Path) -> DriftResult | None:
     """Check for drift since the last onboarding.
 

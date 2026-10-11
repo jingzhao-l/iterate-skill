@@ -20,6 +20,7 @@ from iterate_cli.fingerprint import drift_advice, drift_summary
 from iterate_cli.personalize import load_existing_personalization
 from iterate_cli.refresh import (
     check_onboarding_drift,
+    drift_unavailable_reason,
     is_onboarding_complete,
     load_onboarding_config,
 )
@@ -158,8 +159,19 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
     # Compute the drift result exactly once and derive both summary and advice
     # from it, avoiding a redundant scan + SHA-heavy recomputation.
     drift = check_onboarding_drift(project_root)
-    data["drift"] = drift_summary(drift)
-    data["drift_advice"] = drift_advice(drift)
+    if not drift_enabled:
+        # "Check disabled" must be distinguishable from a genuine "unknown"
+        # state, exactly as `iterate status` already does: an operator who
+        # deliberately set drift_check: false was told their state was merely
+        # indeterminate, with no hint that they turned it off.
+        data["drift"] = "disabled"
+        data["drift_advice"] = drift_unavailable_reason(project_root, config)
+    elif drift is None:
+        data["drift"] = "unknown"
+        data["drift_advice"] = drift_unavailable_reason(project_root, config)
+    else:
+        data["drift"] = drift_summary(drift)
+        data["drift_advice"] = drift_advice(drift)
 
     data["config"] = _collect_resolved_config(config)
     data["personalization"] = _collect_personalization(project_root, config)
@@ -269,6 +281,13 @@ def render_show(data: dict[str, Any], json_output: bool = False) -> int:
         tui.success("Drift: none", indent=2)
     elif drift == "unknown":
         tui.key_value("Drift", "unknown")
+        advice = data.get("drift_advice")
+        if advice:
+            tui.hint(f"Suggested: {advice}", indent=4)
+    elif drift == "disabled":
+        # Not a problem (a deliberate operator choice), so no warning — but
+        # say WHY there is no drift result, so it is not read as a gap.
+        tui.key_value("Drift", "disabled (by config)")
     else:
         tui.warning(f"Drift: {drift}", indent=2)
         advice = data.get("drift_advice")

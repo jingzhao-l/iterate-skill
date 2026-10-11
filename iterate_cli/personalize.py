@@ -472,24 +472,23 @@ def _is_personalization_header(line: str) -> bool:
     return stripped in PERSONALIZATION_SECTION_HEADERS
 
 
-def _is_any_markdown_header(line: str) -> bool:
-    """True when ``line`` is an ATX heading at ANY level (``#`` .. ``######``).
+def _heading_level(line: str) -> int:
+    """Return the ATX heading level (1-6) of ``line``, or 0 when not a heading.
 
-    Used as the "a new section starts here" boundary when skipping a
-    personalization section. Restricting the boundary to ``## `` silently
-    deleted a user's own h1/h3 sections that followed one.
+    CommonMark allows 1-6 hashes followed by a space (or end of line); 7+ is
+    plain text, as is a hash run with no following space (so a shell-style
+    ``# comment`` in user prose is not mistaken for a heading).
     """
     stripped = line.strip()
     if not stripped.startswith("#"):
-        return False
-    # ATX headings are 1-6 hashes; 7+ is plain text per CommonMark. Require a
-    # space (or end) after the hash run so a shell-style comment (`# note`)
-    # inside user prose is not mistaken for a heading.
-    hashes = len(stripped) - len(stripped.lstrip("#"))
-    if hashes > 6:
-        return False
-    rest = stripped[hashes:]
-    return rest == "" or rest.startswith(" ")
+        return 0
+    level = len(stripped) - len(stripped.lstrip("#"))
+    if level > 6:
+        return 0
+    rest = stripped[level:]
+    if rest and not rest.startswith(" "):
+        return 0
+    return level
 
 
 def merge_user_sections(existing_content: str, new_personalization_md: str) -> str:
@@ -510,28 +509,37 @@ def merge_user_sections(existing_content: str, new_personalization_md: str) -> s
     lines = existing_content.split("\n")
     result_lines: list[str] = []
     skip_until_next_header = False
+    skip_level = 0  # heading level of the section currently being removed
 
     for line in lines:
         if _is_personalization_header(line):
             skip_until_next_header = True
+            # Every personalization header is h2, so the section being removed
+            # spans until the next h1/h2 — NOT until the next heading of any
+            # level. Those sections legitimately contain `###` sub-headings
+            # ("### 禁区 / Protected"), and treating those as boundaries left
+            # the sub-section's body behind on a clear/merge.
+            skip_level = _heading_level(line)
             continue
 
-        if skip_until_next_header and _is_any_markdown_header(line):
-            # Hit a new section header: stop skipping. ANY heading level counts,
-            # not just `## `: personalization sections are h2, so a boundary
-            # test of `startswith("## ")` kept skipping past a user's own
-            # `# Title` (h1) or `### Subsection` (h3) and deleted it from the
-            # user-owned section on the next `iterate personalize`.
+        if skip_until_next_header and _heading_level(line) and (
+            _heading_level(line) <= skip_level
+        ):
+            # Hit a header at or above the removed section's own level: the
+            # section ended. The level check (rather than the old
+            # `startswith("## ")`) is what stops a user's own `# Title` (h1)
+            # that follows a personalization section from being deleted too.
             skip_until_next_header = False
             if _is_personalization_header(line):
                 # Another personalization section to remove.
                 skip_until_next_header = True
+                skip_level = _heading_level(line)
                 continue
             result_lines.append(line)
             continue
 
         if skip_until_next_header:
-            # Inside a section being removed.
+            # Inside a section being removed (or one of its sub-headings).
             continue
 
         result_lines.append(line)
