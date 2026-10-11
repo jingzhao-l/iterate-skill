@@ -1,10 +1,20 @@
 {
   "package": "iterate-kernel",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "sourceRepo": "jingzhao-l/iterate-skill",
   "sourcePath": "kernel/fixtures",
   "comment": "Vendored half of a cross-language contract. Each fixture carries the rules it asserts, written so a second implementation can be coded from the file alone; this directory is that second implementation's anchor. The bytes here are deliberately NOT generated from the kernel: they are a copy pinned by sha256, so a change to the published contract shows up here as a red hash check rather than as a silent re-generation. test_kernel_fixtures.py enforces (1) vendor == manifest, (2) every entry names a consumer test that exists, (3) when KERNEL_FIXTURES_DIR points at a live kernel checkout, its bytes must match the pin too. Update procedure: bump kernel, npm pack iterate-kernel@<new>, copy the file, re-record sha256 here, then the consumer test must still pass — if it does not, the two implementations genuinely diverge and the kernel change is the bug, not this file.",
   "files": [
+    {
+      "path": "convergence.ok-01.json",
+      "sha256": "dd619ba508a0ab68023abf9be818ff5b12750246d0fc6d44ee924315eb2b1685",
+      "bytes": 8042,
+      "consumedBy": [
+        "src/iterate_harness/iterate/convergence_policy.py",
+        "tests/test_iterate/test_convergence_policy.py",
+        "scripts/diff_kernel_implementations.py"
+      ]
+    },
     {
       "path": "dimension-context.ok-01.json",
       "sha256": "464354bb9f0118121f1680c7a044510595b50a4e61d690e5a04b951cd98ddc2b",
@@ -24,9 +34,29 @@
       ]
     },
     {
+      "path": "invariant-report.ok-01.json",
+      "sha256": "384b88ba60d2ffe8fcd776847ea29fcb2edc6e20841a7e8997192b30ea04ab16",
+      "bytes": 10385,
+      "consumedBy": [
+        "src/iterate_harness/iterate/invariant_report.py",
+        "tests/test_iterate/test_invariant_report.py",
+        "scripts/diff_kernel_implementations.py"
+      ]
+    },
+    {
+      "path": "provider-registration.ok-01.json",
+      "sha256": "e7cc0fcc74336a44928ed84fd6240a2820c13fe2ea3f3516b3b38d068e669cec",
+      "bytes": 10989,
+      "consumedBy": [
+        "src/iterate_harness/iterate/provider_registry.py",
+        "tests/test_iterate/test_provider_registry.py",
+        "scripts/diff_kernel_implementations.py"
+      ]
+    },
+    {
       "path": "run-plan.ok-01.json",
-      "sha256": "5ad58ada2a4e0918836e11dadee31af08e13f93562f9d28d834d1f17fd2ec085",
-      "bytes": 5068,
+      "sha256": "a7f52399c8501e34c27fcc0293f52d796f0724c92cd0dbfecc3ebf8e4871972f",
+      "bytes": 5329,
       "consumedBy": [
         "src/iterate_harness/iterate/run_plan.py",
         "tests/test_iterate/test_run_plan.py"

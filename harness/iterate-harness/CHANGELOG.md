@@ -6,6 +6,41 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **`iterate/convergence_policy.py`：收敛规则的 Python 半边。** kernel 在 0.1.5 里把
+  「一轮跑完下一步是什么」定成了契约（熔断 > 轮次预算 > error > findings > 证据不全 >
+  未测量 > converged），本模块是对着已发布语料 `convergence.ok-01.json` 的 `comment`
+  写的第二份实现——不是把 TypeScript 读一遍再翻，而是照规则文本反推，期望值一律从语料文件
+  取。关键不对称保住：`unmeasured` 与证据不全永远是 `verify`，不得读成 `converged`
+  （"看不了"与"看着没事"是两回事）。15 条语料用例逐条比对，另加"每一条 precedence 都
+  必须打得过它下边每一条"的表驱动测试；`scripts/diff_kernel_implementations.py` 实测
+  15/15 与 TS dist 判定一致。
+- **`iterate/invariant_report.py` + `iterate/canonical_json.py`：场景①的生产者半边。**
+  `defensive/invariants.py` 的真实 `check_invariants` 只记违规和一个计数，不记通过项的
+  名字——直接照抄会得到一份"全是失败"的报告，消费者分不清"4 项里 3 项通过"和"4 项全挂"。
+  本模块的检查清单来自**配置**（`invariants.ensure` + `invariants.commands`，按书写顺序），
+  ok 由runner 是否点名该 label 决定，`refused` 这类保留原 kind；`outcome` 无法被合成成
+  `pass`（pass 只在无失败项的分支可达，而 runner 点名的违规一定会留在清单里）。dry-run
+  里被预览但没执行的命令报 `ok=false` + `not measured:` 且整体 `error`——error 不产生复核
+  请求，未测不得洗成活动。`canonical_json.py` 是与 kernel/Swift 同规则的第二份规范化实现。
+  实测：对本仓 kernel 目录跑一次真实 invariant（含 `refused: unsafe command` 那条真文案），
+  Python 与 TS 对同一份报告算出同一个 `iv_` 摘要。
+- **`scripts/diff_kernel_implementations.py`：两侧实现在同一份语料上当面比对。** 语料 pin
+  和各自单测只保证"没偏离写下来的用例"，而真正会出事的往往是没人写进用例的那条分支。本脚本
+  把 convergence / invariant-report / provider-registration 三份语料同时喂给本仓 Python 与
+  node 加载的 TS dist，比 verdict、摘要与注册表语义；node 或已构建 dist 不在场时 exit 2 明说
+  "没测到"，不允许静默跳过。实测三份全量一致。
+- **`iterate/provider_registry.py`：provider 注册的 Python 半边。** 重复 id 拒绝覆盖（不是
+  后写赢）、解析不猜（没有默认、没有模糊匹配、没有"只注册了一个就算它"）、要方法时点名它
+  到底提供了什么；注册表每次整体替换而非原地改，避免"加进一张表、下一张表没有"的半份注册。
+  两侧拒绝码按语言各自命名（`KERNEL_E_PROVIDER_DUPLICATE` / `PROVIDER_E_DUPLICATE`），必须
+  一致的是"拒了没拒"和注册表有没有被改动——`diff_kernel_implementations.py` 就按这个比。
+- **语料 pin 升到 `iterate-kernel@0.1.5`**，新增上述三份 fixture 并 pin sha256/字节数；
+  `run-plan.ok-01.json` 的 sha 变了但契约语义没变——kernel 那边只是把 label 的出处改口
+  （配置里根本没有 label 词汇）。`tests/kernel_fixtures/manifest.json` 的 consumedBy
+  规则把"语料进来了但没人读"判成死契约数据，这次三条新条目各自的消费者都在上面两条里。
+
+### Fixed
+
 - **`iterate/run_plan.py`：把 `iterate.config.yaml` 变成共享内核的 RunPlan 契约。** 维度
   覆盖那套算法一直拒绝自己发明计划（是对的），而计划此前只活在这份配置里——GlassPane 侧
   读不到，于是它的会话压缩永远渲染成"0/N verified"。本模块产出计划（scope 并集按人工书写
