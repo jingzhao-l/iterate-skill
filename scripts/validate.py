@@ -733,6 +733,21 @@ def print_errors(source: str, errors: list[str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Force UTF-8 before emitting anything: validation messages and config
+    # values routinely carry CJK/Unicode (a dimension name, a Chinese comment
+    # quoted in an error), and a locale-encoded stdout (Windows cp1252, or a
+    # POSIX LANG=en_US.ISO-8859-1) raises UnicodeEncodeError and aborts the
+    # check with a traceback instead of a verdict. Best-effort: streams that
+    # refuse to be reconfigured are left alone.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError, AttributeError):
+            continue
+
     args = argv if argv is not None else sys.argv[1:]
     if len(args) < 2:
         print(__doc__, file=sys.stderr)

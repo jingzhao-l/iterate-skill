@@ -1784,3 +1784,59 @@ class TestSkillMarkdownFile:
         parts = text.split("---", 2)
         assert len(parts) == 3
         assert len(parts[2].strip()) > 100
+
+
+class TestMainStdioUtf8:
+    """`validate.py main()` must not crash on CJK output under a locale encoding.
+
+    Windows Python and a POSIX `LANG=*.ISO-8859-1` default stdout/stderr to a
+    non-UTF-8 codec. Validation messages quote config values and dimension
+    names, which routinely carry CJK, so printing them raised UnicodeEncodeError
+    and turned a verdict into a traceback.
+    """
+
+    def test_main_opt_in_before_any_output(self) -> None:
+        import inspect
+
+        source = inspect.getsource(validate.main)
+        # The reconfigure must come before argument handling/output, not be a
+        # dead helper nobody calls.
+        assert 'reconfigure(encoding="utf-8"' in source
+        assert source.index("reconfigure") < source.index("__doc__")
+
+    def test_reconfigure_is_defensive(self) -> None:
+        """Must never raise regardless of what the streams happen to be."""
+
+        class Broken:
+            reconfigure = None  # present but not callable
+
+            @staticmethod
+            def write(*args, **kwargs):
+                return None
+
+            @staticmethod
+            def flush():
+                return None
+
+        class Raises:
+            @staticmethod
+            def reconfigure(**kwargs):
+                raise ValueError("unsupported")
+
+            @staticmethod
+            def write(*args, **kwargs):
+                return None
+
+            @staticmethod
+            def flush():
+                return None
+
+        real_out, real_err = validate.sys.stdout, validate.sys.stderr
+        try:
+            validate.sys.stdout = Broken()
+            validate.sys.stderr = Raises()
+            # Usage error, exit 1, and crucially no crash from either stream
+            # refusing (or lacking) reconfigure.
+            assert validate.main([]) == 1
+        finally:
+            validate.sys.stdout, validate.sys.stderr = real_out, real_err

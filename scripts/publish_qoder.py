@@ -29,6 +29,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from collections.abc import Iterable
@@ -434,11 +435,19 @@ def _gen_references_index(stage: str) -> list[str]:
 def _zip_dir(directory: str, zip_path: str) -> None:
     """Zip ``directory`` so its basename is the single top-level entry.
 
-    Both directory and file lists are sorted so repeated builds of the same
-    tree produce byte-identical zips (deterministic ordering for checksummed
-    uploads instead of filesystem-dependent walks).
+    Deterministic by construction so repeated builds of the same tree produce
+    byte-identical zips (required for checksummed uploads):
+
+    * directory and file lists are sorted, removing filesystem walk order;
+    * every member gets a FIXED ``date_time`` (``archive.write`` copies each
+      file's mtime, so a ``touch`` or a fresh ``git clone`` changed the bytes
+      and therefore the SHA-256 of an otherwise identical package);
+    * external_attr/creator_system are pinned, since they encode the building
+      host's permission bits and platform.
     """
     base = os.path.basename(directory.rstrip(os.sep))
+    # 1980-01-01 is the earliest timestamp a ZIP entry can represent.
+    fixed_time = (1980, 1, 1, 0, 0, 0)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for root, dirs, files in os.walk(directory):
             dirs.sort()
@@ -446,7 +455,19 @@ def _zip_dir(directory: str, zip_path: str) -> None:
             for name in files:
                 full = os.path.join(root, name)
                 rel = os.path.relpath(full, directory)
-                archive.write(full, os.path.join(base, rel))
+                arcname = os.path.join(base, rel)
+                with open(full, "rb") as handle:
+                    payload = handle.read()
+                info = zipfile.ZipInfo(arcname, date_time=fixed_time)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 3  # unix, regardless of build host
+                # Derive from the file's OWN mode bits (git checkouts store
+                # only the exec bit, so this is 0755/0644 everywhere), not
+                # os.access, which consults the calling user and would make
+                # the archive depend on who ran the build.
+                mode = 0o755 if os.stat(full).st_mode & 0o111 else 0o644
+                info.external_attr = (0o40000 | mode) << 16
+                archive.writestr(info, payload)
 
 
 # --------------------------------------------------------------------------- #
@@ -549,11 +570,14 @@ def check_package(path: str) -> int:
         errors, warnings = validate_tree(path)
     else:
         errors, warnings, _size = validate_zip(path)
+    # Diagnostics go to stderr and the verdict to stdout: `publish_qoder.py
+    # check x.zip > out` used to swallow the failures along with the text,
+    # and `... check | grep ok` could not be used to assert a pass.
     for warning in warnings:
-        print("warning: " + warning)
+        print("warning: " + warning, file=sys.stderr)
     if errors:
         for error in errors:
-            print("error: " + error)
+            print("error: " + error, file=sys.stderr)
         return 1
     print(f"ok: {path} passes Qoder package checks")
     return 0

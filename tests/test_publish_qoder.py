@@ -320,3 +320,97 @@ class TestCopyTrackedTree:
         # Untracked scratch and excluded dir never ship.
         assert all("scratch.py" not in n for n in names)
         assert all("dev" not in n for n in names)
+
+# ---------------------------------------------------------------------------
+# Deterministic zip output + check-stream routing
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicZip:
+    def _make_tree(self, root: Path) -> Path:
+        tree = root / "iterate"
+        tree.mkdir(parents=True)
+        (tree / "SKILL.md").write_text("# iterate\n", encoding="utf-8")
+        (tree / "scripts").mkdir()
+        (tree / "scripts" / "a.py").write_text("print('x')\n", encoding="utf-8")
+        return tree
+
+    def test_identical_tree_with_different_mtimes_is_byte_identical(
+        self, tmp_path: Path
+    ) -> None:
+        """`archive.write` copied each file's mtime into the zip entry.
+
+        So `touch`/`git clone` changed the SHA-256 of an otherwise identical
+        package, breaking the checksummed upload the docstring promised.
+        """
+        import hashlib
+
+        tree1 = self._make_tree(tmp_path / "one")
+        tree2 = self._make_tree(tmp_path / "two")
+        # Differing mtimes: this is exactly what a fresh checkout vs a
+        # working tree produce for the same content.
+        os.utime(tree1 / "SKILL.md", (1_600_000_000, 1_600_000_000))
+        os.utime(tree2 / "SKILL.md", (1_700_000_000, 1_700_000_000))
+        os.utime(tree1 / "scripts" / "a.py", (1_500_000_000, 1_500_000_000))
+        os.utime(tree2 / "scripts" / "a.py", (1_400_000_000, 1_400_000_000))
+
+        zip1, zip2 = tmp_path / "a.zip", tmp_path / "b.zip"
+        publish_qoder._zip_dir(str(tree1), str(zip1))
+        publish_qoder._zip_dir(str(tree2), str(zip2))
+
+        h1 = hashlib.sha256(zip1.read_bytes()).hexdigest()
+        h2 = hashlib.sha256(zip2.read_bytes()).hexdigest()
+        assert h1 == h2, "same content, different bytes — checksum will drift"
+
+    def test_members_sorted_and_top_level_entry(self, tmp_path: Path) -> None:
+        tree = self._make_tree(tmp_path)
+        out = tmp_path / "pkg.zip"
+        publish_qoder._zip_dir(str(tree), str(out))
+        with zipfile.ZipFile(out) as archive:
+            names = archive.namelist()
+        assert names == sorted(names)
+        assert all(name.startswith("iterate/") for name in names)
+
+    def test_entry_timestamps_are_pinned(self, tmp_path: Path) -> None:
+        tree = self._make_tree(tmp_path)
+        out = tmp_path / "pkg.zip"
+        publish_qoder._zip_dir(str(tree), str(out))
+        with zipfile.ZipFile(out) as archive:
+            for info in archive.infolist():
+                assert info.date_time == (1980, 1, 1, 0, 0, 0), info.filename
+
+    def test_content_round_trips(self, tmp_path: Path) -> None:
+        tree = self._make_tree(tmp_path)
+        out = tmp_path / "pkg.zip"
+        publish_qoder._zip_dir(str(tree), str(out))
+        with zipfile.ZipFile(out) as archive:
+            assert archive.read("iterate/SKILL.md") == b"# iterate\n"
+            assert archive.read("iterate/scripts/a.py") == b"print('x')\n"
+
+
+class TestCheckStreamRouting:
+    def test_errors_go_to_stderr(self, tmp_path: Path, capsys) -> None:
+        """Failures must not be swallowed by `check ... > out`."""
+        broken = tmp_path / "not-a-package"
+        broken.mkdir()
+        code = publish_qoder.main(["check", str(broken)])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert captured.out == "" or "ok:" not in captured.out
+        assert "error: " in captured.err
+
+    def test_pass_verdict_goes_to_stdout(self, tmp_path: Path, capsys) -> None:
+        """A passing package must print its verdict to stdout only."""
+        tree = tmp_path / "iterate"
+        tree.mkdir()
+        (tree / "SKILL.md").write_text("# x\n", encoding="utf-8")
+        code = publish_qoder.main(["check", str(tree)])
+        captured = capsys.readouterr()
+        assert code in (0, 1)
+        if code == 0:
+            assert captured.out.startswith("ok:")
+            assert captured.err == ""
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
