@@ -42,6 +42,8 @@ from iterate_cli.refresh import (
     check_onboarding_drift,
     drift_unavailable_reason,
     full_reonboard,
+    get_drift_ignore,
+    get_stored_fingerprints,
     is_onboarding_complete,
     load_onboarding_config,
 )
@@ -266,6 +268,7 @@ def _dispatch_command(
         return _cmd_fingerprint(
             project_root,
             json_output=getattr(args, "json", False),
+            action=getattr(args, "fingerprint_action", None) or "verify",
         )
     if args.command == "update":
         if show_banner:
@@ -597,9 +600,11 @@ def _build_parser() -> argparse.ArgumentParser:
     fingerprint_parser.add_argument(
         "fingerprint_action",
         nargs="?",
-        choices=["verify"],
+        choices=["verify", "list"],
         default="verify",
-        help="Action to perform (default: 'verify').",
+        help="Action to perform: 'verify' (default) compares recorded "
+        "fingerprints against the project; 'list' prints what was recorded "
+        "at the last onboarding/refresh without rescanning.",
     )
     fingerprint_parser.add_argument(
         "--json",
@@ -1529,8 +1534,92 @@ def _cmd_invariant(
     return render_guard_result(result, json_output=json_output)
 
 
-def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
-    """Handle the 'fingerprint' subcommand — verify manifest drift.
+def _cmd_fingerprint_list(
+    project_root: Path, config: dict[str, Any] | None, json_output: bool
+) -> int:
+    """Print the fingerprints recorded at the last onboarding/refresh.
+
+    Pure read of ``onboarding.fingerprints`` — no rescan, so it is fast and
+    works with ``drift_check: false``. Complements ``verify`` by showing the
+    BASELINE being compared against (path + SHA-256), which ``verify`` alone
+    never prints.
+
+    Args:
+        project_root: Project root directory.
+        config: Already-loaded config, or None when unreadable.
+        json_output: When True, emit a structured JSON object instead of TUI.
+
+    Returns:
+        Exit code: 0 on success, 1 when the config is unreadable.
+    """
+    if config is None:
+        # Fail closed, matching `verify`: a corrupt config is not "no
+        # fingerprints recorded", it is an unknown state.
+        reason = drift_unavailable_reason(project_root, config)
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "project": str(project_root),
+                        "available": False,
+                        "reason": reason,
+                        "fingerprints": [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            tui.error(f"Iterate Skill — Fingerprint List / {project_root.name}")
+            tui.error(f"Could not read iterate.config.yaml: {reason}")
+        return 1
+
+    stored = get_stored_fingerprints(config)
+    ignore_patterns = get_drift_ignore(config)
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "project": str(project_root),
+                    "available": True,
+                    "count": len(stored),
+                    "drift_check_enabled": bool(
+                        (config.get("onboarding") or {}).get("drift_check", True)
+                    ),
+                    "ignore_patterns": ignore_patterns,
+                    "fingerprints": [
+                        {"path": e.get("path"), "sha256": e.get("sha256")}
+                        for e in stored
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    tui.intro(f"Iterate Skill — Fingerprint List / {project_root.name}")
+    if not stored:
+        tui.info("No fingerprints recorded yet.", indent=2)
+        tui.hint("Run 'iterate refresh' (or 'iterate onboard') to capture them.", indent=4)
+        return 0
+    for entry in sorted(stored, key=lambda e: str(e.get("path", ""))):
+        tui.key_value(
+            str(entry.get("path", "")), str(entry.get("sha256", "")), indent=2
+        )
+    tui.empty_line()
+    tui.hint(
+        f"{len(stored)} manifest(s) recorded."
+        + (f" {len(ignore_patterns)} ignore pattern(s)." if ignore_patterns else ""),
+        indent=2,
+    )
+    return 0
+
+
+def _cmd_fingerprint(
+    project_root: Path, json_output: bool = False, action: str = "verify"
+) -> int:
+    """Handle the 'fingerprint' subcommand — verify or list manifest drift.
 
     Compares the fingerprints stored in iterate.config.yaml against the
     current project root via ``check_onboarding_drift``. Drift is
@@ -1538,13 +1627,18 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
     informational health check: it exits 0 when no drift is detected and 1
     when added/removed/changed manifests are found.
 
+    ``action="list"`` instead prints exactly what was RECORDED at the last
+    onboarding/refresh without rescanning, so an operator can see the
+    baseline (path + SHA-256) that ``verify`` is comparing against.
+
     Args:
         project_root: Project root directory.
         json_output: When True, emit a structured JSON object instead of TUI.
+        action: "verify" (default) or "list".
 
     Returns:
-        Exit code: 0 when no drift (or drift checking is unavailable), 1 when
-        drift is detected.
+        Exit code: 0 on success / drift-checking unavailable; 1 when drift is
+        detected (verify) or the recorded fingerprints are unreadable (list).
     """
     from iterate_cli.refresh import check_onboarding_drift, load_onboarding_config
 
@@ -1552,6 +1646,10 @@ def _cmd_fingerprint(project_root: Path, json_output: bool = False) -> int:
     # internally (emitting its own parse error), and re-loading here to build
     # the reason printed a SECOND identical error for a corrupt config.
     config = load_onboarding_config(project_root)
+
+    if action == "list":
+        return _cmd_fingerprint_list(project_root, config, json_output)
+
     drift = check_onboarding_drift(project_root)
 
     if json_output:

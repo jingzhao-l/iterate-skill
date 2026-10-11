@@ -383,3 +383,114 @@ class TestFingerprintVerifyCli:
         payload = json.loads(captured.out)
         assert payload["drift"] is True
         assert payload["changed"] == ["pyproject.toml"]
+
+
+# ---------------------------------------------------------------------------
+# `fingerprint list` — the recorded baseline, without rescanning
+# ---------------------------------------------------------------------------
+
+
+class TestFingerprintList:
+    def test_list_prints_recorded_paths_and_hashes(
+        self, py_project: Path, capsys
+    ) -> None:
+        """`list` must show the BASELINE `verify` compares against."""
+        _write_config_with_drift(py_project)
+        assert cli_main(["fingerprint", "list", "-p", str(py_project)]) == 0
+        out = capsys.readouterr().out
+        # At least one manifest from the fixture project is listed with its
+        # recorded sha256.
+        assert "pyproject.toml" in out
+
+    def test_list_json_shape(self, py_project: Path, capsys) -> None:
+        _write_config_with_drift(py_project)
+        assert (
+            cli_main(["fingerprint", "list", "--json", "-p", str(py_project)]) == 0
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["available"] is True
+        assert payload["count"] == len(payload["fingerprints"])
+        assert payload["count"] >= 1
+        for entry in payload["fingerprints"]:
+            assert set(entry) == {"path", "sha256"}
+            assert len(entry["sha256"]) == 64
+
+    def test_list_does_not_rescan_so_changed_file_still_shows_old_hash(
+        self, py_project: Path, capsys
+    ) -> None:
+        """`list` is a pure read of the config — the point of the command."""
+        _write_config_with_drift(py_project)
+        before = json.loads(
+            _capture_json(["fingerprint", "list", "--json", "-p", str(py_project)])
+        )
+        # Mutate a tracked manifest AFTER the baseline was recorded.
+        (py_project / "pyproject.toml").write_text(
+            '[project]\nname = "pyproj"\nversion = "9.9.9"\nchanged\n',
+            encoding="utf-8",
+        )
+        after = json.loads(
+            _capture_json(["fingerprint", "list", "--json", "-p", str(py_project)])
+        )
+        assert before["fingerprints"] == after["fingerprints"], (
+            "list must not rescan — it reports what was recorded"
+        )
+
+    def test_list_works_with_drift_check_disabled(
+        self, py_project: Path, capsys
+    ) -> None:
+        """`verify` is unavailable when drift_check is off; `list` still is not."""
+        _write_config_with_drift(py_project, drift_check=False)
+        assert (
+            cli_main(["fingerprint", "list", "--json", "-p", str(py_project)]) == 0
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["available"] is True
+        assert payload["drift_check_enabled"] is False
+        assert payload["count"] >= 1
+
+    def test_list_empty_baseline_is_a_hint_not_an_error(
+        self, py_project: Path, capsys
+    ) -> None:
+        """Nothing recorded yet is a normal pre-onboarding state: exit 0."""
+        (py_project / "iterate.config.yaml").write_text(
+            yaml.safe_dump({"goal": "g", "dimensions": ["correctness"]}),
+            encoding="utf-8",
+        )
+        assert cli_main(["fingerprint", "list", "-p", str(py_project)]) == 0
+        out = capsys.readouterr().out
+        assert "No fingerprints recorded" in out
+        assert "refresh" in out  # actionable hint
+
+    def test_list_unreadable_config_fails_closed(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """A corrupt config is an UNKNOWN state, not 'no fingerprints'."""
+        project = tmp_path / "broken"
+        project.mkdir()
+        (project / "iterate.config.yaml").write_text(
+            "onboarding: [unclosed\n", encoding="utf-8"
+        )
+        assert (
+            cli_main(["fingerprint", "list", "--json", "-p", str(project)]) == 1
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["available"] is False
+        assert payload["reason"]
+        assert payload["fingerprints"] == []
+
+    def test_cli_rejects_unknown_action(self, py_project: Path) -> None:
+        """`fingerprint bogus` must be a usage error, not a silent verify."""
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main(["fingerprint", "bogus", "-p", str(py_project)])
+        assert excinfo.value.code == 2
+
+
+def _capture_json(argv: list[str]) -> str:
+    """Run the CLI and return its stdout (imported here to keep helpers local)."""
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cli_main(argv)
+    return buf.getvalue()
