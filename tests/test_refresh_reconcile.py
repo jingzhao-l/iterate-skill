@@ -20,6 +20,7 @@ from iterate_cli.refresh import (
     incremental_refresh,
     load_onboarding_config,
 )
+from iterate_cli.generator import DEFAULT_LANGUAGE
 from iterate_cli.scan import ScanResult
 
 CONFIG_YAML = "iterate.config.yaml"
@@ -65,22 +66,23 @@ class TestReconcileValidationSuggestions:
         # Missing prefixes are appended.
         assert "ruff" in whitelist
 
-    def test_reconcile_whitelist_false_preserves_empty_intent(self) -> None:
-        """Operator's deliberate empty whitelist is respected."""
-        scan = _python_scan()
-        _, whitelist = _reconcile_validation_suggestions(
-            {}, [], scan, reconcile_whitelist=False
-        )
-        assert whitelist == []
+    def test_empty_whitelist_resolved_immediately(self) -> None:
+        """An empty/invalid whitelist resolves to suggestions in ONE pass.
 
-    def test_commands_still_reconciled_when_whitelist_preserved(self) -> None:
-        """Disabling whitelist reconciliation does not disable command reconcile."""
+        (Replaces the old `reconcile_whitelist=False` "intent" behaviour:
+        `_resolve_validation_config` now flags `[]` and uses suggestions
+        right away, so consecutive refreshes never flip.)"""
         scan = _python_scan()
-        commands, whitelist = _reconcile_validation_suggestions(
-            {}, [], scan, reconcile_whitelist=False
-        )
+        commands, whitelist = _reconcile_validation_suggestions({}, [], scan)
         assert "python" in commands
-        assert whitelist == []
+        assert "ruff" in whitelist
+
+    def test_commands_still_reconciled_with_empty_seed(self) -> None:
+        """Command reconcile works even when the seed whitelist is empty."""
+        scan = _python_scan()
+        commands, whitelist = _reconcile_validation_suggestions({}, [], scan)
+        assert "python" in commands
+        assert whitelist  # suggestions appended
 
 
 class TestBuildRefreshDataPreservesReviewer:
@@ -251,14 +253,14 @@ class TestDiffStats:
 
 
 class TestBuildRefreshedConfigEmptyWhitelist:
-    """A cleared command_whitelist is dropped, not persisted as [].
+    """An empty command_whitelist (schema-invalid, minItems 1) is resolved to
+    scan suggestions immediately and a warning is shown — never persisted as
+    ``[]``, and never silently deferred to the next refresh (the old
+    one-round-then-refill flip)."""
 
-    The schema requires command_whitelist to be non-empty when present
-    (minItems 1), so writing ``command_whitelist: []`` would keep the refreshed
-    config schema-invalid. An operator-cleared whitelist is expressed by
-    omitting the key (mirroring personalize's merge)."""
-
-    def test_empty_whitelist_drops_key(self, tmp_path: Path) -> None:
+    def test_empty_whitelist_refilled_with_warning(
+        self, tmp_path: Path, capsys
+    ) -> None:
         config = {
             "dimensions": ["correctness"],
             "onboarding": {"channel": "cli"},
@@ -267,9 +269,26 @@ class TestBuildRefreshedConfigEmptyWhitelist:
         data = _build_refresh_data(
             tmp_path, ScanResult(detected_languages=[], manifests=[]), config
         )
-        assert data.command_whitelist == []
+        # Resolved to the base suggestions right away (no "preserve until
+        # next refresh" deferral).
+        assert data.command_whitelist == ["python", "python3"]
         new_config = _build_refreshed_config(config, data)
-        assert "command_whitelist" not in new_config["validation"]
+        assert new_config["validation"]["command_whitelist"] == ["python", "python3"]
+        captured = capsys.readouterr()
+        assert "command_whitelist is empty or not a list" in captured.out + captured.err
+
+    def test_second_refresh_is_stable(self, tmp_path: Path) -> None:
+        """Two consecutive refreshes converge (no whitelist flip-flop)."""
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+        }
+        scan = ScanResult(detected_languages=[], manifests=[])
+        first = _build_refresh_data(tmp_path, scan, config)
+        config2 = _build_refreshed_config(config, first)
+        second = _build_refresh_data(tmp_path, scan, config2)
+        assert first.command_whitelist == second.command_whitelist
 
     def test_non_empty_whitelist_kept(self, tmp_path: Path) -> None:
         config = {
@@ -283,3 +302,150 @@ class TestBuildRefreshedConfigEmptyWhitelist:
         data = _build_refresh_data(tmp_path, _python_scan(), config)
         new_config = _build_refreshed_config(config, data)
         assert "ruff" in new_config["validation"]["command_whitelist"]
+
+class TestBuildRefreshDataNormalizesHandEditedScalars:
+    """A hand-edited config holding schema-invalid scalars must round-trip.
+
+    refresh rebuilds and REWRITES iterate.config.yaml, so an invalid value
+    that survives a refresh keeps failing `iterate doctor` forever. Each case
+    below used to be written back verbatim.
+    """
+
+    def _config(self, **overrides) -> dict:
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+        }
+        config.update(overrides)
+        return config
+
+    def test_null_target_branch_falls_back_to_default(self, tmp_path) -> None:
+        config = self._config(git={"target_branch": None})
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.target_branch == "main"
+        assert isinstance(data.target_branch, str) and data.target_branch.strip()
+
+    def test_blank_target_branch_falls_back(self, tmp_path) -> None:
+        config = self._config(git={"target_branch": "   "})
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.target_branch == "main"
+
+    def test_non_string_target_branch_falls_back(self, tmp_path) -> None:
+        config = self._config(git={"target_branch": 42})
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.target_branch == "main"
+
+    def test_non_enum_review_scope_falls_back(self, tmp_path) -> None:
+        config = self._config(review={"scope": "everything"})
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.review_scope in ("changed-only", "full")
+
+    def test_null_review_scope_falls_back(self, tmp_path) -> None:
+        config = self._config(review={"scope": None})
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.review_scope in ("changed-only", "full")
+
+    def test_valid_review_scope_preserved(self, tmp_path) -> None:
+        config = self._config(review={"scope": "full"})
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.review_scope == "full"
+
+    def test_string_push_per_round_is_coerced_not_truthy(self, tmp_path) -> None:
+        """`push_per_round: "no"` must not round-trip as a truthy string.
+
+        Secure-by-default: a non-bool is coerced, and only canonical false
+        forms stay false.
+        """
+        config = self._config(git={"push_per_round": "no"})
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.push_per_round is False
+
+    def test_int_one_push_per_round_is_true(self, tmp_path) -> None:
+        config = self._config(git={"push_per_round": 1})
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.push_per_round is True
+
+    def test_bool_false_is_authoritative(self, tmp_path) -> None:
+        config = self._config(git={"push_per_round": False})
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.push_per_round is False
+
+    def test_non_zh_en_language_falls_back(self, tmp_path) -> None:
+        config = self._config(language="fr")
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.language == DEFAULT_LANGUAGE
+
+    def test_non_string_language_falls_back(self, tmp_path) -> None:
+        config = self._config(language=42)
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.language == DEFAULT_LANGUAGE
+
+    def test_valid_language_preserved(self, tmp_path) -> None:
+        config = self._config(language="en")
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.language == "en"
+
+    def test_string_dimensions_not_iterated_char_by_char(self, tmp_path) -> None:
+        """`dimensions: "correctness"` must not become ['c','o','r',...]."""
+        config = self._config(dimensions="correctness")
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.dimensions
+        assert all(len(d) > 1 for d in data.dimensions)
+
+    def test_non_string_dimension_elements_dropped(self, tmp_path) -> None:
+        config = self._config(dimensions=["correctness", 123, "  ", None])
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.dimensions == ["correctness", "123"]
+
+    def test_all_invalid_dimension_elements_fall_back_to_scan(
+        self, tmp_path
+    ) -> None:
+        config = self._config(dimensions=[None, "", "  "])
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.dimensions  # suggestions, not an empty/invalid list
+
+
+class TestDimensionSetsOnDropIsVisible:
+    """A hand-written dimension_set that normalize drops must be announced.
+
+    refresh REWRITES the config, so a silent drop deleted the operator's
+    entry on the next `iterate refresh` with exit 0 and no output.
+    """
+
+    def test_refresh_warns_about_dropped_set(self, tmp_path, capsys) -> None:
+        from iterate_cli.scan import ScanResult
+
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+            "dimension_sets": {
+                "frontend": {"dimensions": ["ui-ux"]},
+                "broken": "not-a-mapping",
+            },
+        }
+        data = _build_refresh_data(
+            tmp_path, ScanResult(detected_languages=[], manifests=[]), config
+        )
+        captured = capsys.readouterr()
+        assert "broken" in captured.out + captured.err
+        assert "dimension_sets" in captured.out + captured.err
+        # The valid entry survives.
+        assert "frontend" in data.dimension_sets
+        assert "broken" not in data.dimension_sets
+
+    def test_no_warning_when_all_sets_valid(self, tmp_path, capsys) -> None:
+        from iterate_cli.scan import ScanResult
+
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+            "dimension_sets": {"frontend": {"dimensions": ["ui-ux"]}},
+        }
+        _build_refresh_data(
+            tmp_path, ScanResult(detected_languages=[], manifests=[]), config
+        )
+        captured = capsys.readouterr()
+        assert "dimension_sets" not in captured.out + captured.err

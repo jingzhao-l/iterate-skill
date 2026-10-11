@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -193,10 +192,12 @@ def capture_fingerprints(
         try:
             digest = compute_sha256(manifest)
         except OSError as exc:
-            print(
-                f"fingerprint: warning: cannot fingerprint {manifest.name}: {exc}",
-                file=sys.stderr,
-            )
+            # Route through the TUI layer (project convention: all user-facing
+            # output goes through iterate_cli.tui) instead of a bare print
+            # with an ad-hoc "fingerprint: warning:" prefix.
+            from iterate_cli.tui import tui
+
+            tui.warning(f"cannot fingerprint {manifest.name}: {exc}")
             continue
         entries.append(FingerprintEntry(path=manifest.name, sha256=digest))
     return entries
@@ -324,7 +325,7 @@ def check_drift(
     Ignored manifests are excluded from **both** sides of the comparison: the
     freshly captured set (via ``capture_fingerprints``) and the stored set.
     This prevents a previously-fingerprinted manifest that is now ignored
-    (e.g. a lock file the user no longer wants tracked) from reporting a
+    (e.g. a setup.py the user no longer wants tracked) from reporting a
     spurious ``removed`` drift before the next refresh.
 
     Args:

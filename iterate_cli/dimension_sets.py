@@ -22,6 +22,7 @@ The global ``dimensions`` list remains the default for whole-project/full review
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from iterate_cli.scan import ScanResult
@@ -117,21 +118,38 @@ def _normalize_set(raw: Any) -> dict[str, Any] | None:
     return {"dimensions": dims_out, **({"focus": focus} if focus else {})}
 
 
-def normalize_dimension_sets(raw: Any) -> dict[str, dict[str, Any]]:
+def normalize_dimension_sets(
+    raw: Any, on_drop: Callable[[str], None] | None = None
+) -> dict[str, dict[str, Any]]:
     """Normalize an arbitrary dimension_sets value to a clean ``{name: {...}}`` map.
 
     Malformed entries are dropped (rather than raising) so a hand-edited config
     degrades gracefully while valid entries are preserved.
+
+    Args:
+        raw: The raw ``dimension_sets`` value from a config.
+        on_drop: Optional callback invoked with each dropped set name. Callers
+            that WRITE the normalized result back to disk (refresh) MUST pass
+            this (e.g. ``tui.warning``) — silently deleting a hand-written
+            entry on the next ``iterate refresh`` with exit 0 and no output
+            was data loss the operator never saw. Read-only callers may omit it.
+
+    Returns:
+        Ordered mapping of scope-name -> normalized set spec.
     """
     if not isinstance(raw, dict):
         return {}
     out: dict[str, dict[str, Any]] = {}
     for name, raw_set in raw.items():
         if not isinstance(name, str) or not is_valid_set_name(name):
+            if on_drop is not None:
+                on_drop(str(name))
             continue
         normalized = _normalize_set(raw_set)
         if normalized is not None:
             out[name] = normalized
+        elif on_drop is not None:
+            on_drop(name)
     return out
 
 
@@ -148,23 +166,20 @@ def suggest_dimension_sets(scan: ScanResult) -> dict[str, dict[str, Any]]:
     """
     from iterate_cli.scan import _has_api_layer
 
-    catalog = {
-        name: {"dimensions": list(spec["dimensions"])}
-        for name, spec in DIMENSION_SET_CATALOG.items()
-    }
+    # Seed EMPTY (not with the full catalog): the `if name not in catalog`
+    # checks below were always False when seeded from DIMENSION_SET_CATALOG,
+    # making those branches dead code whose "correct" behaviour depended on
+    # this initialization detail. Seeding empty makes the add/prune logic
+    # honest in both directions.
+    catalog: dict[str, dict[str, Any]] = {}
 
     if scan.has_frontend:
-        if "frontend" not in catalog:
-            catalog["frontend"] = {"dimensions": list(DIMENSION_SET_CATALOG["frontend"]["dimensions"])}
-    else:
-        # Keep frontend-only set out when there is no detected UI layer.
-        catalog.pop("frontend", None)
+        catalog["frontend"] = {"dimensions": list(DIMENSION_SET_CATALOG["frontend"]["dimensions"])}
+    # (No prune needed: an empty seed means "frontend" is only present when
+    # just added above.)
 
     if _has_api_layer(scan):
-        if "api" not in catalog:
-            catalog["api"] = {"dimensions": list(DIMENSION_SET_CATALOG["api"]["dimensions"])}
-    else:
-        catalog.pop("api", None)
+        catalog["api"] = {"dimensions": list(DIMENSION_SET_CATALOG["api"]["dimensions"])}
 
     # Cross-cutting audits always offered.
     for name in ("security", "performance", "style-tests"):

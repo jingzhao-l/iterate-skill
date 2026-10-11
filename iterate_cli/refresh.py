@@ -266,11 +266,18 @@ def preview_refresh(project_root: Path) -> dict[str, Any]:
         return empty
 
     current_config = ""
+    config_path = project_root / CONFIG_YAML
     try:
-        current_config = (project_root / CONFIG_YAML).read_text(encoding="utf-8")
+        current_config = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # A missing iterate.config.yaml is a legitimate first-refresh state
+        # (_load_refresh_config returns {} for it, and incremental_refresh
+        # succeeds): treat it as empty so preview and the real refresh agree
+        # instead of the dry-run failing where the write path succeeds.
+        current_config = ""
     except (OSError, UnicodeDecodeError) as exc:
-        # The config was already parsed by _build_refresh_outputs, so reaching
-        # this point with an unreadable file is a genuine read failure. Treating
+        # Any OTHER read failure after _build_refresh_outputs parsed the
+        # config is genuine (permissions flipped mid-run, IO error). Treating
         # it as an empty string would falsely flag config_changed and misguide
         # the preview (which claims to refuse to overwrite an unparseable
         # config).
@@ -368,6 +375,12 @@ def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: s
             backup_md = None
         try:
             backup_config = config_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Legitimate first-refresh state (no iterate.config.yaml yet —
+            # _load_refresh_config treats that as {}): there is nothing to
+            # roll back TO, and the file is about to be created. An error
+            # line here used to appear on every successful first refresh.
+            backup_config = None
         except (OSError, UnicodeDecodeError) as exc:
             tui.error(f"Failed to back up {config_path} for rollback: {exc}")
             backup_config = None
@@ -567,6 +580,33 @@ def full_reonboard(
         tui.error(f"Backup failed, aborting re-onboarding: {exc}")
         return REONBOARD_FAILED
 
+    # Marker pre-check (after backup, before the wizard runs): when the
+    # USER-OWNED markers are gone, write_onboarding_outputs would fall back to
+    # the TEMPLATE user section and overwrite the live file — the previous
+    # warning was printed by that same command AFTER the overwrite, telling
+    # the user to "restore the markers and re-run" a file it had just
+    # replaced. Warn here (the .bak-<suffix> copy above is the real safety
+    # net) so the downgrade is announced before anything happens.
+    if iterate_md_path.is_file():
+        from iterate_cli.generator import has_valid_user_owned_markers
+
+        try:
+            existing_md_text = iterate_md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            existing_md_text = None
+        if existing_md_text is not None and not has_valid_user_owned_markers(
+            existing_md_text
+        ):
+            tui.warning(
+                "Existing ITERATE.md is missing the USER-OWNED section markers; "
+                "reonboard will rebuild the user section from the template."
+            )
+            tui.hint(
+                f"Your current file is backed up at "
+                f"{ITERATE_MD}.bak-{backup_suffix}.",
+                indent=2,
+            )
+
     # Run the full wizard.
     if input_func is not None:
         data = run_wizard(project_root, input_func=input_func)
@@ -628,7 +668,6 @@ def _reconcile_validation_suggestions(
     validation_commands: dict[str, list[str]],
     effective_whitelist: list[str],
     scan: ScanResult,
-    reconcile_whitelist: bool = True,
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Additively reconcile validation tooling with a newly-detected stack.
 
@@ -642,9 +681,6 @@ def _reconcile_validation_suggestions(
         validation_commands: Existing ``validation.commands`` mapping.
         effective_whitelist: The currently effective command whitelist.
         scan: Fresh ScanResult used to derive per-language suggestions.
-        reconcile_whitelist: Whether to augment the whitelist. Disable when
-            the operator has deliberately configured an empty whitelist
-            ("run no commands") so their intent is preserved.
 
     Returns:
         Updated (validation_commands, effective_whitelist).
@@ -654,9 +690,6 @@ def _reconcile_validation_suggestions(
     for module, cmds in suggested_commands.items():
         if module not in commands:
             commands[module] = list(cmds)
-
-    if not reconcile_whitelist:
-        return commands, effective_whitelist
 
     suggested_prefixes = suggest_command_whitelist(scan)
     seen = set(effective_whitelist)
@@ -677,8 +710,15 @@ def _resolve_validation_config(
     Preserves existing (possibly customised) validation configuration and
     additively reconciles tooling with the newly-detected tech stack (a
     language added since the last onboarding gets its suggested commands +
-    whitelist prefixes appended). An operator who deliberately configured an
-    empty whitelist ("run no commands") keeps that intent.
+    whitelist prefixes appended).
+
+    An explicit ``command_whitelist: []`` is NOT treated as a "run no
+    commands" intent: the schema forbids it (minItems 1) and
+    ``_build_refreshed_config`` drops the key, so the previous "preserve for
+    one round, refill with suggestions on the next" behaviour only delayed
+    the refill by one refresh while claiming to honour an intent the config
+    cannot actually express. It is now flagged (tui.warning) and resolved
+    exactly like an absent key — predictable on the very first refresh.
 
     Returns:
         (validation_commands, effective_whitelist).
@@ -689,32 +729,24 @@ def _resolve_validation_config(
     # reconcile step does ``dict(commands)``, which would crash on a string.
     existing_commands = validation_existing.get("commands")
     validation_commands = existing_commands if isinstance(existing_commands, dict) else {}
-    # Distinguish an explicit empty whitelist (the operator deliberately
-    # configured "run no commands") from an absent key (fall back to a scan
-    # suggestion so a fresh config still gets a usable whitelist).
     has_whitelist_key = "command_whitelist" in validation_existing
     command_whitelist = validation_existing.get("command_whitelist")
-    if command_whitelist is None:
-        command_whitelist = [] if has_whitelist_key else None
-    elif not isinstance(command_whitelist, list):
-        # A hand-edited scalar/non-list whitelist (e.g. ``command_whitelist:
-        # pytest``) would be iterated incorrectly by the reconcile step — a
-        # string char-splits into single letters and an int raises TypeError
-        # from ``set(int)``. Degrade to an empty whitelist (preserving the
-        # operator's intent to restrict execution) instead of corrupting the
-        # config or crashing refresh.
-        command_whitelist = [] if has_whitelist_key else None
-    effective_whitelist = (
-        command_whitelist
-        if command_whitelist is not None
-        else suggest_command_whitelist(scan)
-    )
-    # An operator who deliberately configured an empty whitelist ("run no
-    # commands") should not get tool prefixes re-added on refresh; every other
-    # case is augmented additively so newly-detected languages are validated.
-    reconcile_whitelist = not (has_whitelist_key and command_whitelist == [])
+    if not isinstance(command_whitelist, list) or not command_whitelist:
+        # Key present but empty (`[]`) or a hand-edited scalar/absent: all
+        # three are schema-invalid-or-absent states, so resolve them the same
+        # way and TELL the operator when a present-but-invalid value was
+        # ignored — silently refilling was the old two-round flip.
+        if has_whitelist_key:
+            tui.warning(
+                "validation.command_whitelist is empty or not a list — the "
+                "schema requires a non-empty list, so scan suggestions are "
+                "used instead (set explicit prefixes to override)."
+            )
+        command_whitelist = suggest_command_whitelist(scan)
+    # An explicit empty whitelist can no longer reach here, so the whitelist
+    # is always reconciled additively (newly-detected languages get prefixes).
     return _reconcile_validation_suggestions(
-        validation_commands, effective_whitelist, scan, reconcile_whitelist
+        validation_commands, command_whitelist, scan
     )
 
 
@@ -758,12 +790,21 @@ def _build_refresh_data(
     existing_dimensions = existing_config.get("dimensions")
     # A hand-edited scalar/string dimensions value (e.g. ``dimensions:
     # "correctness"``) must not be iterated character-by-character by the
-    # ITERATE.md renderer; fall back to scan suggestions instead.
-    dimensions = (
-        existing_dimensions
-        if isinstance(existing_dimensions, list)
-        else suggest_dimensions(scan)
-    )
+    # ITERATE.md renderer; fall back to scan suggestions instead. Non-string
+    # LIST elements (``dimensions: [1, 2]``) are coerced to strings and empty
+    # ones dropped so the rebuilt config stays schema-valid.
+    if isinstance(existing_dimensions, list):
+        dimensions = [
+            str(d)
+            for d in existing_dimensions
+            # None is a YAML null (``dimensions: [- ]``-style hand edit): it
+            # would stringify to the literal "None" and get rendered into
+            # ITERATE.md as a dimension name, so drop it explicitly rather
+            # than let str() launder it through.
+            if d is not None and str(d).strip()
+        ] or suggest_dimensions(scan)
+    else:
+        dimensions = suggest_dimensions(scan)
     # Preserve scope-specific dimension sets, additively reconciling with a
     # freshly-detected stack (a layer added since onboarding gets its preset).
     from iterate_cli.dimension_sets import (
@@ -772,21 +813,46 @@ def _build_refresh_data(
         suggest_dimension_sets,
     )
 
-    existing_dimension_sets = normalize_dimension_sets(existing_config.get("dimension_sets"))
+    existing_dimension_sets = normalize_dimension_sets(
+        existing_config.get("dimension_sets"),
+        # This normalized value is written back to iterate.config.yaml, so a
+        # dropped hand-written entry must be announced — silently deleting it
+        # on the next `iterate refresh` (exit 0, no output) was data loss.
+        on_drop=lambda name: tui.warning(
+            f"dimension_sets.{name!r} is malformed and was dropped from the "
+            "refreshed config (see `iterate doctor`)."
+        ),
+    )
     dimension_sets = merge_dimension_sets(existing_dimension_sets, suggest_dimension_sets(scan))
     git_cfg = existing_config.get("git")
     git_cfg = git_cfg if isinstance(git_cfg, dict) else {}
     review_cfg = existing_config.get("review")
     review_cfg = review_cfg if isinstance(review_cfg, dict) else {}
     target_branch = git_cfg.get("target_branch", DEFAULT_TARGET_BRANCH)
+    # Schema-enum normalisation (mirrors wizard._load_existing_onboarding_data):
+    # a hand-edited `target_branch:` (null), `review.scope: everything`,
+    # `push_per_round: "yes"` or non-string dimension entries would otherwise
+    # be written back verbatim by the refresh rebuild, persisting an invalid
+    # config that doctor keeps flagging on every run.
+    if not isinstance(target_branch, str) or not target_branch.strip():
+        target_branch = DEFAULT_TARGET_BRANCH
     review_scope = review_cfg.get("scope", DEFAULT_REVIEW_SCOPE)
+    if review_scope not in ("changed-only", "full"):
+        review_scope = DEFAULT_REVIEW_SCOPE
     # Secure-by-default: push_per_round must default to False, matching
-    # OnboardingData (generator.py) and the documented default.
+    # OnboardingData (generator.py) and the documented default. A hand-edited
+    # non-bool (``"yes"``, 1) is coerced: any non-empty truthy scalar except
+    # the canonical ``false``/``"false"`` forms would otherwise round-trip as
+    # an invalid value; treat only real bools as authoritative.
     push_per_round = git_cfg.get("push_per_round", False)
+    if not isinstance(push_per_round, bool):
+        push_per_round = str(push_per_round).strip().lower() in ("1", "true", "yes")
     validation_commands, effective_whitelist = _resolve_validation_config(
         existing_config, scan
     )
     language = existing_config.get("language", DEFAULT_LANGUAGE)
+    if language not in ("zh", "en"):
+        language = DEFAULT_LANGUAGE
 
     # Preserve existing personalization so refresh does not lose it.
     personalization = None

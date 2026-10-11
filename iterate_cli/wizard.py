@@ -389,6 +389,16 @@ def _run_basic_wizard(
     # user opts in; otherwise all fields stay at their defaults above).
     _optionally_collect_advanced_config(data, input_func)
 
+    # Re-capture AFTER the advanced step: drift-ignore patterns are collected
+    # there, and the stored fingerprints must match what `iterate refresh`
+    # (which filters by drift_ignore) would compute — otherwise the very first
+    # refresh always reports a spurious fingerprint change and rewrites the
+    # config, breaking refresh's idempotence contract.
+    if data.drift_ignore:
+        data.fingerprints = capture_fingerprints(
+            project_root, ignore_patterns=data.drift_ignore
+        )
+
     if not _confirm_summary(data, input_func):
         _print_cancelled()
         return None
@@ -473,14 +483,34 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             for module, cmds in raw_commands.items()
             if isinstance(cmds, list)
         }
-        command_whitelist = [
-            str(w) for w in (validation.get("command_whitelist") or []) if isinstance(w, str)
-        ]
+        # Normalize validation.command_whitelist: a hand-edited scalar string
+        # (`command_whitelist: pytest`) would otherwise be iterated per
+        # CHARACTER (each char passes `isinstance(w, str)`), producing
+        # ['p','y','t','e','s','t'] that gets written back on save — schema-
+        # valid yet semantically destroyed. refresh/personalize both guard
+        # this; the wizard must too.
+        raw_whitelist = validation.get("command_whitelist")
+        if isinstance(raw_whitelist, list):
+            command_whitelist = [
+                str(w) for w in raw_whitelist if isinstance(w, str)
+            ]
+        elif isinstance(raw_whitelist, str) and raw_whitelist.strip():
+            command_whitelist = [raw_whitelist]
+        else:
+            command_whitelist = []
         # Preserve scope-specific dimension sets so a returning user who
-        # declines a basic-config update does not silently lose them.
+        # declines a basic-config update does not silently lose them. The
+        # normalized value is re-serialized into the config on save, so a
+        # dropped hand-written entry must be announced (same as refresh).
         from iterate_cli.dimension_sets import normalize_dimension_sets
 
-        dimension_sets = normalize_dimension_sets(config.get("dimension_sets"))
+        dimension_sets = normalize_dimension_sets(
+            config.get("dimension_sets"),
+            on_drop=lambda name: tui.warning(
+                f"dimension_sets.{name!r} is malformed and will be dropped "
+                "when the config is saved."
+            ),
+        )
 
         # A hand-edited `language:` with an empty/null value parses to None and
         # would be re-emitted as `language: null`, violating the schema enum.
@@ -501,7 +531,12 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             push_per_round=git.get("push_per_round", False),
             validation_commands=validation_commands,
             command_whitelist=command_whitelist,
-            fingerprints=capture_fingerprints(project_root),
+            # Filter by the preserved drift-ignore patterns: refresh captures
+            # with the same filter, and storing unfiltered fingerprints made
+            # the next refresh see a phantom diff (see _run_basic_wizard).
+            fingerprints=capture_fingerprints(
+                project_root, ignore_patterns=drift_ignore
+            ),
             language=existing_language,
             goal=config.get("goal", DEFAULT_GOAL),
             max_rounds=config.get("max_rounds", DEFAULT_MAX_ROUNDS),
@@ -1025,8 +1060,13 @@ def _read_drift_ignore(current: list[str], input_func: InputFunc) -> list[str]:
     """Read comma-separated drift-ignore glob patterns, keeping ``current`` on
     empty input. Values are deduplicated and whitespace-trimmed.
     """
+    # Examples must be names that drift detection actually tracks: lock files
+    # (package-lock.json/yarn.lock) are NOT in MANIFEST_FILES, so suggesting
+    # them produced patterns that could never match — a silent no-op that left
+    # users believing lockfile churn would be ignored. setup.py / tsconfig.json
+    # are both real MANIFEST_FILES.
     tui.hint(
-        "排除漂移检测的 manifest glob（逗号分隔，如 package-lock.json,yarn.lock）/",
+        "排除漂移检测的 manifest glob（逗号分隔，如 setup.py,tsconfig.json）/",
         indent=2,
     )
     tui.hint(
