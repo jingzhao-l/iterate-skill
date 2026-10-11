@@ -1282,15 +1282,24 @@ class TestDownloadReleaseIntegrity:
         with pytest.raises(install.ReleaseIntegrityError, match="SHA256SUMS.txt URL is required"):
             install._download_release_source("http://x/tar", None, None)
 
-    def test_raises_on_checksum_download_failure(self, monkeypatch) -> None:
+    def test_checksum_download_failure_falls_back_not_aborts(self, monkeypatch) -> None:
+        """An unfetchable checksum file is a TRANSPORT failure, not integrity.
+
+        The tarball fetch failing already fell back to the trusted local
+        source; a checksum fetch failing is the same class of event and must
+        behave the same way. Aborting the whole update told the operator their
+        release failed verification when in fact nothing was ever verified —
+        and, worse, it was the ONE unavailable case that could not recover
+        from a transient network blip. The unverified tarball is discarded, so
+        the fail-closed property is preserved.
+        """
         def fake_download(url, token, timeout=30):
             if "SHA256SUMS" in url:
                 return None, "HTTP 500"
             return b"tarball", None
 
         monkeypatch.setattr(install, "_download_bytes", fake_download)
-        with pytest.raises(install.ReleaseIntegrityError, match="could not download checksum file"):
-            install._download_release_source("http://x/tar", "http://x/SHA256SUMS.txt", None)
+        assert install._download_release_source("http://x/tar", "http://x/SHA256SUMS.txt", None) is None
 
     def test_raises_on_missing_checksum_entry(self, monkeypatch) -> None:
         def fake_download(url, token, timeout=30):
@@ -2184,3 +2193,143 @@ class TestArrowMenuRedrawOnTerminal:
         assert s.count("↑/↓") == 1, s
         assert s.count("→ Done / 完 成") == 1, s
         assert "Done" in s
+
+# ---------------------------------------------------------------------------
+# install.py: markup escaping, stdio reconfigure, --version, checksum fallback
+# ---------------------------------------------------------------------------
+
+
+class TestMarkupEscaping:
+    """rich treats `[...]` as a style tag; user-influenced text must be escaped."""
+
+    def test_escape_markup_brackets_survive(self) -> None:
+        original = "C:\\[build]\\skill and [404]"
+        escaped = install._escape_markup(original)
+        if install._RICH_AVAILABLE:
+            # rich's escape must alter at least the tag-opening bracket, and
+            # whatever it produces has to render back to the original text.
+            assert escaped != original
+            from io import StringIO
+
+            from rich.console import Console
+
+            buf = StringIO()
+            Console(file=buf, force_terminal=False, width=200).print(escaped)
+            assert original in buf.getvalue()
+        else:
+            assert escaped == original
+
+    def test_tui_print_does_not_swallow_bracketed_text(self, capsys) -> None:
+        """A path/status containing `[...]` must appear verbatim in the output."""
+        marker = "target [404] not-found"
+        install._tui_print(marker, style="iterate.success")
+        out = capsys.readouterr().out
+        assert "404" in out
+        assert "not-found" in out
+
+    def test_escape_markup_identity_without_rich(self, monkeypatch) -> None:
+        monkeypatch.setattr(install, "_RICH_AVAILABLE", False)
+        assert install._escape_markup("[a]") == "[a]"
+
+
+class TestReconfigureStdio:
+    def test_reconfigure_is_defensive(self) -> None:
+        """Must never raise, whatever stdout/stderr happen to be."""
+
+        class Broken:
+            reconfigure = None  # attribute exists but is not callable
+
+        class Raises:
+            @staticmethod
+            def reconfigure(**kwargs):
+                raise OSError("closed")
+
+        real_out, real_err, real_in = install.sys.stdout, install.sys.stderr, install.sys.stdin
+        try:
+            install.sys.stdout = Broken()
+            install.sys.stderr = Raises()
+            install.sys.stdin = Broken()
+            install._reconfigure_stdio()  # must not raise
+        finally:
+            install.sys.stdout, install.sys.stderr, install.sys.stdin = (
+                real_out,
+                real_err,
+                real_in,
+            )
+
+    def test_reconfigure_called_from_main(self) -> None:
+        """main() must opt into UTF-8 before any output is produced."""
+        import inspect
+
+        source = inspect.getsource(install.main)
+        assert "_reconfigure_stdio()" in source
+
+
+class TestInstallerVersionFlag:
+    def test_version_flag_prints_version(self, capsys) -> None:
+        with pytest.raises(SystemExit) as excinfo:
+            install.build_parser().parse_args(["--version"])
+        assert excinfo.value.code == 0
+        out = capsys.readouterr().out
+        assert "iterate-skill-installer" in out
+
+    def test_installed_version_matches_pyproject(self) -> None:
+        import tomllib
+
+        repo_root = Path(__file__).resolve().parent.parent
+        expected = tomllib.loads(
+            (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["version"]
+        assert install._installed_version() == expected
+
+    def test_installed_version_tolerates_missing_pyproject(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A copied/standalone script must not crash --version."""
+
+        def boom():
+            raise OSError("no such file")
+
+        monkeypatch.setattr(Path, "read_text", lambda *a, **k: boom())
+        assert install._installed_version() == install._FALLBACK_INSTALLER_VERSION
+
+
+class TestChecksumDownloadFallback:
+    def test_network_failure_falls_back_to_local(self, monkeypatch) -> None:
+        """Unfetchable checksum file: transport problem, not an integrity verdict.
+
+        Both fetches failing the same way must behave the same way — discard
+        the unverified tarball and let the caller fall back to the trusted
+        local source. Aborting with ReleaseIntegrityError told the operator
+        their release failed verification when nothing was ever verified.
+        """
+        calls = []
+
+        def fake_download(url, token, timeout=30):
+            calls.append(url)
+            if "SHA256SUMS" in url:
+                return None, "DNS failure"
+            return b"tarball", None
+
+        monkeypatch.setattr(install, "_download_bytes", fake_download)
+        assert (
+            install._download_release_source(
+                "http://x/tar", "http://x/SHA256SUMS.txt", None
+            )
+            is None
+        )
+        assert len(calls) == 2
+
+    def test_mismatch_still_fails_closed(self, monkeypatch) -> None:
+        """A retrieved-but-wrong checksum is a real integrity failure."""
+
+        def fake_download(url, token, timeout=30):
+            if "SHA256SUMS" in url:
+                return (hashlib.sha256(b"other").hexdigest() + "  iterate-skill.tar.gz\n").encode(), None
+            return b"tarball", None
+
+        monkeypatch.setattr(install, "_download_bytes", fake_download)
+        with pytest.raises(install.ReleaseIntegrityError):
+            install._download_release_source(
+                "http://x/tar", "http://x/SHA256SUMS.txt", None
+            )

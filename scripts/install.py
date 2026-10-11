@@ -76,6 +76,22 @@ except ImportError:
     _RICH_AVAILABLE = False
 
 
+def _escape_markup(text: str) -> str:
+    """Escape ``text`` so rich renders it literally instead of as markup.
+
+    rich treats ``[...]`` as a style tag and drops it from the output. Any
+    user-influenced string (a target path, an HTTP status, a file name) can
+    legitimately contain square brackets, so it must be escaped before being
+    embedded in a styled template. Returns ``text`` unchanged when rich is
+    unavailable (plain ``print`` needs no escaping).
+    """
+    if not _RICH_AVAILABLE:
+        return text
+    from rich.markup import escape as _rich_escape
+
+    return _rich_escape(text)
+
+
 def _tui_print(message: str, *, style: str = "", stderr: bool = False) -> None:
     """Print a styled message, falling back to plain print without rich."""
     if not _RICH_AVAILABLE:
@@ -86,9 +102,14 @@ def _tui_print(message: str, *, style: str = "", stderr: bool = False) -> None:
         return
     console = _ERR_CONSOLE if stderr else _CONSOLE
     if style:
-        console.print(f"[{style}]{message}[/]")
+        # Escape the MESSAGE, never the style: rich parses `[...]` as markup,
+        # so a path like `C:\\[build]\\skill` or an error text containing
+        # `[404]` was silently swallowed as a (nonexistent) style tag and
+        # vanished from the output — the operator lost the very detail the
+        # line was there to convey.
+        console.print(f"[{style}]{_escape_markup(message)}[/]")
     else:
-        console.print(message)
+        console.print(_escape_markup(message))
 
 
 def _intro(title: str, subtitle: str = "") -> None:
@@ -281,6 +302,33 @@ def _frame_box(title: str, lines: list[str]) -> None:
 
 GITHUB_REPO_OWNER = "jingzhao-l"
 GITHUB_REPO_NAME = "iterate-skill"
+
+# Fallback installer version when pyproject.toml cannot be read (the script is
+# often executed standalone, before the package is installed).
+_FALLBACK_INSTALLER_VERSION = "0.0.0+unknown"
+
+
+def _installed_version() -> str:
+    """Return the skill version for ``--version``.
+
+    Reads ``[project].version`` from the bundled pyproject.toml so the value
+    can never drift from the single source of truth used by the release; falls
+    back to a placeholder when the file is absent or unparseable (standalone
+    execution of a copied script) rather than raising.
+    """
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return _FALLBACK_INSTALLER_VERSION
+    try:
+        import tomllib
+
+        data = tomllib.loads(text)
+    except Exception:  # noqa: BLE001 - malformed TOML must not break --version
+        return _FALLBACK_INSTALLER_VERSION
+    version = data.get("project", {}).get("version")
+    return version if isinstance(version, str) and version else _FALLBACK_INSTALLER_VERSION
 # NOTE: this is deliberately the *release list*, not `/releases/latest`.
 # `/releases/latest` means "newest non-prerelease by published_at" across the
 # whole repository, and this repository also publishes releases for the
@@ -1090,8 +1138,13 @@ def _print_install_summary(
         "",
     ]
     for _assistant, display_name, destination in installed:
+        # Escape only the USER-INFLUENCED fragments: display_name comes from
+        # the assistant registry but destination is a real filesystem path the
+        # operator chose, and rich would silently drop any `[...]` in it as a
+        # style tag — hiding the very path the summary exists to show.
         summary_lines.append(
-            f"  [iterate.label]{display_name}:[/] {destination}"
+            f"  [iterate.label]{_escape_markup(display_name)}:[/] "
+            f"{_escape_markup(str(destination))}"
         )
     summary_lines.append("")
     summary_lines.append(
@@ -1717,19 +1770,21 @@ def _download_release_source(
     unverified tarballs.
 
     Raises:
-        ReleaseIntegrityError: When the release cannot be verified (missing or
-            undownloadable checksum URL, no matching checksum entry, or a SHA-256
-            mismatch). Callers must fail closed on this — never fall back to a
-            different source while claiming the release applied.
+        ReleaseIntegrityError: When the release was CHECKSUMMED but failed
+            verification (no matching checksum entry, or a SHA-256 mismatch),
+            or the archive is unusable. Callers must fail closed on this —
+            never fall back to a different source while claiming the release
+            applied.
         ReleaseStructureError: When the verified archive is unusable (extraction
             failed, or it does not contain exactly one top-level directory with a
             ``SKILL.md`` marker). Callers must abort — a broken release must not
             silently fall back to a possibly-different local source.
 
     Returns:
-        The extracted ``SKILL.md`` root directory, or ``None`` only when the
-        tarball/checksum could not be downloaded (pure network failure, which
-        legitimately allows falling back to the local source).
+        The extracted ``SKILL.md`` root directory, or ``None`` when the
+        tarball OR the checksum file could not be downloaded (a pure network
+        failure, which legitimately allows falling back to the local source;
+        the unverified bytes are discarded either way).
     """
     if not checksum_url:
         raise ReleaseIntegrityError("SHA256SUMS.txt URL is required for integrity verification.")
@@ -1742,10 +1797,24 @@ def _download_release_source(
 
     checksum_data, checksum_error = _download_bytes(checksum_url, token)
     if not checksum_data:
+        # A checksum file we could not FETCH is a transport problem, not an
+        # integrity failure — the same class as the tarball fetch failing
+        # above. Fall back to the trusted local source (discarding the
+        # unverified tarball bytes entirely) instead of aborting the whole
+        # update: we never install the unverified download, so the
+        # fail-closed property still holds.
         if checksum_error:
-            raise ReleaseIntegrityError(f"could not download checksum file: {checksum_error}")
-        raise ReleaseIntegrityError("could not download checksum file.")
-
+            _warning(
+                f"Could not download checksum file ({checksum_error}); "
+                "discarding the unverified tarball."
+            )
+        else:
+            _warning(
+                "Could not download checksum file; discarding the unverified tarball."
+            )
+        return None
+    # Everything below is a genuine INTEGRITY verdict: the checksum was
+    # retrieved and the release failed to satisfy it. These abort.
     expected_hash = _parse_checksum(checksum_data, EXPECTED_TARBALL_FILENAME)
     if not expected_hash:
         raise ReleaseIntegrityError(f"{EXPECTED_TARBALL_FILENAME} not found in checksum file.")
@@ -1878,9 +1947,11 @@ def update_command(
                 token,
             )
         except ReleaseIntegrityError as exc:
-            # Integrity failure (missing/undownloadable checksum, missing
-            # entry, SHA mismatch) must abort — never fall back to local and
-            # claim "Update complete." for an unverified release.
+            # Integrity failure (checksum retrieved but no matching entry, or a
+            # SHA mismatch) must abort — never fall back to local and claim
+            # "Update complete." for an unverified release. (A checksum file
+            # that could not be DOWNLOADED is not this case: it returns None
+            # and falls back below, with the unverified tarball discarded.)
             _error(f"Refusing to update from release: {exc}")
             return 1
         except ReleaseStructureError as exc:
@@ -2697,6 +2768,16 @@ def build_parser() -> argparse.ArgumentParser:
         prog="iterate-skill",
         description="Install and configure iterate-skill for AI coding assistants.",
     )
+    # `--version` was missing, so `npx iterate-skill-installer --version` (and
+    # the bare script) printed a usage error instead of the version — there was
+    # no way to confirm which installer build is running without reading the
+    # file. Reads pyproject at runtime so the value cannot drift from
+    # [project].version; falls back to the packaged constant.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"iterate-skill-installer {_installed_version()}",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_install_parser(subparsers)
     _add_uninstall_parser(subparsers)
@@ -2729,8 +2810,30 @@ def parse_legacy_args(argv: list[str] | None) -> argparse.Namespace | None:
     return namespace
 
 
+def _reconfigure_stdio() -> None:
+    """Force UTF-8 on stdio so CJK output cannot crash the installer.
+
+    Windows Python defaults stdout/stderr to cp1252/locale encoding unless a
+    UTF-8 mode or a modern terminal is detected; printing the Chinese banner
+    or a CJK project name then raises ``UnicodeEncodeError`` and aborts the
+    install mid-way. Best-effort: a stream that refuses to be reconfigured
+    (a closed pipe, a StringIO in tests) is left alone.
+    """
+    for stream in (sys.stdout, sys.stderr, sys.stdin):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError, AttributeError):
+            # e.g. "I/O operation on closed file" from an already-closed
+            # stream, or a stream that does not accept the keyword args.
+            continue
+
+
 def main(argv: list[str] | None = None, source: Path | None = None) -> int:
     """CLI entry point."""
+    _reconfigure_stdio()
     if source is None:
         source = Path(__file__).resolve().parent.parent
 
