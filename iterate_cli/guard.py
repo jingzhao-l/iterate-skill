@@ -344,15 +344,23 @@ def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
     caller always reports a timeout either way.
     """
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        if os.name == "posix":
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        # Windows: no os.killpg/signal.SIGKILL and start_new_session is a
+        # no-op there, so the process group is not isolated; kill the leader.
+        proc.kill()
         return
     except ProcessLookupError:
-        # The group is already gone (the command exited between the timeout
-        # firing and this call). Nothing left to kill.
+        # The group (or its leader) is already gone — the command exited
+        # between the timeout firing and this call. NOTHING is left to kill,
+        # so falling through to proc.kill() would only raise again.
         return
-    except OSError:
-        # killpg failed for some other reason (e.g. EPERM, or the pid was not a
-        # group leader). Fall through to killing just the leader.
+    except (AttributeError, OSError):
+        # AttributeError: interpreter/platform without os.getpgid (Windows
+        #   Pythons reached via a monkeypatched posix path). OSError (e.g.
+        #   PermissionError): killpg refused — try the leader directly as a
+        #   last resort so the command we own still stops.
         pass
     try:
         proc.kill()
@@ -414,28 +422,41 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
         # Chunked (not readline) draining: a tool that emits one gigantic
         # newline-free line (progress deltas, minified output) would otherwise
         # materialize the whole line in memory and silently bypass the byte
-        # cap. Only the last _OUTPUT_LINE_CAP lines and the tail of a
-        # still-open line (carry) are ever retained.
+        # cap. Retention is TAIL-first: only the last _OUTPUT_LINE_CAP lines,
+        # the last _OUTPUT_BYTE_CAP bytes of completed lines, and the tail of
+        # a still-open line (carry) are kept — the fatal error a build prints
+        # right before dying lives at the END of the output, so overflowing
+        # the cap must discard the oldest content, never the newest.
         carry = ""
+        retained = 0  # chars currently held in `lines` (approximate bytes)
+
+        def _trim_lines() -> None:
+            nonlocal retained
+            while lines and (
+                len(lines) > _OUTPUT_LINE_CAP or retained > _OUTPUT_BYTE_CAP
+            ):
+                retained -= len(lines.pop(0)) + 1
+
         while True:
             chunk = proc.stdout.read(_DRAIN_CHUNK_CHARS)
             if not chunk:
                 break
             total_bytes += len(chunk.encode("utf-8", errors="replace"))
-            if total_bytes > _OUTPUT_BYTE_CAP:
-                continue
             carry += chunk
             if "\n" in carry:
                 complete, _, carry = carry.rpartition("\n")
-                lines.extend(complete.split("\n"))
-                if len(lines) > _OUTPUT_LINE_CAP:
-                    del lines[: len(lines) - _OUTPUT_LINE_CAP]
+                new_lines = complete.split("\n")
+                lines.extend(new_lines)
+                retained += sum(len(line) + 1 for line in new_lines)
+                _trim_lines()
+            # Keep only the tail of a still-open line (half-line before the
+            # next newline arrives) so a newline-free flood stays bounded.
             if len(carry) > _OUTPUT_BYTE_CAP:
                 carry = carry[-_OUTPUT_BYTE_CAP:]
         if carry:
             lines.append(carry)
-            if len(lines) > _OUTPUT_LINE_CAP:
-                del lines[: len(lines) - _OUTPUT_LINE_CAP]
+            retained += len(carry)
+            _trim_lines()
 
     thread = threading.Thread(target=_drain, daemon=True)
     thread.start()
@@ -443,10 +464,22 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
         returncode = proc.wait(timeout=_COMMAND_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         _kill_process_tree(proc)
-        proc.wait()
+        try:
+            # Bounded wait even after the kill: if both killpg and the
+            # proc.kill() fallback failed (EPERM / race), an unbounded
+            # wait() here would hang `iterate guard` forever.
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        thread.join(timeout=5)
         return EXIT_FAIL, f"command timed out after {_COMMAND_TIMEOUT_SECONDS}s"
     thread.join(timeout=5)
-    tail = " | ".join(line.rstrip("\n") for line in lines[-3:])
+    # Per-line truncation BEFORE joining: a single megabyte-wide noise line
+    # would otherwise consume the whole 400-char budget on its own and push
+    # the (short) fatal error line out of the tail entirely — the exact
+    # "kept the noise, lost the error" failure the tail-first retention
+    # above exists to prevent.
+    tail = " | ".join(line.rstrip("\n")[:160] for line in lines[-3:])
     return returncode, tail[:400]
 
 

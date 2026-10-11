@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from iterate_cli.cli import main as cli_main
 from iterate_cli.guard import (
     _DRAIN_CHUNK_CHARS,
+    _OUTPUT_BYTE_CAP,
     EXIT_FAIL,
     EXIT_PASS,
     render_guard_result,
@@ -723,6 +724,74 @@ class TestCommandExecutionBoundaries:
         result = run_guard_postcheck(project, None)
         assert result.passed is False
         assert any("timed out" in detail for _, _, detail in result.items)
+
+    def test_overflow_keeps_tail_not_head(self, tmp_path, monkeypatch) -> None:
+        """When the byte cap overflows, the FATAL (last) lines must survive.
+
+        Regression: retention was head-first, so a build that printed a
+        megabyte of progress noise and then the actual error lost the error
+        (it fell off the end) while the earliest, least useful lines were kept.
+        """
+        blob = _OUTPUT_BYTE_CAP + 256 * 1024  # comfortably over the cap
+        script = (
+            "import sys\n"
+            "sys.stdout.write('HEAD-MARKER-noise\\n')\n"
+            f"sys.stdout.write('N' * {blob})\n"
+            "sys.stdout.write('\\nFATAL-MARKER-division-by-zero\\n')\n"
+            "sys.exit(3)\n"
+        )
+        scripts_dir = tmp_path / "proj" / "scripts"
+        monkeypatch.setenv("ITERATE_EXTRA_SAFE_COMMAND_PREFIXES", "python3")
+        project = _make_project(tmp_path)
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir / "loud.py").write_text(script, encoding="utf-8")
+        config = _base_config()
+        config["validation"]["commands"] = {
+            "python": ["python3 scripts/loud.py"]
+        }
+        _write_config(project, config)
+        result = run_guard_postcheck(project, None)
+        detail = " | ".join(d for _, _, d in result.items)
+        # The tail (the actual failure) is what a diagnostic must keep.
+        assert "FATAL-MARKER-division-by-zero" in detail
+        # ...and the bounded tail stays far below the megabyte of noise.
+        assert len(detail) < 5_000
+
+    def test_wide_last_line_cannot_starve_the_final_error(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A single wide-but-retained noise line must not evict the fatal line.
+
+        ``_run_command`` keeps only the last 3 lines and then slices the joined
+        string to 400 chars. Without per-line truncation, one 200KB progress
+        line in that window consumed the whole budget and the SHORT fatal error
+        printed after it was sliced away — the diagnostic reported success-looking
+        noise for a failed command.
+        """
+        wide = 200_000  # under the 1 MiB byte cap, so the line is RETAINED
+        script = (
+            "import sys\n"
+            f"sys.stdout.write('W' * {wide} + '\\n')\n"
+            f"sys.stdout.write('W' * {wide} + '\\n')\n"
+            "sys.stdout.write('FATAL-ZERO-DIVISION\\n')\n"
+            "sys.exit(1)\n"
+        )
+        scripts_dir = tmp_path / "proj" / "scripts"
+        monkeypatch.setenv("ITERATE_EXTRA_SAFE_COMMAND_PREFIXES", "python3")
+        project = _make_project(tmp_path)
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir / "wide.py").write_text(script, encoding="utf-8")
+        config = _base_config()
+        config["validation"]["commands"] = {
+            "python": ["python3 scripts/wide.py"]
+        }
+        _write_config(project, config)
+        result = run_guard_postcheck(project, None)
+        assert result.passed is False  # exit 1 must still be a failure
+        detail = " | ".join(d for _, _, d in result.items)
+        assert "FATAL-ZERO-DIVISION" in detail, (
+            f"fatal line starved out of the tail by wide noise lines: {detail!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
