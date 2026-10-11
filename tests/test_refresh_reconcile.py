@@ -12,6 +12,7 @@ from pathlib import Path
 
 import yaml
 
+from iterate_cli.generator import DEFAULT_LANGUAGE
 from iterate_cli.refresh import (
     _build_refresh_data,
     _build_refreshed_config,
@@ -20,7 +21,6 @@ from iterate_cli.refresh import (
     incremental_refresh,
     load_onboarding_config,
 )
-from iterate_cli.generator import DEFAULT_LANGUAGE
 from iterate_cli.scan import ScanResult
 
 CONFIG_YAML = "iterate.config.yaml"
