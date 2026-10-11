@@ -21,3 +21,25 @@ export class KernelSchemaError extends Error {
     this.issues = issues;
   }
 }
+
+/**
+ * The shape of a zod error, declared structurally so `errors.ts` stays free of a
+ * zod import and the module graph has no cycle: the contract functions
+ * (`convergenceDecision`, `registerProvider`, `reVerificationRequestFrom`) validate
+ * their own inputs and need to raise the same error `parse.ts` raises, and `parse.ts`
+ * imports them.
+ */
+export interface SchemaErrorLike {
+  readonly issues: readonly { readonly path: readonly (string | number)[]; readonly message: string }[];
+}
+
+/** One place that turns a validation failure into `KernelSchemaError`. */
+export function schemaErrorFrom(label: string, error: SchemaErrorLike): KernelSchemaError {
+  return new KernelSchemaError(
+    label,
+    error.issues.map((issue) => ({
+      path: issue.path.map((segment) => String(segment)).join("."),
+      message: issue.message
+    }))
+  );
+}

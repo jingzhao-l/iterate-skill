@@ -37,6 +37,9 @@ APIs it actually uses.
 | `decision-log-entry` / `decision-log` | the append-only decision-log entry and the `opID ↔ entry` hash chain that makes it auditable |
 | `dimension-context` / `parse` | the dimension-coverage transcription: a plan plus what the engine actually recorded → verified / unverified / unplanned, and one line to put in a summary. It validates id *shape*, never which ids exist — that list belongs to whoever configured the run. |
 | `run-plan` / `parse` | the plan that `dimension-context` needs and refuses to invent: which dimensions a run intends to cover, in the caller's order, with the declared source. It carries a **digest** (`rp_` + sha256 of the canonical form) so a ledger line can state which plan a run was held to, and a reader can notice the plan changed mid-run. Nothing here reads a config file — producing a plan is whoever configures the run's job, and that keeps the kernel from learning a consumer's file format. |
+| `invariant-report` / `parse` | what the invariant runner may state about its own checks, and the re-verification a failure asks for. It refuses a report that says `pass` while carrying a failed check, and it turns an `error` (a check that could not run) into **no** request: re-verifying the app would answer a question nobody measured. |
+| `convergence` | the rules for what the loop does next, from stated inputs only. A tripped breaker, a spent round budget, and an errored check each `halt`; unlooked-or-unmeasured states `verify`, never `converged`. Both harnesses read one idea of "done" instead of growing two. |
+| `provider-registration` | metadata for a judgement producer — who offers which method, and what it requires. Registering an existing id is refused rather than silently overridden, and resolution never guesses. |
 | `errors` / `schemas` / `canonical-json` / `recipe-config` | `KernelSchemaError`, the JSON Schemas, canonical serialisation, recipe validation |
 
 ## A runnable example
@@ -108,12 +111,17 @@ not a contract; it is a note nobody reads.
 
 ## Consumers
 
-Vendored or installed, a consumer's kernel is one of two things, and the difference is a
-distribution decision rather than a semantic one:
+A consumer's kernel is this package, pinned. There is no second copy of the source anywhere:
+the GlassPane Harness fork used to vendor `kernel/src` under `packages/opencode/vendor/kernel`
+with a probe that asked whether the canonical branch had moved, and that arrangement was retired
+in favour of the npm dependency — its `script/kernel-pin.mjs` now checks the installed version,
+the lockfile integrity hash, and the per-file sha256 of the shipped corpus against
+`contracts/kernel-pin.json`, and `script/kernel-conformance.mjs` runs the fixtures against the
+installed `dist/`.
 
-- **vendored source**, hash-pinned per file, with a probe that asks whether the canonical
-  branch has moved (what the GlassPane Harness fork does), or
-- **this package**, pinned by semver.
+The Python side still cannot import TypeScript, so it vendors the *corpus* (fixtures and schemas)
+and implements the rules itself from the fixture `comment` fields; that is what the paragraph
+above describes, and `scripts/check_kernel_fixtures.py` is what keeps the two copies byte-agreed.
 
 Either way, run the fixtures: they are how you find out that the kernel you have is not the
 kernel you think you have.

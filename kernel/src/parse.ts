@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { KernelSchemaError } from "./errors.js";
+import { schemaErrorFrom } from "./errors.js";
 import {
   EvidencePackReadSchema,
   EvidencePackSchema,
@@ -14,21 +14,24 @@ import {
 } from "./dimension-context.js";
 import { RecipeConfigSchema, type RecipeConfig } from "./recipe-config.js";
 import { RunPlanSchema, type RunPlan } from "./run-plan.js";
-
-function schemaError(label: string, error: z.ZodError): KernelSchemaError {
-  const issues = error.issues.map((issue) => ({
-    path: issue.path.map((segment) => String(segment)).join("."),
-    message: issue.message
-  }));
-  return new KernelSchemaError(label, issues);
-}
+import {
+  InvariantReportSchema,
+  ReverificationRequestSchema,
+  type InvariantReport,
+  type ReverificationRequest
+} from "./invariant-report.js";
+import { RoundStateSchema, type RoundState } from "./convergence.js";
+import {
+  ProviderRegistrationSchema,
+  type ProviderRegistration
+} from "./provider-registration.js";
 
 function parseOrThrow<T>(schema: z.ZodType<T>, input: unknown, label: string): T {
   const result = schema.safeParse(input);
   if (result.success) {
     return result.data;
   }
-  throw schemaError(label, result.error);
+  throw schemaErrorFrom(label, result.error);
 }
 
 export function parseEvidencePack(input: unknown): EvidencePack {
@@ -51,7 +54,7 @@ export function parseEvidencePackRead(input: unknown): EvidencePack {
   if (result.success) {
     return result.data;
   }
-  throw schemaError("evidence pack", result.error);
+  throw schemaErrorFrom("evidence pack", result.error);
 }
 
 export function parseDecisionLogEntry(input: unknown): DecisionLogEntry {
@@ -72,4 +75,20 @@ export function parseDimensionContext(input: unknown): DimensionContext {
 
 export function parseDimensionContextInput(input: unknown): DimensionContextInput {
   return parseOrThrow(DimensionContextInputSchema, input, "dimension context input");
+}
+
+export function parseInvariantReport(input: unknown): InvariantReport {
+  return parseOrThrow(InvariantReportSchema, input, "invariant report");
+}
+
+export function parseReverificationRequest(input: unknown): ReverificationRequest {
+  return parseOrThrow(ReverificationRequestSchema, input, "re-verification request");
+}
+
+export function parseRoundState(input: unknown): RoundState {
+  return parseOrThrow(RoundStateSchema, input, "round state");
+}
+
+export function parseProviderRegistration(input: unknown): ProviderRegistration {
+  return parseOrThrow(ProviderRegistrationSchema, input, "provider registration");
 }

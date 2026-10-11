@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.iterate.dev/convergence-round-state-0.1.json",
+  "title": "ConvergenceRoundState",
+  "description": "What a caller states about the round that just finished, which the convergence rules turn into an action (5.7 R40 scenario 4). Every field is a verdict somebody else produced; this contract moves none of them. NOTE ON SOURCE OF TRUTH: the field constraints are duplicated from `src/convergence.ts`, which is the definition; this file mirrors it. The ordering that decides which verdict wins (breaker, then budget, then errored check, then findings, then evidence, then invariants, then converged) is arithmetic in the validator and cannot be expressed in JSON Schema — a schema-only implementation must re-implement `convergenceDecision` and be tested against the cases in `fixtures/convergence.ok-01.json`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["round", "maxRounds", "invariantState", "openFindings", "evidenceComplete", "breakerLevel"],
+  "properties": {
+    "schemaVersion": {
+      "const": "iterate.convergence/0.1"
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxRounds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "invariantState": {
+      "enum": ["pass", "fail", "error", "unmeasured"]
+    },
+    "openFindings": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "evidenceComplete": {
+      "type": "boolean"
+    },
+    "breakerLevel": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    }
+  }
+}

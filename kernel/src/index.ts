@@ -11,10 +11,18 @@ export {
   DECISION_LOG_ENTRY_SCHEMA_ID,
   RECIPE_CONFIG_SCHEMA_ID,
   RUN_PLAN_SCHEMA_ID,
+  INVARIANT_REPORT_SCHEMA_ID,
+  REVERIFICATION_REQUEST_SCHEMA_ID,
+  CONVERGENCE_ROUND_STATE_SCHEMA_ID,
+  PROVIDER_REGISTRATION_SCHEMA_ID,
   EVIDENCE_PACK_JSON_SCHEMA,
   DECISION_LOG_ENTRY_JSON_SCHEMA,
   RECIPE_CONFIG_JSON_SCHEMA,
   RUN_PLAN_JSON_SCHEMA,
+  INVARIANT_REPORT_JSON_SCHEMA,
+  REVERIFICATION_REQUEST_JSON_SCHEMA,
+  CONVERGENCE_ROUND_STATE_JSON_SCHEMA,
+  PROVIDER_REGISTRATION_JSON_SCHEMA,
   type JsonSchemaObject
 } from "./schemas.js";
 
@@ -133,7 +141,11 @@ export {
   parseRecipeConfig,
   parseRunPlan,
   parseDimensionContext,
-  parseDimensionContextInput
+  parseDimensionContextInput,
+  parseInvariantReport,
+  parseReverificationRequest,
+  parseRoundState,
+  parseProviderRegistration
 } from "./parse.js";
 
 export { canonicalJson } from "./canonical-json.js";
@@ -173,3 +185,66 @@ export {
 } from "./decision-log.js";
 
 export { KernelSchemaError, type KernelSchemaIssue } from "./errors.js";
+
+export {
+  INVARIANT_REPORT_SCHEMA_VERSION,
+  REVERIFICATION_SCHEMA_VERSION,
+  INVARIANT_CHECK_MAX,
+  INVARIANT_DETAIL_MAX_LENGTH,
+  REVERIFICATION_CODES,
+  InvariantCheckKindSchema,
+  InvariantCheckSchema,
+  InvariantReportOutcomeSchema,
+  InvariantReportSchema,
+  ReverificationTargetsSchema,
+  ReverificationRequestSchema,
+  KernelReverificationError,
+  invariantReportDigest,
+  failingChecks,
+  reVerificationRequestFrom,
+  type InvariantCheckKind,
+  type InvariantCheck,
+  type InvariantReportOutcome,
+  type InvariantReport,
+  type ReverificationTargets,
+  type ReverificationRequest,
+  type ReverificationRecipeStep,
+  type KernelReverificationCode
+} from "./invariant-report.js";
+
+export {
+  CONVERGENCE_SCHEMA_VERSION,
+  CONVERGENCE_REASONS,
+  InvariantStateSchema,
+  RoundStateSchema,
+  ConvergenceActionSchema,
+  ConvergenceDecisionSchema,
+  convergenceDecision,
+  type InvariantState,
+  type RoundState,
+  type ConvergenceAction,
+  type ConvergenceDecision,
+  type ConvergenceReason
+} from "./convergence.js";
+
+export {
+  PROVIDER_SCHEMA_VERSION,
+  PROVIDER_ID_PATTERN,
+  PROVIDER_ID_MAX_LENGTH,
+  PROVIDER_METHOD_MAX,
+  PROVIDER_CODES,
+  ProviderKindSchema,
+  ProviderMethodSchema,
+  ProviderRegistrationSchema,
+  KernelProviderError,
+  emptyProviderRegistry,
+  registerProvider,
+  resolveProvider,
+  requireMethod,
+  providerIdsInCommon,
+  type ProviderKind,
+  type ProviderMethod,
+  type ProviderRegistration,
+  type ProviderRegistry,
+  type KernelProviderCode
+} from "./provider-registration.js";

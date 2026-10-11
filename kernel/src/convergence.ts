@@ -1,0 +1,104 @@
+import { z } from "zod";
+
+import { schemaErrorFrom } from "./errors.js";
+
+/**
+ * Convergence rules: what happens after a round, decided from stated inputs
+ * (5.7 R40 scenario 4 — a GlassPane fix finishing hands the next step to the
+ * invariant review, and only then does the loop consider re-verifying).
+ *
+ * This is the piece §8.5 puts **inside** the kernel ("收敛规则"), and it is policy
+ * arithmetic, not verification: every input is a verdict somebody else produced. The
+ * rules exist so the two harnesses do not each grow a private idea of "done" — the
+ * asymmetry that makes a loop stop in one product and keep running in the other.
+ */
+export const CONVERGENCE_SCHEMA_VERSION = "iterate.convergence/0.1" as const;
+
+export const InvariantStateSchema = z.enum(["pass", "fail", "error", "unmeasured"]);
+export type InvariantState = z.infer<typeof InvariantStateSchema>;
+
+/** What a caller states about the round that just finished. */
+export const RoundStateSchema = z.strictObject({
+  schemaVersion: z.literal(CONVERGENCE_SCHEMA_VERSION).optional(),
+  round: z.number().int().min(1),
+  maxRounds: z.number().int().min(1),
+  invariantState: InvariantStateSchema,
+  openFindings: z.number().int().min(0),
+  /** False when the engine never got to evidence something (refused, crashed, unattached). */
+  evidenceComplete: z.boolean(),
+  /** The engine's own circuit-breaker level for this run; 3 is tripped. */
+  breakerLevel: z.number().int().min(0).max(3)
+});
+export type RoundState = z.infer<typeof RoundStateSchema>;
+
+export const ConvergenceActionSchema = z.enum(["fix", "verify", "converged", "halt"]);
+export type ConvergenceAction = z.infer<typeof ConvergenceActionSchema>;
+
+export const CONVERGENCE_REASONS = {
+  breakerTripped: "circuit-breaker-tripped",
+  budgetExhausted: "round-budget-exhausted",
+  invariantErrored: "invariant-check-errored",
+  openFindings: "open-findings",
+  invariantsFailed: "invariants-failed",
+  evidenceIncomplete: "evidence-incomplete",
+  invariantsUnmeasured: "invariants-unmeasured",
+  allGatesGreen: "all-gates-green"
+} as const;
+export type ConvergenceReason = (typeof CONVERGENCE_REASONS)[keyof typeof CONVERGENCE_REASONS];
+
+export const ConvergenceDecisionSchema = z.strictObject({
+  action: ConvergenceActionSchema,
+  reason: z.enum([
+    CONVERGENCE_REASONS.breakerTripped,
+    CONVERGENCE_REASONS.budgetExhausted,
+    CONVERGENCE_REASONS.invariantErrored,
+    CONVERGENCE_REASONS.openFindings,
+    CONVERGENCE_REASONS.invariantsFailed,
+    CONVERGENCE_REASONS.evidenceIncomplete,
+    CONVERGENCE_REASONS.invariantsUnmeasured,
+    CONVERGENCE_REASONS.allGatesGreen
+  ]),
+  round: z.number().int().min(1),
+  maxRounds: z.number().int().min(1)
+});
+export type ConvergenceDecision = z.infer<typeof ConvergenceDecisionSchema>;
+
+/**
+ * Precedence, and why it is this order:
+ *
+ * 1. breaker tripped → `halt`. A limit the harness set on itself is not the app's
+ *    failure, and continuing would report a stall as a verdict.
+ * 2. round budget spent → `halt`. Checked before the work so a run cannot buy
+ *    another round by reporting findings it already had.
+ * 3. the invariant check errored → `halt`. Nothing can be derived from a check that
+ *    did not run; retrying is the runner's job, not the loop's.
+ * 4. open findings, or invariants that failed → `fix`.
+ * 5. evidence incomplete, or invariants unmeasured → `verify`. Not `converged`:
+ *    "we could not look" and "we looked and it holds" are different states, and
+ *    collapsing them is the failure this whole contract exists to prevent.
+ * 6. otherwise → `converged`.
+ */
+export function convergenceDecision(state: RoundState): ConvergenceDecision {
+  const checked = RoundStateSchema.safeParse(state);
+  if (!checked.success) {
+    throw schemaErrorFrom("round state", checked.error);
+  }
+  const input = checked.data;
+  const decided = (action: ConvergenceAction, reason: ConvergenceReason): ConvergenceDecision => ({
+    action,
+    reason,
+    round: input.round,
+    maxRounds: input.maxRounds
+  });
+
+  if (input.breakerLevel >= 3) return decided("halt", CONVERGENCE_REASONS.breakerTripped);
+  if (input.round >= input.maxRounds) return decided("halt", CONVERGENCE_REASONS.budgetExhausted);
+  if (input.invariantState === "error") return decided("halt", CONVERGENCE_REASONS.invariantErrored);
+  if (input.openFindings > 0) return decided("fix", CONVERGENCE_REASONS.openFindings);
+  if (input.invariantState === "fail") return decided("fix", CONVERGENCE_REASONS.invariantsFailed);
+  if (!input.evidenceComplete) return decided("verify", CONVERGENCE_REASONS.evidenceIncomplete);
+  if (input.invariantState === "unmeasured") {
+    return decided("verify", CONVERGENCE_REASONS.invariantsUnmeasured);
+  }
+  return decided("converged", CONVERGENCE_REASONS.allGatesGreen);
+}
