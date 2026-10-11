@@ -370,6 +370,63 @@ async function run() {
   );
   assert.ok(timedOut.timedOut, 'runCommand must reject with a "timed out" InstallerError on timeout');
 
+  // runCommand: the timeout must kill the WHOLE process group, not just the
+  // direct child. A `pip`/`curl` that had already spawned a helper outlived a
+  // bare child.kill() and kept running (and holding our stdio pipe) after the
+  // installer reported a timeout. The grandchild writes a marker file on
+  // completion; a group kill prevents it from ever being written.
+  if (process.platform !== 'win32') {
+    const marker = path.join(os.tmpdir(), `iterate-grandchild-${process.pid}-${Date.now()}`);
+    const wrapper = path.join(os.tmpdir(), `iterate-group-${process.pid}.js`);
+    // The wrapper (leader) spawns a detached-ish long-lived grandchild that
+    // would write `marker` ~2s later, then itself wedges on an endless sleep.
+    fs.writeFileSync(
+      wrapper,
+      `const { spawn } = require('node:child_process');\n` +
+        `spawn(process.execPath, ['-e', 'setTimeout(() => require("fs").writeFileSync(${JSON.stringify(marker)}, "x"), 2000)'], { stdio: 'ignore' });\n` +
+        `setInterval(() => {}, 1000);\n`,
+    );
+    try {
+      const groupTimedOut = await runCommand(process.execPath, [wrapper], { timeout: 400 }).then(
+        () => false,
+        (err) => err instanceof InstallerError && /timed out/.test(err.message),
+      );
+      assert.ok(groupTimedOut, 'group kill path must still report the timeout');
+      // Give any surviving grandchild time to fire, then assert it never did.
+      await new Promise((r) => setTimeout(r, 2600));
+      assert.ok(!fs.existsSync(marker), 'grandchild survived the timeout — process group was not killed');
+    } finally {
+      fs.rmSync(wrapper, { force: true });
+      fs.rmSync(marker, { force: true });
+    }
+  }
+
+  // runCommand: a grandchild that inherits our stdio pipe keeps 'close' from
+  // firing even after the leader is dead. The promise must still settle (via
+  // the post-kill fallback) rather than hang the installer forever. The
+  // grandchild ignores SIGTERM and outlives the leader deliberately.
+  if (process.platform !== 'win32') {
+    const holdPipe = path.join(os.tmpdir(), `iterate-holdpipe-${process.pid}.js`);
+    fs.writeFileSync(
+      holdPipe,
+      `const { spawn } = require('node:child_process');\n` +
+        `const c = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'], { stdio: ['ignore', "inherit", "inherit"] });\n` +
+        `setInterval(() => {}, 1000);\n`,
+    );
+    try {
+      const raced = await Promise.race([
+        runCommand(process.execPath, [holdPipe], { timeout: 300 }).then(
+          () => 'settled-ok',
+          () => 'settled-reject',
+        ),
+        new Promise((r) => setTimeout(() => r('never-settled'), 12000)),
+      ]);
+      assert.strictEqual(raced, 'settled-reject', 'promise must settle even when a grandchild holds the stdio pipe');
+    } finally {
+      fs.rmSync(holdPipe, { force: true });
+    }
+  }
+
   // runCommand: stdout retention must be bounded (no unbounded memory growth
   // for a chatty producer) while still returning the tail of the output.
   const script = "for (let i = 0; i < 200000; i++) console.log('line-' + i);";

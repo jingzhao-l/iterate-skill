@@ -492,40 +492,90 @@ class TailBuffer {
 // take minutes on slow networks, but a wedged child must never hang the
 // installer forever.
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+// Grace period between the SIGKILL and giving up on 'close'. A grandchild that
+// inherited our stdio pipe keeps that pipe open, so Node withholds 'close'
+// even though the leader is already dead — without this the promise would
+// never settle and the installer would hang despite the timeout having fired.
+const POST_KILL_SETTLE_MS = 5 * 1000;
 // Hard cap on retained stdout/stderr per command (memory bound).
 const MAX_CAPTURED_OUTPUT_CHARS = 1024 * 1024;
+
+// True only on POSIX: Windows has no process groups keyed by negative pid and
+// `detached` there means "new console window", not "new process group".
+const IS_POSIX = process.platform !== 'win32';
+
+function killProcessTree(child) {
+  // The child was spawned detached (POSIX), so it is its own process-group
+  // leader and its negative pid addresses the WHOLE group. A bare
+  // `child.kill()` only signals the immediate process, so a `pip` that had
+  // already spawned a compiler/download helper outlived the kill and kept
+  // running (and holding our stdio pipe) after the installer "timed out".
+  if (IS_POSIX && child.pid) {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    } catch (err) {
+      // ESRCH: the group is already gone. EPERM: fall through to the leader.
+      if (err && err.code === 'ESRCH') return;
+    }
+  }
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // Already exited — nothing left to signal.
+  }
+}
 
 function runCommand(bin, args, options = {}) {
   const { timeout = DEFAULT_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: 'pipe', ...spawnOptions });
+    // `detached` on POSIX puts the child in its own process group so the
+    // timeout can kill the entire tree, not just the leader. It does not
+    // change how we await the child (we never unref it).
+    const child = spawn(bin, args, { stdio: 'pipe', detached: IS_POSIX, ...spawnOptions });
     const stdoutTail = new TailBuffer(MAX_CAPTURED_OUTPUT_CHARS);
     const stderrTail = new TailBuffer(MAX_CAPTURED_OUTPUT_CHARS);
     child.stdout?.on('data', (data) => stdoutTail.push(data.toString()));
     child.stderr?.on('data', (data) => stderrTail.push(data.toString()));
     let killed = false;
+    let settled = false;
+    let killFallback = null;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
     const timer =
       timeout > 0
         ? setTimeout(() => {
             killed = true;
-            child.kill('SIGKILL');
+            killProcessTree(child);
+            // The leader may be dead while a grandchild still holds our stdio
+            // pipe open, in which case 'close' never arrives. Guarantee the
+            // promise settles either way.
+            killFallback = setTimeout(() => {
+              settle(reject, new InstallerError(`${bin} timed out after ${timeout} ms`));
+            }, POST_KILL_SETTLE_MS);
           }, timeout)
         : null;
-    child.on('close', (code) => {
+    const finish = (code) => {
       if (timer) clearTimeout(timer);
+      if (killFallback) clearTimeout(killFallback);
       if (killed) {
-        reject(new InstallerError(`${bin} timed out after ${timeout} ms`));
+        settle(reject, new InstallerError(`${bin} timed out after ${timeout} ms`));
         return;
       }
       if (code === 0) {
-        resolve(stdoutTail.toString());
+        settle(resolve, stdoutTail.toString());
       } else {
-        reject(new InstallerError(`${bin} exited with ${code}: ${stderrTail.toString() || stdoutTail.toString()}`));
+        settle(reject, new InstallerError(`${bin} exited with ${code}: ${stderrTail.toString() || stdoutTail.toString()}`));
       }
-    });
+    };
+    child.on('close', finish);
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
-      reject(err);
+      if (killFallback) clearTimeout(killFallback);
+      settle(reject, err);
     });
   });
 }
