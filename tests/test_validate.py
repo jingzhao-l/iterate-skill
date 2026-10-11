@@ -1840,3 +1840,49 @@ class TestMainStdioUtf8:
             assert validate.main([]) == 1
         finally:
             validate.sys.stdout, validate.sys.stderr = real_out, real_err
+
+
+class TestScopeChunkSizeMinimum:
+    """`reviewer.scope_chunk_size` must reject zero/negative chunk sizes.
+
+    Without a `minimum`, a hand-edited `scope_chunk_size: 0` validated cleanly
+    and produced zero-size reviewer batches — i.e. an empty `full`-scope review
+    that reported success having read nothing.
+    """
+
+    @pytest.mark.parametrize("value", [0, -1, -25])
+    def test_zero_or_negative_is_rejected(
+        self, value: int, schema_path: Path
+    ) -> None:
+        schema = validate.load_schema(schema_path)
+        errors = validate.validate_config_against_schema(
+            {"reviewer": {"scope_chunk_size": value}}, schema
+        )
+        assert errors, f"scope_chunk_size={value} must not validate"
+        assert "minimum of 1" in errors[0]
+
+    @pytest.mark.parametrize("value", [1, 25, 1000])
+    def test_positive_values_still_pass(self, value: int, schema_path: Path) -> None:
+        schema = validate.load_schema(schema_path)
+        errors = validate.validate_config_against_schema(
+            {"reviewer": {"scope_chunk_size": value}}, schema
+        )
+        assert errors == []
+
+    def test_non_integer_still_rejected(self, schema_path: Path) -> None:
+        schema = validate.load_schema(schema_path)
+        errors = validate.validate_config_against_schema(
+            {"reviewer": {"scope_chunk_size": "abc"}}, schema
+        )
+        assert errors and "integer" in errors[0]
+
+    def test_mirror_schema_stays_byte_identical(self) -> None:
+        """The packaged copy in iterate_cli/data/ must match the source."""
+        source = (REPO_ROOT / "config" / "config.schema.json").read_bytes()
+        mirror = (
+            REPO_ROOT / "iterate_cli" / "data" / "config.schema.json"
+        ).read_bytes()
+        assert source == mirror, (
+            "iterate_cli/data/config.schema.json is stale — re-copy it from "
+            "config/config.schema.json"
+        )

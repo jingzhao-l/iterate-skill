@@ -236,7 +236,8 @@
         },
         "scope_chunk_size": {
           "type": "integer",
-          "description": "Number of files per reviewer batch in a `full` scope review (default 25). Large inventories are split into per-chunk reviewer tasks."
+          "minimum": 1,
+          "description": "Number of files per reviewer batch in a `full` scope review (default 25). Large inventories are split into per-chunk reviewer tasks. Must be >= 1: a zero or negative value would produce zero-size chunks and an empty review."
         }
       }
     },
