@@ -29,6 +29,23 @@ All notable changes to iterate-harness should be recorded in this file.
   **未随本批落地（下一批）**：Swift `DecisionLogEntry` 绑定还没加这四个可选字段——它解码时
   会静默丢弃它们，重编码就丢审计信息；GlassPane 侧的 fork 重钉 0.1.6 与 kernel-conformance
   的新 oracle 同属那一批。
+- **`iterate/kernel_decision_record.py`：转录层的 Python 半边，与 0.1.6 的 TS 实现当面比对
+  （场景③的对称半边）。** 第二份实现照
+  `tests/kernel_fixtures/decision-record-transcription.ok-01.json` 的 `comment` 写，不照
+  TypeScript 写——这才是"两套实现一致＝契约拿到证据"，而不是"抄了一份镜像"。三件照抄照不出
+  来的事：① 时间戳自己按"ISO-8601 带显式时区"的模式把关、日历运算手写截断，不用
+  `fromisoformat`——3.10 只接受 3 位或 6 位小数秒而 3.11+ 接受任意位，且
+  `Date.parse("11/10/2026 02:28")` 在 V8 里会猜成美式月/日、Python 却直接拒绝，两边必须按
+  同一条规则拒绝而不是各按各的解析器；② 可选字段缺席就是不写键，绝不写 `None`（链的摘要盖在
+  规范字节上，把"缺席"写成 null 会让每条既有链节换摘要）；③ `outcome` 只读不猜，读不到就是
+  `inconclusive`。
+  语料位点：manifest 升到 0.1.6，新增两条 sha256 钉（转录档案 + 扩展条目档案），
+  `test_kernel_fixtures.py` 的四条守卫（vendored==pin、消费测试存在、实时 kernel 检出与 pin
+  一致、篡改被拒）实测仍绿。18 条新单测；跨语言对照 `diff_kernel_implementations.py` 加进第
+  四个模块后实测 53 个用例判定一致（原 40 + 转录 13），并反向变异证明它咬得住——把 Python 侧
+  "没记到"改成"pass"时点名红在 `transcribe/silent-record-stays-inconclusive`。
+  本批纯增量：`decision_log.py` 的写侧还没翻成内核形状（那一步必须同批改读侧
+  `last_state.py`、WebUI 与 plugin 的 TS 副本，另批做）。
 
 - **`iterate/glasspane_reverification.py` + `scripts/check_glasspane_reverification.py`：
   场景①的发送线，实机跑通。** 内核造出 `iterate.reverification/0.1` 之后，本模块负责把它
