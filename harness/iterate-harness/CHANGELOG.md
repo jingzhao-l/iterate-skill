@@ -6,6 +6,30 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **`iterate/glasspane_reverification.py` + `scripts/check_glasspane_reverification.py`：
+  场景①的发送线，实机跑通。** 内核造出 `iterate.reverification/0.1` 之后，本模块负责把它
+  **发出去**并原样转述引擎答案：operationIds → `gp_last_evidence` + `gp_diagnose`，其余
+  一律不排。三条边界各是这条链的要点：① 绝不发变更型调用（`gp_act`/`gp_snapshot`/
+  `gp_restore`/`gp_attach`/`gp_export_evidence` 在名单里点名排除），重跑配方步骤是对用户
+  机器的决定，属于宿主权限面，不属于错误路径；② 没有通道就说 `NOT attempted`，不返回空集
+  让人读成"没意见"；③ 引擎的拒绝原样转述（连 remedy），不重新编码、不改写。
+  实机证明（`glasspane-mcp` 1.6.2 + 钉住的 `mcp` 2.0.0，16 工具在列）：真实
+  `check_invariants` 跑出 outcome=fail → 真请求
+  `iv_15d87c73d4ef809ec…` → 引擎回 `outcome=inconclusive`（attribution soft）与一条
+  `GP_E_NOT_ATTACHED: no app attached | remedy: call attach first`，2/2 转述成功。
+  缺字段的包（只有 `schemaVersion`）以前会被转成 `inconclusive` 结论——那是"没测到"不是
+  引擎判断，现在点名 `GP_E_PACK_INCOMPLETE` 拒绝转述。同步 runner 撞上 async 宿主时，
+  协程不再被当成答案，而是点名 `GP_E_ASYNC_HOST`（这条是它自己暴露的真 bug）。
+  17 条单测（真档案来自已发布语料、拒绝行来自实机捕获）；反向变异五刀各打中一条具名
+  用例：撤 async 守卫、把配方步骤排成 `gp_act`、撤包完整性闸、不解析 shell 的拒绝行、
+  无通道当跑过。
+- **`check_glasspane_channel.py`：把"没连上"与"不广告工具"分开说。** 之前它只读
+  `list_tools()`，一个连接失败的 server 会被报成"GlassPane 不提供 gp_*"——那是对产品的
+  一句假话。现在先读 `list_statuses()`，失败就写 `NOT measured` 并附 detail；detail 长得
+  像字段改名时，再报出 SDK pin 事实（本机 `mcp` 1.29.0，pyproject 钉 2.0.0；
+  `tool.input_schema` 只在 2.0.0 存在）。这台机器上 harness 的 MCP 层当前连不上任何
+  server，与本批无关（同一状态在我这批改动的"对照前"复跑里同样复现）。
+
 - **`scripts/check_run_plan_channel.py`：把场景②的共享通道真跑一遍，而不是各自自证。**
   本仓真生产者（`build_run_plan` + `write_run_plan`）用 GlassPane 自己的
   `iterate.config.yaml`（`gui` scope）造一份计划，交给 fork 的
