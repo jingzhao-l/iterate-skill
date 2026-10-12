@@ -8,6 +8,7 @@ import { after, test } from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 
 import {
+  DECISION_LOG_CODES,
   DECISION_LOG_ENTRY_JSON_SCHEMA,
   KernelDecisionLogError,
   appendDecisionLogEntry,
@@ -296,3 +297,87 @@ test("canonical bytes do not depend on key insertion order", () => {
   assert.equal(canonicalJson(scrambled), serializeDecisionLogEntry(appended.entry));
   assert.equal(decisionLogEntryHash(scrambled), appended.hash, "hash is over the canonical form, not the object literal");
 });
+
+// ── The producer-vocabulary fields, in the chain itself ───────────────────────
+//
+// Scenario 3 only converges if an iterate record and a fork tool-execution can sit in the SAME
+// ledger. Two properties are load-bearing and neither is visible in the type: the extended
+// fields must participate in the hash (or a writer could swap a kind without breaking the
+// chain), and an entry that does not use them must store no nulls (or widening the shape would
+// re-hash every chain that predates it).
+
+test("a fork entry and a transcribed iterate entry share one verifiable chain", () => {
+  const path = ledgerPath();
+  const forkEntry = appendDecisionLogEntry(path, draft());
+  const iterateEntry = appendDecisionLogEntry(
+    path,
+    draft({
+      summary: "round 3 review: 2 findings, 1 blocking, across 2 dimensions",
+      outcome: "fail",
+      kind: "review_result",
+      round: 3,
+      dimension: "ui-consistency",
+      payload: { blocking: 1, findings: [{ severity: "blocking" }] }
+    })
+  );
+  assert.equal(iterateEntry.line, 2);
+
+  const verified = readDecisionLog(path);
+  assert.equal(verified.ok, true, verified.reason);
+  assert.equal(verified.entries.length, 2);
+  assert.equal(verified.entries[1].kind, "review_result");
+  assert.equal(verified.entries[1].round, 3);
+  assert.equal(verified.entries[1].dimension, "ui-consistency");
+  assert.deepEqual(verified.entries[1].payload, { blocking: 1, findings: [{ severity: "blocking" }] });
+  assert.equal(verified.entries[1].prevEntryHash, forkEntry.hash, "the extended entry still links to the plain one");
+
+  // Independent digest: the stored bytes, hashed by openssl, must equal what the chain claims.
+  const line2 = readFileSync(path, "utf8").split("\n")[1];
+  assert.equal(opensslSha256(Buffer.from(line2, "utf8")), iterateEntry.hash);
+});
+
+test("an entry that uses none of the new fields stores no nulls and keeps its old bytes", () => {
+  const path = ledgerPath();
+  const appended = appendDecisionLogEntry(path, draft());
+  const line = readFileSync(path, "utf8").trim();
+  for (const field of ["kind", "round", "dimension", "payload"]) {
+    assert.equal(line.includes(`"${field}"`), false, `${field} must be absent from the stored form`);
+  }
+  assert.equal(line.includes("null"), false, "absent is spelled by omission, never by null");
+});
+
+test("buildDecisionLogEntry carries every optional field into the entry", () => {
+  const built = buildDecisionLogEntry(
+    draft({ kind: "validation", round: 0, dimension: "api-contract", payload: { command: "pytest -q" } }),
+    { sequence: 0, prevEntryHash: "" }
+  );
+  assert.equal(built.kind, "validation");
+  assert.equal(built.round, 0, "round 0 is a real round and must not be treated as absent");
+  assert.equal(built.dimension, "api-contract");
+  assert.deepEqual(built.payload, { command: "pytest -q" });
+});
+
+test("a payload over the canonical bound refuses the draft and writes nothing", () => {
+  const path = ledgerPath();
+  const oversized = draft({ kind: "report", payload: { blob: "x".repeat(9000) } });
+  assert.throws(
+    () => appendDecisionLogEntry(path, oversized),
+    (error) => {
+      assert.ok(error instanceof KernelDecisionLogError, `got ${error}`);
+      assert.equal(error.code, DECISION_LOG_CODES.draft);
+      assert.match(error.message, /payload/);
+      return true;
+    }
+  );
+  assert.equal(statExists(path), false, "a refused draft must not leave a torn line on disk");
+});
+
+function statExists(path) {
+  try {
+    statSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+

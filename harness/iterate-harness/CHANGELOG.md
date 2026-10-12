@@ -6,6 +6,30 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **`iterate-kernel@0.1.6`：决策日志条目学会说"哪一种决定、第几轮、哪个维度、凭什么"，
+  并新增 `decision-log-transcribe` 把两侧**已经在写**的日志映射成这个形状（场景③的
+  契约半边）。** 条目此前只有 `{entryId, sequence, prevEntryHash, summary, outcome,
+  createdAt}`——够 GlassPane 记工具执行，但记不下 iterate 循环写的
+  `{timestamp, round, type, data}`：实测两侧词汇表已经在分叉（plugin 的 TS 认 10 种
+  `type`，Python 的 `VALID_ENTRY_TYPES` 只有 8 种，`round_failed`/`resume` 一进 Python
+  侧就被当成非法）。四个字段全部可选：省略即不进规范字节，因此**既有链节的摘要不变**，
+  这不只是"能过解析"——对照用例把"不带新字段的落盘行里不得出现 `null`"钉成具名断言，
+  并反向变异证明它咬得住（把"缺席"写成 `null` 时 15 条链测试同时变红）。`kind` 故意
+  **不做枚举**：两套词汇各归各家，内核只保证可比（形状/边界），否则每加一种决定都要发
+  一次内核版本——和 `dimension-context` 不持有维度清单同一个理由。`dimension` 复用
+  `DIMENSION_ID_PATTERN`（导入而非重述），这是"recorded 半边"能从任一生态的账本里被
+  覆盖率算术看见的前提。`payload` 有 8192 字符的规范 JSON 上限，且这条上限**JSON Schema
+  表达不出来**——按既有纪律写成具名分歧用例（ajv 放行、zod 拒绝），而不是默默当约束存在。
+  `decision-log-transcribe` 的十条规则连同 13 个用例落在
+  `kernel/fixtures/decision-record-transcription.ok-01.json`，Python 半边照这份档案实现，
+  不读 TypeScript。其中一条是测量逼出来的：`Date.parse("11/10/2026 02:28")` 在 V8 里会按
+  美式月/日猜出一个时刻，而 Python 直接拒绝——所以时间戳改由显式时区的 ISO-8601 模式先把关，
+  否则"同一条记录被谁转换就归谁解释"，账本不再是证据。225 条内核测试全绿（本批 +26），
+  `npm pack --dry-run` 实测 92 文件、新模块与新档案在包内。
+  **未随本批落地（下一批）**：Swift `DecisionLogEntry` 绑定还没加这四个可选字段——它解码时
+  会静默丢弃它们，重编码就丢审计信息；GlassPane 侧的 fork 重钉 0.1.6 与 kernel-conformance
+  的新 oracle 同属那一批。
+
 - **`iterate/glasspane_reverification.py` + `scripts/check_glasspane_reverification.py`：
   场景①的发送线，实机跑通。** 内核造出 `iterate.reverification/0.1` 之后，本模块负责把它
   **发出去**并原样转述引擎答案：operationIds → `gp_last_evidence` + `gp_diagnose`，其余

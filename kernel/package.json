@@ -1,6 +1,6 @@
 {
   "name": "iterate-kernel",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": false,
   "description": "iterate ecosystem shared kernel: schemas, the evidence->decision transcription, the decision-log audit chain and public validators. Verification reasoning stays in the engine; this layer transcribes.",
   "type": "module",
@@ -25,6 +25,10 @@
     "./decision-log-entry": {
       "types": "./dist/decision-log-entry.d.ts",
       "default": "./dist/decision-log-entry.js"
+    },
+    "./decision-log-transcribe": {
+      "types": "./dist/decision-log-transcribe.d.ts",
+      "default": "./dist/decision-log-transcribe.js"
     },
     "./dimension-context": {
       "types": "./dist/dimension-context.d.ts",

@@ -85,6 +85,8 @@ export {
 
 export {
   DECISION_ENTRY_ID_PATTERN,
+  DECISION_KIND_PATTERN,
+  PAYLOAD_MAX_CANONICAL_LENGTH,
   PREV_ENTRY_HASH_PATTERN,
   SUMMARY_MAX_LENGTH,
   DecisionOutcomeSchema,
@@ -92,6 +94,13 @@ export {
   type DecisionOutcome,
   type DecisionLogEntry
 } from "./decision-log-entry.js";
+
+export {
+  DECISION_TRANSCRIBE_CODES,
+  KernelDecisionTranscribeError,
+  decisionLogDraftFromRecord,
+  isLegacyDecisionRecord
+} from "./decision-log-transcribe.js";
 
 export {
   RECIPE_SCHEMA_VERSION,
