@@ -119,6 +119,36 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > **3.5.0 状态（2026-10-13）**：minor（新增 `config unset`、`fingerprint list`
+      > 两个子命令 + 约 45 条评审发现的修复批次；测试 1238 → 1364）。
+      > 主仓库 `main` 14bf566 已推送；signed annotated tag `v3.5.0`（GPG Good signature，
+      > key `0929EA31DF4F7429F63FC53189D88B1D043A1298`）；
+      > ✅ **GitHub Release v3.5.0 已创建**（`release.yml` 作业 success run 38410780244），
+      > 6 个资产齐备（tar.gz + SHA256SUMS.txt + qoder.zip，各带 `.asc` 签名）；
+      > `shasum -a 256 -c` OK、tar 与 zip 内 `harness/` 均为 0、`SKILL.md version: 3.5.0`；
+      > qoder.zip 成员 `date_time` 已是钉死的 `1980-01-01`（确定性 zip 修复在 CI 生效）；
+      > npm `iterate-skill-installer@3.5.0` 已发布（registry `latest=3.5.0`，
+      > 实测 `npx -y iterate-skill-installer@latest --version` 输出 3.5.0）；
+      > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经并发脚本
+      > `.dist_tmp/clawhub_publish.py` + stage `.dist_tmp/clawhub-stage-3.5.0/iterate-skill`
+      > （65 文件、1,583,517 字节、harness/kernel/tests/badges 均 0）
+      > 发布 3.5.0（`ok:true`，versionId `k9702zatzq52ff0gvqwq03qrcd8g6zc2`，`status` pending）；
+      > ModelScope 已 PATCH 生效（`.dist_tmp/rebuild_ms_350.py` 按 3.4.4 文件集重建精简 zip
+      > 61 文件、501,836 字节，经 OpenAPI `update_skill_settings` 设置
+      > `skill_file=a1c3c0cd-25d0-47ab-8b71-fef39f7a6ff5`，`last_modified` 已刷新）；
+      > SkillHub（skillId `104490`）经 `.dist_tmp/rebuild_skillhub_350.py` 精简包
+      > （57 文件、499,453 字节、harness 0、剔除 LICENSE/.gitignore/.gitmodules/
+      > npm-installer/LICENSE）`.skillhub publish` 成功（`ok:true`，versionId `433609`，
+      > `tags.latest=3.5.0`，`reviewStatus/securityScanStatus=pending` 为平台异步审核）。
+      >
+      > **踩坑记录**：本轮 `gh` 报 "token invalid"、`gh auth token` 为空，根因是
+      > **login keychain 被锁**（`security find-generic-password -w` 全部返回 RC=36
+      > `errSecInteractionNotAllowed`，连 `show-keychain-info` 都失败，而 metadata
+      > 读取正常）。`security unlock-keychain ~/Library/Keychains/login.keychain-db`
+      > 之后 `gh` 立即恢复正常，无需重新 `gh auth login`。另一个坑：ClawHub 上传走
+      > `wry-manatee-359.convex.site`，`requests` 在 macOS 上会读**系统代理配置**
+      > （urllib 的 `getproxies_macosx_sysconf`），该代理连不上存储域导致 `ProxyError`；
+      > 用 `NO_PROXY='*'` 绕过后 65/65 全部上传成功。
       > **3.4.2 状态（2026-09-18）**：patch（防御式编码 9 项修复批次 F3-F12）。
       > 主仓库 v3.4.2 已推送（`main` a8c4857，7 个逻辑 commit，tag `v3.4.2`）；
       > ✅ **GitHub Release v3.4.2 已创建**（`gh auth login` 恢复 keyring 凭据后
