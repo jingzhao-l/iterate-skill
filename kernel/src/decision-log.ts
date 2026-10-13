@@ -75,6 +75,10 @@ export interface DecisionLogDraft {
   readonly outcome: DecisionOutcome;
   readonly createdAt: string;
   readonly operationId?: string;
+  readonly kind?: string;
+  readonly round?: number;
+  readonly dimension?: string;
+  readonly payload?: Record<string, unknown>;
 }
 
 /**
@@ -304,6 +308,14 @@ export function buildDecisionLogEntry(
     createdAt: checked.data.createdAt,
   };
   if (checked.data.operationId !== undefined) candidate.operationId = checked.data.operationId;
+  // Each optional field is *absent* rather than null when the producer has nothing to say.
+  // `canonicalJson` is what gets hashed, so a `null` written here would change the bytes of
+  // every new entry — and a chain whose digests depend on how a writer spells "unset" is not
+  // recomputable by the Swift engine or by `sha256sum` on the line.
+  if (checked.data.kind !== undefined) candidate.kind = checked.data.kind;
+  if (checked.data.round !== undefined) candidate.round = checked.data.round;
+  if (checked.data.dimension !== undefined) candidate.dimension = checked.data.dimension;
+  if (checked.data.payload !== undefined) candidate.payload = checked.data.payload;
   const parsed = DecisionLogEntrySchema.safeParse(candidate);
   if (!parsed.success) {
     const detail = parsed.error.issues

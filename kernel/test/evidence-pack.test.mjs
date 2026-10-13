@@ -145,6 +145,36 @@ test("negative: selector field exceeding max length is rejected on both sides", 
   assertBothSidesReject(broken, "selector title 513 chars");
 });
 
+// ── The emptiness rule (the drift the GlassPane shell caught in the published package) ──
+//
+// This exists because the shipped contract once accepted `role: ""` while the daemon refused it:
+// an empty role is not a narrower selector, it is one that stopped naming its target, and a
+// report rendered from it prints a missing label. The point of these cases is that the schema and
+// the zod must move TOGETHER — a fix applied to one binding is the same bug with a new layout.
+
+for (const field of ["role", "title"]) {
+  test(`negative: selector.${field} empty string is refused on both sides`, () => {
+    const broken = structuredClone(base);
+    broken.signals.act.selector[field] = "";
+    assertBothSidesReject(broken, `selector.${field}=""`);
+  });
+}
+
+test("selector.identifier stays unruled: empty is accepted by both sides", () => {
+  const probe = structuredClone(base);
+  probe.signals.act.selector.identifier = "";
+  // Not a loophole — a statement that no side rules on this field. If the daemon ever gains a
+  // guard here, this case must flip in the same change, not silently keep accepting "".
+  assertBothSidesAccept(probe, 'selector.identifier=""');
+});
+
+test("the published schema states the same minimum the zod enforces", () => {
+  const selector = EVIDENCE_PACK_JSON_SCHEMA.$defs.selector.properties;
+  assert.equal(selector.role.minLength, 1, "schema lost role's minLength — the zod alone is not a contract");
+  assert.equal(selector.title.minLength, 1, "schema lost title's minLength");
+  assert.equal(selector.identifier.minLength, undefined, "identifier must stay unruled on both sides");
+});
+
 test("KernelSchemaError carries stable code and located issues", () => {
   const broken = structuredClone(base);
   broken.attribution.level = "medium";
