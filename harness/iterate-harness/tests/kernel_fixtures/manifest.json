@@ -16,6 +16,15 @@
       ]
     },
     {
+      "path": "decision-log-chain.ok-01.json",
+      "sha256": "eb4586b0ee0cfc5224ba9a985c37fc25eeaaffe5bd8f34c83284d01a05aca4bd",
+      "bytes": 1597,
+      "consumedBy": [
+        "src/iterate_harness/iterate/kernel_decision_log.py",
+        "tests/test_iterate/test_kernel_decision_log.py"
+      ]
+    },
+    {
       "path": "decision-log-entry.ok-02.json",
       "sha256": "d68a3730ac7a9fa766795e2567bb2bb5fdf7d103196aa8d665e76e65151410b1",
       "bytes": 813,

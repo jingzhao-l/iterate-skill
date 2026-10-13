@@ -118,6 +118,25 @@ All notable changes to iterate-harness should be recorded in this file.
   `run-plan.ok-01.json` 的 sha 变了但契约语义没变——kernel 那边只是把 label 的出处改口
   （配置里根本没有 label 词汇）。`tests/kernel_fixtures/manifest.json` 的 consumedBy
   规则把"语料进来了但没人读"判成死契约数据，这次三条新条目各自的消费者都在上面两条里。
+- **`iterate/kernel_decision_log.py`：哈希链的 Python 半边（场景③写侧翻转的能力前提）。**
+  锚点是新 vendored 的 `tests/kernel_fixtures/decision-log-chain.ok-01.json`：TS 侧用
+  openssl/shasum 重算、Python 侧用 hashlib 重算，两边都从**同一份落盘字节**出发——一条只有一种
+  语言能重算的链是主张而非证据，这正是该档案 comment 里写下的纪律。随链一起移植的还有
+  `verify / read / head / build / append / new_decision_entry_id` 与全套拒绝分支：路径必须绝对、
+  目录不得可被 group/other 写、文件 0600、写后回读再验链、`sequence`/`prevEntryHash` 由账本拥有
+  所以调用方发进来一律拒绝（伪造连续性是账本最不能允许的事故）。可选字段缺席一律不写 `null`，
+  否则每条既有链节的摘要都会换。
+  12 条用例，两处反向变异各打中一条具名断言（撤规范字节比较→红在
+  `test_a_non_canonical_storage_form_is_caught_not_rehashed`；撤目录权限守卫→红在
+  `test_a_group_writable_directory_is_refused`）。其中一条负例起初是**假绿**：
+  `mkdir(mode=0o777)` 被 umask 掩掉，守卫根本看不见松目录；改成显式 `chmod` 之后它才真的能红。
+  **本批纯增量，没动旧日志的生产者**：`decision_log.py` 仍照旧写 `{timestamp, round, type, data}`。
+  写侧翻转要同批改 `last_state`/`ci_report`/`html_report`/`replay` 与四个 web 路由（实测 8 个
+  读者），并用 `is_legacy_decision_record` 继续读历史行——那是单独一批协调改动；先把"能不能验"
+  落地，翻转时才只改"写什么"。
+  全量读数：2399 passed / 5 failed / 6 skipped，另有 `tests/test_mcp` 一处收集错误（本机 `mcp`
+  不是钉住的 2.0.0，缺 `mcp.server.mcpserver`）。这 5 条与收集错误**把本批两个新文件从树上摘掉后
+  逐条复跑仍然全红**（按 sha 核回），所以是既有环境性失败而非本批引入；点名留档，不当成已修。
 
 ### Fixed
 
