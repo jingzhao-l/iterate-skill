@@ -29,9 +29,24 @@ export type AttributionLevel = z.infer<typeof AttributionLevelSchema>;
 export const CircuitBreakerLevelSchema = z.number().int().min(0).max(3);
 export type CircuitBreakerLevel = z.infer<typeof CircuitBreakerLevelSchema>;
 
+/**
+ * The selector, and why `role`/`title` carry a `.min(1)`.
+ *
+ * The engine's AX matcher treats an empty string as "no constraint stated", so an empty `role`
+ * is not a narrower selector — it is a selector that silently stops naming what it targets, and
+ * a `last_evidence` report rendered from it prints a missing label. The daemon refuses it. A
+ * published contract that accepted `""` would promise the agent one rule while the side that
+ * actually acts on the selector enforced another; the GlassPane shell caught exactly this drift,
+ * which is why the bound is stated in both bindings (here and `schemas/evidence-pack.schema.json`)
+ * rather than left to a consumer's stricter local copy.
+ *
+ * `identifier` deliberately has no minimum: no side rules on an empty one (the daemon has no
+ * guard for it, and "nothing in the tree carries an empty AXIdentifier" is not readable from the
+ * engine), so the kernel does not invent a verdict for it either.
+ */
 export const SelectorSchema = z.strictObject({
-  role: z.string().max(SELECTOR_MAX_LENGTH),
-  title: z.string().max(SELECTOR_MAX_LENGTH).optional(),
+  role: z.string().min(1).max(SELECTOR_MAX_LENGTH),
+  title: z.string().min(1).max(SELECTOR_MAX_LENGTH).optional(),
   identifier: z.string().max(SELECTOR_MAX_LENGTH).optional(),
 });
 export type Selector = z.infer<typeof SelectorSchema>;

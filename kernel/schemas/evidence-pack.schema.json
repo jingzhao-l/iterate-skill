@@ -196,15 +196,20 @@
       "properties": {
         "role": {
           "type": "string",
-          "maxLength": 512
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "What the target is, in the accessibility tree's own vocabulary. Never empty: the engine's matcher reads an empty role as 'no constraint stated', so an empty role stops naming what the assertion targets instead of narrowing it — and the daemon refuses it."
         },
         "title": {
           "type": "string",
-          "maxLength": 512
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Optional display label. When present it is never empty, for the same reason as role: a report rendered from `title: \"\"` prints a missing label and reads as 'the tree had no title there'."
         },
         "identifier": {
           "type": "string",
-          "maxLength": 512
+          "maxLength": 512,
+          "description": "Optional AXIdentifier. Deliberately has no minLength: no side rules on an empty identifier (the daemon has no guard for it), so the kernel does not invent one."
         }
       }
     },

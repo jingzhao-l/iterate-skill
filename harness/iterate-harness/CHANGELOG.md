@@ -140,6 +140,21 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Fixed
 
+- **`iterate-kernel@0.1.7`：发布出去的 `selector` 契约不再承诺"空 role 可以"。** 这不是预防性
+  收紧，是被别人的闸抓出来的真缺陷：GlassPane 的 `mcp-shell/test/consumer-consistency.test.mjs`
+  有一条"daemon 判据 / 已发布 JSON Schema / 内核 zod 三处必须同规则"的闸，把根仓镜像语料按已
+  发布包刷新后它当场变红——`$defs.selector.role` 与 `.title` 在 canonical 侧只有 `maxLength`、
+  没有 `minLength`，zod 也只有 `.max(512)`；而引擎的 AX 匹配把空串读成"没有声明约束"，空 role
+  不是更窄的选择器，是**停止命名它指向的东西**，daemon 直接拒。契约在这里对 agent 许的诺和执行
+  它的规则是两个答案。修法落在同一个提交的两侧：zod `.min(1)`、schema `minLength: 1`；
+  `identifier` 保持无人裁定（daemon 对它没有守卫，内核也不替它发明判据，测试单独钉住这一点，
+  将来若加守卫必须同批改那条用例，而不是默默继续放行）。
+  内核加 4 条：role 空串两侧拒、title 空串两侧拒、identifier 空串两侧收、"schema 写明的下限必须
+  等于 zod 执行的下限"；两处反向变异各自变红（撤 zod `.min(1)` 只红 zod 侧那条；撤 schema
+  `minLength` 同时红掉跨绑定那条），两侧都咬得住。229 条内核测试全绿（本批 +4）。
+  harness 语料 manifest 版本随升到 0.1.7（档案字节未变，evidence-pack 的 5 份 ok-* 一字未动）。
+  Python 侧无需跟改：实测 iterate-harness 没有 selector 校验，命中的 `role` 全是聊天消息字段。
+
 - **`iterate/run_plan.py`：把 `iterate.config.yaml` 变成共享内核的 RunPlan 契约。** 维度
   覆盖那套算法一直拒绝自己发明计划（是对的），而计划此前只活在这份配置里——GlassPane 侧
   读不到，于是它的会话压缩永远渲染成"0/N verified"。本模块产出计划（scope 并集按人工书写
