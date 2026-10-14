@@ -1149,6 +1149,58 @@ stamp 不匹配会自动重装到新 tag。
 >         ENEEDAUTH 修复——去掉 `registry-url`（空 token 会阻断 OIDC 交换）、
 >         条件写认证行、node 24 + npm ≥11.5.1，使 provenance 工作流可用
 >         （本版仍按清单本地 publish，latest=3.6.0 已生效）。
+>
+>         **3.7.0 发布记录（2026-10-15 收尾）**：dsh 0.2.1-alpha.2 升级 + 配置回读
+>         闭环 + UI 中英双语批次（独立版本线，仅 `harness/iterate-plugin/package.json`
+>         + `package-lock.json`）。**上游 dsh**：`dsh-v0.2.1-alpha.2` 五包
+>         `@deepseek-ai/*` 精确钉版 `0.2.1-alpha.2`（`@deepseek-ai/cordis` 保持
+>         `4.0.5-alpha.1`）；唯一采纳的破坏性变更是 **session 工作目录可变**（新
+>         `src/working-directory.ts` 接线 `index.ts`/`config-loader.ts`/
+>         `session-hooks.ts`/`live.ts`，特性探测 + `header.cwd` 全路径回落）；两份
+>         README `dshReleases` 声明 `0.2.1-alpha.2` compatible（累计 19 个 release）。
+>         未采纳并记入 README/CHANGELOG/DESIGN：session state-record API、共享
+>         `AGENTS.md`（`DSH_AGENTS_HOME`）、实验性 Git Worktrees 插件、被移除的
+>         `both` 展示模式（本插件从未使用）、全局 dsh CLI 安装。**审计修复**：
+>         `isReviewReport` manifest 判定 bug、4 处 session 扫描器深扫 fallback、
+>         `file-lock.ts` 补 `makeLockRelease`、新增 `test/package-contract.test.ts`
+>         与 `test/present-helpers.test.ts`。**UX 缺口全量实现**：(1) 配置回读闭环——
+>         `lib/parse.js` 新增 `buildConfigReadInstruction`/`scanSessionForConfigRead`/
+>         `configValueByPath`/`isEffectiveConfig`，`src/client/session-cache.ts`
+>         （`noteSession`/`readSession`/`subscribeSession` + `useSyncExternalStore`）
+>         让 root 域 SettingsPanel 跨 scope 读 session 快照，选中字段展示当前值 +
+>         3 态诚实标注（已回读/模型未回读/未读到）+ 剪贴板拒绝兜底，配 3 个 render
+>         测试；(2) UI 中英双语——`src/client/i18n.ts` 约 290 key、389 处字面量包裹、
+>         语言卡片与 `withLang` 插槽，`parse.js` 的 `stoppedReasonLabel`/
+>         `diskEmptyStateText`/`buildCompletionSummary` 增 `lang` 参数、
+>         `CONFIG_EDIT_FIELDS` label/hint 改 `{zh,en}`；模型面契约文案按约定保持
+>         中文，双语指南卡带「中文（粘贴给模型的契约文案）」说明；(3) 测试——新增
+>         `test/client-i18n.test.ts`(12)、`test/client-render.test.ts`(24, jsdom)，
+>         parse 扩到 219。**主仓推送**：发布时本地 main 与 origin/main 分叉（其他
+>         会话 harness/kernel WIP 与工作区 32 文件重叠），用 `git merge-tree
+>         --write-tree` + `commit-tree` 在 origin/main 上合成 `37b480d` 直推
+>         （`ff249de..37b480d`，树 `2f901a39`，插件内容逐字节一致），本地提交留
+>         `77d1582`；10-15 复查两提交均已并入 origin/main 历史，本地 main 已被另一
+>         会话调和为 `59307ad`（ahead 0 / behind 8，新提交与脏文件相交
+>         `badges/downloads.json`、`harness/iterate-harness/CHANGELOG.md`，故本地
+>         main 未动），全程未触碰 `.githooks/pre-push` 暂存态与 iterate-harness WIP。
+>         **独立仓**：`git subtree split` 不可用（独立仓为支持 git-clone 安装跟踪
+>         ~1665 个 node_modules 文件，拆分树会将其删除），照例走
+>         `.release/iterate-plugin` 替代路径：pull `11198a9` → rsync（`--exclude
+>         node_modules --exclude .git --exclude .github`；`.github` 为本版起必加——
+>         独立仓自带 OIDC 发布 workflow `npm-publish.yml`，曾被 `--delete` 误删，
+>         已恢复且 `1d4d957` 中与 `11198a9` 逐字节一致）→ `npm install` 同步
+>         dsh-tools 0.2.1-alpha.2（`dsh-working-directory` 到位）→ 重建 `dist/`、
+>         `lib/client.js` 逐字节一致 → 1216 测试全绿 → 提交 `1d4d957` 快进推送
+>         `11198a9..1d4d957` → annotated tag `v3.7.0`（tag 对象 `6379ee4`）推送
+>         远端。**npm**：`iterate-plugin@3.7.0` 已发布（2026-10-13T15:38:57Z，
+>         86 文件 / 540.3 kB / 解包 2.0 MB，shasum
+>         `6d8ebc390cc39f19d9e8fdd0128596d424cfe008`）；发布后 45 秒查询仍读到
+>         3.6.0（传播延迟），10-15 复查 `dist-tags.latest=3.7.0` 生效。**验证**：
+>         `build` + `build:client` 干净、typecheck 三程序（server/test/client）
+>         0 错误、1216 测试 / 269 suites / 0 fail（677→1113→1216）。**遗留**：
+>         Dependabot alert #48（高危 `source-map-js`，dev 依赖，在
+>         `harness/iterate-harness/frontend/web/package-lock.json`）不属插件
+>         scope，未处理。
 
 ---
 
