@@ -2265,6 +2265,25 @@ class TestReconfigureStdio:
         assert "_reconfigure_stdio()" in source
 
 
+def _pyproject_version_text(path) -> str:
+    """Read ``[project].version`` without a TOML parser.
+
+    The assertion below has to hold on every interpreter this package supports, and
+    ``tomllib`` only exists on 3.11+ — a test that imports it silently stops measuring
+    anything on 3.10, which is precisely how the real 3.10 defect stayed invisible.
+    """
+    in_project = False
+    for raw in Path(path).read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            in_project = line.rstrip() == "[project]"
+            continue
+        if in_project and line.startswith("version"):
+            _, _, value = line.partition("=")
+            return value.strip().strip("\"'")
+    return ""
+
+
 class TestInstallerVersionFlag:
     def test_version_flag_prints_version(self, capsys) -> None:
         with pytest.raises(SystemExit) as excinfo:
@@ -2274,13 +2293,50 @@ class TestInstallerVersionFlag:
         assert "iterate-skill-installer" in out
 
     def test_installed_version_matches_pyproject(self) -> None:
-        import tomllib
-
-        repo_root = Path(__file__).resolve().parent.parent
-        expected = tomllib.loads(
-            (repo_root / "pyproject.toml").read_text(encoding="utf-8")
-        )["project"]["version"]
+        expected = _pyproject_version_text(
+            Path(__file__).resolve().parent.parent / "pyproject.toml"
+        )
+        assert expected, "the reader itself is broken, so nothing is being measured"
         assert install._installed_version() == expected
+
+    def test_installed_version_is_still_right_when_tomllib_is_absent(
+        self, monkeypatch
+    ) -> None:
+        """3.10 is the ordinary case for this bug, so simulate it on any interpreter.
+
+        Before the fix the missing module fell into the same catch-all as a malformed
+        manifest, and ``--version`` printed ``0.0.0+unknown`` on a supported Python.
+        """
+        import builtins
+
+        real_import = builtins.__import__
+
+        def no_tomllib(name, *args, **kwargs):
+            if name == "tomllib":
+                raise ImportError("No module named 'tomllib'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_tomllib)
+        expected = _pyproject_version_text(
+            Path(__file__).resolve().parent.parent / "pyproject.toml"
+        )
+        assert install._installed_version() == expected
+
+    def test_the_text_reader_ignores_version_keys_outside_the_project_table(
+        self, tmp_path
+    ) -> None:
+        victim = tmp_path / "pyproject.toml"
+        victim.write_text(
+            '[project]\nname = "iterate-skill-installer"\nversion = "3.5.0"\n\n'
+            '[tool.hatch]\nversion = "9.9.9"\n',
+            encoding="utf-8",
+        )
+        assert install._version_from_text(victim.read_text(encoding="utf-8")) == "3.5.0"
+
+    def test_the_text_reader_gives_up_instead_of_guessing(self) -> None:
+        assert install._version_from_text('[tool.hatch]\nversion = "1.1.1"\n') is None
+        assert install._version_from_text("") is None
+
 
     def test_installed_version_tolerates_missing_pyproject(
         self, tmp_path, monkeypatch

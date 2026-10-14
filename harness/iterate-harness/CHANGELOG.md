@@ -4,6 +4,24 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`scripts/install.py::_installed_version()` 在 Python 3.10 上不再报假版本。** 包里
+  `requires-python >= 3.10`，而 `tomllib` 是 3.11+ 才有——缺模块的 `ImportError` 被
+  `except Exception` 与"清单坏了"同一路径吞掉，于是在一个受支持的解释器上
+  `iterate-installer --version` 打印 `0.0.0+unknown`，而 `pyproject.toml` 写的是 3.5.0。
+  修法是把两件事分开：`ImportError` 走无解析器的行读取（只认 `[project]` 表里的
+  `version = "…"`，遇到下一个表头即停），真·TOML 语法坏仍回落到占位符。
+  同时改掉那条让缺陷看不见的测试：`tests/test_install_script.py` 原先无条件
+  `import tomllib` 来算期望值，等于"测试只在产品能跑的解释器上跑"——3.10 的 CI 因此
+  连着红了 5 个 run（`c8f2e14`/`13187a6`/`ff249de`/`37b480d`/`59307ad`），把这期间每一批的
+  验收信号一起盖掉。现在期望值由测试自己按行扫读取，另加三条：模拟 `tomllib` 缺失
+  （任何解释器都能测到 3.10 那条路）、别的表里的 `version =` 不得被当成版本、
+  读不出来时返回 `None` 而不是猜。
+  实测：3.11 上该组 6 passed；真 python3.10 下 `_installed_version()` 从
+  `0.0.0+unknown` 变 `3.5.0`；反向对照（把新回退撤掉）当场回到 `0.0.0+unknown`，
+  证明这条分支承重而非装饰；改完按 sha256 核回，ruff 干净。
+
 ### Added
 
 - **`iterate-kernel@0.1.6`：决策日志条目学会说"哪一种决定、第几轮、哪个维度、凭什么"，

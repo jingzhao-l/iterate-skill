@@ -26,6 +26,7 @@ import http.client
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -308,6 +309,33 @@ GITHUB_REPO_NAME = "iterate-skill"
 _FALLBACK_INSTALLER_VERSION = "0.0.0+unknown"
 
 
+#: The ``[project]`` table's own header line, and the version assignment that
+#: follows it. Deliberately table-scoped: a top-level ``version =`` search would
+#: happily return ``[tool.hatch] version`` or any other table's key and print a
+#: version that belongs to no one.
+_PROJECT_TABLE_RE = re.compile(r"^\[project\]\s*$", re.MULTILINE)
+_PROJECT_VERSION_RE = re.compile(r"""^version\s*=\s*["']([^"']+)["']""", re.MULTILINE)
+
+
+def _version_from_text(text: str) -> str | None:
+    """Read ``[project].version`` out of TOML text with no TOML parser.
+
+    Only the shape pyproject.toml actually uses for its own version line is
+    recognised: a bare ``version = "..."`` inside the ``[project]`` table, before
+    the next table header. Anything else returns ``None`` so the caller falls
+    back loudly instead of guessing.
+    """
+    header = _PROJECT_TABLE_RE.search(text)
+    if header is None:
+        return None
+    tail = text[header.end():]
+    next_table = re.search(r"^\[", tail, re.MULTILINE)
+    if next_table is not None:
+        tail = tail[: next_table.start()]
+    match = _PROJECT_VERSION_RE.search(tail)
+    return match.group(1) if match else None
+
+
 def _installed_version() -> str:
     """Return the skill version for ``--version``.
 
@@ -325,6 +353,14 @@ def _installed_version() -> str:
         import tomllib
 
         data = tomllib.loads(text)
+    except ImportError:
+        # Python 3.10 has no tomllib (it is 3.11+), and this package supports
+        # >=3.10 — so a missing module is an expected path, not a corrupted
+        # manifest. Falling straight through to the placeholder here made
+        # `--version` print "0.0.0+unknown" on a supported interpreter while
+        # pyproject.toml said the real version.
+        parsed = _version_from_text(text)
+        return parsed if parsed is not None else _FALLBACK_INSTALLER_VERSION
     except Exception:  # noqa: BLE001 - malformed TOML must not break --version
         return _FALLBACK_INSTALLER_VERSION
     version = data.get("project", {}).get("version")
