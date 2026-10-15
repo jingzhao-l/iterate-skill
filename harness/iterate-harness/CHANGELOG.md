@@ -210,6 +210,93 @@ All notable changes to iterate-harness should be recorded in this file.
 - **更正 2.5.0 那条 `dimension_context` 的描述**：写的是"注入给评审与协调链路"，实测
   该模块除自身与其测试外无任何 import，生产链路里没有它。接线是后续条目，不是既成事实。
 
+## [2.6.0] - 2026-10-15
+
+### Added
+
+- **CLI `--append-system-prompt` 真正接线**（`cli.py`、`ui/app.py`、`ui/backend_host.py`、
+  `ui/react_launcher.py`、`ui/coordinator_drain.py`）：该旗标此前只解析不生效，现贯通
+  print / 交互 REPL / task worker / React launcher 四条路径，coordinator 后续回合也经
+  `session_system_prompt()` 继承追加内容。
+- **`--restore-session <id>` 真实恢复会话**（`cli.py`、`ui/backend_host.py`、
+  `ui/react_launcher.py`）：React 前端 `/resume` 此前声称恢复成功，但后端宿主从未加载
+  快照——"恢复"出一个空会话（假恢复）。现 CLI 先校验会话存在于磁盘（缺失即报错
+  exit 1），宿主经 `_replay_restored_transcript` 重放转写记录；缺 session id 或消息
+  历史的残缺快照直接拒绝，不再装作成功。
+- **MCP 工具名冲突确定性消歧**（`tools/__init__.py`、`tools/base.py`）：两台服务器
+  清洗出同名工具时按 `__2/__3` 后缀登记并 WARNING（此前静默互相覆盖、路由串台）；
+  `ToolRegistry.register` 拒绝重复注册（失败时原工具保持在位），64 字符 API 上限内
+  确定性收敛。
+- **回归测试**：新增 `tests/test_{permissions,hooks,engine,defensive}/test_hardening.py`、
+  `tests/test_web/` 五个修复套件（start/stop 状态机、干预、SSE 续传、quick wins、
+  chat 冲突）、`tests/test_tools/` 三个新工具套件、`tests/test_commands/test_cli.py`
+  +31 例（restore/append/退出码/菜单索引/OptionInfo）、`tests/test_swarm/` 20 例、
+  npm `bootstrap.test.js` +19 例（重定向降级 / 并发锁 / 超时 / venv 自愈）。
+
+### Fixed
+
+- **权限边界三处**（`permissions/checker.py`）：`denied_commands` 提前到
+  `allowed_tools` 之前——白名单 `bash` 不再放行 `rm -rf *`；敏感路径匹配大小写折叠
+  （`.SSH/id_rsa` 不再漏过内置 `*/.ssh/*`，拒绝方向只多不少）；`mode_override` 只认
+  `plan`，`default`/`full_auto`/未知值回落配置模式（此前 exit_plan_mode 后会话被钉回
+  DEFAULT，工具往 session metadata 写 `full_auto` 还能静默提权）。
+- **引擎五处**（`engine/query.py`、`engine/query_engine.py`、`engine/messages.py`）：
+  coordinator 上下文门控改匹配真实提示词（原 `startswith("You are a **coordinator**.")`
+  对生产提示词永不命中，push/pop 协商从未生效，历史里留下错位副本）；权限提示串行化
+  （`permission_prompt_lock`，并发工具不再叠对话框）+ 通道超时 fail-closed；工具输出
+  offload 失败回落内联（不再炸掉回合）；`USER_PROMPT_SUBMIT` 的 `blocked` 真正拒绝——
+  消息不再先入历史再被忽略，拒绝理由以 assistant 回合返回；`tool_metadata` 空 dict
+  不再被 falsy 误替换，图片附件 20MB 上限。
+- **hooks 执行器与热重载**（`hooks/executor.py`、`loader.py`、`hot_reload.py`）：
+  单钩子异常与 spawn `OSError` 收敛为 failed HookResult（不再撕掉调用方正在进行的
+  工具执行）；命令/HTTP 输出 8KiB 上限带截断标记；notification matcher 补
+  `notification_type` 候选（`permission_prompt` 类 matcher 此前恒不命中）；未知 event
+  名 WARNING 点名拼写并列出合法值（此前静默丢整段配置）；热重载失败保留旧注册表且
+  不记 mtime（坏 settings 不会把钩子清空到下次改动为止）。
+- **防御层两处**（`defensive/transaction.py`、`invariants.py`）：快照引用计数——同一
+  文件并行变更时首个 commit 不再提前丢共享快照，兄弟变更的 rollback 仍能回到原始
+  字节，锁覆盖整个读改写；refused 违规点名具体元字符与配置条目，操作者能修配置而不
+  是被无从下手地锁死。
+- **配置/认证/更新/定时任务 17 处**：run_lock 租约抢占竞态、settings env-key provider
+  不一致与持久化、auth 存储错形状 JSON、update 四段预发布版本解析与空操作误报成功、
+  cron daemon 启动竞态/损坏注册表日志/停止验证、config_loader YAML 解析警告与
+  git 段校验、replay 时区归一、bool-as-int（`effort: true`、`line: true`）、onboard
+  assert→raise、report_server 查询串别名、state store 监听器隔离、docker stop 超时、
+  死字段 `budget_usd`/`max_turns` 回退与 `personalization_base_dir()` 接线。
+- **Web 运行态 13 处**（`web/**`）：start 状态机守卫（pausing/stopping 叠加启动经
+  `RunConflictError` 拒绝）、stop-during-start TOCTOU、`_restore_redacted` null 填充、
+  结构化 409、阻塞调用移入线程、operator 暂停超时不再自动恢复、`_stop` 只终结 done
+  注册、重置后历史读取与 journal 上限、权限审计缺口、hub 级 SSE id + `Last-Event-ID`
+  续传与缺口告警、端口占用提示与 docs 门控。
+- **CLI/UX 11 处**（`cli.py`、`ui/**`）：print 模式权限 fail-closed（无 TTY 的权限
+  提示此前放行一切工具）、print 模式错误 exit 1 + stderr 摘要（此前吞错 exit 0、
+  裸 traceback）、`--output-format` 白名单校验、菜单 0/负索引拒绝（此前回绕选中最后
+  一项）、`OptionInfo`/`ArgumentInfo` 统一解包、`--cwd` 默认值改调用时解析（原 import
+  期固化成启动目录）。
+- **swarm/tasks 12 处**（`swarm/**`、`tasks/**`）：不可运行队友记 `failed` 而非桩
+  成功；`_destroy_worktree`/`cleanup_team_directories` 包含化——git 失败、二进制
+  `.git` 标记、不可读 team.json 不再外泄，团队目录在 finally 里清理；permission
+  `request_id` 与 mailbox 消息 id 白名单校验（拒 `../`/NUL 穿越）；done-callback
+  竞态不再误删重生队友的注册；spawn 自清终态书箱、`_generations` 随淘汰回收、
+  `stop_task` 中止失败保留记录、git 调用加超时。
+- **tools 10 处**（`tools/**`）：bash 超时杀整个进程组（`start_new_session` +
+  `killpg`，孙进程不再握着管道挂死）；worktree 进出 60s 有界通信；`remote_trigger`
+  名称/输出三重上限；notebook 单元 100K 字符上限；运行时 `assert` 校验改显式
+  raise（`-O` 下不被剥离）；`exit_worktree` mypy 收口；顺带把
+  `test_bash_tool_timeout_does_not_hang_when_stdout_stays_open` 的外层 2s 守卫提到
+  20s（全量跑不再 flaky）。
+- **npm 包装器 14 处**（`npm/lib/bootstrap.js`）：重定向 https→http 降级被
+  `--allow-http` 门控（此前 302 可绕过安装源策略）；非 http(s) 协议前置拒绝；curl
+  `--proto-redir =https`；下载失败/超时/中断清理流与半截缓存文件；响应中途 socket
+  复位立即失败（此前干等 60s 总超时）；`detectPython` 30s / `runStep` 10min 超时且
+  信号击杀如实报告（此前无超时可永久挂死、退出码报 null）；并发 bootstrap 互斥锁
+  （原子创建 + 陈旧锁回收，venv 不再被并发写坏）；stamp 命中但 venv 缺失时自愈重装；
+  主 pip 失败不再被 fallback 吞掉；损坏 `Location` 头不再 TypeError 崩溃。
+- **验证**：全量 `pytest tests/ -q` **2627 passed, 6 skipped**（基线 2259 passed +
+  1 flaky fail → 全绿）；ruff clean；mypy strict clean（254 源文件）；npm
+  `node --test 'test/*.test.js'` **77 passed**。版本号在 `__init__.py` /
+  `npm/package.json` / `frontend/web/package.json` / `CHANGELOG.md` 同步至 2.6.0。
+
 ## [2.5.0] - 2026-09-30
 
 ### Added

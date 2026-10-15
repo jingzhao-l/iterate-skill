@@ -24,8 +24,10 @@ import pytest
 
 from iterate_harness.iterate.dimension_context import (
     DIMENSION_E_DUPLICATE,
+    DIMENSION_E_EMPTY,
     DIMENSION_E_ID,
     DimensionContextError,
+    DimensionEvidence,
     PlannedDimension,
     dimension_context,
     dimension_context_from_evidence,
@@ -230,3 +232,42 @@ def test_operation_ids_are_capped() -> None:
     assert entry.evidence.operation_ids is not None
     assert len(entry.evidence.operation_ids) == 32
     assert entry.evidence.operation_ids[-1] == "op_79"
+
+
+def test_evidence_keeps_valid_operation_ids() -> None:
+    evidence = DimensionEvidence.from_json({"decisions": 2, "operationIds": ["op_1", "op_2"]})
+    assert evidence.decisions == 2
+    assert evidence.operation_ids == ("op_1", "op_2")
+
+
+def test_evidence_counts_default_to_zero() -> None:
+    assert DimensionEvidence.from_json({}).decisions == 0
+
+
+def test_evidence_accepts_numeric_strings() -> None:
+    """Ledger entries survive a JSON round-trip as strings all too often."""
+    assert DimensionEvidence.from_json({"decisions": "3"}).decisions == 3
+
+
+def test_evidence_rejects_a_boolean_decision_count() -> None:
+    """``bool`` subclasses ``int``: ``decisions: true`` used to become 1."""
+    with pytest.raises(DimensionContextError) as excinfo:
+        DimensionEvidence.from_json({"decisions": True})
+    assert excinfo.value.code == DIMENSION_E_EMPTY
+
+
+@pytest.mark.parametrize("junk", ["many", 1.5, None, ["1"]])
+def test_evidence_rejects_a_non_numeric_decision_count(junk: object) -> None:
+    with pytest.raises(DimensionContextError):
+        DimensionEvidence.from_json({"decisions": junk})
+
+
+def test_evidence_rejects_a_bare_operation_id_string() -> None:
+    """``"op_1"`` is not a one-element list — it used to become ('o', 'p', ...)."""
+    with pytest.raises(DimensionContextError):
+        DimensionEvidence.from_json({"decisions": 1, "operationIds": "op_1"})
+
+
+def test_evidence_rejects_non_string_operation_ids() -> None:
+    with pytest.raises(DimensionContextError):
+        DimensionEvidence.from_json({"decisions": 1, "operationIds": [1, 2]})
