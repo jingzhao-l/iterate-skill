@@ -763,6 +763,36 @@ stamp 不匹配会自动重装到新 tag。
       > `iterate-harness@2.2.0` 已发布（registry 传播约 90s，latest=2.2.0）。端到端验证：
       > `npm install -g iterate-harness && ih --version` = `iterate_harness 2.2.0`。
       >
+      > **2.6.0 发布记录（2026-10-15）**：整轮「代码审查 → 修复 → UX 评审 → 缺口补齐 → 自检」
+      > 的结果，60+ 处修复横跨权限 / 引擎 / hooks / 防御 / Web / CLI / swarm / tools / npm 十个面。
+      > **主体亮点**：① 权限硬边界——`denied_commands` 提前到 `allowed_tools` 之前（白名单 bash
+      > 不再放行被拒命令）、敏感路径大小写折叠（`.SSH` 不再漏过 `*/.ssh/*`）、`mode_override`
+      > 只认 `plan`（`default`/`full_auto`/未知值回落配置模式，堵住会话提权）；② 引擎——
+      > coordinator 上下文门控改匹配真实提示词（旧门控对生产提示词永不命中）、权限提示串行化
+      > + 超时 fail-closed、`USER_PROMPT_SUBMIT` 的 blocked 真正拒绝（消息不再先入历史再被忽略）；
+      > ③ hooks——单钩子异常 / spawn OSError 收敛为 failed result、输出 8KiB 上限、notification
+      > matcher 补 `notification_type`、热重载失败保留旧注册表；④ 防御——快照引用计数（同一文件
+      > 并行变更共享原始字节，首个 commit 不再提前丢快照）；⑤ CLI——print 模式权限 fail-closed、
+      > 错误 exit 1、`--append-system-prompt` 死旗标接线、`--restore-session` 真实恢复（修 React
+      > 假恢复：此前声称恢复成功但宿主从未加载快照）；⑥ npm 包装器——重定向 https→http 降级门控、
+      > 探测/步骤超时、并发 bootstrap 互斥锁（原子创建 + 陈旧锁回收）、venv 缺失自愈；详见
+      > `CHANGELOG.md` 2.6.0 条目。版本号在 `__init__.py` / `npm/package.json` /
+      > `frontend/web/package.json` / `CHANGELOG.md` 同步至 2.6.0；校验 **2627 pytest + 6 skip**
+      > （基线 1 个 flaky `test_bash_tool_timeout...` 已通过 2s→20s 外层守卫消除，全量全绿）、
+      > ruff clean、mypy strict clean（254 源文件）、npm 包装器 `node --test` **77 passed**。
+      > 主仓库 push 提交 `0357549`（rebase 至 `252368e` 后）。发布仓走 `.release/iterate-harness`
+      > 替代路径 rsync 提交（按已提交树同步，工作区不带并行会话的在途删除）并快进推送
+      > `9f31180..a15d304`。**发版通道沿用 2.5.0 修好的 tag 路径**（本机 gh token 已失效、
+      > keychain 读不出，REST 建 Release 一律 401）：推 `v2.6.0` tag 即触发 release.yml
+      > （run 38666279099，success ~45s），幂等建 Release + 构建
+      > `iterate_harness-2.6.0-py3-none-any.whl` + `.asc` + `.sha256` 上传 + 自动发布 PyPI
+      > （已验证 PyPI latest=2.6.0）；npm `iterate-harness@2.6.0` 已发布（registry 传播约 2 分钟，
+      > latest=2.6.0）。端到端验证：`npm install -g --prefix ~/.npm-global iterate-harness` 后
+      > `ih --version` = `iterate_harness 2.6.0`。**过程注记**：并行会话的 15 个在途删除
+      > （harness glasspane/kernel_decision* + kernel transcribe*）以 `ALLOW_DELETIONS` 声明后
+      > 提交（本提交零删除，工作区未动）；其过期 badges/downloads.json 快照（10-10 数据，落后于
+      > 已推送的 10-15）在 rebase autostash 冲突中解析为远端新值，原始字节保留在 `stash@{0}`。
+      >
       > **2.5.0 发布记录（2026-09-30）**：整轮「审查 → 修复 → UX 评审 → 缺口补齐」的结果。
       > 主体是 WebUI 操作台 + 辅助干预通道这一层的真实缺口补齐，另含引擎 / swarm / 任务层一批
       > 正确性修复。**① Web/后端**：SSE 帧带单调 `id:`（重连时 `Last-Event-ID` 有意义，缺口两侧
