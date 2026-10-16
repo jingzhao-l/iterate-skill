@@ -57,6 +57,28 @@ jobs:
           # non-EOL runtime (Node 20 went EOL 2026-04).
           node-version: "24"
 
+      - name: Verify package version matches the release tag
+        working-directory: npm-installer
+        # A forgotten version bump used to publish the PREVIOUS version under a
+        # new tag (npm rejects a duplicate version only once it is too late),
+        # silently drifting `npx iterate-skill-installer --version` away from
+        # the documented release. Fail before publishing instead.
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          TAG="${TAG#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ -n "$TAG" ] && [ "$TAG" != "$PKG" ]; then
+            echo "::error::package.json version $PKG does not match release tag $TAG"
+            exit 1
+          fi
+          echo "package.json version $PKG (tag: ${TAG:-<none>})"
+
+      - name: Run installer tests
+        working-directory: npm-installer
+        # Guards the download/verify/extract pipeline (checksum handling,
+        # tar listing fail-closed, link rejection) before it reaches npm.
+        run: npm test
+
       - name: Publish with provenance
         working-directory: npm-installer
         env:
