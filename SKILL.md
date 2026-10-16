@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.5.0
+version: 3.5.1
 permissions:
   file_read: true
   file_write: true
@@ -343,9 +343,9 @@ CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适
 | `0` | 成功 / 无问题 | `status` 已 onboard 且无漂移；`guard pre-check` 可开工；`fingerprint list` 已读出基线（即使为空） |
 | `1` | **业务失败**（命令按预期跑完，结论是"有问题"） | `guard`/`invariant` 返回 `FAIL`；`fingerprint verify` 检出漂移；`doctor --strict` 有 warning；`config set/unset` 的键/值非法；JSON 模式下配置无法解析 |
 | `2` | **用法错误**（argparse） | 未知子命令、未知动作（`fingerprint bogus`）、缺必填参数、`config` 的非法键名 |
-| `127` | 依赖缺失 | `tools/gpg-signing.sh` 找不到 `gh`/`gpg` |
+| `127` | 依赖缺失 | `iterate` CLI 缺少 PyYAML/rich 等运行依赖；`tools/gpg-signing.sh` 找不到 `gh`/`gpg` |
 
-判读要点：**`2` 不要当作"有问题"去重试**——那是命令敲错了，重试只会得到同样的 `2`；**`1` 才是"结论为否"**，应当据此推进修复或回滚。`--json` 模式下 `1` 依然会输出结构化对象（含 `reason`/`errors` 字段），因此脚本可先解析 JSON 再看 `$?`，无需靠退出码区分错误类别。
+判读要点：**`2` 不要当作"有问题"去重试**——那是命令敲错了，重试只会得到同样的 `2`；**`1` 才是"结论为否"**，应当据此推进修复或回滚。**用户取消**（`onboard`/`reonboard`/`update` 交互确认时回答否）同样返回 `1`：取消意味着"未执行"，脚本不应把它读成成功。`--json` 模式下 `1` 依然会输出结构化对象（含 `reason`/`errors` 字段），因此脚本可先解析 JSON 再看 `$?`，无需靠退出码区分错误类别。**`stdout` 只放数据**：所有 warning/error 都写 `stderr`，因此 `--json` 的 stdout 恰好是一个 JSON 文档，可直接管到 `jq`。
 
 **个性化配置 / Personalization**：捕获 AI 扫描不到的项目专属约束（禁区、风险区、已知意图、维度定制等 9 类）。运行 `iterate personalize` 可在项目中途随时追加，无需重做 onboarding。`iterate personalize --clear` 可一次清空所有个性化（结构化规则 + `ITERATE.md` 用户区中的相关段落，需确认或加 `--yes` 跳过）。`iterate show` 可只读查看合并后的配置与个性化详情（`--json` 输出结构化数据供脚本/CI 使用）。详见 README。
 
@@ -583,18 +583,33 @@ If no issues are found, return { "findings": [], "readFiles": [...] }.
 | AI 助手 / Assistant | 安装路径 / Install Path |
 |---------------------|------------------------|
 | Trae | `.trae/skills/iterate/` |
-| Claude Code | `.claude/skills/iterate/` |
+| Claude Code (`claude` / `claude-code`) | `.claude/skills/iterate/` |
 | Cursor | `.cursor/skills/iterate/` |
 | Windsurf | `.windsurf/skills/iterate/` |
 | GitHub Copilot | `.github/skills/iterate/` |
 | OpenAI Codex | `.codex/skills/iterate/` |
 | Roo Code | `.roo/skills/iterate/` |
 | Qoder | `.qoder/skills/iterate/` |
-| Gemini CLI | `.gemini/skills/iterate/` |
+| Gemini CLI (`gemini` / `gemini-cli`) | `.gemini/skills/iterate/` |
 | OpenCode | `.opencode/skills/iterate/` |
 | Continue | `.continue/skills/iterate/` |
 | Augment | `.augment/skills/iterate/` |
 | Warp | `.warp/skills/iterate/` |
+| Aider | `.aider/skills/iterate/` |
+| AiderDesk | `.aiderdesk/skills/iterate/` |
+| Zed | `.zed/skills/iterate/` |
+| Cline | `.cline/skills/iterate/` |
+| OpenClaw | `skills/iterate/` |
+| Autohand | `.autohand/skills/iterate/` |
+| Bob | `.bob/skills/iterate/` |
+| CodeArts | `.codeartsdoer/skills/iterate/` |
+| Antigravity | `.antigravity/skills/iterate/` |
+| Amp | `.amp/skills/iterate/` |
+| DeepAgents | `.deepagents/skills/iterate/` |
+| Kimi | `.kimi/skills/iterate/` |
+| Astral | `.astral/skills/iterate/` |
+
+`<name>` 取上表第一列的标识符；完整列表以 `scripts/install.py install --help` 输出的 `choices` 为准（上表与 `SUPPORTED_AI` 保持同步，详见 `npm-installer/README.md`）。
 
 安装脚本会自动复制 `SKILL.md`、配置、维度定义、校验脚本和模板到对应目录；`--ai all` 一次性安装到所有支持的助手目录。
 
@@ -607,7 +622,9 @@ If no issues are found, return { "findings": [], "readFiles": [...] }.
 - `uninstall --yes`：卸载已安装的 skill；不加 `--yes` 时会要求二次确认。
 - `update --yes`：从 GitHub 最新 release 下载源码刷新文件，跳过确认；**非交互（管道/CI）下必填**，否则会以"检测到非交互 stdin"退出 1。
 - `update`（不带 `--yes`）：同上，但交互确认；下载失败时回退到本地源码。
-- `--list` / `--interactive`：列出支持的助手 / 进入交互选择。
+- `config --list`：打印当前项目 `iterate.config.yaml`（与"列出支持的助手"无关）。
+- `config --interactive`：进入项目配置交互向导。
+- 支持的助手名以 `install --ai <name>` 的 `choices` 为准（见上表；`--ai all` 安装到全部）。
 
 #### 按模块/目录拆分 / Split by Module or Directory
 

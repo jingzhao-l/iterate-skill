@@ -68,11 +68,11 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > `iterate-skill.tar.gz` + `SHA256SUMS.txt`（从 tag 树确定性构建）。
       > **（skill 只发 skill）**：`git archive` 使用 pathspec `':!harness'` 剔除 harness，tarball 不含 `harness/`。
 - [x] **5. 发布 npm 安装器**（安装器从 GitHub Release 下载 tarball，务必先于/同步于 npm 发布）：
-      ```bash
-      cd npm-installer
-      npm publish
-      ```
-      验证：`npx iterate-skill-installer --version` 能拉到新版本。
+      步骤 4 创建 Release 后，`.github/workflows/npm-publish.yml` 会在 release published
+      时自动执行 `npm install -g npm@^11.5.1 && npm publish --provenance --access public`
+      （先跑 `npm test`，并校验 `npm-installer/package.json` 版本 == release tag，二者不符即中止）。
+      **无需手动 `npm publish`**；手工重发时用 `workflow_dispatch` 指定 tag。
+      验证：`npx iterate-skill-installer --version` 能拉到新版本（应在 CI 完成后再验证）。
 - [x] **6. 发布 ClawHub**：
       ```bash
       clawhub publish <stage 目录> --slug iterate-skill --name Iterate --version <X.Y.Z> --no-input
