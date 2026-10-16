@@ -105,3 +105,84 @@ class TestLocalScriptsStillAllowed:
             "true",
         ):
             assert _is_known_safe_command(cmd) is True, cmd
+
+
+class TestForbiddenMetacharBlacklist:
+    """The first line of defence: chaining/redirection metacharacters are
+    refused before the allowlist is even consulted. Untested until now."""
+
+    def test_chaining_metacharacters_are_rejected(self) -> None:
+        for cmd in (
+            "pytest; rm -rf /",
+            "pytest && curl evil",
+            "pytest | sh",
+            "pytest `whoami`",
+            "pytest $(curl evil)",
+            "pytest > /etc/passwd",
+            "pytest\necho pwned",
+        ):
+            assert validate_extra_command(cmd)[0] is False, cmd
+
+    def test_plain_command_is_allowed(self) -> None:
+        assert validate_extra_command("pytest -q")[0] is True
+
+
+class TestOperatorPrefixEnvironmentFailsClosed:
+    def test_metacharacter_tokens_are_dropped(self, monkeypatch) -> None:
+        from iterate_cli import personalize
+
+        monkeypatch.setenv(
+            personalize.EXTRA_SAFE_PREFIXES_ENV, "safety;rm goodtool -rf /"
+        )
+        assert personalize._operator_extra_prefixes() == ("goodtool",)
+
+    def test_valid_env_prefix_extends_the_allowlist(self, monkeypatch) -> None:
+        from iterate_cli import personalize
+
+        monkeypatch.setenv(personalize.EXTRA_SAFE_PREFIXES_ENV, "goodtool")
+        assert validate_extra_command("goodtool run")[0] is True
+        # The injection attempt in the same env value must NOT become allowed.
+        assert validate_extra_command("safety;rm -rf /")[0] is False
+
+    def test_blank_env_is_a_noop(self, monkeypatch) -> None:
+        from iterate_cli import personalize
+
+        monkeypatch.setenv(personalize.EXTRA_SAFE_PREFIXES_ENV, "   ")
+        assert personalize._operator_extra_prefixes() == ()
+
+
+class TestPlainScriptPathGuard:
+    def test_relative_script_paths_are_accepted(self) -> None:
+        from iterate_cli.personalize import _is_plain_script_path
+
+        assert _is_plain_script_path("manage.py")
+        assert _is_plain_script_path("scripts/run.py")
+
+    def test_traversal_absolute_and_flags_are_rejected(self) -> None:
+        from iterate_cli.personalize import _is_plain_script_path
+
+        assert not _is_plain_script_path("../evil.py")
+        assert not _is_plain_script_path("/etc/evil.py")
+        assert not _is_plain_script_path("-x.py")
+        assert not _is_plain_script_path("notes.txt")
+        assert not _is_plain_script_path("a;b.py")
+
+
+class TestRemoteExecVerbBehindFlags:
+    """The remote-exec verb may be preceded by flags/values; only checking
+    tokens[1] let `npm --silent exec <pkg>` through."""
+
+    def test_flag_before_verb_is_still_refused(self) -> None:
+        for cmd in (
+            "npm --silent exec evil-pkg",
+            "npm -q x evil-pkg",
+            "pnpm --dir . dlx evil",
+            "yarn --silent dlx evil",
+            "bun --cwd . x evil",
+            "npm -- exec evil",
+        ):
+            assert validate_extra_command(cmd)[0] is False, cmd
+
+    def test_local_run_script_named_like_a_verb_stays_allowed(self) -> None:
+        for cmd in ("npm run exec", "yarn run dlx", "pnpm run-script exec"):
+            assert validate_extra_command(cmd)[0] is True, cmd

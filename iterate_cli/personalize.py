@@ -178,8 +178,11 @@ def _operator_extra_prefixes() -> tuple[str, ...]:
 #: code from a remote registry instead of running something already in the repo.
 #: ``npm exec`` is the same verb as ``npx``; ``pnpm dlx`` / ``yarn dlx`` /
 #: ``bun x`` are the same idea. They are equivalent to ``curl … | sh``, so they
-#: are refused even though the parent binary is allowlisted. Only the verb
-#: matters, so ``npm exec`` is caught whatever flags follow it.
+#: are refused even though the parent binary is allowlisted. The verb is
+#: matched at ANY position after the manager (not just directly behind it),
+#: so ``npm --silent exec`` / ``pnpm --dir . dlx`` / ``npm -- exec`` are all
+#: caught too — flags may be interleaved freely, but a bare verb token
+#: anywhere in the command is refused (fail closed).
 _REMOTE_EXEC_VERBS: dict[str, frozenset[str]] = {
     "npm": frozenset({"exec", "x"}),
     "pnpm": frozenset({"dlx", "exec"}),
@@ -201,8 +204,22 @@ def _is_known_safe_command(cmd: str) -> bool:
     # ``npx``-style remote execution would be persisted into a committed
     # iterate.config.yaml and run under shell=True in CI.
     remote_verbs = _REMOTE_EXEC_VERBS.get(first_token)
-    if remote_verbs is not None and len(tokens) > 1 and tokens[1] in remote_verbs:
-        return False
+    if remote_verbs is not None:
+        # Scan EVERY position after the manager, not just tokens[1]: the old
+        # second-token-only check was bypassed by inserting a flag before the
+        # verb — `npm --silent exec evil-pkg` / `pnpm --dir . dlx evil` both
+        # passed (the flag occupied tokens[1], the verb never got tested),
+        # persisting remote code execution into validation.commands. A bare
+        # verb token anywhere after the manager is refused instead.
+        for idx, token in enumerate(tokens[1:], start=1):
+            if token not in remote_verbs:
+                continue
+            # `npm run exec` / `yarn run dlx` / `pnpm run-script dlx` run a
+            # LOCAL package.json script whose name merely matches a verb; no
+            # download happens, so those stay allowed.
+            if idx >= 2 and tokens[idx - 1] in ("run", "run-script"):
+                continue
+            return False
     operator_prefixes = _operator_extra_prefixes()
     # Handle "python -m pytest" style invocations: accept if the
     # *effective* tool (after -m) is whitelisted.
@@ -486,7 +503,12 @@ def _heading_level(line: str) -> int:
     if level > 6:
         return 0
     rest = stripped[level:]
-    if rest and not rest.startswith(" "):
+    # CommonMark separates the hash run from the title with a space OR a tab;
+    # accepting only the space made `##\tUser Tab Heading` invisible to the
+    # section-boundary scan, and merge_user_sections then deleted that user
+    # heading together with its body (opposite of the "prefer keeping user
+    # text" trade-off elsewhere).
+    if rest and not rest.startswith((" ", "\t")):
         return 0
     return level
 
@@ -709,7 +731,11 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     for module, cmds in raw_extra_cmds.items():
         module_str = str(module)
         if not MODULE_NAME_PATTERN.match(module_str):
-            # Skip entries with unsafe module names.
+            # Skip entries with unsafe module names — and ANNOUNCE the drop:
+            # every other malformed structure in this loader lands in
+            # ``dropped`` (warning below), so a silently vanishing module's
+            # commands would be the one data loss nobody was told about.
+            dropped.append(f"extra_validation_commands[{module_str}]")
             continue
         if isinstance(cmds, list):
             valid: list[str] = []
