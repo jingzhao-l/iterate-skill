@@ -334,3 +334,25 @@ class TestJsonHelpText:
                 for opt in getattr(action, "option_strings", [])
             }
             assert "--json" in flags, f"`{command}` does not accept --json"
+
+
+class TestWarningGoesToStderr:
+    """Warnings must not pollute stdout: `--json` promises exactly one JSON
+    document on stdout for every command, and several commands emit warnings
+    while building their payload."""
+
+    def test_warning_writes_to_stderr_only(self, capsys) -> None:
+        from iterate_cli.tui import tui as real_tui
+
+        real_tui.warning("careful now")
+        captured = capsys.readouterr()
+        assert "careful now" in captured.err
+        assert "careful now" not in captured.out
+
+    def test_error_and_warning_share_the_stderr_stream(self, capsys) -> None:
+        from iterate_cli.tui import tui as real_tui
+
+        real_tui.error("bad thing")
+        captured = capsys.readouterr()
+        assert "bad thing" in captured.err
+        assert "bad thing" not in captured.out

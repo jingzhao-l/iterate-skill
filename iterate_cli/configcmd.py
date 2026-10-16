@@ -488,7 +488,10 @@ def run_config_set(
 
     if json_output:
         # Keep stdout clean for scripts/CI: only the JSON confirmation object.
-        print(json.dumps({"key": key, "value": parsed}, ensure_ascii=False, default=str))
+        # Echo the CANONICAL spec.name (like `config get` does) — echoing the
+        # raw input meant `config set git.use_worktree true` and
+        # `config get use_worktree` reported two different keys for one field.
+        print(json.dumps({"key": spec.name, "value": parsed}, ensure_ascii=False, default=str))
         return 0
     tui.success(f"{key} set to {_format_value(parsed)}.")
     tui.hint(f"Backup written to {backup_path.name}.", indent=2)
@@ -586,7 +589,17 @@ def run_config_unset(
     # way run_config_set does (removing through it would corrupt the file).
     parent: Any = config
     for part in spec.path[:-1]:
-        parent = parent.get(part)
+        if not isinstance(parent, dict) or part not in parent:
+            # Absent section ≠ broken section: `git:` missing entirely means
+            # the key is simply unset, but the old flow reported "intermediate
+            # field 'git' is not a mapping" — blaming a type error that does
+            # not exist and sending the operator to hand-edit a healthy file.
+            return _set_error(
+                f"{key!r} is not set in {CONFIG_YAML} (section {part!r} is "
+                "absent; nothing to unset).",
+                json_output,
+            )
+        parent = parent[part]
         if not isinstance(parent, dict):
             return _set_error(
                 f"Cannot unset {key!r}: intermediate field {part!r} is not a "
@@ -644,7 +657,7 @@ def run_config_unset(
         print(
             json.dumps(
                 {
-                    "key": key,
+                    "key": spec.name,
                     "removed": True,
                     "previous_value": removed_value,
                     "value": "default",

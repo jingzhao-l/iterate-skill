@@ -28,27 +28,61 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from iterate_cli import __version__
-from iterate_cli.fingerprint import drift_summary
-from iterate_cli.generator import (
-    has_valid_user_owned_markers,
-    write_onboarding_outputs,
-)
-from iterate_cli.refresh import (
-    CONFIG_YAML,
-    REONBOARD_CANCELLED,
-    REONBOARD_COMPLETED,
-    REONBOARD_NO_CHANGES,
-    check_onboarding_drift,
-    drift_unavailable_reason,
-    full_reonboard,
-    get_drift_ignore,
-    get_stored_fingerprints,
-    is_onboarding_complete,
-    load_onboarding_config,
-)
-from iterate_cli.tui import tui
-from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
+#: Third-party imports the CLI cannot run without. A ModuleNotFoundError for
+#: one of these is a DEPENDENCY GAP (exit 127 per the documented contract:
+#: "127 | 依赖缺失"), not a bug — every other import failure is re-raised so a
+#: typo in our own modules still surfaces as a traceback.
+_REQUIRED_DEPENDENCIES = frozenset({"yaml", "rich"})
+
+
+def _dependency_exit_code(missing: str) -> int | None:
+    """Return the exit code for a missing top-level module, or None to re-raise.
+
+    Extracted from the import guard below so the documented 127 contract is
+    unit-testable without having to uninstall PyYAML/rich.
+    """
+    return 127 if missing in _REQUIRED_DEPENDENCIES else None
+
+
+try:
+    from iterate_cli import __version__
+    from iterate_cli.fingerprint import drift_summary
+    from iterate_cli.generator import (
+        has_valid_user_owned_markers,
+        write_onboarding_outputs,
+    )
+    from iterate_cli.refresh import (
+        CONFIG_YAML,
+        DRIFT_REASON_CORRUPT,
+        DRIFT_REASON_DISABLED,
+        DRIFT_REASON_NO_FINGERPRINTS,
+        REONBOARD_CANCELLED,
+        REONBOARD_COMPLETED,
+        REONBOARD_NO_CHANGES,
+        check_onboarding_drift,
+        drift_unavailable_code,
+        drift_unavailable_reason,
+        full_reonboard,
+        get_drift_ignore,
+        get_stored_fingerprints,
+        is_onboarding_complete,
+        load_onboarding_config,
+    )
+    from iterate_cli.tui import tui
+    from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
+except ModuleNotFoundError as _import_error:
+    _missing = (_import_error.name or "").split(".")[0]
+    _code = _dependency_exit_code(_missing)
+    if _code is None:
+        raise
+    print(
+        f"iterate: missing required dependency {_missing!r}. "
+        "Install the skill properly (``pip install iterate-skill`` / "
+        "``pipx install .``) or add the dependency (``pip install "
+        f"{'pyyaml' if _missing == 'yaml' else _missing}``) and retry.",
+        file=sys.stderr,
+    )
+    raise SystemExit(_code) from _import_error
 
 
 def _should_show_banner(args: argparse.Namespace) -> bool:
@@ -165,8 +199,15 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         # Ctrl+C mid-interaction must not surface a raw traceback.
         tui.cancel()
+        # Deliberately NOT "nothing was written": `config set` may already
+        # have copied its backup, `doctor --fix` may have applied fixes, and
+        # `update` may have copied files — the old blanket claim was false
+        # for exactly the paths where a user is most likely to interrupt.
         tui.hint(
-            "已中断，本次未写入任何文件 / Interrupted, nothing was written.", indent=2
+            "已中止；写入类步骤可能已部分完成并留下时间戳备份，请检查项目目录 / "
+            "Interrupted mid-run; write steps may have left timestamped backups "
+            "(*.configset-*, *.doctorfix-*, .bak-*) — check the project directory.",
+            indent=2,
         )
         return 1
     except EOFError:
@@ -174,8 +215,9 @@ def main(argv: list[str] | None = None) -> int:
         # clean cancellation instead of an unhandled-input traceback.
         tui.cancel()
         tui.hint(
-            "输入已结束（Ctrl+D / EOF），本次未写入任何文件 / "
-            "Input ended (Ctrl+D / EOF), nothing was written.",
+            "输入已结束（Ctrl+D / EOF）；已写入的备份文件仍保留在项目目录 / "
+            "Input ended (Ctrl+D / EOF); any backups already written remain in "
+            "the project directory.",
             indent=2,
         )
         return 1
@@ -729,10 +771,11 @@ def _cmd_onboard(project_root: Path) -> int:
         iterate_md, config_yaml = write_onboarding_outputs(
             data, project_root, existing_md
         )
-    except (OSError, UnicodeDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         # Writing either artifact failed (disk full, permissions, locked file,
-        # or a corrupt template). Surface a clear message instead of a bare
-        # traceback; the writer already rolled back partially-written files.
+        # a corrupt template, or a generated ITERATE.md missing the USER-OWNED
+        # markers). Surface a clear message instead of a bare traceback; the
+        # writer already rolled back partially-written files.
         tui.error(f"写入 onboarding 产物失败：{exc}")
         tui.warning(
             "未写入或已回滚 ITERATE.md / iterate.config.yaml，请检查目录权限后重试。"
@@ -836,7 +879,7 @@ def _cmd_personalize_clear(
         has: The ``has_personalization`` callable (injected for testability).
 
     Returns:
-        Exit code: 0 on success/cancel/nothing-to-clear, 1 on failure.
+        Exit code: 0 on success/nothing-to-clear, 1 on failure/cancel.
     """
     from iterate_cli.personalize import (
         CorruptConfigError,
@@ -883,7 +926,11 @@ def _cmd_personalize_clear(
         )
         if not confirmed:
             tui.info("已取消 / Cancelled.")
-            return 0
+            # Cancel → 1: the docstring at the top of this command promises
+            # "1 on failure/cancel", and `onboard`/`reonboard` already
+            # returned 1 for a user cancel — returning 0 here made "user
+            # said no" indistinguishable from "personalization cleared".
+            return 1
 
     try:
         config_path, iterate_md_path = clear_personalization(project_root)
@@ -1031,6 +1078,12 @@ def _cmd_refresh(
                     "config_changed": preview["config_changed"],
                     "md_changed_lines": preview["md_changed_lines"],
                     "stats": preview["stats"],
+                    # Additive caveat: these numbers come from the PREVIEW
+                    # scan taken before apply (apply re-scans independently),
+                    # so a file edited between preview and apply makes what
+                    # was actually written differ from these figures. Labelled
+                    # instead of silently implying post-apply accuracy.
+                    "stats_basis": "pre-apply",
                 },
                 ensure_ascii=False,
             )
@@ -1064,14 +1117,15 @@ def _cmd_reonboard(project_root: Path) -> int:
         return 0
     elif status == REONBOARD_NO_CHANGES:
         tui.info("Re-onboarding not needed — no changes to apply.")
-        tui.hint("Old files backed up with .bak-<timestamp> suffix.", indent=2)
+        tui.hint("旧文件未改动，临时备份已清理 / Old files are intact; the temporary backup was removed.", indent=2)
         return 0
     elif status == REONBOARD_CANCELLED:
         # Cancelling is a normal (non-error) user decision; mirror onboarding's
         # cancel message and exit code so scripts see "not written" clearly.
         tui.cancel()
         tui.hint(
-            "Re-onboarding cancelled. Old files are intact (a .bak snapshot was taken).",
+            "Re-onboarding cancelled. Old files are intact (the temporary "
+            "backup was removed — nothing was written).",
             indent=2,
         )
         return 1
@@ -1372,6 +1426,16 @@ def _cmd_doctor(
                 tui.success(f"doctor --fix: applied {len(fixes)} safe fix(es).")
                 for fix_note in fixes:
                     tui.bullet(fix_note, indent=4)
+                # Transparency note: --fix rewrites the config via a YAML dump,
+                # which drops hand-written comments. A backup IS taken
+                # (*.doctorfix-*) but the output never said either thing, so an
+                # operator could discover the comment loss only after the fact.
+                tui.hint(
+                    "iterate.config.yaml is rewritten as clean YAML — hand-written "
+                    "comments are not preserved (pre-fix backup: *.doctorfix-* next "
+                    "to the config).",
+                    indent=4,
+                )
                 tui.empty_line()
             else:
                 tui.success("doctor --fix: no safe fixes needed.")
@@ -1570,22 +1634,30 @@ def _cmd_fingerprint_list(
                 )
             )
         else:
-            tui.error(f"Iterate Skill — Fingerprint List / {project_root.name}")
+            # Title uses tui.intro (stdout, ◆ prefix) like every other
+            # fingerprint path; only the actual error line goes to stderr.
+            # Printing the title via tui.error once put "✗ Iterate Skill —
+            # Fingerprint List" on stderr with no matching stdout header.
+            tui.intro(f"Iterate Skill — Fingerprint List / {project_root.name}")
             tui.error(f"Could not read iterate.config.yaml: {reason}")
         return 1
 
     stored = get_stored_fingerprints(config)
     ignore_patterns = get_drift_ignore(config)
     if json_output:
+        # isinstance narrowing: a hand-edited scalar `onboarding:` section
+        # (`onboarding: legacy-scalar`) is truthy, survived the `or {}`, and
+        # crashed this branch with AttributeError — the --json contract then
+        # broke too (stdout emitted no JSON at all, just a traceback).
+        onboarding_section = config.get("onboarding")
+        onboarding = onboarding_section if isinstance(onboarding_section, dict) else {}
         print(
             json.dumps(
                 {
                     "project": str(project_root),
                     "available": True,
                     "count": len(stored),
-                    "drift_check_enabled": bool(
-                        (config.get("onboarding") or {}).get("drift_check", True)
-                    ),
+                    "drift_check_enabled": bool(onboarding.get("drift_check", True)),
                     "ignore_patterns": ignore_patterns,
                     "fingerprints": [
                         {"path": e.get("path"), "sha256": e.get("sha256")}
@@ -1642,21 +1714,22 @@ def _cmd_fingerprint(
     """
     from iterate_cli.refresh import check_onboarding_drift, load_onboarding_config
 
-    # Load the config once and reuse: check_onboarding_drift loads it again
-    # internally (emitting its own parse error), and re-loading here to build
-    # the reason printed a SECOND identical error for a corrupt config.
+    # Load the config once and reuse: passing it into check_onboarding_drift
+    # (sentinel-aware) skips a second load, which used to emit a SECOND
+    # identical parse-error report for a corrupt config.
     config = load_onboarding_config(project_root)
 
     if action == "list":
         return _cmd_fingerprint_list(project_root, config, json_output)
 
-    drift = check_onboarding_drift(project_root)
+    drift = check_onboarding_drift(project_root, config)
 
     if json_output:
         if drift is None:
             # Distinguish the three reasons drift checking is unavailable
             # (mirroring doctor's drift check) so a JSON consumer can tell
             # "not onboarded" from "check disabled" from "no fingerprints yet".
+            code = drift_unavailable_code(project_root, config)
             reason = _drift_unavailable_reason(project_root, config)
             print(
                 json.dumps(
@@ -1675,8 +1748,11 @@ def _cmd_fingerprint(
             # "config unreadable, drift unknown" as a pass while `status`/
             # `show` exited 1 for the same state. Non-corrupt unavailability
             # (not onboarded / disabled / no fingerprints) stays informational
-            # (exit 0) — drift is non-blocking there by design.
-            return 1 if "could not be parsed" in reason else 0
+            # (exit 0) — drift is non-blocking there by design. Branch on the
+            # stable CODE, not on substrings of the human message: rewording
+            # the reason text used to be able to flip this CI exit code
+            # silently, with no test failing.
+            return 1 if code == DRIFT_REASON_CORRUPT else 0
         print(
             json.dumps(
                 {
@@ -1699,19 +1775,27 @@ def _cmd_fingerprint(
 
     if drift is None:
         tui.info("Fingerprint verification unavailable.", indent=2)
-        reason = _drift_unavailable_reason(project_root, config)
-        if "could not be parsed" in reason:
+        code = drift_unavailable_code(project_root, config)
+        if code == DRIFT_REASON_CORRUPT:
             # A corrupt config cannot be fixed by onboarding or by enabling
             # drift_check; point at doctor instead of the generic hint, and
             # fail closed (exit 1) to match the JSON branch above.
             tui.hint("Run 'iterate doctor' to diagnose the config.", indent=4)
             return 1
-        if "disabled" in reason:
+        if code == DRIFT_REASON_DISABLED:
             tui.hint(
                 "Enable drift_check in iterate.config.yaml to verify fingerprints.",
                 indent=4,
             )
-        else:
+        elif code == DRIFT_REASON_NO_FINGERPRINTS:
+            # drift_check is already ON — telling this user to "run onboard or
+            # enable drift_check" was wrong on both counts; the only thing
+            # missing is a captured baseline.
+            tui.hint(
+                "Run 'iterate refresh' to capture fingerprints, then verify.",
+                indent=4,
+            )
+        else:  # not onboarded / unknown
             tui.hint(
                 "Run 'iterate onboard' first, or enable drift_check in "
                 "iterate.config.yaml.",
@@ -1991,7 +2075,11 @@ def _cmd_update(
         if not _confirm("Apply this update now?", default=False):
             tui.cancel()
             tui.hint("Update cancelled. Nothing was changed.", indent=2)
-            return 0
+            # Cancel → 1, per main()'s documented contract ("0 for success,
+            # 1 for error/cancel") and matching `onboard`/`reonboard`: a
+            # script must not read "the update was applied" from exit 0
+            # just because the operator said no.
+            return 1
         confirmed = True
 
     outcome = updater_mod.run_update(
