@@ -2389,3 +2389,149 @@ class TestChecksumDownloadFallback:
             install._download_release_source(
                 "http://x/tar", "http://x/SHA256SUMS.txt", None
             )
+
+
+# ---------------------------------------------------------------------------
+# Network-layer hardening: bare OSError (ConnectionResetError / ssl.SSLError)
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadLayerCatchesBareOSError:
+    """`ConnectionResetError`/`ssl.SSLError` raised mid-read are OSError
+    subclasses but NOT URLError subclasses, so they used to escape as an
+    unhandled traceback instead of a clean error reason."""
+
+    def test_download_bytes_reports_connection_reset(self, monkeypatch) -> None:
+        def boom(request, timeout=None):
+            raise ConnectionResetError("connection reset by peer")
+
+        monkeypatch.setattr(install, "_urlopen", boom)
+        data, error = install._download_bytes("https://api.github.com/x", None)
+        assert data is None
+        assert error and "connection error" in error
+
+    def test_fetch_latest_release_info_reports_connection_reset(
+        self, monkeypatch
+    ) -> None:
+        def boom(request, timeout=None):
+            raise ConnectionResetError("reset")
+
+        monkeypatch.setattr(install, "_urlopen", boom)
+        info, error = install._fetch_latest_release_info(None)
+        assert info is None
+        assert error and "connection error" in error
+
+
+# ---------------------------------------------------------------------------
+# Extraction: a checksum-verified but CORRUPT archive must abort cleanly
+# ---------------------------------------------------------------------------
+
+
+class TestCorruptArchiveFailsClosed:
+    """zlib.error / EOFError / ValueError from a damaged deflate stream are not
+    tarfile.TarError or OSError, so they used to escape as a raw traceback."""
+
+    @pytest.mark.parametrize(
+        "exc_factory",
+        [
+            lambda: __import__("zlib").error("corrupt deflate stream"),
+            lambda: EOFError("compressed file ended before the end-of-stream marker"),
+            lambda: ValueError("invalid header"),
+        ],
+    )
+    def test_corrupt_archive_raises_release_structure_error(
+        self, monkeypatch, exc_factory
+    ) -> None:
+        payload = b"not really a tarball"
+        digest = hashlib.sha256(payload).hexdigest()
+        checksum = f"{digest}  {install.EXPECTED_TARBALL_FILENAME}\n".encode()
+
+        def fake_download(url, token, timeout=None):
+            if "SHA256SUMS" in url:
+                return checksum, None
+            return payload, None
+
+        monkeypatch.setattr(install, "_download_bytes", fake_download)
+
+        def boom(*args, **kwargs):
+            raise exc_factory()
+
+        monkeypatch.setattr(install.tarfile, "open", boom)
+
+        with pytest.raises(install.ReleaseStructureError):
+            install._download_release_source(
+                "https://example/x.tar.gz", "https://example/SHA256SUMS.txt", None
+            )
+
+
+# ---------------------------------------------------------------------------
+# Checksum parsing: strict 64-hex + conflicting duplicates
+# ---------------------------------------------------------------------------
+
+
+class TestParseChecksumStrictness:
+    def test_conflicting_duplicate_entries_reject_the_file(self) -> None:
+        a = "a" * 64
+        b = "b" * 64
+        text = f"{a}  f.tar.gz\n{b}  f.tar.gz\n".encode()
+        # Self-contradictory file → refuse to trust either line (parity with
+        # the npx installer's parseChecksums).
+        assert install._parse_checksum(text, "f.tar.gz") is None
+
+    def test_identical_duplicate_entries_are_fine(self) -> None:
+        a = "a" * 64
+        text = f"{a}  f.tar.gz\n{a}  ./f.tar.gz\n".encode()
+        assert install._parse_checksum(text, "f.tar.gz") == a
+
+    def test_plus_prefixed_digest_is_skipped(self) -> None:
+        # int(digest, 16) used to accept "+aaa…"; a real digest never has it.
+        text = f"+{'a' * 63}  f.tar.gz\n".encode()
+        assert install._parse_checksum(text, "f.tar.gz") is None
+
+
+# ---------------------------------------------------------------------------
+# init_config must create the TARGET directory (mkstemp needs it)
+# ---------------------------------------------------------------------------
+
+
+class TestInitConfigCreatesTargetDir:
+    def test_missing_target_directory_is_created(self, tmp_path: Path) -> None:
+        source = tmp_path / "src"
+        (source / "config").mkdir(parents=True)
+        (source / "config" / "iterate.config.yaml").write_text(
+            "goal: test\n", encoding="utf-8"
+        )
+        target = tmp_path / "deeply" / "nested" / "proj"
+        assert not target.exists()
+        assert install.init_config(target, source) == 0
+        assert (target / "iterate.config.yaml").read_text(encoding="utf-8") == "goal: test\n"
+
+
+# ---------------------------------------------------------------------------
+# prompt_dimensions must preserve the recorded ORDER on default/EOF
+# ---------------------------------------------------------------------------
+
+
+class TestPromptDimensionsOrderStable:
+    def test_empty_answer_keeps_original_order(self) -> None:
+        current = ["security", "correctness"]
+        assert install.prompt_dimensions(current, input_func=lambda _: "") == current
+
+    def test_eof_keeps_original_order(self) -> None:
+        current = ["security", "correctness"]
+
+        def eof(_prompt: str) -> str:
+            raise EOFError
+
+        assert install.prompt_dimensions(current, input_func=eof) == current
+
+
+# ---------------------------------------------------------------------------
+# Exit-code contract: usage error → 2
+# ---------------------------------------------------------------------------
+
+
+class TestMainUsageExitCodes:
+    def test_no_subcommand_is_usage_error(self, capsys) -> None:
+        assert install.main([]) == 2
+        capsys.readouterr()

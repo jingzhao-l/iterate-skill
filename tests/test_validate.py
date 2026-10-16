@@ -1739,7 +1739,9 @@ class TestMain:
         assert validate.main(["decisions", str(path)]) == 0
 
     def test_unknown_command(self) -> None:
-        assert validate.main(["unknown", "foo"]) == 1
+        # Usage error → exit 2 (contract: 2 = invocation is wrong, 1 = the
+        # validation ran and found problems).
+        assert validate.main(["unknown", "foo"]) == 2
 
     def test_dimensions_subcommand(self, tmp_path: Path) -> None:
         dimensions_dir = tmp_path / "dimensions"
@@ -1761,7 +1763,8 @@ class TestMain:
         assert validate.main(["dimensions", str(tmp_path / "nope")]) == 1
 
     def test_missing_arguments(self) -> None:
-        assert validate.main([]) == 1
+        # Usage error → exit 2 (see exit-code contract).
+        assert validate.main([]) == 2
 
 
 class TestSkillMarkdownFile:
@@ -1835,9 +1838,9 @@ class TestMainStdioUtf8:
         try:
             validate.sys.stdout = Broken()
             validate.sys.stderr = Raises()
-            # Usage error, exit 1, and crucially no crash from either stream
+            # Usage error, exit 2, and crucially no crash from either stream
             # refusing (or lacking) reconfigure.
-            assert validate.main([]) == 1
+            assert validate.main([]) == 2
         finally:
             validate.sys.stdout, validate.sys.stderr = real_out, real_err
 
@@ -1886,3 +1889,101 @@ class TestScopeChunkSizeMinimum:
             "iterate_cli/data/config.schema.json is stale — re-copy it from "
             "config/config.schema.json"
         )
+
+
+# ---------------------------------------------------------------------------
+# Whitelist entry handling parity with iterate_cli.doctor
+# ---------------------------------------------------------------------------
+
+
+class TestWhitelistEntryStripping:
+    """`command_whitelist` entries are stripped before the syntax check and the
+    prefix match, mirroring doctor. An un-stripped entry was syntactically
+    accepted but could never prefix-match a real command, so doctor
+    ("compliant") and validate.py ("rejects everything") disagreed on one
+    config."""
+
+    def test_padded_entry_is_accepted_and_used_for_matching(self) -> None:
+        errors = validate.validate_command_whitelist(
+            {
+                "validation": {
+                    "command_whitelist": ["  pytest  "],
+                    "commands": {"python": ["pytest -q"]},
+                }
+            }
+        )
+        # Before the fix the un-stripped prefix never matched the command, so
+        # this reported a misleading "not whitelisted" rejection.
+        assert errors == []
+
+    def test_space_only_entry_is_rejected(self) -> None:
+        """A whitespace-only prefix would make EVERY command "whitelisted"."""
+        errors = validate.validate_command_whitelist(
+            {"validation": {"command_whitelist": ["   "]}}
+        )
+        assert errors
+        assert any("empty after stripping" in e for e in errors)
+
+    def test_metachar_entry_still_rejected(self) -> None:
+        errors = validate.validate_command_whitelist(
+            {"validation": {"command_whitelist": ["pytest;rm -rf /"]}}
+        )
+        assert errors
+
+
+class TestDimensionSetsUnhashableAndScalar:
+    """Hand-edited dimension_sets must not crash set() and must not be split
+    into single characters."""
+
+    def test_unhashable_member_does_not_crash(self) -> None:
+        errors = validate.validate_dimension_sets(
+            {
+                "dimension_sets": {
+                    "quick": {"dimensions": ["correctness", ["nested"]]},
+                }
+            }
+        )
+        assert any("list of strings" in e for e in errors)
+
+    def test_scalar_dimensions_is_rejected_not_iterated(self) -> None:
+        errors = validate.validate_dimension_sets(
+            {"dimension_sets": {"quick": {"dimensions": "correctness"}}}
+        )
+        assert any("non-empty list" in e for e in errors)
+
+
+class TestPersonalizationConsistencyScalarAndUnhashable:
+    """`validate_personalization_consistency` used `set(config["dimensions"])`:
+    a scalar string became a set of CHARACTERS (junk "not enabled" errors) and
+    an unhashable member raised TypeError."""
+
+    def test_unhashable_member_does_not_crash(self) -> None:
+        errors = validate.validate_personalization_consistency(
+            {
+                "dimensions": ["correctness", ["nested"]],
+                "personalization": {"fix_priority_order": ["security"]},
+            }
+        )
+        # Only real dimension names are cross-checked: "security" is not among
+        # the enabled ones, and the unhashable member is simply ignored.
+        assert any("security" in e for e in errors)
+
+    def test_scalar_dimensions_does_not_produce_char_junk(self) -> None:
+        errors = validate.validate_personalization_consistency(
+            {
+                "dimensions": "correctness",
+                "personalization": {"fix_priority_order": ["correctness"]},
+            }
+        )
+        # A non-list `dimensions` is skipped entirely (the JSON-schema pass
+        # reports the structural problem) — no per-character set junk.
+        assert errors == []
+
+    def test_dict_dimensions_does_not_crash(self) -> None:
+        errors = validate.validate_personalization_consistency(
+            {
+                "dimensions": {"a": 1},
+                "personalization": {"fix_priority_order": ["correctness"]},
+            }
+        )
+        assert errors == []
