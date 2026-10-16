@@ -34,6 +34,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -1531,8 +1532,17 @@ def _fetch_latest_release_info(
         )
     except http.client.HTTPException as exc:
         return None, f"GitHub API connection error: {exc}"
+    except OSError as exc:
+        # Bare OSError catches what the specific handlers above cannot:
+        # ConnectionResetError / ssl.SSLError raised mid-read() are OSError
+        # subclasses but NOT URLError subclasses, and used to escape this
+        # function as an unhandled traceback (updater.py already had this
+        # guard; install.py must not regress the same path).
+        return None, f"GitHub API connection error: {exc}"
     except json.JSONDecodeError as exc:
         return None, f"GitHub API returned invalid JSON: {exc}"
+    except Exception as exc:  # noqa: BLE001 — CLI boundary: clean reason, never traceback
+        return None, f"GitHub API request failed: {exc}"
 
     if not isinstance(payload, list):
         return None, "GitHub API returned an unexpected payload shape"
@@ -1696,8 +1706,16 @@ def _download_bytes(
         return None, f"request timed out after {timeout}s"
     except http.client.HTTPException as exc:
         return None, f"connection error: {exc}"
+    except OSError as exc:
+        # ConnectionResetError / ssl.SSLError raised mid-read() are OSError
+        # subclasses but NOT URLError subclasses; without this arm a dropped
+        # connection surfaced as an unhandled traceback instead of a clean
+        # error reason (updater.py's twin function already had this guard).
+        return None, f"connection error: {exc}"
     except ValueError as exc:
         return None, f"invalid response: {exc}"
+    except Exception as exc:  # noqa: BLE001 — CLI boundary: clean reason, never traceback
+        return None, f"download failed: {exc}"
 
 
 def _is_github_api_url(url: str) -> bool:
@@ -1754,6 +1772,12 @@ def _urlopen(request: urllib.request.Request, timeout: int | None = None):
     return _safe_opener().open(request, timeout=timeout)
 
 
+#: A SHA-256 digest is exactly 64 hex characters. Used by the checksum parser
+#: so malformed entries (``+abc…``, ``0xabc…``, short strings) are skipped
+#: exactly as the npx installer's ``parseChecksums`` skips them.
+_SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
 def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
     """Parse a SHA256SUMS-style file and return the hash for ``filename``.
 
@@ -1763,12 +1787,15 @@ def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
     malformed entry (skipped) rather than compared as if it were a real hash.
     A body that is not valid UTF-8 is treated as malformed too (None) instead
     of leaking an uncaught ``UnicodeDecodeError``; the caller then refuses to
-    proceed.
+    proceed. Two conflicting digests for the same basename also yield None:
+    a self-contradictory checksum file must never be trusted (parity with the
+    npx installer's parseChecksums).
     """
     try:
         text = checksum_text.decode("utf-8")
     except UnicodeDecodeError:
         return None
+    found: str | None = None
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -1777,11 +1804,12 @@ def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
         if len(parts) != 2:
             continue
         digest, name = parts
-        try:
-            int(digest, 16)
-        except ValueError:
-            continue
-        if len(digest) != 64:
+        # Strict 64-hex match: ``int(digest, 16)`` also accepted forms like
+        # "+abc…", "-abc…" and "0xabc…" that can never be a real digest, so the
+        # two installers disagreed about the same malformed file (JS uses
+        # ^[0-9a-fA-F]{64}$). Either way the comparison would fail closed, but
+        # the error text differed ("mismatch" vs "not found in checksum file").
+        if not _SHA256_HEX_RE.match(digest):
             continue
         # Handle "HASH  filename", "HASH *filename" and "HASH ./filename"
         # formats (the ``./`` prefix is common for tarballs stored at repo root).
@@ -1791,9 +1819,17 @@ def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
         # asset instead of being rejected as "not found".
         name = name.lstrip("*").strip()
         name = name.removeprefix("./")
-        if os.path.basename(name) == filename:
-            return digest.lower()
-    return None
+        if os.path.basename(name) != filename:
+            continue
+        candidate = digest.lower()
+        if found is not None and found != candidate:
+            # Two CONFLICTING entries for the same asset make the file
+            # untrustworthy (the npx installer rejects it outright): return
+            # None so the caller refuses the release, instead of silently
+            # trusting whichever line happened to come first.
+            return None
+        found = candidate
+    return found
 
 
 def _download_release_source(
@@ -1802,8 +1838,11 @@ def _download_release_source(
     """Download a release tarball, verify checksum (mandatory), and extract it.
 
     Refuses to proceed if ``checksum_url`` is None or if the checksum
-    cannot be verified. This prevents supply-chain attacks via
-    unverified tarballs.
+    cannot be verified. Because the SHA256SUMS file is fetched from the
+    SAME release as the tarball, this guards against transport corruption
+    and asset mis-pairing; it cannot defend against a release that is
+    itself compromised at the source (that trust anchor is the GitHub
+    release channel plus the optional GPG signatures).
 
     Raises:
         ReleaseIntegrityError: When the release was CHECKSUMMED but failed
@@ -1879,10 +1918,14 @@ def _download_release_source(
                     f"found {len(skill_roots)}."
                 )
             return skill_roots[0]
-    except (tarfile.TarError, OSError):
+    except (tarfile.TarError, OSError, EOFError, ValueError, zlib.error):
         # A checksum-verified archive that cannot be extracted is a broken
         # release, not a network flake: abort instead of falling back to local
-        # and silently installing a different source tree.
+        # and silently installing a different source tree. zlib.error (corrupt
+        # deflate stream) / EOFError (truncated gzip) / ValueError are NOT
+        # TarError/OSError subclasses — without them a damaged-but-correctly-
+        # checksummed archive raised a raw traceback (same fix as
+        # updater._download_verified_release; keep the two in sync).
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise ReleaseStructureError("release tarball could not be extracted.")
 
@@ -2270,7 +2313,11 @@ def init_config(target: Path, source: Path) -> int:
         return 1
 
     content = master_path.read_text(encoding="utf-8")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    # mkdir the TARGET dir itself, not its parent: mkstemp(dir=target)
+    # requires target to exist. The parent-level mkdir only masked this for
+    # callers that pre-created the directory (main checks target.exists()),
+    # so any direct call — tests, refactors — crashed with FileNotFoundError.
+    target.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=target, prefix=".iterate.config.yaml.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -2592,7 +2639,11 @@ def prompt_int_in_range(
 
 def prompt_dimensions(current: object, input_func: InputFunc = input) -> list[str]:
     """Interactively select enabled dimensions."""
-    current_set = set(current) if isinstance(current, list) else set(DIMENSION_CHOICES)
+    # Preserve the ORDER of the current selection: the EOF/empty-answer paths
+    # below used to round-trip through a set, so the same config produced a
+    # differently-ordered `dimensions:` list on every run (YAML diff noise).
+    ordered_current = list(dict.fromkeys(current)) if isinstance(current, list) else list(DIMENSION_CHOICES)
+    current_set = set(ordered_current)
     selected: list[str] = []
     _tui_print("")
     _tui_print("Select review dimensions (enter numbers/names, comma-separated):", style="iterate.primary")
@@ -2603,9 +2654,9 @@ def prompt_dimensions(current: object, input_func: InputFunc = input) -> list[st
         answer = input_func("Dimensions: ").strip()
     except EOFError:
         # EOF mid-prompt: keep the current dimension selection.
-        return _ensure_non_empty_dimensions(list(current_set))
+        return _ensure_non_empty_dimensions(ordered_current)
     if not answer:
-        return _ensure_non_empty_dimensions(list(current_set))
+        return _ensure_non_empty_dimensions(ordered_current)
 
     for part in answer.split(","):
         part = part.strip()
@@ -2882,7 +2933,11 @@ def main(argv: list[str] | None = None, source: Path | None = None) -> int:
 
     if not args.command:
         build_parser().print_help()
-        return 1
+        # Usage error (no subcommand given), matching argparse's own exit 2
+        # for bad flags in this same entry point — previously 1 made "the
+        # user mistyped the invocation" indistinguishable from a business
+        # failure that a retry/fix loop should act on.
+        return 2
 
     if args.command == "install":
         if not args.target.exists():

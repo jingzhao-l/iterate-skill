@@ -414,3 +414,42 @@ class TestCheckStreamRouting:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+class TestCheckPackageMissingPath:
+    def test_nonexistent_path_reports_cleanly(self, capsys) -> None:
+        # Used to reach os.path.getsize() inside validate_zip and surface a
+        # bare FileNotFoundError traceback instead of a verdict.
+        rc = publish_qoder.check_package("/definitely/not/here/package.zip")
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "no such file or directory" in (captured.out + captured.err)
+
+
+class TestArchiveScratchFileStaysOutOfPackage:
+    def test_no_archive_scratch_file_left_in_destination(self, tmp_path) -> None:
+        """The `git archive -o` scratch zip must not land inside the staged tree.
+
+        It used to be written as ``<dst>/.archive-src.zip``; an interrupted run
+        left it in the very tree that gets packaged.
+        """
+        dst = tmp_path / "stage"
+        dst.mkdir()
+        publish_qoder._git_archive_extract(str(dst), [])
+        assert (dst / "SKILL.md").is_file()
+        assert not (dst / ".archive-src.zip").exists()
+        assert list(dst.glob("*.zip")) == []
+
+    def test_failed_archive_leaves_destination_clean(self, tmp_path, monkeypatch) -> None:
+        dst = tmp_path / "stage"
+        dst.mkdir()
+
+        class _Result:
+            returncode = 1
+            stderr = b"boom"
+            stdout = b""
+
+        monkeypatch.setattr(publish_qoder.subprocess, "run", lambda *a, **k: _Result())
+        with pytest.raises(RuntimeError):
+            publish_qoder._git_archive_extract(str(dst), [])
+        assert list(dst.iterdir()) == []

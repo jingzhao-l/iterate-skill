@@ -189,20 +189,31 @@ def _git_archive_extract(dst: str, excludes: Iterable[str]) -> list[str]:
     """
     specs = [f":!{pat}" for pat in (*MANDATORY_EXCLUDES, *excludes)]
     warnings: list[str] = []
-    tmp_zip = os.path.join(dst, ".archive-src.zip")
-    cmd = ["git", "archive", "--format=zip", "-o", tmp_zip, "HEAD", *specs]
-    # Run against the repo root explicitly: `git archive` pathspecs (the
-    # `:!exclude` specs above) are matched relative to the current directory,
-    # so invoking this script from a subdirectory would silently fail to
-    # exclude `harness/` and ship it in the package.
-    proc = subprocess.run(
-        cmd, cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False
-    )
-    if proc.returncode != 0:
-        raise RuntimeError("git archive failed; are you in the repo root?")
-    with zipfile.ZipFile(tmp_zip) as archive:
-        archive.extractall(dst, members=_safe_members(archive, dst))
-    os.remove(tmp_zip)
+    # Stage the archive OUTSIDE dst: it used to live at "<dst>/.archive-src.zip",
+    # so an interrupted run (or a crash between extract and remove) left a stray
+    # ~1 MB zip inside the very tree that gets packaged and shipped.
+    fd, tmp_zip = tempfile.mkstemp(prefix="iterate-archive-", suffix=".zip")
+    os.close(fd)
+    try:
+        cmd = ["git", "archive", "--format=zip", "-o", tmp_zip, "HEAD", *specs]
+        # Run against the repo root explicitly: `git archive` pathspecs (the
+        # `:!exclude` specs above) are matched relative to the current directory,
+        # so invoking this script from a subdirectory would silently fail to
+        # exclude `harness/` and ship it in the package.
+        proc = subprocess.run(
+            cmd, cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False
+        )
+        if proc.returncode != 0:
+            raise RuntimeError("git archive failed; are you in the repo root?")
+        with zipfile.ZipFile(tmp_zip) as archive:
+            archive.extractall(dst, members=_safe_members(archive, dst))
+    finally:
+        try:
+            os.remove(tmp_zip)
+        except OSError:
+            # Best-effort: the file lives in the system temp dir now, so a
+            # leftover is harmless and never enters a package.
+            pass
     return warnings
 
 
@@ -566,6 +577,11 @@ def validate_zip(zip_path: str) -> tuple[list[str], list[str], int]:
 
 def check_package(path: str) -> int:
     """CLI for the ``check`` subcommand."""
+    if not os.path.exists(path):
+        # A typo'd path used to reach os.path.getsize() inside validate_zip and
+        # surface as a bare FileNotFoundError traceback instead of a verdict.
+        print(f"error: no such file or directory: {path}", file=sys.stderr)
+        return 1
     if os.path.isdir(path):
         errors, warnings = validate_tree(path)
     else:

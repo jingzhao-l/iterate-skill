@@ -357,8 +357,20 @@ def validate_command_whitelist(config: dict[str, Any]) -> list[str]:
     # matched against trustworthy prefixes; bad entries are reported and dropped.
     safe_whitelist: list[str] = []
     for idx, entry in enumerate(whitelist):
-        if isinstance(entry, str) and _WHITELIST_ENTRY_PATTERN.match(entry):
-            safe_whitelist.append(entry)
+        # Strip before BOTH the syntax check and the prefix match, mirroring
+        # iterate_cli.doctor._check_whitelist_compliance: " pytest " is
+        # syntactically valid but never prefix-matches a real command
+        # un-stripped, so the two gates used to reach opposite verdicts for
+        # one config (doctor: compliant / validate.py: rejects everything).
+        stripped = entry.strip() if isinstance(entry, str) else entry
+        if isinstance(entry, str) and stripped and _WHITELIST_ENTRY_PATTERN.match(stripped):
+            safe_whitelist.append(stripped)
+        elif isinstance(entry, str) and _WHITELIST_ENTRY_PATTERN.match(entry):
+            # Space-only entry: syntactically valid, but an empty prefix would
+            # make every command "whitelisted" — reject instead of trusting it.
+            errors.append(
+                f"validation.command_whitelist[{idx}] is empty after stripping: {entry!r}"
+            )
         else:
             errors.append(
                 f"validation.command_whitelist[{idx}] contains unsafe characters: {entry!r}"
@@ -539,7 +551,7 @@ def validate_dimension_sets(config: dict[str, Any]) -> list[str]:
             for d in dims:
                 if isinstance(d, str) and d not in enum:
                     errors.append(f"dimension_sets.{name}.dimensions has unknown dimension {d!r}")
-        seen = set(dims)
+        seen = {d for d in dims if isinstance(d, str)}
         focus = spec.get("focus")
         if focus is not None:
             if not isinstance(focus, dict):
@@ -623,7 +635,16 @@ def validate_personalization_consistency(config: dict[str, Any]) -> list[str]:
     if not isinstance(personalization, dict):
         return errors
 
-    enabled_dims = set(config.get("dimensions") or [])
+    # Non-list / non-string entries must not reach `set()`: an unhashable
+    # member (nested list/dict from a hand edit) raised TypeError out of the
+    # consistency checker, and a scalar string was iterated into a set of
+    # single characters, producing junk "not in enabled dimensions" errors.
+    # The JSON-schema pass already reports the structural problem; here we
+    # only cross-check the entries that are actually dimension names.
+    raw_dims = config.get("dimensions")
+    if not isinstance(raw_dims, list):
+        return errors
+    enabled_dims = {d for d in raw_dims if isinstance(d, str)}
     if not enabled_dims:
         return errors
 
@@ -751,7 +772,10 @@ def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     if len(args) < 2:
         print(__doc__, file=sys.stderr)
-        return 1
+        # Usage error → 2, matching the exit-code contract (1 = business
+        # failure/"validation found problems", 2 = the invocation itself is
+        # wrong and retrying without fixing it is pointless).
+        return 2
 
     command, target_str = args[0], args[1]
     target = Path(target_str)
@@ -780,7 +804,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
         print(__doc__, file=sys.stderr)
-        return 1
+        return 2
 
     if errors:
         print_errors(str(target), errors)
