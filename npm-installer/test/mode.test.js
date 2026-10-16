@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode, parseChecksums, enforceDownloadedSize, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, buildAuthFlags, InstallerError, runCommand, runPythonInstall } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums, enforceDownloadedSize, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, validateTokenShape, buildAuthFlags, InstallerError, runCommand, runPythonInstall } = require('../lib/installer');
 
 // 64-char lowercase hex digest, as sha256 actually produces.
 const H = 'a'.repeat(64);
@@ -345,6 +345,32 @@ async function run() {
   assert.strictEqual(parseArgs(['--token', '  gh_xyz ']).token, 'gh_xyz', '--token value should be trimmed');
 
   console.log('mode.test.js: all normalizeToken tests passed');
+
+  // validateTokenShape: parity with install.py's _validate_github_token — a
+  // typo'd PAT must fail fast (clear message) instead of a later 401/403.
+  // Accepts blank (no token) and the documented prefixes; rejects bad shapes.
+  assert.strictEqual(validateTokenShape(null), null, 'no token is valid (auth simply omitted)');
+  assert.strictEqual(validateTokenShape(''), null, 'blank token is treated as absent');
+  assert.strictEqual(
+    validateTokenShape(`ghp_${'a'.repeat(36)}`),
+    null,
+    'a well-formed legacy PAT is accepted',
+  );
+  assert.strictEqual(
+    validateTokenShape(`github_pat_${'A'.repeat(30)}`),
+    null,
+    'a fine-grained PAT is accepted',
+  );
+  assert.ok(validateTokenShape('short') !== null, 'a too-short token is rejected');
+  assert.ok(
+    validateTokenShape(`abcdefghijklmnopqrstuvwxyz0123456789`) !== null,
+    'a correctly sized token without a known prefix is rejected',
+  );
+  assert.ok(
+    validateTokenShape(`ghp_${'a'.repeat(300)}`) !== null,
+    'an over-long token is rejected',
+  );
+  console.log('mode.test.js: all validateTokenShape tests passed');
 
   // buildAuthFlags: the PAT must only ride on api.github.com requests, and
   // even there redirects must be forbidden so the raw -H Authorization header

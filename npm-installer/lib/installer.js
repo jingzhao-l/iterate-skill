@@ -67,6 +67,23 @@ const JSON_MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
 const CHECKSUMS_MAX_BYTES = 1 * 1024 * 1024; // 1 MiB
 const TARBALL_MAX_BYTES = 100 * 1024 * 1024; // 100 MiB
 
+// Hard cap on tarball LISTING output (``tar -tzf`` / ``tar -tvzf``). The
+// listing must be seen IN FULL: the link-rejection, single-top-level-directory
+// and path-escape guards in extractTarball are meaningless on a truncated view
+// (a 1 MiB TailBuffer used to drop the OLDEST entries, exactly where a tampered
+// archive hides its symlink). 16 MiB is far beyond the real release (a few
+// hundred names) yet still bounded; exceeding it is fail-closed, never a
+// silent truncation.
+const MAX_LISTING_CHARS = 16 * 1024 * 1024;
+
+// Post-extraction size budget, mirroring scripts/install.py (which enforces it
+// during extraction). JS extraction shells out to ``tar -xzf``, which has no
+// such bound, so a highly compressed "decompression bomb" could expand to
+// many GiB on disk before anything noticed. The extracted tree is re-measured
+// and removed when it exceeds these ceilings.
+const MAX_EXTRACTED_BYTES = 500 * 1024 * 1024; // 500 MiB total
+const MAX_EXTRACTED_MEMBER_BYTES = 256 * 1024 * 1024; // 256 MiB per file
+
 // A strict upper bound for an interactive yes/no prompt. On EOF (piped stdin
 // that ends) or a TTY that stops responding, the prompt must fall back to the
 // default rather than hang the installer forever.
@@ -284,6 +301,32 @@ function normalizeToken(raw) {
   return trimmed === '' ? null : trimmed;
 }
 
+// GitHub PAT prefixes accepted by scripts/install.py (kept in sync so the two
+// installers agree about what a "malformed token" is). A typo'd token used to
+// be sent verbatim and surfaced only as a confusing 401/403 later.
+const GITHUB_TOKEN_PREFIXES = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_'];
+
+/**
+ * Return an error message when ``token`` cannot be a GitHub PAT, else null.
+ * Mirrors install.py's ``_validate_github_token`` (length + prefix whitelist).
+ */
+function validateTokenShape(token) {
+  if (!token) return null;
+  if (token.length < 20 || token.length > 256) {
+    return (
+      'GitHub token looks malformed: expected a PAT (starts with ghp_/gho_/github_pat_ etc.) ' +
+      'of ~40-256 chars, got a very different length.'
+    );
+  }
+  if (!GITHUB_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix))) {
+    return (
+      'GitHub token does not look valid: expected a Personal Access Token starting with ' +
+      'one of (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_). Double-check the --token value.'
+    );
+  }
+  return null;
+}
+
 /**
  * Compose the curl flags that attach the caller's PAT — and only those. The
  * token is never attached to a non-API host; and marking it up differently
@@ -307,7 +350,14 @@ async function fetchJson(url, token) {
   const failFlag = (await supportsCurlFailWithBody()) ? '--fail-with-body' : '--fail';
   const args = ['-sSL', failFlag, '--max-time', CURL_MAX_TIME_SECONDS, '--max-filesize', String(JSON_MAX_BYTES), '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'User-Agent: iterate-skill-installer', ...buildAuthFlags(url, token)];
   args.push(url);
-  const stdout = await runCommand('curl', args);
+  // stdoutMustBeComplete with an explicit cap: the default 1 MiB TailBuffer
+  // would truncate a large /releases payload and JSON.parse then failed with a
+  // baffling "Unexpected end of JSON input". The cap now matches the
+  // --max-filesize ceiling and an oversized body reports itself as such.
+  const stdout = await runCommand('curl', args, {
+    stdoutCap: JSON_MAX_BYTES,
+    stdoutMustBeComplete: true,
+  });
   try {
     return JSON.parse(stdout);
   } catch (err) {
@@ -487,6 +537,33 @@ class TailBuffer {
   }
 }
 
+/**
+ * Fail-closed output buffer for output that must be observed COMPLETELY
+ * (tarball listings, API JSON). Unlike TailBuffer — which keeps the newest
+ * text and is right for diagnostics — this one records that the cap was
+ * exceeded instead of discarding the oldest content, because a partially seen
+ * SECURITY listing is worse than no listing at all.
+ */
+class FullBuffer {
+  constructor(cap) {
+    this.cap = cap;
+    this.text = '';
+    this.overflowed = false;
+  }
+  push(chunk) {
+    if (!chunk || this.overflowed) return;
+    if (this.text.length + chunk.length > this.cap) {
+      this.overflowed = true;
+      this.text = (this.text + chunk).slice(0, this.cap);
+      return;
+    }
+    this.text += chunk;
+  }
+  toString() {
+    return this.text;
+  }
+}
+
 // Default ceiling for a single child command: 10 minutes then SIGKILL. Long
 // operations in this file (pip/pipx installs, venv creation) can legitimately
 // take minutes on slow networks, but a wedged child must never hang the
@@ -527,13 +604,23 @@ function killProcessTree(child) {
 }
 
 function runCommand(bin, args, options = {}) {
-  const { timeout = DEFAULT_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
+  const {
+    timeout = DEFAULT_COMMAND_TIMEOUT_MS,
+    // Cap on retained stdout. Diagnostics want a TAIL (newest text); security
+    // listings / parseable payloads want the WHOLE thing or nothing, which is
+    // what ``stdoutMustBeComplete`` switches on.
+    stdoutCap = MAX_CAPTURED_OUTPUT_CHARS,
+    stdoutMustBeComplete = false,
+    ...spawnOptions
+  } = options;
   return new Promise((resolve, reject) => {
     // `detached` on POSIX puts the child in its own process group so the
     // timeout can kill the entire tree, not just the leader. It does not
     // change how we await the child (we never unref it).
     const child = spawn(bin, args, { stdio: 'pipe', detached: IS_POSIX, ...spawnOptions });
-    const stdoutTail = new TailBuffer(MAX_CAPTURED_OUTPUT_CHARS);
+    const stdoutTail = stdoutMustBeComplete
+      ? new FullBuffer(stdoutCap)
+      : new TailBuffer(stdoutCap);
     const stderrTail = new TailBuffer(MAX_CAPTURED_OUTPUT_CHARS);
     child.stdout?.on('data', (data) => stdoutTail.push(data.toString()));
     child.stderr?.on('data', (data) => stderrTail.push(data.toString()));
@@ -566,6 +653,15 @@ function runCommand(bin, args, options = {}) {
         return;
       }
       if (code === 0) {
+        if (stdoutMustBeComplete && stdoutTail.overflowed) {
+          settle(
+            reject,
+            new InstallerError(
+              `${bin} produced more than ${stdoutCap} characters of output; refusing to act on a truncated result.`,
+            ),
+          );
+          return;
+        }
         settle(resolve, stdoutTail.toString());
       } else {
         settle(reject, new InstallerError(`${bin} exited with ${code}: ${stderrTail.toString() || stdoutTail.toString()}`));
@@ -580,13 +676,22 @@ function runCommand(bin, args, options = {}) {
   });
 }
 
-async function rejectLinkEntries(tarballPath) {
+async function rejectLinkEntries(tarballPath, { listingCap = MAX_LISTING_CHARS } = {}) {
   // Inspect the verbose listing and reject any symbolic ("l") or hard ("h")
   // link entry. We deliberately reject *all* links rather than validating
   // their targets: the release tarball contains none, so any link is a sign
   // of a tampered archive and refusing it outright is the safest response to
   // a symlink-escape attempt (see extractTarball above).
-  const verbose = await runCommand('tar', ['-tvzf', tarballPath]);
+  //
+  // stdoutMustBeComplete: this listing is a SECURITY input. The old 1 MiB
+  // tail buffer silently dropped the OLDEST entries, so an archive with enough
+  // filler members to push its listing past the cap hid a symlink/hardlink
+  // entry from this scan entirely (while `tar -xzf` still extracted it).
+  // A listing over the cap now fails closed instead.
+  const verbose = await runCommand('tar', ['-tvzf', tarballPath], {
+    stdoutCap: listingCap,
+    stdoutMustBeComplete: true,
+  });
   for (const line of verbose.split(/\r?\n/)) {
     if (!line) {
       continue;
@@ -605,7 +710,7 @@ async function rejectLinkEntries(tarballPath) {
   }
 }
 
-async function extractTarball(tarballPath, destDir) {
+async function extractTarball(tarballPath, destDir, { listingCap = MAX_LISTING_CHARS } = {}) {
   // Use the system tar command (available on macOS, Linux, and Windows 10+),
   // but defend against path-traversal tarballs: before extracting we list the
   // archive contents and refuse to extract any entry whose resolved path
@@ -626,8 +731,13 @@ async function extractTarball(tarballPath, destDir) {
   const absoluteDest = path.resolve(destDir);
   fs.mkdirSync(absoluteDest, { recursive: true });
 
-  // 1. List archive entries (no extraction yet).
-  const listing = await runCommand('tar', ['-tzf', tarballPath]);
+  // 1. List archive entries (no extraction yet). Must be complete — see
+  //    rejectLinkEntries: every guard below reads THIS listing, and a tail
+  //    buffer would let a big archive hide entries from all of them.
+  const listing = await runCommand('tar', ['-tzf', tarballPath], {
+    stdoutCap: listingCap,
+    stdoutMustBeComplete: true,
+  });
   const entries = listing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (entries.length === 0) {
     throw new InstallerError('Refusing to extract tarball: archive contains no entries.');
@@ -652,7 +762,7 @@ async function extractTarball(tarballPath, destDir) {
   // and bsdtar (macOS): '-' regular, 'd' directory, 'l' symbolic link, 'h'
   // hard link. We only need to detect links, so a cheap first-char scan is
   // sufficient and avoids relying on the rest of the format.
-  await rejectLinkEntries(tarballPath);
+  await rejectLinkEntries(tarballPath, { listingCap });
 
   // 2. Enforce the single-top-level-directory contract required by
   //    --strip-components=1.
@@ -690,6 +800,77 @@ async function extractTarball(tarballPath, destDir) {
 
   // 4. Now extract safely — the content has been validated above.
   await runCommand('tar', ['-xzf', tarballPath, '-C', absoluteDest, '--strip-components=1']);
+
+  // 5. Decompression-bomb guard (mirrors scripts/install.py). ``tar`` itself
+  //    has no size bound, and ``--max-filesize`` on the download only limits
+  //    the COMPRESSED size, so a small, highly compressible archive could have
+  //    expanded to many GiB already. Re-measure the extracted tree and fail
+  //    closed (removing it) when it exceeds the budget.
+  enforceExtractedSize(absoluteDest);
+}
+
+/**
+ * Fail closed when an extracted tree exceeds the size budget.
+ *
+ * Separate, injectable-budget helper so the bomb guard is unit-testable
+ * without writing 500 MiB to disk. Removes ``root`` on violation.
+ */
+function enforceExtractedSize(
+  root,
+  { maxTotal = MAX_EXTRACTED_BYTES, maxMember = MAX_EXTRACTED_MEMBER_BYTES } = {},
+) {
+  const extracted = measureTree(root);
+  if (extracted.total > maxTotal || extracted.largest > maxMember) {
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch {
+      // Best effort: the size violation below is the actionable message.
+    }
+    throw new InstallerError(
+      `Refusing to keep extracted tarball: expanded size ${extracted.total} bytes ` +
+        `(largest member ${extracted.largest} bytes) exceeds the safety budget ` +
+        `(${maxTotal} total / ${maxMember} per file).`,
+    );
+  }
+  return extracted;
+}
+
+/**
+ * Total and largest-file sizes of a directory tree.
+ *
+ * Symlinks are skipped (``lstat``): following them could walk outside the
+ * extraction directory, and the release ships none (any link was already
+ * rejected before extraction).
+ */
+function measureTree(root) {
+  let total = 0;
+  let largest = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue; // Unreadable entry: nothing to account for.
+    }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      try {
+        const size = fs.lstatSync(full).size;
+        total += size;
+        if (size > largest) largest = size;
+      } catch {
+        // Raced/removed entry: skip.
+      }
+    }
+  }
+  return { total, largest };
 }
 
 function runPythonInstall(pythonBin, installScript, args, options = {}) {
@@ -792,7 +973,11 @@ async function installCli(pythonBin, sourceDir) {
     }
   } catch (err) {
     warning(`Could not install iterate CLI: ${err.message}`);
-    hint('Install it later with: pipx install <repo>  or  pip install .');
+    // Not on PyPI: the only public install paths are the repo (or its
+    // release source dir) — the old "pipx install <repo>" placeholder was not
+    // copy-pasteable at all.
+    hint('Install it later with:  pipx install "git+https://github.com/jingzhao-l/iterate-skill.git"');
+    hint('  (or, from a downloaded release/repo root:  pipx install .  /  pip install .)');
     return;
   }
 
@@ -854,8 +1039,14 @@ async function resolveInstallMode(options, ask = askYesNo) {
   const cwd = process.cwd();
   const home = os.homedir();
   if (cwd !== home) {
+    // defaultNo = true (kept as the behavior AND made visible in the prompt):
+    // the question used to render "[Y/n]" while Enter, EOF and the timeout all
+    // resolved to No — a user pressing Enter to accept was silently sent to a
+    // global install instead. Now the prompt shows "[y/N]" and matches.
     const answer = await ask(
-      `当前目录 ${cwd} 看起来是项目目录，是否安装到此项目？(输入 n 则全局安装到用户目录)`,
+      `Install into this project? / 当前目录 ${cwd} 看起来是项目目录，是否安装到此项目？` +
+        ' (n = install globally to your home directory / 全局安装)',
+      true,
     );
     if (answer) {
       options.target = cwd;
@@ -1018,6 +1209,14 @@ async function main(options = {}) {
     noCli = false,
   } = options;
 
+  // Fail fast on a malformed PAT (same rule as scripts/install.py): sending a
+  // typo'd token produced a confusing 401/403 only AFTER the API round-trip.
+  const tokenError = validateTokenShape(token);
+  if (tokenError) {
+    error(tokenError);
+    return 1;
+  }
+
   step('Checking environment');
   const pythonBin = await findPython();
   if (!pythonBin) {
@@ -1045,17 +1244,37 @@ async function main(options = {}) {
   // that is a stable release carrying BOTH assets we need, so a release from
   // another sub-project (or one whose assets are still uploading) is skipped
   // rather than mistaken for the latest skill release.
-  const release = Array.isArray(releases)
-    ? releases.find(
-        (r) =>
-          r &&
-          !r.draft &&
-          !r.prerelease &&
-          Array.isArray(r.assets) &&
-          r.assets.some((a) => a && a.name === TARBALL_ASSET_NAME) &&
-          r.assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME)
-      )
-    : releases;
+  if (!Array.isArray(releases)) {
+    // A non-array payload (an error object, a single release object) used to
+    // be used AS the release and then failed with the misleading "Latest
+    // release has no tag." — say what actually went wrong.
+    error('GitHub API returned an unexpected payload (expected an array of releases).');
+    hint('Retry, or set GITHUB_TOKEN if this is a rate-limit artefact.');
+    return 1;
+  }
+  // Announce releases that carry the tarball but not the checksum pair: they
+  // are skipped, which silently installs an OLDER release when the newest one
+  // is mid-upload. Saying so out loud keeps "installed an old version" visible.
+  for (const candidate of releases) {
+    if (!candidate || candidate.draft || candidate.prerelease) continue;
+    const assets = Array.isArray(candidate.assets) ? candidate.assets : [];
+    const hasTarball = assets.some((a) => a && a.name === TARBALL_ASSET_NAME);
+    const hasChecksums = assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME);
+    if (hasTarball && !hasChecksums) {
+      warning(
+        `Skipping release ${candidate.tag_name}: has ${TARBALL_ASSET_NAME} but no ${CHECKSUMS_ASSET_NAME}.`,
+      );
+    }
+  }
+  const release = releases.find(
+    (r) =>
+      r &&
+      !r.draft &&
+      !r.prerelease &&
+      Array.isArray(r.assets) &&
+      r.assets.some((a) => a && a.name === TARBALL_ASSET_NAME) &&
+      r.assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME),
+  );
 
   if (!release) {
     error(
@@ -1139,14 +1358,19 @@ async function main(options = {}) {
       `\x1b[32m✓\x1b[0m SHA256 checksum verified`,
     ]);
 
-    // GPG authenticity check (best-effort, defense-in-depth). The release also
-    // publishes a detached ASCII-armored signature over the tarball. When a
-    // `gpg` binary is present we verify it against the embedded signing key: a
-    // *valid* signature upgrades the release from "integrity-guaranteed" to
-    // "authenticity-guaranteed". If gpg is unavailable we degrade to a warning
-    // (SHA256 already guards integrity); if gpg IS present but the signature
-    // fails, we still install but report it loudly — a failed signature here is
-    // almost always a key-rotation lag, never a hidden fault.
+    // GPG authenticity check (defense-in-depth, fail-closed when it runs). The
+    // release also publishes a detached ASCII-armored signature over the
+    // tarball. When a `gpg` binary is present we verify it against the embedded
+    // signing key: a *valid* signature upgrades the release from
+    // "integrity-guaranteed" to "authenticity-guaranteed". If gpg is
+    // unavailable we degrade to a warning (SHA256 already guards integrity —
+    // that check still stands on its own).
+    //
+    // If gpg IS present and the signature is present but does NOT verify, the
+    // install now FAILS. SHA256SUMS travels in the same release as the tarball,
+    // so an attacker who can replace one can replace both; the pinned public
+    // key is the single anchor they cannot forge. Reporting "signature
+    // invalid" and installing anyway made that anchor decorative.
     if (signatureAsset) {
       const signaturePath = path.join(tmpDir, TARBALL_SIGNATURE_ASSET_NAME);
       try {
@@ -1157,10 +1381,13 @@ async function main(options = {}) {
         if (sig.status === 'verified') {
           success('GPG signature verified.');
         } else if (sig.status === 'invalid') {
-          warning(
-            `GPG signature could NOT be verified (${sig.detail}).\n` +
-              '  SHA256 integrity still passed; re-run after the release key is rotated if this persists.'
+          error(
+            `GPG signature verification FAILED (${sig.detail}) — refusing to install.\n` +
+              '  The tarball was signed with a key that does not match the pinned ' +
+              'iterate-skill signing key: this is either tampering or a key rotation ' +
+              'that this installer version does not know about. Report it before retrying.',
           );
+          return 1;
         } else {
           warning(
             `gpg not available (${sig.detail}); skipping signature check — SHA256 integrity still enforced.`
@@ -1169,6 +1396,13 @@ async function main(options = {}) {
       } catch (err) {
         warning(`Could not download/verify the GPG signature (${err.message}); SHA256 integrity still enforced.`);
       }
+    } else {
+      // Say it out loud: a silent skip meant an operator could believe the
+      // signature layer ran on every install. SHA256 still guards integrity,
+      // but authenticity was NOT verified for this release.
+      warning(
+        'Release publishes no GPG signature asset; authenticity check skipped (SHA256 integrity still enforced).',
+      );
     }
 
     info('Extracting release...');
@@ -1221,7 +1455,7 @@ async function main(options = {}) {
       // Skill-only install: explain how to add the CLI later instead of
       // silently installing it globally.
       hint('Skipped installing the iterate CLI (--no-cli).');
-      hint('Install it later for `iterate onboard` with:  pipx install <repo>  (or)  pip install .');
+      hint('Install it later for `iterate onboard` with:  pipx install "git+https://github.com/jingzhao-l/iterate-skill.git"');
     } else {
       // Install the iterate CLI so `iterate onboard` works right after
       // install. Made explicit up front so skill-only users are not surprised
@@ -1255,6 +1489,7 @@ module.exports = {
   rejectLinkEntries,
   isGithubApiUrl,
   normalizeToken,
+  validateTokenShape,
   buildAuthFlags,
   supportsCurlFailWithBody,
   // Executed under test for the timeout/null-exit-code hardening; retaining
@@ -1262,5 +1497,11 @@ module.exports = {
   runCommand,
   runPythonInstall,
   TailBuffer,
+  FullBuffer,
+  measureTree,
+  enforceExtractedSize,
+  MAX_LISTING_CHARS,
+  MAX_EXTRACTED_BYTES,
+  MAX_EXTRACTED_MEMBER_BYTES,
   DEFAULT_COMMAND_TIMEOUT_MS,
 };
