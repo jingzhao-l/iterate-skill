@@ -32,7 +32,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 sys.path.insert(0, str(REPO_ROOT))
 
-import install  # noqa: I001  (module imported after sys.path setup for scripts/)
+import install
+
+
+@pytest.fixture(autouse=True)
+def _stub_mandatory_signature_policy(monkeypatch):
+    """Stub the mandatory-signature gate for install-path unit tests.
+
+    These fixtures synthesize their own tarball/checksum payloads, which by
+    construction cannot carry a signature valid under the PINNED release key;
+    the gate itself (including fail-closed and the ``ITERATE_ALLOW_UNSIGNED``
+    override) is covered in ``tests/test_signing.py``.
+    """
+    monkeypatch.setattr(
+        install,
+        "_enforce_signature_policy",
+        lambda artifact, signature: (True, "stub"),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1773,7 +1789,9 @@ class TestUpdateCommand:
             # the subsequent copy in update_command does not raise.
             _seed_real_validation_source(release_path)
             monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: ({"tag": "v1", "tarball_url": "x", "checksum_url": "y"}, None))
-            monkeypatch.setattr(install, "_download_release_source", lambda a, b, c: release_path)
+            monkeypatch.setattr(
+            install, "_download_release_source", lambda a, b, c, sig=None: release_path
+        )
             assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
             installed = target / ".trae" / "skills" / "iterate" / "SKILL.md"
             # The traversed volume can lag on directory-entry visibility right
@@ -1827,7 +1845,9 @@ class TestUpdateCommand:
         target.mkdir()
         info = {"tag": "v1", "tarball_url": "http://x/tar", "checksum_url": "http://x/sha"}
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (info, None))
-        monkeypatch.setattr(install, "_download_release_source", lambda a, b, c: None)
+        monkeypatch.setattr(
+            install, "_download_release_source", lambda a, b, c, sig=None: None
+        )
         assert install.update_command("trae", target, source, None, global_install=False, yes=True) == 0
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
 
@@ -1841,7 +1861,7 @@ class TestUpdateCommand:
         info = {"tag": "v1", "tarball_url": "http://x/tar", "checksum_url": "http://x/sha"}
         monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (info, None))
 
-        def _integrity_boom(a, b, c):
+        def _integrity_boom(a, b, c, sig=None):
             raise install.ReleaseIntegrityError("Checksum mismatch for release tarball")
 
         monkeypatch.setattr(install, "_download_release_source", _integrity_boom)

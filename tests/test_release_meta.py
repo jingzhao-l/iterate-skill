@@ -166,3 +166,67 @@ def test_skill_md_command_list_matches_the_parser() -> None:
     # `guard pre-check` / `guard post-check`) do not read as duplicates.
     duplicates = sorted({line for line in examples if examples.count(line) > 1})
     assert not duplicates, f"SKILL.md shows these lines twice: {duplicates}"
+
+
+# ---------------------------------------------------------------------------
+# Pinned release-signing key must stay identical across all three copies
+# ---------------------------------------------------------------------------
+
+_SIGNING_FINGERPRINT = "0929EA31DF4F7429F63FC53189D88B1D043A1298"
+
+
+def _key_from_python(path: Path) -> str:
+    """Extract the armored key from a ``ITERATE_SIGNING_PUBLIC_KEY = \"\"\"…\"\"\"``
+    (or ``…: Final[str] = \"\"\"…\"\"\"``) assignment."""
+    source = path.read_text(encoding="utf-8")
+    match = re.search(
+        r'ITERATE_SIGNING_PUBLIC_KEY(?::\s*Final\[str\])?\s*=\s*"""(.*?)"""',
+        source,
+        re.DOTALL,
+    )
+    assert match, f"{path} is missing the ITERATE_SIGNING_PUBLIC_KEY triple-quoted literal"
+    return match.group(1).strip()
+
+
+def _key_from_js(path: Path) -> str:
+    """Extract the armored key from the JS array-of-strings constant."""
+    source = path.read_text(encoding="utf-8")
+    start = source.index("const ITERATE_SIGNING_PUBLIC_KEY = [")
+    end = source.index("]", start)
+    parts = re.findall(r"'([^']*)'", source[start:end])
+    assert parts, f"{path} is missing ITERATE_SIGNING_PUBLIC_KEY entries"
+    return "\n".join(parts).strip()
+
+
+def test_pinned_signing_key_is_identical_in_all_three_copies() -> None:
+    """A silent key swap in one copy would make installers refuse every release
+    (fail closed) or, worse, verify against the wrong anchor. All three copies
+    must be byte-identical.
+
+    The release workflow refuses to sign with any key other than this
+    fingerprint, so drift here breaks the release, not the security model —
+    which is exactly why it must be caught in CI.
+    """
+    python_cli = _key_from_python(REPO_ROOT / "iterate_cli" / "signing.py")
+    python_installer = _key_from_python(REPO_ROOT / "scripts" / "install.py")
+    js_installer = _key_from_js(REPO_ROOT / "npm-installer" / "lib" / "installer.js")
+
+    assert python_cli == python_installer, (
+        "iterate_cli/signing.py and scripts/install.py embed different public keys"
+    )
+    assert python_cli == js_installer, (
+        "iterate_cli/signing.py and npm-installer/lib/installer.js embed different public keys"
+    )
+
+
+def test_signing_fingerprint_is_declared_in_every_copy() -> None:
+    """Each copy must NAME the pinned fingerprint, so diagnostics can point at
+    the expected key and the release workflow can assert it."""
+    for relative in (
+        "iterate_cli/signing.py",
+        "scripts/install.py",
+        "npm-installer/lib/installer.js",
+        ".github/workflows/release.yml",
+    ):
+        text = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        assert _SIGNING_FINGERPRINT in text, f"{relative} does not name the pinned key fingerprint"

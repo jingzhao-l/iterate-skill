@@ -24,6 +24,7 @@ from iterate_cli.updater import (
     OPTIONAL_RELEASE_PATHS,
     RELEASES_API_URL,
     REQUIRED_RELEASE_PATHS,
+    SIGNATURE_ASSET_NAME,
     TARBALL_ASSET_NAME,
     UpdateOutcome,
     UpdateResult,
@@ -45,20 +46,28 @@ from iterate_cli.updater import (
 # ---------------------------------------------------------------------------
 
 
-def _release_payload(tag: str = "v9.9.9") -> bytes:
+def _release_payload(tag: str = "v9.9.9", *, with_signature: bool = True) -> bytes:
+    assets = [
+        {
+            "name": TARBALL_ASSET_NAME,
+            "browser_download_url": "https://example.invalid/iterate-skill.tar.gz",
+        },
+        {
+            "name": CHECKSUMS_ASSET_NAME,
+            "browser_download_url": "https://example.invalid/SHA256SUMS.txt",
+        },
+    ]
+    if with_signature:
+        assets.append(
+            {
+                "name": SIGNATURE_ASSET_NAME,
+                "browser_download_url": "https://example.invalid/iterate-skill.tar.gz.asc",
+            }
+        )
     payload = {
         "tag_name": tag,
         "name": f"iterate-skill {tag}",
-        "assets": [
-            {
-                "name": TARBALL_ASSET_NAME,
-                "browser_download_url": "https://example.invalid/iterate-skill.tar.gz",
-            },
-            {
-                "name": CHECKSUMS_ASSET_NAME,
-                "browser_download_url": "https://example.invalid/SHA256SUMS.txt",
-            },
-        ],
+        "assets": assets,
     }
     # A LIST: the updater now queries /releases (not /releases/latest) so a
     # harness/plugin release cannot shadow the skill release.
@@ -95,15 +104,19 @@ def make_fetch(
     tarball: bytes | None = None,
     checksums: bytes | None = None,
     tag: str = "v9.9.9",
+    signature: bytes | None = b"-----BEGIN PGP SIGNATURE-----\nstub\n-----END PGP SIGNATURE-----\n",
 ) -> tuple[updater._Fetched, dict[str, bytes]]:
     """Return ``(fetcher, url->body map)`` simulating the GitHub API + assets."""
     urls: dict[str, bytes] = {RELEASES_API_URL: _release_payload(tag)}
     tarball_url = "https://example.invalid/iterate-skill.tar.gz"
     checksum_url = "https://example.invalid/SHA256SUMS.txt"
+    signature_url = "https://example.invalid/iterate-skill.tar.gz.asc"
     if tarball is not None:
         urls[tarball_url] = tarball
     if checksums is not None:
         urls[checksum_url] = checksums
+    if signature is not None:
+        urls[signature_url] = signature
 
     def fetch(url: str, *, timeout: float, headers: dict[str, str]) -> updater._Fetched:
         if url not in urls:
@@ -121,6 +134,22 @@ def make_ok_fetch(root: Path) -> updater._Fetched:
     checksums_body = f"{checksums}  {TARBALL_ASSET_NAME}\n".encode()
     fetch, _ = make_fetch(tarball=tarball, checksums=checksums_body)
     return fetch
+
+
+@pytest.fixture(autouse=True)
+def _stub_mandatory_signature_policy(monkeypatch):
+    """Stub the mandatory-signature gate for the download-path unit tests.
+
+    Fixtures here build their artifacts at test time, so they cannot carry a
+    signature valid under the PINNED release key; the gate itself is covered in
+    ``tests/test_signing.py`` (pure policy + a real gpg round-trip). Without
+    this stub every download test would (correctly) fail closed.
+    """
+    monkeypatch.setattr(
+        updater,
+        "enforce_signature_policy",
+        lambda artifact, signature, **kwargs: (True, "stub"),
+    )
 
 
 # ---------------------------------------------------------------------------

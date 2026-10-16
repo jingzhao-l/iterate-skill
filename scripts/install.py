@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -380,6 +381,9 @@ RELEASES_API_URL = (
 )
 CHECKSUMS_ASSET_NAME = "SHA256SUMS.txt"
 EXPECTED_TARBALL_FILENAME = "iterate-skill.tar.gz"
+#: Detached ASCII-armored signature asset: its presence and validity are
+#: MANDATORY (see the signature policy block below).
+SIGNATURE_ASSET_NAME = f"{EXPECTED_TARBALL_FILENAME}.asc"
 
 # Accepted GitHub Personal Access Token prefixes (classic ``ghp_``/``gho_``/``ghu_``
 # and fine-grained ``github_pat_``). Used to fail fast when a token is mistyped
@@ -411,6 +415,177 @@ _DOWNLOAD_CHUNK_SIZE = 64 * 1024  # 64 KiB read chunks while streaming
 # than derived from it. A member exceeding the per-member cap is also refused.
 MAX_EXTRACT_BYTES = 500 * 1024 * 1024  # 500 MiB total uncompressed
 MAX_EXTRACT_MEMBER_BYTES = 256 * 1024 * 1024  # 256 MiB per member
+
+
+# ---------------------------------------------------------------------------
+# Release signature policy (MANDATORY)
+# ---------------------------------------------------------------------------
+#
+# The skill release publishes a detached ASCII-armored GPG signature
+# (``iterate-skill.tar.gz.asc``) next to the tarball. SHA256SUMS.txt travels in
+# the SAME release, so it cannot serve as an independent authenticity anchor —
+# the pinned public key below is the only anchor an attacker with release-write
+# access cannot forge.
+#
+# MANDATORY by default: a missing signature, a host without ``gpg``, or a
+# signature that does not verify aborts the update. The single documented
+# escape hatch is the environment variable ``ITERATE_ALLOW_UNSIGNED`` (for
+# hosts without GnuPG) and it NEVER bypasses a BAD signature.
+#
+# Keep this constant/label byte-identical with ``iterate_cli/signing.py`` and
+# ``npm-installer/lib/installer.js`` (tests/test_release_meta.py asserts it).
+SIGNING_KEY_FINGERPRINT = "0929EA31DF4F7429F63FC53189D88B1D043A1298"
+
+ALLOW_UNSIGNED_ENV = "ITERATE_ALLOW_UNSIGNED"
+
+ITERATE_SIGNING_PUBLIC_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+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
+YVXa4IEQs7aBxKO+n+T2AvUYiKQ=
+=DYXk
+-----END PGP PUBLIC KEY BLOCK-----"""
+
+
+def _allow_unsigned() -> bool:
+    """True when the operator explicitly opted out of signature enforcement."""
+    return bool(os.environ.get(ALLOW_UNSIGNED_ENV, "").strip())
+
+
+def _verify_detached_signature(
+    artifact_path: Path,
+    signature_path: Path,
+    gpg_bin: str = "gpg",
+    timeout: int = 30,
+) -> tuple[str, str]:
+    """Return ``(status, detail)``; status is verified/invalid/unavailable.
+
+    Mirrors ``iterate_cli.signing.verify_detached_signature`` (same pinned key,
+    same isolated temporary GNUPGHOME; keep the two in sync).
+    """
+    gpg = gpg_bin if os.sep in gpg_bin else shutil.which(gpg_bin)
+    if not gpg:
+        return "unavailable", "gpg binary not found on PATH"
+    # Short isolated keyring: gpg's agent socket is <GNUPGHOME>/S.gpg-agent and
+    # a deep path trips the ~104-char unix-socket limit ("File name too long").
+    try:
+        with tempfile.TemporaryDirectory(prefix="ig-") as tmp:
+            home = Path(tmp)
+            key_path = home / "pub.asc"
+            key_path.write_text(ITERATE_SIGNING_PUBLIC_KEY, encoding="utf-8")
+            imported = subprocess.run(
+                [gpg, "--homedir", str(home), "--batch", "--yes", "--quiet",
+                 "--import", str(key_path)],
+                capture_output=True, text=True, timeout=timeout, check=False,
+            )
+            if imported.returncode != 0:
+                lines = (imported.stderr or imported.stdout).strip().splitlines()
+                return "unavailable", (
+                    "could not import the pinned public key"
+                    + (f": {lines[-1][:160]}" if lines else "")
+                )
+            verified = subprocess.run(
+                [gpg, "--homedir", str(home), "--batch",
+                 "--status-fd", "1", "--verify", str(signature_path), str(artifact_path)],
+                capture_output=True, text=True, timeout=timeout, check=False,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "unavailable", f"gpg could not run: {exc}"
+    if verified.returncode == 0 and "GOODSIG" in verified.stdout:
+        return "verified", f"signature matches the pinned key ({SIGNING_KEY_FINGERPRINT})"
+    lines = [ln for ln in verified.stderr.strip().splitlines() if ln.strip()]
+    return "invalid", (lines[-1][:200] if lines else "gpg reported a bad signature")
+
+
+def _enforce_signature_policy(
+    artifact_path: Path,
+    signature_path: Path | None,
+) -> tuple[bool, str]:
+    """Apply the mandatory-signature policy; ``(ok, detail)``.
+
+    ``ok=False`` means the caller MUST abort. Mirrors
+    ``iterate_cli.signing.enforce_signature_policy`` (keep in sync).
+    """
+    override = _allow_unsigned()
+
+    if signature_path is None:
+        if override:
+            return True, (
+                f"UNSIGNED release accepted because {ALLOW_UNSIGNED_ENV} is set "
+                "(SHA256 integrity only)"
+            )
+        return False, (
+            "release is UNSIGNED: it publishes no .asc signature, so authenticity "
+            "cannot be verified (SHA256SUMS travels in the same release and is not "
+            f"an independent anchor). Set {ALLOW_UNSIGNED_ENV}=1 only if you accept "
+            "an unauthenticated install."
+        )
+
+    status, detail = _verify_detached_signature(artifact_path, signature_path)
+    if status == "verified":
+        return True, detail
+    if status == "invalid":
+        return False, (
+            f"GPG signature verification FAILED ({detail}). The artifact is not "
+            f"signed by the pinned iterate signing key ({SIGNING_KEY_FINGERPRINT}) — "
+            f"this is either tampering or a key rotation; {ALLOW_UNSIGNED_ENV} does "
+            "NOT bypass a bad signature."
+        )
+    if override:
+        return True, (
+            f"signature NOT verified ({detail}) but accepted because "
+            f"{ALLOW_UNSIGNED_ENV} is set (SHA256 integrity only)"
+        )
+    return False, (
+        f"cannot verify the release signature ({detail}). Install GnuPG (``gpg``) "
+        f"and retry, or set {ALLOW_UNSIGNED_ENV}=1 to accept an unauthenticated install."
+    )
 
 
 def _validate_github_token(token: str | None) -> str | None:
@@ -1560,6 +1735,7 @@ def _fetch_latest_release_info(
 
     tarball_url: str | None = None
     checksum_url: str | None = None
+    signature_url: str | None = None
     assets = data.get("assets")
     if isinstance(assets, list):
         for asset in assets:
@@ -1573,6 +1749,8 @@ def _fetch_latest_release_info(
                 tarball_url = asset_url
             elif name == CHECKSUMS_ASSET_NAME:
                 checksum_url = asset_url
+            elif name == SIGNATURE_ASSET_NAME:
+                signature_url = asset_url
 
     if not isinstance(tarball_url, str):
         return None, f"release has no {EXPECTED_TARBALL_FILENAME} asset"
@@ -1580,6 +1758,8 @@ def _fetch_latest_release_info(
     result: dict[str, str] = {"tag": tag, "tarball_url": tarball_url}
     if checksum_url:
         result["checksum_url"] = checksum_url
+    if signature_url:
+        result["signature_url"] = signature_url
     return result, None
 
 
@@ -1833,23 +2013,27 @@ def _parse_checksum(checksum_text: bytes, filename: str) -> str | None:
 
 
 def _download_release_source(
-    tarball_url: str, checksum_url: str | None, token: str | None
+    tarball_url: str,
+    checksum_url: str | None,
+    token: str | None,
+    signature_url: str | None = None,
 ) -> Path | None:
-    """Download a release tarball, verify checksum (mandatory), and extract it.
+    """Download a release tarball, verify checksum + signature, and extract it.
 
     Refuses to proceed if ``checksum_url`` is None or if the checksum
     cannot be verified. Because the SHA256SUMS file is fetched from the
     SAME release as the tarball, this guards against transport corruption
     and asset mis-pairing; it cannot defend against a release that is
-    itself compromised at the source (that trust anchor is the GitHub
-    release channel plus the optional GPG signatures).
+    itself compromised at the source — that trust anchor is the MANDATORY
+    detached GPG signature (``signature_url``), verified against the pinned
+    public key (``ITERATE_SIGNING_PUBLIC_KEY``) below.
 
     Raises:
         ReleaseIntegrityError: When the release was CHECKSUMMED but failed
             verification (no matching checksum entry, or a SHA-256 mismatch),
-            or the archive is unusable. Callers must fail closed on this —
-            never fall back to a different source while claiming the release
-            applied.
+            when the signature is missing/unverifiable, or when the archive is
+            unusable. Callers must fail closed on this — never fall back to a
+            different source while claiming the release applied.
         ReleaseStructureError: When the verified archive is unusable (extraction
             failed, or it does not contain exactly one top-level directory with a
             ``SKILL.md`` marker). Callers must abort — a broken release must not
@@ -1906,6 +2090,30 @@ def _download_release_source(
 
     temp_dir = Path(tempfile.mkdtemp(prefix="iterate-release-"))
     try:
+        # Mandatory authenticity gate (see _enforce_signature_policy): the
+        # signature is written next to the tarball inside the temp dir so gpg
+        # can verify it, then the whole temp dir is either extracted into or
+        # removed on failure.
+        signature_bytes: bytes | None = None
+        if signature_url:
+            signature_bytes, signature_error = _download_bytes(signature_url, token)
+            if signature_bytes is None:
+                raise ReleaseIntegrityError(
+                    "could not download the release signature "
+                    f"({signature_error or 'unknown error'})"
+                )
+        tarball_path = temp_dir / EXPECTED_TARBALL_FILENAME
+        tarball_path.write_bytes(data)
+        signature_path: Path | None = None
+        if signature_bytes is not None:
+            signature_path = temp_dir / SIGNATURE_ASSET_NAME
+            signature_path.write_bytes(signature_bytes)
+        signature_ok, signature_detail = _enforce_signature_policy(
+            tarball_path, signature_path
+        )
+        if not signature_ok:
+            raise ReleaseIntegrityError(signature_detail)
+
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
             _safe_extractall(tar, temp_dir)
             root_candidates = [p for p in temp_dir.iterdir() if p.is_dir()]
@@ -2024,6 +2232,7 @@ def update_command(
                 release_info["tarball_url"],
                 release_info["checksum_url"],
                 token,
+                release_info.get("signature_url"),
             )
         except ReleaseIntegrityError as exc:
             # Integrity failure (checksum retrieved but no matching entry, or a

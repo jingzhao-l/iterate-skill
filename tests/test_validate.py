@@ -1646,7 +1646,9 @@ class TestUpdateCommand:
             ),
         )
         monkeypatch.setattr(
-            install, "_download_release_source", lambda _url, _checksum_url, _token: release_source
+            install,
+            "_download_release_source",
+            lambda _url, _checksum_url, _token, _signature_url=None: release_source,
         )
 
         assert install_main(["install", "--ai", "trae", "--target", str(target)], source=source) == 0

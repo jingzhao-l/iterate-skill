@@ -424,6 +424,71 @@ function enforceDownloadedSize(destPath, maxBytes) {
   }
 }
 
+// True when the operator explicitly opted out of signature enforcement. Kept
+// as an ENVIRONMENT variable (not a flag) so it cannot be enabled from a
+// project config and shows up in the invoking environment for audit.
+const ALLOW_UNSIGNED_ENV = 'ITERATE_ALLOW_UNSIGNED';
+
+function allowUnsigned() {
+  return String(process.env[ALLOW_UNSIGNED_ENV] || '').trim() !== '';
+}
+
+/**
+ * Apply the MANDATORY release-signature policy (mirrors
+ * ``iterate_cli/signing.py`` and ``scripts/install.py``).
+ *
+ * Returns an error MESSAGE when the install must abort, or null when it may
+ * proceed. The ``ITERATE_ALLOW_UNSIGNED`` override downgrades "cannot check"
+ * (no ``.asc`` asset / no ``gpg`` binary) to a warning, but it NEVER bypasses a
+ * BAD signature — that is exactly the tampering/key-substitution case.
+ *
+ * @param {object} state
+ * @param {boolean} state.hasSignatureAsset  release published an ``.asc``
+ * @param {string}  [state.status]           'verified' | 'invalid' | 'unavailable'
+ * @param {string}  [state.detail]           verifier detail for messages
+ * @param {string}  [state.downloadError]    failure to FETCH the ``.asc``
+ * @param {boolean} [state.allowUnsigned]    override (defaults to the env var)
+ */
+function signaturePolicyError({
+  hasSignatureAsset,
+  status = null,
+  detail = '',
+  downloadError = null,
+  allowUnsigned: override = allowUnsigned(),
+} = {}) {
+  if (downloadError) {
+    // The release DID publish a signature but we could not fetch it: a
+    // transport problem, not a licence to skip authenticity.
+    return (
+      `Could not download the release signature (${downloadError}). Refusing to install ` +
+      `without authenticity verification; retry once the network recovers. Set ` +
+      `${ALLOW_UNSIGNED_ENV}=1 only if you accept an unauthenticated install.`
+    );
+  }
+  if (!hasSignatureAsset) {
+    if (override) return null;
+    return (
+      'Release is UNSIGNED: it publishes no .asc signature, so authenticity cannot be ' +
+      `verified (SHA256SUMS travels in the same release and is not an independent ` +
+      `anchor). Set ${ALLOW_UNSIGNED_ENV}=1 only if you accept an unauthenticated install.`
+    );
+  }
+  if (status === 'verified') return null;
+  if (status === 'invalid') {
+    return (
+      `GPG signature verification FAILED (${detail}). Refusing to install: the tarball ` +
+      `is not signed by the pinned iterate signing key. This is either tampering or a ` +
+      `key rotation this installer version does not know about; ${ALLOW_UNSIGNED_ENV} ` +
+      'does NOT bypass a bad signature.'
+    );
+  }
+  if (override) return null;
+  return (
+    `Cannot verify the release signature (${detail || 'gpg unavailable'}). Install GnuPG ` +
+    `(gpg) and retry, or set ${ALLOW_UNSIGNED_ENV}=1 to accept an unauthenticated install.`
+  );
+}
+
 function sha256File(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
@@ -447,7 +512,11 @@ function sha256File(filePath) {
 // Runs inside an isolated temporary GNUPGHOME so the end user's own keyring and
 // gpg-agent are never touched or modified.
 function verifyGpgDetachedSignature(artifactPath, signaturePath, publicKeyArmor, tmpDir) {
-  const gpgHome = path.join(tmpDir, 'gnupg');
+  // NOTE: gpg derives its agent socket from the homedir
+  // (<homedir>/S.gpg-agent) and unix sockets cap out around 104 characters, so
+  // keep this path SHORT — a deep tmpdir made gpg fail with "File name too
+  // long: can't connect to the gpg-agent".
+  const gpgHome = path.join(tmpDir, 'g');
   fs.mkdirSync(gpgHome, { recursive: true, mode: 0o700 });
   const keyPath = path.join(tmpDir, 'iterate-skill-pubkey.asc');
   fs.writeFileSync(keyPath, publicKeyArmor, 'utf8');
@@ -1252,20 +1321,27 @@ async function main(options = {}) {
     hint('Retry, or set GITHUB_TOKEN if this is a rate-limit artefact.');
     return 1;
   }
-  // Announce releases that carry the tarball but not the checksum pair: they
-  // are skipped, which silently installs an OLDER release when the newest one
-  // is mid-upload. Saying so out loud keeps "installed an old version" visible.
+  // Announce releases that carry the tarball but not the checksum/signature
+  // pair: they are skipped, which silently installs an OLDER release when the
+  // newest one is mid-upload. Saying so out loud keeps "installed an old
+  // version" visible.
   for (const candidate of releases) {
     if (!candidate || candidate.draft || candidate.prerelease) continue;
     const assets = Array.isArray(candidate.assets) ? candidate.assets : [];
     const hasTarball = assets.some((a) => a && a.name === TARBALL_ASSET_NAME);
-    const hasChecksums = assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME);
-    if (hasTarball && !hasChecksums) {
+    const missing = [];
+    if (!assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME)) missing.push(CHECKSUMS_ASSET_NAME);
+    if (!assets.some((a) => a && a.name === TARBALL_SIGNATURE_ASSET_NAME)) missing.push(TARBALL_SIGNATURE_ASSET_NAME);
+    if (hasTarball && missing.length > 0) {
       warning(
-        `Skipping release ${candidate.tag_name}: has ${TARBALL_ASSET_NAME} but no ${CHECKSUMS_ASSET_NAME}.`,
+        `Skipping release ${candidate.tag_name}: has ${TARBALL_ASSET_NAME} but no ${missing.join(' / ')}.`,
       );
     }
   }
+  // A usable release must carry the tarball, its checksums AND its detached
+  // signature: the signature is mandatory at install time (see
+  // signaturePolicyError), so selecting a release without one would only turn
+  // "found the latest" into "failed to install".
   const release = releases.find(
     (r) =>
       r &&
@@ -1273,12 +1349,14 @@ async function main(options = {}) {
       !r.prerelease &&
       Array.isArray(r.assets) &&
       r.assets.some((a) => a && a.name === TARBALL_ASSET_NAME) &&
-      r.assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME),
+      r.assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME) &&
+      r.assets.some((a) => a && a.name === TARBALL_SIGNATURE_ASSET_NAME),
   );
 
   if (!release) {
     error(
-      `No published release in the last 100 carries a ${TARBALL_ASSET_NAME} + ${CHECKSUMS_ASSET_NAME} asset pair.`
+      `No published release in the last 100 carries a ${TARBALL_ASSET_NAME} + ` +
+        `${CHECKSUMS_ASSET_NAME} + ${TARBALL_SIGNATURE_ASSET_NAME} asset triple.`
     );
     hint('This is usually a GitHub API rate limit; retry with GITHUB_TOKEN set.');
     return 1;
@@ -1306,7 +1384,7 @@ async function main(options = {}) {
     return 1;
   }
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iterate-skill-install-'));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ig-install-'));
   const tarballPath = path.join(tmpDir, TARBALL_ASSET_NAME);
   const checksumPath = path.join(tmpDir, CHECKSUMS_ASSET_NAME);
 
@@ -1358,19 +1436,17 @@ async function main(options = {}) {
       `\x1b[32m✓\x1b[0m SHA256 checksum verified`,
     ]);
 
-    // GPG authenticity check (defense-in-depth, fail-closed when it runs). The
-    // release also publishes a detached ASCII-armored signature over the
-    // tarball. When a `gpg` binary is present we verify it against the embedded
-    // signing key: a *valid* signature upgrades the release from
-    // "integrity-guaranteed" to "authenticity-guaranteed". If gpg is
-    // unavailable we degrade to a warning (SHA256 already guards integrity —
-    // that check still stands on its own).
+    // GPG authenticity check — MANDATORY (see signaturePolicyError).
     //
-    // If gpg IS present and the signature is present but does NOT verify, the
-    // install now FAILS. SHA256SUMS travels in the same release as the tarball,
-    // so an attacker who can replace one can replace both; the pinned public
-    // key is the single anchor they cannot forge. Reporting "signature
-    // invalid" and installing anyway made that anchor decorative.
+    // SHA256SUMS.txt travels in the SAME release as the tarball, so an attacker
+    // who can replace one can replace both; the pinned public key below is the
+    // only anchor they cannot forge. A missing `.asc`, a host without `gpg`, an
+    // unfetchable signature, or a signature that does not verify all ABORT the
+    // install. The single documented escape hatch is ``ITERATE_ALLOW_UNSIGNED``
+    // (hosts without GnuPG) and it never bypasses a BAD signature.
+    let signatureStatus = null;
+    let signatureDetail = '';
+    let signatureDownloadError = null;
     if (signatureAsset) {
       const signaturePath = path.join(tmpDir, TARBALL_SIGNATURE_ASSET_NAME);
       try {
@@ -1378,30 +1454,28 @@ async function main(options = {}) {
           maxBytes: CHECKSUMS_MAX_BYTES,
         });
         const sig = verifyGpgDetachedSignature(tarballPath, signaturePath, ITERATE_SIGNING_PUBLIC_KEY, tmpDir);
-        if (sig.status === 'verified') {
-          success('GPG signature verified.');
-        } else if (sig.status === 'invalid') {
-          error(
-            `GPG signature verification FAILED (${sig.detail}) — refusing to install.\n` +
-              '  The tarball was signed with a key that does not match the pinned ' +
-              'iterate-skill signing key: this is either tampering or a key rotation ' +
-              'that this installer version does not know about. Report it before retrying.',
-          );
-          return 1;
-        } else {
-          warning(
-            `gpg not available (${sig.detail}); skipping signature check — SHA256 integrity still enforced.`
-          );
-        }
+        signatureStatus = sig.status;
+        signatureDetail = sig.detail;
       } catch (err) {
-        warning(`Could not download/verify the GPG signature (${err.message}); SHA256 integrity still enforced.`);
+        signatureDownloadError = err.message;
       }
-    } else {
-      // Say it out loud: a silent skip meant an operator could believe the
-      // signature layer ran on every install. SHA256 still guards integrity,
-      // but authenticity was NOT verified for this release.
+    }
+    const signatureError = signaturePolicyError({
+      hasSignatureAsset: Boolean(signatureAsset),
+      status: signatureStatus,
+      detail: signatureDetail,
+      downloadError: signatureDownloadError,
+    });
+    if (signatureError) {
+      error(signatureError);
+      return 1;
+    }
+    if (signatureStatus === 'verified') {
+      success('GPG signature verified.');
+    } else if (allowUnsigned()) {
       warning(
-        'Release publishes no GPG signature asset; authenticity check skipped (SHA256 integrity still enforced).',
+        `Signature NOT verified (${signatureDetail || 'no signature'}) but accepted because ` +
+          `${ALLOW_UNSIGNED_ENV} is set — SHA256 integrity only.`,
       );
     }
 
@@ -1490,6 +1564,9 @@ module.exports = {
   isGithubApiUrl,
   normalizeToken,
   validateTokenShape,
+  allowUnsigned,
+  signaturePolicyError,
+  ALLOW_UNSIGNED_ENV,
   buildAuthFlags,
   supportsCurlFailWithBody,
   // Executed under test for the timeout/null-exit-code hardening; retaining

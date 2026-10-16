@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from iterate_cli import __version__
+from iterate_cli.signing import enforce_signature_policy
 
 # ---------------------------------------------------------------------------
 # Named constants (no magic strings scattered through the business logic)
@@ -68,6 +69,11 @@ RELEASES_API_URL = (
 
 TARBALL_ASSET_NAME = "iterate-skill.tar.gz"
 CHECKSUMS_ASSET_NAME = "SHA256SUMS.txt"
+#: Detached ASCII-armored GPG signature over the tarball. Its PRESENCE and
+#: validity are mandatory (see iterate_cli.signing.enforce_signature_policy):
+#: SHA256SUMS.txt is published by the same release as the tarball, so it cannot
+#: serve as an independent authenticity anchor.
+SIGNATURE_ASSET_NAME = TARBALL_ASSET_NAME + ".asc"
 
 #: Top-level paths never copied into an assistant dir regardless of contents —
 #: the skill release never carries harness/ and an assistant dir must never
@@ -293,6 +299,9 @@ class ReleaseInfo:
     tag: str
     tarball_url: str
     checksum_url: str | None = None
+    #: URL of the detached ``.asc`` signature asset, or None when the release
+    #: publishes none (which the mandatory-signature policy then rejects).
+    signature_url: str | None = None
 
 
 def _urlopen_bounded(url: str, timeout: float, headers: dict[str, str]) -> bytes:
@@ -378,6 +387,7 @@ def fetch_latest_release(
     tag: str | None = None
     tarball_url: str | None = None
     checksum_url: str | None = None
+    signature_url: str | None = None
     saw_versioned_release = False
     # The list endpoint returns releases newest-published first; take the first
     # that both parses to a version and ships the tarball, so a release from
@@ -398,6 +408,7 @@ def fetch_latest_release(
         saw_versioned_release = True
         candidate_tarball: str | None = None
         candidate_checksum: str | None = None
+        candidate_signature: str | None = None
         assets = candidate.get("assets")
         if isinstance(assets, list):
             for item in assets:
@@ -411,9 +422,12 @@ def fetch_latest_release(
                     candidate_tarball = url
                 elif name == CHECKSUMS_ASSET_NAME:
                     candidate_checksum = url
+                elif name == SIGNATURE_ASSET_NAME:
+                    candidate_signature = url
         if not isinstance(candidate_tarball, str):
             continue
         tag, tarball_url, checksum_url = candidate_tag, candidate_tarball, candidate_checksum
+        signature_url = candidate_signature
         break
 
     if tag is None or not isinstance(tarball_url, str):
@@ -427,7 +441,12 @@ def fetch_latest_release(
             f"no published release in the last 100 carries an {TARBALL_ASSET_NAME} asset"
         )
     return (
-        ReleaseInfo(tag=tag, tarball_url=tarball_url, checksum_url=checksum_url),
+        ReleaseInfo(
+            tag=tag,
+            tarball_url=tarball_url,
+            checksum_url=checksum_url,
+            signature_url=signature_url,
+        ),
         None,
     )
 
@@ -567,8 +586,16 @@ def download_verified_release(
 ) -> tuple[Path | None, str | None]:
     """Download + verify + extract the release tarball into a temp dir.
 
-    Refuses a release with no checksum asset and refuses extraction on any
-    SHA-256 mismatch, so nothing is written unless the archive is authentic.
+    Verification order (both are mandatory):
+
+    1. SHA-256 against the release's ``SHA256SUMS.txt`` — integrity.
+    2. detached GPG signature against the PINNED public key — authenticity
+       (``iterate_cli.signing``). The checksum file travels in the SAME release
+       as the tarball, so it cannot be the only anchor; a missing signature, an
+       unverifiable one, or a host without ``gpg`` aborts the update unless the
+       operator set ``ITERATE_ALLOW_UNSIGNED`` (see
+       ``signing.enforce_signature_policy`` — a BAD signature is never bypassed).
+
     The returned path is the extracted repo root (``<tmp>/<tag>/source/``);
     the caller owns cleanup (``shutil.rmtree`` the temp parent).
     """
@@ -592,9 +619,30 @@ def download_verified_release(
     if reason is not None:
         return None, reason
 
+    # GPG authenticity check (mandatory — see enforce_signature_policy).
     temp_parent = Path(tempfile.mkdtemp(prefix="iterate-update-"))
-    extract_root = temp_parent / "source"
     try:
+        signature_bytes: bytes | None = None
+        if release.signature_url:
+            signature_bytes, signature_err = _download_bytes(
+                release.signature_url, fetcher, timeout, "signature file"
+            )
+            if signature_bytes is None:
+                # A signature that exists but cannot be FETCHED is a transport
+                # problem: retry later rather than silently dropping the
+                # authenticity gate.
+                return None, signature_err or "signature download failed"
+        tarball_path = temp_parent / TARBALL_ASSET_NAME
+        tarball_path.write_bytes(tarball)
+        signature_path: Path | None = None
+        if signature_bytes is not None:
+            signature_path = temp_parent / SIGNATURE_ASSET_NAME
+            signature_path.write_bytes(signature_bytes)
+        ok, detail = enforce_signature_policy(tarball_path, signature_path)
+        if not ok:
+            return None, detail
+
+        extract_root = temp_parent / "source"
         extract_root.mkdir()
         with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tar:
             _safe_extractall(tar, extract_root)

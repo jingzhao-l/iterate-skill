@@ -52,22 +52,22 @@ jobs:
           sha256sum iterate-skill.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Sign tarball and checksums with GPG (best-effort)
+      - name: Sign tarball and checksums with GPG (MANDATORY)
         # Imports the signing key and emits detached ASCII-armored signatures
         # (*.asc) alongside each release artifact, so consumers can verify
-        # authenticity, not just integrity. Skips silently when the repo
-        # secrets GPG_PRIVATE_KEY/GPG_PASSPHRASE are not set.
+        # authenticity, not just integrity. Signing is REQUIRED: a release
+        # without signatures is refused (the installers fail closed on a missing
+        # .asc, so shipping an unsigned release would only break every client).
         env:
           GPG_INPUT_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           # `secrets` is rejected by GitHub's workflow parser inside `if:`
-          # (HTTP 422 "Unrecognized named-value: 'secrets'" — it made the whole
-          # workflow invalid, so no release since 2026-09-27 could run).
-          # `env:` still accepts it, so bind there and decide here instead.
-          if [ -z "$GPG_INPUT_KEY" ]; then
-            echo "GPG_PRIVATE_KEY not configured; skipping signing (best-effort)."
-            exit 0
+          # (HTTP 422 "Unrecognized named-value: 'secrets'"), hence the env bind.
+          if [ -z "$GPG_INPUT_KEY" ] || [ -z "$GPG_PASSPHRASE" ]; then
+            echo "::error::GPG_PRIVATE_KEY / GPG_PASSPHRASE are not configured."
+            echo "::error::Release signing is MANDATORY — configure the secrets, then re-run this job."
+            exit 1
           fi
           mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
           printf '%s\n' "allow-loopback-pinentry" >> "$HOME/.gnupg/gpg-agent.conf"
@@ -78,6 +78,23 @@ jobs:
               --passphrase "$GPG_PASSPHRASE" --detach-sign --armor "$f"
           done
           ls -la ./*.asc
+
+      - name: Verify signatures against the pinned key
+        # Two independent guarantees: (1) the secret key really is the pinned
+        # iterate signing key (an accidental key swap would otherwise ship
+        # artifacts every installer refuses), and (2) each signature actually
+        # verifies its artifact.
+        run: |
+          EXPECTED_FPR="0929EA31DF4F7429F63FC53189D88B1D043A1298"
+          got_fpr="$(gpg --list-keys --with-colons "$EXPECTED_FPR" | awk -F: '/^fpr:/{print $10; exit}')"
+          if [ "$got_fpr" != "$EXPECTED_FPR" ]; then
+            echo "::error::The configured GPG key is not the pinned iterate signing key (got: ${got_fpr:-none})."
+            exit 1
+          fi
+          for f in iterate-skill.tar.gz SHA256SUMS.txt; do
+            gpg --batch --verify "$f.asc" "$f"
+          done
+          echo "Signatures verified against $EXPECTED_FPR"
 
       - name: Upload tarball and checksums to release
         uses: softprops/action-gh-release@v2
@@ -111,18 +128,17 @@ jobs:
       - name: Rebuild Qoder package
         run: python3 scripts/publish_qoder.py build --out iterate-qoder.zip
 
-      - name: Sign Qoder package with GPG (best-effort)
+      - name: Sign Qoder package with GPG (MANDATORY)
         env:
           GPG_INPUT_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          # `secrets` is rejected by GitHub's workflow parser inside `if:`
-          # (HTTP 422 "Unrecognized named-value: 'secrets'" — it made the whole
-          # workflow invalid, so no release since 2026-09-27 could run).
+          # `secrets` is rejected by GitHub's workflow parser inside `if:`;
           # `env:` still accepts it, so bind there and decide here instead.
-          if [ -z "$GPG_INPUT_KEY" ]; then
-            echo "GPG_PRIVATE_KEY not configured; skipping signing (best-effort)."
-            exit 0
+          if [ -z "$GPG_INPUT_KEY" ] || [ -z "$GPG_PASSPHRASE" ]; then
+            echo "::error::GPG_PRIVATE_KEY / GPG_PASSPHRASE are not configured."
+            echo "::error::Release signing is MANDATORY — configure the secrets, then re-run this job."
+            exit 1
           fi
           mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
           printf '%s\n' "allow-loopback-pinentry" >> "$HOME/.gnupg/gpg-agent.conf"
@@ -130,6 +146,18 @@ jobs:
           printf '%s\n' "$GPG_INPUT_KEY" | gpg --batch --yes --import
           gpg --batch --yes --pinentry-mode loopback \
             --passphrase "$GPG_PASSPHRASE" --detach-sign --armor iterate-qoder.zip
+          ls -la ./iterate-qoder.zip.asc
+
+      - name: Verify Qoder signature against the pinned key
+        run: |
+          EXPECTED_FPR="0929EA31DF4F7429F63FC53189D88B1D043A1298"
+          got_fpr="$(gpg --list-keys --with-colons "$EXPECTED_FPR" | awk -F: '/^fpr:/{print $10; exit}')"
+          if [ "$got_fpr" != "$EXPECTED_FPR" ]; then
+            echo "::error::The configured GPG key is not the pinned iterate signing key (got: ${got_fpr:-none})."
+            exit 1
+          fi
+          gpg --batch --verify iterate-qoder.zip.asc iterate-qoder.zip
+          echo "Signature verified against $EXPECTED_FPR"
 
       - name: Upload Qoder package to release
         uses: softprops/action-gh-release@v2

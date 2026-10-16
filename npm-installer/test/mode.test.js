@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode, parseChecksums, enforceDownloadedSize, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, validateTokenShape, buildAuthFlags, InstallerError, runCommand, runPythonInstall } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums, enforceDownloadedSize, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, validateTokenShape, buildAuthFlags, InstallerError, runCommand, runPythonInstall, signaturePolicyError, allowUnsigned, ALLOW_UNSIGNED_ENV } = require('../lib/installer');
 
 // 64-char lowercase hex digest, as sha256 actually produces.
 const H = 'a'.repeat(64);
@@ -474,6 +474,7 @@ async function run() {
   }
 
   testEnforceDownloadedSize();
+  testSignaturePolicy();
 
   console.log('mode.test.js: all runCommand/runPythonInstall hardening tests passed');
 }
@@ -482,3 +483,78 @@ run().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+
+// ---------------------------------------------------------------------------
+// Mandatory release-signature policy (mirrors iterate_cli/signing.py)
+// ---------------------------------------------------------------------------
+
+function testSignaturePolicy() {
+  // Verified → proceed.
+  assert.strictEqual(
+    signaturePolicyError({ hasSignatureAsset: true, status: 'verified', detail: 'ok' }),
+    null,
+    'a verified signature must allow the install',
+  );
+
+  // Missing .asc → refuse by default...
+  const unsigned = signaturePolicyError({ hasSignatureAsset: false });
+  assert.ok(/UNSIGNED/.test(unsigned), 'a missing signature must be refused');
+  assert.ok(unsigned.includes(ALLOW_UNSIGNED_ENV), 'the refusal must name the escape hatch');
+  // ...but the documented override (hosts without gpg) allows it.
+  assert.strictEqual(
+    signaturePolicyError({ hasSignatureAsset: false, allowUnsigned: true }),
+    null,
+    'the explicit override must permit an unsigned release',
+  );
+
+  // BAD signature → never allowed, override or not.
+  for (const allowUnsigned of [false, true]) {
+    const bad = signaturePolicyError({
+      hasSignatureAsset: true,
+      status: 'invalid',
+      detail: 'BAD signature',
+      allowUnsigned,
+    });
+    assert.ok(/FAILED/.test(bad), 'a bad signature must always be refused');
+    assert.ok(bad.includes(ALLOW_UNSIGNED_ENV), 'and must say the override will not help');
+  }
+
+  // No gpg binary → refuse unless overridden.
+  const noGpg = signaturePolicyError({
+    hasSignatureAsset: true,
+    status: 'unavailable',
+    detail: 'gpg binary not found on PATH',
+  });
+  assert.ok(/Cannot verify/.test(noGpg), 'missing gpg must refuse by default');
+  assert.strictEqual(
+    signaturePolicyError({
+      hasSignatureAsset: true,
+      status: 'unavailable',
+      detail: 'nope',
+      allowUnsigned: true,
+    }),
+    null,
+    'missing gpg may be overridden (that is what the override exists for)',
+  );
+
+  // Signature exists but could not be fetched → a transport problem, refuse.
+  const fetchFailed = signaturePolicyError({
+    hasSignatureAsset: true,
+    downloadError: 'HTTP 500',
+  });
+  assert.ok(/Could not download/.test(fetchFailed), 'an unfetchable signature must refuse');
+
+  // allowUnsigned() reads the environment variable.
+  const previous = process.env[ALLOW_UNSIGNED_ENV];
+  try {
+    process.env[ALLOW_UNSIGNED_ENV] = '1';
+    assert.strictEqual(allowUnsigned(), true);
+    process.env[ALLOW_UNSIGNED_ENV] = '   ';
+    assert.strictEqual(allowUnsigned(), false, 'blank is not an opt-out');
+  } finally {
+    if (previous === undefined) delete process.env[ALLOW_UNSIGNED_ENV];
+    else process.env[ALLOW_UNSIGNED_ENV] = previous;
+  }
+
+  console.log('mode.test.js: all signaturePolicyError tests passed');
+}

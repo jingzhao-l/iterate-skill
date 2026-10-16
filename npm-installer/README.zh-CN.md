@@ -39,8 +39,13 @@ npx iterate-skill-installer --version
 
 1. 检查你系统上的 Python 3。
 2. 从 GitHub 获取最新的 iterate-skill 发布版本。
-3. 下载发布 tarball 与 `SHA256SUMS.txt`。
-4. 校验 tarball 的校验和。
+3. 下载发布 tarball、`SHA256SUMS.txt` 及其分离式 GPG 签名
+   （`iterate-skill.tar.gz.asc`）。
+4. 同时校验 tarball 校验和（完整性）与签名（真实性，对照内嵌的 iterate 签名公钥）。
+   **签名为强制**：没有有效签名的发布会直接拒绝安装——因为 `SHA256SUMS.txt` 与
+   tarball 出自同一个 release，不能作为唯一信任锚点。没有 `gpg` 请先安装 GnuPG；
+   确实无法运行 gpg 的环境可显式设置 `ITERATE_ALLOW_UNSIGNED=1` 放行（但**坏签名
+   永不放行**）。
 5. 解压发布内容到临时目录。
 6. 运行自带的 Python 安装脚本（`scripts/install.py`），它会：
    - 检测你机器上已安装的 AI 编程助手。

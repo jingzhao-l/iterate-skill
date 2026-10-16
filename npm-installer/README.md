@@ -39,8 +39,15 @@ npx iterate-skill-installer --version
 
 1. Checks for Python 3 on your system.
 2. Fetches the latest iterate-skill release from GitHub.
-3. Downloads the release tarball and `SHA256SUMS.txt`.
-4. Verifies the tarball checksum.
+3. Downloads the release tarball, `SHA256SUMS.txt` and its detached GPG
+   signature (`iterate-skill.tar.gz.asc`).
+4. Verifies BOTH the tarball checksum (integrity) and the signature against the
+   pinned iterate signing key (authenticity). **Signing is mandatory**: a
+   release without a valid signature is refused, because `SHA256SUMS.txt`
+   travels in the same release as the tarball and therefore cannot be the only
+   anchor. Install GnuPG (`gpg`) if you do not have it; hosts that cannot run
+   gpg may opt out explicitly with `ITERATE_ALLOW_UNSIGNED=1` (a bad signature
+   is never bypassed).
 5. Extracts the release into a temporary directory.
 6. Runs the bundled Python install script (`scripts/install.py`) which:
    - Detects installed AI coding assistants on your machine.
