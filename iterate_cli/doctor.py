@@ -475,7 +475,11 @@ def _check_reasoning_effort(report: DoctorReport, config: dict[str, Any]) -> Non
     if reasoning_effort is None:
         _ok(report, "reasoning_effort", "reasoning_effort not set (provider default).")
         return
-    if reasoning_effort not in REASONING_EFFORT_VALUES:
+    # isinstance guard first: a hand-edited `reasoning_effort: {a: 1}` /
+    # `reasoning_effort: [low]` is UNHASHABLE and used to raise TypeError out
+    # of the membership test — doctor, the tool meant to diagnose broken
+    # configs, crashed on one. Non-strings fall through to the same error path.
+    if not isinstance(reasoning_effort, str) or reasoning_effort not in REASONING_EFFORT_VALUES:
         _err(
             report,
             "reasoning_effort",
@@ -495,7 +499,9 @@ def _check_language(report: DoctorReport, config: dict[str, Any]) -> None:
     language = config.get("language")
     if language is None:
         return
-    if language not in SUPPORTED_LANGUAGES:
+    # isinstance guard first: `language: [zh]` is unhashable and must degrade
+    # to the same "not supported" warning instead of a TypeError traceback.
+    if not isinstance(language, str) or language not in SUPPORTED_LANGUAGES:
         _warn(
             report,
             "language",
@@ -518,7 +524,9 @@ def _check_review_scope(report: DoctorReport, config: dict[str, Any]) -> None:
         )
         return
     scope = review.get("scope") if review else None
-    if scope is not None and scope not in SUPPORTED_SCOPES:
+    # isinstance guard first: `review.scope: [full]` is unhashable and must
+    # degrade to the same "not supported" warning instead of a TypeError.
+    if scope is not None and (not isinstance(scope, str) or scope not in SUPPORTED_SCOPES):
         _warn(
             report,
             "review.scope",
@@ -603,8 +611,13 @@ def _check_validation_commands(report: DoctorReport, config: dict[str, Any]) -> 
             # authoritative check (metachar-free + known-safe tool prefix —
             # it does NOT consult command_whitelist), so mirror it exactly
             # instead of inventing a whitelist fallback that guard lacks.
-            if not _command_is_safe_command(str(cmds[0])):
-                unknown_tool.append(f"{module}: {cmds[0]!r}")
+            # Check EVERY command, not just the first: guard pre/post-check
+            # validates each entry, so a module `[pytest, "mytool --check"]`
+            # must be flagged here too — checking only cmds[0] let doctor
+            # report "healthy" while guard deterministically failed.
+            for cmd in cmds:
+                if not _command_is_safe_command(cmd):
+                    unknown_tool.append(f"{module}: {cmd!r}")
             continue
         # Report every invalid module, not just the first: an operator fixing
         # a multi-module config must see all violations in one run.
@@ -1156,15 +1169,20 @@ def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]
             fixes.append("dimensions: empty, restored canonical defaults.")
         new_config["dimensions"] = deduped
 
-    # language: must be one of zh/en.
+    # language: must be one of zh/en. isinstance guard first so an unhashable
+    # hand-edited value (`language: [zh]`) is repaired instead of crashing
+    # `doctor --fix` with a TypeError (mirrors the check path above).
     language = new_config.get("language")
-    if language is not None and language not in SUPPORTED_LANGUAGES:
+    if language is not None and (not isinstance(language, str) or language not in SUPPORTED_LANGUAGES):
         new_config["language"] = "en"
         fixes.append(f"language: {language!r} invalid, reset to 'en'.")
 
     # reasoning_effort: must be one of low/medium/high (None = provider default).
+    # Same unhashable-value guard as language.
     reasoning_effort = new_config.get("reasoning_effort")
-    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORT_VALUES:
+    if reasoning_effort is not None and (
+        not isinstance(reasoning_effort, str) or reasoning_effort not in REASONING_EFFORT_VALUES
+    ):
         new_config["reasoning_effort"] = None
         fixes.append(
             f"reasoning_effort: {reasoning_effort!r} invalid, reset to provider default (null)."
@@ -1302,9 +1320,21 @@ def export_report_json(
         report.to_dict(strict=strict), ensure_ascii=False, indent=2
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = out_path.with_name(out_path.name + ".tmp")
-    tmp_path.write_text(payload + "\n", encoding="utf-8")
-    os.replace(tmp_path, out_path)
+    # Unique tmp name (pid + random suffix): a fixed "<name>.tmp" made two
+    # concurrent exports to the same target stomp each other's half-written
+    # file, and a failed write_text left the tmp behind forever. Write →
+    # atomic replace → best-effort cleanup of the tmp on any failure.
+    tmp_path = out_path.with_name(
+        f"{out_path.name}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp"
+    )
+    try:
+        tmp_path.write_text(payload + "\n", encoding="utf-8")
+        os.replace(tmp_path, out_path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass  # cleanup is best-effort; the real error surfaces above
 
 
 def render_report(report: DoctorReport, json_output: bool = False, strict: bool = False) -> int:
