@@ -156,6 +156,11 @@ class OnboardingData:
     coverage_validation: bool = True
     scope_chunk_size: int = DEFAULT_SCOPE_CHUNK_SIZE
     drift_ignore: list[str] = field(default_factory=list)
+    #: User's deliberate drift-check switch. Preserved across re-onboarding —
+    #: an operator who set ``drift_check: false`` used to get it silently
+    #: flipped back to true by any wizard-driven regeneration, because the
+    #: loader never read it and generate_config_yaml hardcoded ``True``.
+    drift_check: bool = True
     personalization: PersonalizationData | None = None
 
     def completed_at(self) -> str:
@@ -238,7 +243,7 @@ def generate_config_yaml(data: OnboardingData) -> str:
         "completed_at": data.completed_at(),
         "channel": data.channel,
         "skill_version": SKILL_VERSION,
-        "drift_check": True,
+        "drift_check": data.drift_check,
         "fingerprints": fingerprints_to_dict(data.fingerprints),
         # Persist user-entered text so returning users who decline basic
         # update don't lose their previously entered description/conventions.
@@ -325,6 +330,21 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
         if original_mode is not None:
             os.chmod(tmp_path, original_mode)
         os.replace(tmp_path, path)
+        # Make the RENAME durable too: fsync on the file only persists its
+        # contents, so a power loss right after os.replace could still lose
+        # the link itself (file "vanishes" though the write reported success).
+        # fsyncing the parent directory closes that window. Best-effort and
+        # self-contained: directories cannot be opened on some platforms
+        # (Windows), and a failed dir-fsync must never fail a write whose
+        # bytes already landed.
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
     except OSError:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -400,6 +420,12 @@ def write_onboarding_outputs(
 
     Raises:
         OSError: If files cannot be written.
+        ValueError: If the freshly generated ITERATE.md lacks the USER-OWNED
+            markers (damaged/outdated bundled template). Writing it would
+            either discard the preserved user section (splice target missing)
+            or produce an ITERATE.md that ``iterate personalize`` can never
+            update again — refuse before touching the filesystem instead, as
+            ``generate_refreshed_md`` already does for the refresh path.
     """
     iterate_md_path = output_dir / "ITERATE.md"
     config_path = output_dir / "iterate.config.yaml"
@@ -420,6 +446,19 @@ def write_onboarding_outputs(
             new_personalization_md = data.personalization.to_user_md_sections()
             user_content = merge_user_sections(user_content, new_personalization_md)
         iterate_md_content = _replace_user_owned_section(fresh, user_content)
+
+    # Validate the OUTPUT (not just the input): a template without markers
+    # silently won the splice (_replace_user_owned_section returns the content
+    # unchanged when markers are absent) and the user's manual section just
+    # vanished — no warning, no error, byte-identical to a "successful" run.
+    if not has_valid_user_owned_markers(iterate_md_content):
+        raise ValueError(
+            "Generated ITERATE.md is missing the USER-OWNED section markers; "
+            "refusing to write. The bundled template appears damaged or out "
+            "of date — reinstall the skill, or restore "
+            "<!-- ITERATE:USER-OWNED:START --> / ...END --> in "
+            "templates/ITERATE.template.md and retry."
+        )
 
     config_yaml = generate_config_yaml(data)
     atomic_write(iterate_md_path, iterate_md_content)

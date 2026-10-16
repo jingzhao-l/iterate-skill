@@ -406,6 +406,32 @@ def _run_basic_wizard(
     return data
 
 
+def _normalize_loaded_str(value: object, default: str) -> str:
+    """Return ``value`` when it is a non-empty string, else ``default``.
+
+    Config-loaded scalars are re-persisted verbatim by the wizard, so a
+    hand-edited ``goal: 123`` used to be written back as-is and left doctor
+    flagging the config forever.
+    """
+    return value if isinstance(value, str) and value.strip() else default
+
+
+def _normalize_loaded_int(value: object, default: int, lo: int, hi: int | None = None) -> int:
+    """Return ``value`` clamped into ``[lo, hi]``, else ``default``.
+
+    ``bool`` is rejected explicitly (it is an ``int`` subclass in Python, so
+    ``max_rounds: true`` must not normalize to 1). Bounds mirror
+    config.schema.json constraints, matching what ``doctor --fix`` would do.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    if value < lo:
+        return lo
+    if hi is not None and value > hi:
+        return hi
+    return value
+
+
 def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
     """Load existing onboarding data from iterate.config.yaml.
 
@@ -455,6 +481,13 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         drift_ignore = (
             [str(p) for p in drift_ignore_raw] if isinstance(drift_ignore_raw, list) else []
         )
+
+        # Preserve the drift-check switch too: generate_config_yaml used to
+        # hardcode `drift_check: True`, so `iterate reonboard` / basic-config
+        # update silently re-enabled drift for an operator who had deliberately
+        # turned it off (non-bool hand edits fall back to the default).
+        raw_drift_check = onboarding_section.get("drift_check", True)
+        drift_check = raw_drift_check if isinstance(raw_drift_check, bool) else True
 
         # Preserve every user-customised field so a returning user who declines
         # the basic-config update does not lose them during regeneration.
@@ -538,22 +571,43 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
                 project_root, ignore_patterns=drift_ignore
             ),
             language=existing_language,
-            goal=config.get("goal", DEFAULT_GOAL),
-            max_rounds=config.get("max_rounds", DEFAULT_MAX_ROUNDS),
+            # Re-persisted scalars are type-checked here: a hand-edited
+            # `goal: 123` / `max_rounds: "abc"` / `atomic.max_lines: -5`
+            # used to flow straight back into the regenerated config, so
+            # every doctor run kept flagging a value the wizard had just
+            # re-confirmed as "loaded".
+            goal=_normalize_loaded_str(config.get("goal", DEFAULT_GOAL), DEFAULT_GOAL),
+            max_rounds=_normalize_loaded_int(
+                config.get("max_rounds", DEFAULT_MAX_ROUNDS),
+                DEFAULT_MAX_ROUNDS,
+                MAX_ROUNDS_MIN,
+                MAX_ROUNDS_MAX,
+            ),
             reasoning_effort=normalize_reasoning_effort(
                 config.get("reasoning_effort", DEFAULT_REASONING_EFFORT)
             ),
-            atomic_max_lines=atomic.get("max_lines", DEFAULT_ATOMIC_MAX_LINES),
-            atomic_max_adjacent_methods=atomic.get(
-                "max_adjacent_methods", DEFAULT_ATOMIC_MAX_ADJACENT_METHODS
+            atomic_max_lines=_normalize_loaded_int(
+                atomic.get("max_lines", DEFAULT_ATOMIC_MAX_LINES),
+                DEFAULT_ATOMIC_MAX_LINES,
+                1,
+            ),
+            atomic_max_adjacent_methods=_normalize_loaded_int(
+                atomic.get("max_adjacent_methods", DEFAULT_ATOMIC_MAX_ADJACENT_METHODS),
+                DEFAULT_ATOMIC_MAX_ADJACENT_METHODS,
+                1,
             ),
             use_worktree=git.get("use_worktree", False),
             auto_merge=git.get("auto_merge", False),
             output_schema_validation=reviewer.get("output_schema_validation", True),
             evidence_validation=reviewer.get("evidence_validation", True),
             coverage_validation=reviewer.get("coverage_validation", True),
-            scope_chunk_size=reviewer.get("scope_chunk_size", DEFAULT_SCOPE_CHUNK_SIZE),
+            scope_chunk_size=_normalize_loaded_int(
+                reviewer.get("scope_chunk_size", DEFAULT_SCOPE_CHUNK_SIZE),
+                DEFAULT_SCOPE_CHUNK_SIZE,
+                1,
+            ),
             drift_ignore=drift_ignore,
+            drift_check=drift_check,
         )
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         tui.error(f"Failed to load existing config: {exc}")

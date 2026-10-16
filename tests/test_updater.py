@@ -1379,3 +1379,39 @@ def test_run_command_small_detail_not_truncated() -> None:
 
     with pytest.raises(RuntimeError, match="boom"):
         updater._run_command(["cmd"], runner, 60, "test cmd")
+
+
+def test_update_assistant_dir_removes_files_deleted_upstream(tmp_path) -> None:
+    """A file deleted upstream must disappear from the assistant dir.
+
+    Regression: the managed directories were copied with
+    ``copytree(dirs_exist_ok=True)``, which MERGED — so a module removed in a
+    newer release survived forever in ``~/.claude/skills/iterate`` while
+    scripts/install.py's force path removed it. The two refresh routes
+    disagreed about what "refresh to the release" means.
+    """
+    source = _minimal_source(tmp_path / "src-tree")
+    destination = tmp_path / "skills" / "iterate"
+    extra = source / "iterate_cli" / "will_be_deleted.py"
+    extra.write_text("x = 1\n", encoding="utf-8")
+
+    update_assistant_dir(source, destination)
+    assert (destination / "iterate_cli" / "will_be_deleted.py").is_file()
+
+    # Simulate the next release dropping that module.
+    extra.unlink()
+    update_assistant_dir(source, destination)
+    assert not (destination / "iterate_cli" / "will_be_deleted.py").exists()
+
+
+def test_update_assistant_dir_leaves_unmanaged_files_alone(tmp_path) -> None:
+    """Only managed paths are replaced; a user's own file at the root stays."""
+    source = _minimal_source(tmp_path / "src-tree")
+    destination = tmp_path / "skills" / "iterate"
+    update_assistant_dir(source, destination)
+    user_note = destination / "MY-NOTES.md"
+    user_note.write_text("keep me\n", encoding="utf-8")
+
+    update_assistant_dir(source, destination)
+
+    assert user_note.read_text(encoding="utf-8") == "keep me\n"

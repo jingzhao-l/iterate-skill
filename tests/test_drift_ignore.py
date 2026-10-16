@@ -348,8 +348,12 @@ class TestFingerprintVerifyCli:
         )
         assert cli_main(["fingerprint", "verify", "-p", str(py_project)]) == 1
         captured = capsys.readouterr()
-        assert "Drift detected" in captured.out
-        assert "pyproject.toml" in captured.out
+        # "Drift detected:" is a warning and now goes to stderr (stdout is
+        # reserved for data / the single --json document); the drift detail
+        # lines stay on stdout. Assert across both streams.
+        combined = captured.out + captured.err
+        assert "Drift detected" in combined
+        assert "pyproject.toml" in combined
 
     def test_verify_removed_manifest_exits_one(self, js_project: Path, capsys) -> None:
         write_onboarding_outputs(_build_onboarding_data(js_project), js_project)
