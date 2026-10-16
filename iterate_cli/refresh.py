@@ -180,23 +180,42 @@ def is_onboarding_complete(project_root: Path) -> bool:
     return (project_root / ITERATE_MD).is_file()
 
 
-def drift_unavailable_reason(
+#: Stable machine-readable codes for "drift check unavailable". CLI exit
+#: codes and TUI hint selection branch on THESE constants — never on the
+#: human-readable message text, so rewording a message can never silently
+#: flip a CI gate (the previous substring match on "could not be parsed"
+#: would have).
+DRIFT_REASON_CORRUPT = "corrupt_config"
+DRIFT_REASON_NOT_ONBOARDED = "not_onboarded"
+DRIFT_REASON_DISABLED = "drift_check_disabled"
+DRIFT_REASON_NO_FINGERPRINTS = "no_fingerprints"
+DRIFT_REASON_UNKNOWN = "unknown"
+
+_DRIFT_REASON_MESSAGES: dict[str, str] = {
+    DRIFT_REASON_CORRUPT: "iterate.config.yaml exists but could not be parsed",
+    DRIFT_REASON_NOT_ONBOARDED: "onboarding not completed",
+    DRIFT_REASON_DISABLED: "drift check is disabled (drift_check: false)",
+    DRIFT_REASON_NO_FINGERPRINTS: (
+        "no fingerprints recorded yet (run `iterate refresh` to capture them)"
+    ),
+    DRIFT_REASON_UNKNOWN: "drift check unavailable",
+}
+
+
+def drift_unavailable_code(
     project_root: Path, config: dict[str, Any] | None
 ) -> str:
-    """Return a machine-readable reason for "drift check unavailable".
+    """Return a stable reason CODE for "drift check unavailable".
 
     Distinguishes "not onboarded" from "config corrupt" from "check disabled"
-    from "no fingerprints yet" so both the JSON payload and the TUI hint can
-    point the user at the right fix. Lives here (next to
-    ``check_onboarding_drift``) so ``status``, ``show`` and ``fingerprint``
-    cannot drift apart: ``show`` used to collapse all four cases into
-    "unknown", telling an operator who deliberately set ``drift_check: false``
-    that their state was indeterminate.
+    from "no fingerprints yet". The code is the machine contract; the message
+    from ``drift_unavailable_reason`` is derived from it for display. Lives
+    here (next to ``check_onboarding_drift``) so ``status``, ``show`` and
+    ``fingerprint`` cannot drift apart.
     """
-    reason = "onboarding not completed"
     config_path = project_root / CONFIG_YAML
     if config_path.is_file() and config is None:
-        return "iterate.config.yaml exists but could not be parsed"
+        return DRIFT_REASON_CORRUPT
     if config is not None:
         onboarding = (
             config.get("onboarding")
@@ -208,29 +227,52 @@ def drift_unavailable_reason(
         # completed"), so advertising "run `iterate refresh`" here would send
         # the user to a command guaranteed to reject them.
         if not is_onboarding_complete(project_root):
-            return reason
+            return DRIFT_REASON_NOT_ONBOARDED
         if not onboarding.get("drift_check", True):
-            reason = "drift check is disabled (drift_check: false)"
-        else:
-            stored = onboarding.get("fingerprints") or []
-            if not isinstance(stored, list) or not stored:
-                reason = "no fingerprints recorded yet (run `iterate refresh` to capture them)"
-            else:
-                reason = "drift check unavailable"
-    return reason
+            return DRIFT_REASON_DISABLED
+        stored = onboarding.get("fingerprints") or []
+        if not isinstance(stored, list) or not stored:
+            return DRIFT_REASON_NO_FINGERPRINTS
+    return DRIFT_REASON_UNKNOWN
 
 
-def check_onboarding_drift(project_root: Path) -> DriftResult | None:
+def drift_unavailable_reason(
+    project_root: Path, config: dict[str, Any] | None
+) -> str:
+    """Return a human-readable reason for "drift check unavailable".
+
+    Display counterpart of ``drift_unavailable_code`` (same four cases plus
+    corrupt-config). The message must only be SHOWN to users; code that
+    branches on the reason must use the code, not substring matching.
+    """
+    return _DRIFT_REASON_MESSAGES[drift_unavailable_code(project_root, config)]
+
+
+#: Sentinel for "no pre-loaded config supplied" — ``None`` is a meaningful
+#: value (the config exists but is unparseable), so it cannot double as the
+#: default for an optional pre-loaded-config parameter.
+_CONFIG_NOT_PASSED = object()
+
+
+def check_onboarding_drift(
+    project_root: Path,
+    config: dict[str, Any] | None | object = _CONFIG_NOT_PASSED,
+) -> DriftResult | None:
     """Check for drift since the last onboarding.
 
     Args:
         project_root: The project root directory.
+        config: Optional ALREADY-LOADED config to reuse. Pass ``None``
+            explicitly when the config exists but could not be parsed (avoids
+            a second load emitting a SECOND identical parse-error report);
+            omit the argument to load the config here (previous behaviour).
 
     Returns:
         DriftResult if onboarding was completed and drift check is enabled,
         None if onboarding was never completed or drift check is disabled.
     """
-    config = load_onboarding_config(project_root)
+    if config is _CONFIG_NOT_PASSED:
+        config = load_onboarding_config(project_root)
     if config is None:
         return None
 
@@ -558,6 +600,14 @@ def _build_refreshed_config(
     # manifest fingerprints actually changed (keeps ``iterate refresh`` a no-op
     # when nothing drifted; ``--dry-run`` reports "no changes needed" instead of
     # always showing a diff due to a fresh timestamp).
+    #
+    # NOTE: this timestamp is "when the CONFIG was last reconciled". The Meta
+    # row in ITERATE.md is deliberately NOT restamped (refresh reuses the old
+    # value so an unchanged refresh stays byte-for-byte identical), so it keeps
+    # meaning "when ITERATE.md was last generated". The two can therefore
+    # diverge after a fingerprint-only refresh; that is intentional, not a
+    # staleness bug — do not "fix" one to match the other without revisiting
+    # the idempotency requirement above.
     new_fp = fingerprints_to_dict(data.fingerprints)
     if onboarding.get("fingerprints") != new_fp:
         onboarding["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -653,11 +703,28 @@ def full_reonboard(
     else:
         data = run_wizard(project_root)
 
+    def _remove_backups() -> None:
+        """Best-effort removal of the snapshots taken above.
+
+        Called on the no-write exit paths (cancelled / no changes): nothing
+        was written, so the copies are pure litter in the repo root that
+        accumulated as untracked ``*.bak-*`` files on every cancelled
+        re-onboard. A failed unlink is harmless and must not change the
+        returned status.
+        """
+        for name in (ITERATE_MD, CONFIG_YAML):
+            try:
+                (project_root / f"{name}.bak-{backup_suffix}").unlink(missing_ok=True)
+            except OSError:
+                pass
+
     if data is None:
+        _remove_backups()
         return REONBOARD_CANCELLED
     if data is NO_CHANGES_NEEDED:
-        # Returning user declined all updates; nothing to write. The old
-        # files remain intact and the .bak-<timestamp> copies are harmless.
+        # Returning user declined all updates; nothing to write, so drop the
+        # snapshots as well — there is nothing to recover from.
+        _remove_backups()
         return REONBOARD_NO_CHANGES
 
     # Preserve existing personalization when the user did not re-personalize,
@@ -697,7 +764,10 @@ def full_reonboard(
                 )
                 return REONBOARD_FAILED
         write_onboarding_outputs(data, project_root, existing_md)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # OSError: write failed (rolled back). ValueError: generated
+        # ITERATE.md lacks the USER-OWNED markers (damaged template) —
+        # write_onboarding_outputs refuses before touching the filesystem.
         tui.error(f"Failed to write onboarding outputs: {exc}")
         return REONBOARD_FAILED
 
@@ -768,7 +838,42 @@ def _resolve_validation_config(
     # Guard against a hand-edited scalar ``validation.commands`` value: the
     # reconcile step does ``dict(commands)``, which would crash on a string.
     existing_commands = validation_existing.get("commands")
+    if existing_commands is not None and not isinstance(existing_commands, dict):
+        tui.warning(
+            "validation.commands is not a mapping — ignored; scan suggestions "
+            "are used instead."
+        )
+        existing_commands = {}
     validation_commands = existing_commands if isinstance(existing_commands, dict) else {}
+    # Normalize PER-MODULE values (not just the top-level type): a hand-edited
+    # `{python: "pytest -q"}` (scalar instead of a list) passed the guard above,
+    # was written back verbatim by _build_refreshed_config, and then tripped
+    # doctor/validate forever — refresh claims to normalize hand edits back to
+    # schema-valid values, so non-list modules are dropped (announced) and
+    # non-string entries filtered, mirroring wizard._load_existing_onboarding_data.
+    normalized_commands: dict[str, list[str]] = {}
+    for module, cmds in validation_commands.items():
+        if not isinstance(cmds, list):
+            tui.warning(
+                f"validation.commands[{module!r}] is not a list — dropped "
+                "(doctor/validate would reject it)."
+            )
+            continue
+        filtered = [c for c in cmds if isinstance(c, str) and c.strip()]
+        if len(filtered) != len(cmds):
+            tui.warning(
+                f"validation.commands[{module!r}] had non-string/empty entries — "
+                "they were dropped."
+            )
+        if not filtered:
+            # All entries were invalid: an empty list violates the schema
+            # (minItems 1), so the module cannot be kept as-is either.
+            tui.warning(
+                f"validation.commands[{module!r}] has no valid commands — module dropped."
+            )
+            continue
+        normalized_commands[str(module)] = filtered
+    validation_commands = normalized_commands
     has_whitelist_key = "command_whitelist" in validation_existing
     command_whitelist = validation_existing.get("command_whitelist")
     if not isinstance(command_whitelist, list) or not command_whitelist:

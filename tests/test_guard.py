@@ -570,8 +570,10 @@ class TestRenderGuardResult:
         project = _make_project(tmp_path)
         result = run_guard_postcheck(project, None, dry_run=True)
         render_guard_result(result, json_output=False)
-        out = capsys.readouterr().out
-        assert "DRY-RUN preview (nothing executed)" in out
+        captured = capsys.readouterr()
+        # The preview banner is rendered as a warning, which now goes to stderr
+        # (stdout stays data-only so `--json` can promise one clean document).
+        assert "DRY-RUN preview (nothing executed)" in (captured.out + captured.err)
 
     def test_precheck_dry_run_still_reports_it_in_json(
         self, tmp_path, capsys

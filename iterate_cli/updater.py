@@ -702,7 +702,16 @@ def _copy_release_path(source: Path, destination: Path, relative: str) -> None:
     if src.is_dir():
         if dst.is_symlink() or dst.exists() and not dst.is_dir():
             dst.unlink()
-        shutil.copytree(src, dst, dirs_exist_ok=True)
+        # REPLACE (not merge) a managed directory: copytree(dirs_exist_ok=True)
+        # merged, so a file deleted upstream (e.g. a removed iterate_cli
+        # module) survived in the assistant dir forever, while
+        # scripts/install.py's force path rmtree+copied — `iterate update`
+        # and the installer disagreed about what "refresh to the release"
+        # means. Replacing makes the managed paths byte-identical to the
+        # verified release.
+        if dst.is_dir():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
     else:
         if dst.is_symlink():
             dst.unlink()

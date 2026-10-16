@@ -1854,7 +1854,9 @@ class TestCLIStatus:
         ret = cli_main(["status", "-p", str(empty_project)])
         assert ret == 0
         captured = capsys.readouterr()
-        assert "Not onboarded" in captured.out
+        # The "Not onboarded" line is a warning → stderr now (stdout is the
+        # data stream; `status --json` has its own machine-readable payload).
+        assert "Not onboarded" in (captured.out + captured.err)
 
     def test_status_onboarded_no_drift(self, fake_project: Path, capsys) -> None:
         data = _build_onboarding_data(fake_project)
@@ -2056,7 +2058,8 @@ class TestCLIRefresh:
         ret = cli_main(["refresh", "-p", str(empty_project)])
         assert ret == 1
         captured = capsys.readouterr()
-        assert "not yet completed" in captured.out
+        # "not yet completed" is now a warning on stderr (see tui.warning).
+        assert "not yet completed" in (captured.out + captured.err)
 
     def test_refresh_success(self, fake_project: Path, capsys) -> None:
         data = _build_onboarding_data(fake_project)
@@ -2179,6 +2182,14 @@ class TestJsonStdoutIsExactlyOneDocument:
             code = cli_main(args + ["-p", str(tmp_path), "--no-banner"])
         return code, out.getvalue()
 
+    @staticmethod
+    def _run_with_stderr(args, tmp_path) -> tuple[int, str, str]:
+        """Like ``_run`` but also captures stderr — warnings live there."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli_main(args + ["-p", str(tmp_path), "--no-banner"])
+        return code, out.getvalue(), err.getvalue()
+
     def test_refresh_json_on_unproject_is_lone_json(self, tmp_path) -> None:
         code, out = self._run(["refresh", "--json"], tmp_path)
         assert code == 1
@@ -2195,10 +2206,16 @@ class TestJsonStdoutIsExactlyOneDocument:
         assert "Onboarding not yet completed" not in out, out
 
     def test_refresh_non_json_still_prints_the_warning(self, tmp_path) -> None:
-        """Suppression must be scoped to --json, not remove the message."""
-        code, out = self._run(["refresh"], tmp_path)
+        """The message must still be EMITTED — now on stderr.
+
+        Warnings moved to stderr so stdout stays data-only on every command
+        (not just on --json paths); the message itself is not suppressed.
+        """
+        code, out, err = self._run_with_stderr(["refresh"], tmp_path)
         assert code == 1
-        assert "Onboarding not yet completed" in out
+        assert "Onboarding not yet completed" in err
+        assert "Onboarding not yet completed" not in out
+        assert "\u26a0" not in out, out
 
     def test_missing_project_dir_json_emits_error_object(self) -> None:
         """A precondition failure is still a JSON error, not empty stdout."""
@@ -3462,7 +3479,8 @@ class TestCLIPersonalize:
         ret = cli_main(["personalize", "-p", str(empty_project)])
         assert ret == 1
         captured = capsys.readouterr()
-        assert "not yet completed" in captured.out.lower() or "onboard" in captured.out.lower()
+        combined = (captured.out + captured.err).lower()
+        assert "not yet completed" in combined or "onboard" in combined
 
     def test_personalize_no_config(self, fake_project: Path, capsys) -> None:
         """ITERATE.md exists but config.yaml missing."""
@@ -5165,7 +5183,9 @@ class TestShowCommand:
         ret = cli_main(["show", "-p", str(empty_project)])
         assert ret == 0
         captured = capsys.readouterr()
-        assert "Not onboarded" in captured.out
+        # "Not onboarded" is a warning → stderr; the payload/config keys stay
+        # on stdout (the not-onboarded payload is stable, see collect_show_data).
+        assert "Not onboarded" in (captured.out + captured.err)
 
     def test_show_onboarded_with_personalization(
         self, fake_project: Path, capsys
@@ -5248,9 +5268,10 @@ class TestShowCommand:
 
         ret = cli_main(["show", "-p", str(fake_project)])
         assert ret == 0
-        captured = capsys.readouterr().out
-        assert "Drift:" in captured
-        assert "iterate refresh" in captured
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "Drift:" in combined
+        assert "iterate refresh" in combined
 
     def test_show_json_includes_drift_advice(
         self, fake_project: Path, capsys, monkeypatch
@@ -5320,9 +5341,12 @@ class TestShowCommand:
         capsys.readouterr()
 
         assert cli_main(["show", "-p", str(fake_project), "--no-banner"]) == 1
-        out = capsys.readouterr().out
-        assert "unreadable" in out
-        assert "doctor" in out
+        captured = capsys.readouterr()
+        # The unreadable-config message is an error (stderr); the remedy hint
+        # stays on stdout. Assert across both.
+        combined = captured.out + captured.err
+        assert "unreadable" in combined
+        assert "doctor" in combined
 
     def test_show_healthy_config_still_exits_zero(
         self, fake_project: Path, capsys
@@ -5435,7 +5459,9 @@ class TestPersonalizeClear:
             "iterate_cli.wizard._ask_yes_no", lambda *a, **k: False
         )
         ret = cli_main(["personalize", "-p", str(fake_project), "--clear"])
-        assert ret == 0
+        # Cancel → 1 (matches onboard/reonboard and main()'s documented
+        # "1 for error/cancel"); the config must remain untouched either way.
+        assert ret == 1
 
         config = yaml.safe_load(
             (fake_project / "iterate.config.yaml").read_text(encoding="utf-8")
@@ -5676,3 +5702,238 @@ class TestCompareFingerprintsMalformed:
         result = compare_fingerprints(stored, current)  # type: ignore[list-item]
         assert result.changed == ["a.json"]
         assert result.removed == []
+
+
+# ---------------------------------------------------------------------------
+# Review-driven regression tests (3.5.x hardening batch)
+# ---------------------------------------------------------------------------
+
+
+class TestFingerprintListJsonScalarOnboarding:
+    """`onboarding:` holding a scalar (hand edit) used to crash
+    `fingerprint list --json` with AttributeError, emitting NO JSON at all."""
+
+    def test_scalar_onboarding_emits_lone_json(self, tmp_path: Path, capsys) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "ITERATE.md").write_text("# Project\n", encoding="utf-8")
+        (project / "iterate.config.yaml").write_text(
+            "onboarding: legacy-scalar\n", encoding="utf-8"
+        )
+        rc = cli_main(["fingerprint", "list", "--json", "-p", str(project), "--no-banner"])
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)  # must not raise
+        assert rc == 0
+        assert payload["available"] is True
+        assert payload["drift_check_enabled"] is True
+
+
+class TestDriftUnavailableCodes:
+    """Machine-readable reason codes: CLI exit codes must branch on these, not
+    on substrings of the human message (rewording used to flip a CI gate)."""
+
+    def test_corrupt_config_code(self, tmp_path: Path) -> None:
+        from iterate_cli.refresh import (
+            DRIFT_REASON_CORRUPT,
+            drift_unavailable_code,
+            drift_unavailable_reason,
+        )
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "iterate.config.yaml").write_text("dimensions: [oops\n", encoding="utf-8")
+        assert drift_unavailable_code(project, None) == DRIFT_REASON_CORRUPT
+        assert "could not be parsed" in drift_unavailable_reason(project, None)
+
+    def test_not_onboarded_code(self, tmp_path: Path) -> None:
+        from iterate_cli.refresh import (
+            DRIFT_REASON_NOT_ONBOARDED,
+            drift_unavailable_code,
+        )
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        assert drift_unavailable_code(project, {}) == DRIFT_REASON_NOT_ONBOARDED
+
+    def test_disabled_code(self, tmp_path: Path) -> None:
+        from iterate_cli.refresh import DRIFT_REASON_DISABLED, drift_unavailable_code
+
+        project = tmp_path / "proj"
+        (project / "ITERATE.md").parent.mkdir(parents=True, exist_ok=True)
+        (project / "ITERATE.md").write_text("# P\n", encoding="utf-8")
+        assert (
+            drift_unavailable_code(project, {"onboarding": {"drift_check": False}})
+            == DRIFT_REASON_DISABLED
+        )
+
+    def test_no_fingerprints_code(self, tmp_path: Path) -> None:
+        from iterate_cli.refresh import (
+            DRIFT_REASON_NO_FINGERPRINTS,
+            drift_unavailable_code,
+        )
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "ITERATE.md").write_text("# P\n", encoding="utf-8")
+        assert (
+            drift_unavailable_code(project, {"onboarding": {"fingerprints": []}})
+            == DRIFT_REASON_NO_FINGERPRINTS
+        )
+
+
+class TestFingerprintVerifyNoDuplicateParseError:
+    """A corrupt config used to print the parse error TWICE (once from the CLI's
+    load, once from check_onboarding_drift's internal load)."""
+
+    def test_parse_error_reported_once(self, tmp_path: Path, capsys) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "ITERATE.md").write_text("# P\n", encoding="utf-8")
+        (project / "iterate.config.yaml").write_text("dimensions: [oops\n", encoding="utf-8")
+        rc = cli_main(["fingerprint", "verify", "-p", str(project), "--no-banner"])
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert rc == 1
+        assert combined.count("Failed to parse") == 1
+
+
+class TestShowCorruptConfigBeforeOnboarding:
+    """`status` exits 1 for a config that exists but cannot be parsed, even
+    before onboarding; `show` used to exit 0 with a truncated payload."""
+
+    def test_show_fails_closed_pre_onboarding(self, tmp_path: Path, capsys) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "iterate.config.yaml").write_text("dimensions: [oops\n", encoding="utf-8")
+        rc = cli_main(["show", "--json", "-p", str(project), "--no-banner"])
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 1
+        assert payload["config_error"] is True
+        assert payload["onboarded"] is False
+
+    def test_show_not_onboarded_payload_has_stable_keys(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        rc = cli_main(["show", "--json", "-p", str(project), "--no-banner"])
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        for key in ("project", "onboarded", "onboarding", "config", "drift", "personalization"):
+            assert key in payload, key
+
+
+class TestWriteOnboardingOutputsRefusesMarkerlessTemplate:
+    """A damaged/outdated template without the USER-OWNED markers silently
+    discarded the user's manual section (`_replace_user_owned_section` returns
+    the content unchanged when markers are absent)."""
+
+    def test_markerless_generated_content_raises(self, tmp_path: Path, monkeypatch) -> None:
+        from iterate_cli import generator
+
+        bad_template = tmp_path / "ITERATE.template.md"
+        bad_template.write_text("# no markers here\n", encoding="utf-8")
+        monkeypatch.setattr(generator, "TEMPLATE_PATH", bad_template)
+
+        data = _build_onboarding_data(tmp_path / "proj")
+        (tmp_path / "proj").mkdir(parents=True, exist_ok=True)
+        existing_md = (
+            "# Iterate\n\n<!-- ITERATE:USER-OWNED:START -->\n"
+            "MY PRECIOUS MANUAL NOTES\n<!-- ITERATE:USER-OWNED:END -->\n"
+        )
+        with pytest.raises(ValueError, match="USER-OWNED"):
+            generator.write_onboarding_outputs(data, tmp_path / "proj", existing_md)
+        # Nothing may have been written.
+        assert not (tmp_path / "proj" / "ITERATE.md").exists()
+
+
+class TestDriftCheckPreservedAcrossWizardRegeneration:
+    """`generate_config_yaml` hardcoded `drift_check: True`, so a wizard-driven
+    regeneration silently re-enabled a deliberately disabled drift check."""
+
+    def test_round_trip_preserves_false(self, tmp_path: Path) -> None:
+        from iterate_cli.generator import generate_config_yaml
+        from iterate_cli.wizard import _load_existing_onboarding_data
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "ITERATE.md").write_text("# P\n", encoding="utf-8")
+        (project / "iterate.config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "dimensions": ["correctness"],
+                    "onboarding": {
+                        "channel": "cli",
+                        "completed_at": "2026-01-01T00:00:00Z",
+                        "drift_check": False,
+                        "fingerprints": [],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        data = _load_existing_onboarding_data(project)
+        assert data is not None
+        assert data.drift_check is False
+        regenerated = yaml.safe_load(generate_config_yaml(data))
+        assert regenerated["onboarding"]["drift_check"] is False
+
+    def test_non_bool_falls_back_to_true(self, tmp_path: Path) -> None:
+        from iterate_cli.generator import generate_config_yaml
+        from iterate_cli.wizard import _load_existing_onboarding_data
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "ITERATE.md").write_text("# P\n", encoding="utf-8")
+        (project / "iterate.config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "onboarding": {"drift_check": "yes-please", "fingerprints": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+        data = _load_existing_onboarding_data(project)
+        assert data is not None and data.drift_check is True
+        assert yaml.safe_load(generate_config_yaml(data))["onboarding"]["drift_check"] is True
+
+
+class TestRefreshNormalizesPerModuleCommands:
+    """`validation.commands: {python: "pytest -q"}` (scalar per module) was
+    written back verbatim, so doctor kept flagging it forever."""
+
+    def test_scalar_module_value_is_dropped(self) -> None:
+        from iterate_cli.refresh import _resolve_validation_config
+        from iterate_cli.scan import ScanResult
+
+        commands, _whitelist = _resolve_validation_config(
+            {"validation": {"commands": {"python": "pytest -q"}}, "dimensions": ["correctness"]},
+            ScanResult(),
+        )
+        assert all(isinstance(v, list) for v in commands.values())
+
+    def test_non_string_entries_are_filtered(self) -> None:
+        from iterate_cli.refresh import _resolve_validation_config
+        from iterate_cli.scan import ScanResult
+
+        commands, _whitelist = _resolve_validation_config(
+            {"validation": {"commands": {"python": ["pytest -q", 42, " "]}}},
+            ScanResult(),
+        )
+        assert commands.get("python") == ["pytest -q"]
+
+
+class TestCliDependencyExitCode:
+    """The documented exit-code contract lists 127 for a missing dependency."""
+
+    def test_third_party_dependency_maps_to_127(self) -> None:
+        from iterate_cli.cli import _dependency_exit_code
+
+        assert _dependency_exit_code("yaml") == 127
+        assert _dependency_exit_code("rich") == 127
+
+    def test_own_module_and_blank_do_not_map(self) -> None:
+        from iterate_cli.cli import _dependency_exit_code
+
+        assert _dependency_exit_code("iterate_cli") is None
+        assert _dependency_exit_code("") is None

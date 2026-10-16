@@ -414,10 +414,7 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
     except (OSError, subprocess.SubprocessError) as exc:
         return EXIT_FAIL, f"could not execute: {exc}"
 
-    total_bytes = 0
-
     def _drain() -> None:
-        nonlocal total_bytes
         assert proc.stdout is not None
         # Chunked (not readline) draining: a tool that emits one gigantic
         # newline-free line (progress deltas, minified output) would otherwise
@@ -441,7 +438,6 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
             chunk = proc.stdout.read(_DRAIN_CHUNK_CHARS)
             if not chunk:
                 break
-            total_bytes += len(chunk.encode("utf-8", errors="replace"))
             carry += chunk
             if "\n" in carry:
                 complete, _, carry = carry.rpartition("\n")
