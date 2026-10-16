@@ -1323,6 +1323,80 @@ stamp 不匹配会自动重装到新 tag。
 >         Dependabot alert #48（高危 `source-map-js`，dev 依赖，在
 >         `harness/iterate-harness/frontend/web/package-lock.json`）不属插件
 >         scope，未处理。
+>
+>         **3.8.0 发布记录（2026-10-16）**：dsh 0.2.1-alpha.4 升级 +
+>         `engines.dsh` 兼容契约采纳 + 全面审查 15 项缺陷修复（独立版本线，仅
+>         `harness/iterate-plugin/package.json` + `package-lock.json`）。
+>         **上游 dsh**：`dsh-v0.2.1-alpha.4`（10-15 发布）五包 `@deepseek-ai/*`
+>         精确钉版 `0.2.1-alpha.4`，`@deepseek-ai/cordis` 升 `4.0.5-alpha.2`
+>         （alpha.4 各包 peer 硬性要求 `~4.0.5-alpha.2`，否则 ERESOLVE）；
+>         `dshReleases` 声明 `0.2.1-alpha.3: compatible` 与
+>         `0.2.1-alpha.4: compatible`（累计 21 个 release，两份 README 同步）。
+>         **唯一采纳的新契约——`engines.dsh`**：alpha.4 起运行时优先按
+>         `engines.dsh` 判兼容（声明后忽略 `peerDependencies`），缺失才回退校验
+>         精确 `@deepseek-ai/dsh-*` peer 列表。本插件声明
+>         `engines.dsh: ">=0.1.1-rc.1"`（下界对齐 `dshReleases` 最老条目，
+>         前瞻式覆盖当前与未来 runtime），故当前 runtime 加载不再因精确钉死的
+>         peer 列表告警；所有宿主能力仍逐个特性探测。`test/package-contract.
+>         test.ts` 加 2 条断言（range 格式 + 下界对齐最老条目）。alpha.3/alpha.4
+>         其余为宿主级变更（Web 登录、密钥脱敏、热重载、自定义插件索引、按模型
+>         推理等级 UI），不触及本插件消费的 `defineTool`/`JsonValue`/`exec.*`/
+>         `tools/pre-execute`/`presentCall`，无破坏性变更、无需额外采纳。
+>         **审查修复 15 项**（无 critical；validate/present 覆盖/客户端清理/
+>         `isConcurrencySafe` 标注均判定无缺陷）：
+>         (1) `iterate_config write` 读-改-写整段未加锁 → `withProjectLock`
+>         （major）；(2) `iterate_triage apply` 同锁名包 read→merge→backup→
+>         write→prune（major）；(3) `stoppedReasonLabel` 原型链索引
+>         （`__proto__`/`toString` 返回对象/函数 → React 渲染崩溃）→
+>         `Object.hasOwn` + String 兜底，`capture` 加 7 值 enum 白名单（major）；
+>         (4) 跨轮对比表「已修复」列恒 0（findings 无 `status` 字段）→ 接线
+>         transcript `fixes {round,success}`，client 传 `manifest.fixes`；
+>         (5) reviewer prompt `meta` 防御不一致；(6) nudge 无 manifest 时
+>         `mode:'normal'` → `null`（不再捏造身份）；(7) checkpoint `mode` 可空
+>         化 4 处；(8) 配置指引陈旧文案改 fail-closed 描述；(9) TriagePanel
+>         键盘用 `rootRef` 替代全局 `querySelector`（多实例焦点失效）；
+>         (10) ConvergenceDashboard `pulseSeenRef` 抑制首次挂载陈旧脉冲；
+>         (11) 锁 release 读后删 TOCTOU → acquire 捕获 inode、release 校验 inode
+>         再删（他人窃取的锁不再被误删）；(12) `Atomics.wait` 轮询阻塞事件循环
+>         上限 5s → `DEFAULT_WAIT_MS` 5000→1000；(13) `decision-log.ts` 重复锁
+>         实现迁至共享 `acquireProjectLockChecked`（保留 `acquireLogLock`/
+>         `acquireLogLockChecked` 导出名）；(14) `changed-only` 审查范围误纳
+>         出界符号链接（`statSync` 跟随 link → 该文件发现永久 `EVIDENCE_VIOLATION`）
+>         → `lstatSync`/`realpathSync` 出界跳过；(15) `iterate_transcript nudge`
+>         / `iterate_checkpoint resume` 跨进程 RMW 无锁 → `transcript`/
+>         `checkpoint` 锁。
+>         **验证**：`npm run typecheck`（三程序 server/test/client）0 错误、
+>         `npm test` 1219 / 270 suites / 0 fail（基线 1216 + 3 新增：
+>         `engines.dsh` 契约 ×2、`buildRoundComparison` fixes 接线）、
+>         `npm run build && npm run build:client` 干净且与 `src/` 齐步
+>         （`test/package-contract.test.ts` 强制 `dist/` 新鲜度与 `lib/client.js`
+>         digest 匹配）。许可仍 MIT，运行时依赖仍仅 `js-yaml`（无强传染依赖）。
+>         **主仓**：30 文件全在 `harness/iterate-plugin/` 内，提交
+>         `39ed9c3` 快进推送 `c692177..39ed9c3`。`.git/hooks/pre-commit`
+>         （删除文件守门）因工作区有 15 个未被暂存的缺失文件而拒绝提交——全在
+>         `harness/iterate-harness/` 与 `kernel/`（另一 lane 的连贯未提交重构，
+>         含配套修改与 fixtures），本次提交 `git diff --cached --diff-filter=D`
+>         为 0，用 `ALLOW_DELETIONS` 逐一命名声明排除，未恢复也未暂存他人改动，
+>         `.githooks/pre-push` 暂存态与 iterate-harness WIP 全程未动。
+>         **独立仓**：`git subtree split` 产物推送被拒（non-fast-forward，与
+>         独立历史无公共祖先，临时分支 `subtree-plugin` 已删），照例走
+>         `.release/iterate-plugin` 替代路径：`git pull origin main` 已对齐
+>         `6d01fa4` → rsync（`--exclude node_modules --exclude .git
+>         --exclude .github --exclude .release`；`.github` 必加，独立仓自带 OIDC
+>         发布 workflow `npm-publish.yml` 已确认仍在）→ `npm ci --ignore-scripts`
+>         同步 dsh-tools/cordis 至 alpha.4/alpha.2（五包版本逐一核对）→
+>         `build` + `build:client` 可复现且与主仓产物 `md5` 逐一一致 →
+>         1219 测试全绿 + typecheck 三程序 0 错误 → 提交 `2219028` 快进推送
+>         `6d01fa4..2219028`。**npm**：`iterate-plugin@3.8.0` 已发布（
+>         2026-10-16T15:11:21Z，86 文件 / 546.5 kB / 解包 2.0 MB，shasum
+>         `9869c1ba822e3920e3671743bd7c1fe6e6d6e964`）；发布后 20 秒复查
+>         `dist-tags.latest=3.8.0` 生效。tarball 抽查含 `dist/file-lock.js`、
+>         `dist/tools/transcript.js`、`lib/client.js`、`lib/parse.js`、
+>         `dist/tools/` 18 项，`engines.dsh`/`peerDependencies.cordis`/
+>         `dependencies={js-yaml}`/`repository` 均正确。
+>         **遗留**：Dependabot alert #48（高危 `source-map-js`，dev 依赖，在
+>         `harness/iterate-harness/frontend/web/package-lock.json`）不属插件
+>         scope，未处理。
 
 ---
 
