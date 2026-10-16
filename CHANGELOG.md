@@ -5,6 +5,56 @@
 
 ---
 
+## [3.5.2] — 2026-10-16
+
+本轮为发布链路加固（patch）：**把「发布签名」从"尽力而为"改为强制**，并修复 npm
+CI 发布链路的认证缺口。
+
+### 新增强制发布签名 / Mandatory release signature
+
+- **发布侧（`.github/workflows/release.yml`）**：GPG 签名不再"缺密钥就跳过"——
+  未配置 `GPG_PRIVATE_KEY`/`GPG_PASSPHRASE` 即失败；签名后增加校验步骤，断言
+  签名密钥指纹等于钉死的 `0929EA31DF4F7429F63FC53189D88B1D043A1298` 且每份
+  `.asc` 都能验证对应产物（密钥被换/签名损坏都会在 CI 就被拦住）。
+- **安装侧（npm 与 Python 双端）**：新增/统一强制签名策略——缺少 `.asc`、机器无
+  `gpg`、签名无法取回、或签名与钉死公钥不匹配，一律**中止**安装/更新。理由：
+  `SHA256SUMS.txt` 与 tarball 出自同一个 release，攻击者能改其一即可改其二，内嵌
+  公钥才是不可伪造的唯一锚点。
+  - `iterate_cli/signing.py`（新模块）：钉死公钥 + 指纹 + `verify_detached_signature`
+    + `enforce_signature_policy`；`iterate update`（`updater.py`）接入该策略。
+  - `scripts/install.py`：同步实现同一策略（独立脚本，公钥常量与指纹与前者字节一致，
+    由 `tests/test_release_meta.py` 守护三处副本一致：CLI / install.py / installer.js）。
+  - `npm-installer/lib/installer.js`：`signaturePolicyError()` 统一判定；最新 release
+    的挑选条件从"tarball + 校验和"收紧为"tarball + 校验和 + 签名"。
+  - **唯一例外**：显式设置 `ITERATE_ALLOW_UNSIGNED=1`（用于确实无法运行 gpg 的机器）；
+    **坏签名永不放行**——该开关只覆盖"无法校验"，不覆盖"校验失败"。
+- **修复 gpg 隔离密钥环路径过长导致校验失败**：gpg 的 agent socket 位于
+  `<GNUPGHOME>/S.gpg-agent`，Unix socket 路径上限约 104 字符；此前用较深的临时目录
+  会报 `can't connect to the gpg-agent: File name too long`，使签名校验在部分环境
+  （尤其中间产物在深路径下）直接失败。现改用短前缀临时 homedir，npm 侧同步缩短
+  临时目录前缀。
+
+### 修复 / Fixes — 发布链路
+
+- **npm CI 发布链路**：`npm-publish.yml` 此前因仓库未配置 `NPM_TOKEN` secret 且该包
+  无 OIDC Trusted Publisher 映射而 `ENEEDAUTH` 失败（v3.5.0、v3.5.1 均如此）。
+  现已配置 `NPM_TOKEN` secret，CI 可正常发布；同时在 workflow 中保留 `npm test` 与
+  "package.json 版本 == release tag" 断言。**待办（infra）**：npm 已开始限制绕过 2FA
+  的 granular token 用于发布与信任管理，持久方案是配置 OIDC Trusted Publisher
+  （需带 2FA 的 web 会话执行 `npm trust github …`），配置后可移除该 secret。
+
+### 测试 / Tests
+
+- 新增 `tests/test_signing.py`（15 例）：策略各分支（缺签名/缺 gpg/坏签名/覆盖开关）、
+  真实 gpg 往返（生成临时密钥 → 签名 → 校验通过；篡改产物 → `invalid`；异密钥签名 →
+  `invalid`）、钉死公钥可导入且指纹相符。
+- `tests/test_release_meta.py`：新增"三处公钥字节一致"与"四处均声明指纹"两条守护。
+- npm `mode.test.js`：新增 `signaturePolicyError()` 全分支用例。
+- 现有 updater/install 下载路径用例改为对策略打桩（其夹具无法产出对钉死密钥有效的
+  签名），策略本身由上面两组用例覆盖。
+
+---
+
 ## [3.5.1] — 2026-10-16
 
 本轮为无人值守的全量复审 + 修复 + 发版：4 个并行深评子代理对 skill 本体产出

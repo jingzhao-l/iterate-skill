@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.5.1
+version: 3.5.2
 permissions:
   file_read: true
   file_write: true
@@ -350,6 +350,16 @@ CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适
 **个性化配置 / Personalization**：捕获 AI 扫描不到的项目专属约束（禁区、风险区、已知意图、维度定制等 9 类）。运行 `iterate personalize` 可在项目中途随时追加，无需重做 onboarding。`iterate personalize --clear` 可一次清空所有个性化（结构化规则 + `ITERATE.md` 用户区中的相关段落，需确认或加 `--yes` 跳过）。`iterate show` 可只读查看合并后的配置与个性化详情（`--json` 输出结构化数据供脚本/CI 使用）。详见 README。
 
 安装 CLI：`npx iterate-skill-installer` 会自动安装 `iterate` CLI；也可手动 `pip install .` 或 `pipx install .`（从本仓库根目录）。
+
+**发布签名（强制）/ Release Signature (mandatory)**：每个 release 都附带
+`iterate-skill.tar.gz.asc`（GPG 分离签名），安装器与 `iterate update` 会**同时**
+校验 SHA256（完整性）与签名（真实性，对照内嵌公钥指纹
+`0929EA31DF4F7429F63FC53189D88B1D043A1298`）。签名为必需：缺少签名、缺少 `gpg`、
+签名无法取回或签名不匹配都会**中止**安装/更新——因为 `SHA256SUMS.txt` 与 tarball
+出自同一个 release，单独用它无法抵御"发布渠道被篡改"。唯一例外是显式设置
+环境变量 `ITERATE_ALLOW_UNSIGNED=1`（用于确实无法运行 gpg 的机器；*坏签名永不放行*）。
+发布侧同样强制：`.github/workflows/release.yml` 未配置签名密钥或签名校验失败时
+直接失败，不会发布未签名资产。
 
 ---
 
