@@ -5,6 +5,166 @@
 
 ---
 
+## [3.5.1] — 2026-10-16
+
+本轮为无人值守的全量复审 + 修复 + 发版：4 个并行深评子代理对 skill 本体产出
+约 52 条 findings（2 HIGH、17 MEDIUM、33 LOW），全部修复项均配有可复现的
+单元测试（Python 与 npm 安装器两侧），因此为 patch 版本。评审范围限于
+`iterate_cli/`、`npm-installer/`、`scripts/`、`tests/`、`SKILL.md`、
+`pyproject.toml`、`CHANGELOG.md`、`RELEASE.md` 与两个 GitHub workflow；
+`harness/`（iterate-plugin、iterate-harness）与 `kernel/` 不在发布范围内，
+仅在其独立仓库处理。
+
+### 修复 / Fixes — 安全与供应链（HIGH）
+
+- **npm 安装器 tar 列表截断绕过链接防护（HIGH，已实证）**：`lib/installer.js`
+  用 1 MiB 的 `TailBuffer` 捕获 `tar -tzf/-tvzf` 输出，只保留**末尾**内容；
+  成员数足够多时列表头部被丢弃，其中的 symlink/hardlink 条目因此完全逃过
+  检查，而真正的 `tar -xzf` 处理的是完整归档——攻击者可借"表头截断"把
+  `link -> /etc` 之类条目解压出来。修复：新增 `FullBuffer`（保留头部并标记
+  溢出）与 `runCommand({stdoutMustBeComplete, stdoutCap})`，列表/JSON 这类
+  **必须完整**的捕获在超限时 fail-closed 报错而非静默截断；`extractTarball`
+  与 `rejectLinkEntries` 均支持注入上限以便测试。
+- **GPG 签名验证不再"告警后照装"（MEDIUM）**：SHA256SUMS 与 tarball 同源发布，
+  内嵌公钥是攻击者无法伪造的唯一锚点；`.asc` 存在且签名无效时现以退出码 1
+  fail-closed，仅"gpg 不可用/无签名资产"降级为 stderr 告警（后者也补了显式
+  提示，不再静默跳过）。
+- **npm 侧解压炸弹预算（MEDIUM）**：`tar -xzf` 对未压缩体积零防护，新增
+  `measureTree`/`enforceExtractedSize`（500 MiB 总量 / 256 MiB 单文件，与
+  `scripts/install.py` 对齐），超限即删除解压产物并报错。
+- **JSON 响应上限与捕获上限不一致（MEDIUM）**：`fetchJson` 允许 10 MiB 但
+  实际只留 1 MiB，超出后 `JSON.parse` 报出费解的 "Unexpected end of JSON
+  input"；现按 `JSON_MAX_BYTES` 完整捕获，超限直接报"响应过大"。
+- **`personalize` 远程执行动词可被 flag 绕过（HIGH）**：`npm --silent exec x`、
+  `pnpm --dir . dlx x` 等把动词挤到 `tokens[1]` 之外即可通过白名单，进而被
+  持久化进 committed 配置、在 CI 里以 `shell=True` 执行。修复：扫描动词后的
+  全部 token，同时保留 `npm run exec`（本地同名脚本）的合法用法。
+- **校验和文件严格化与冲突拒绝**：`_parse_checksum` 改用 `^[0-9a-fA-F]{64}$`
+  严格匹配（`int(digest,16)` 曾接受 `+`/`0x` 前缀），同一文件出现同名校验和的
+  冲突条目时整体拒绝（与 npm 侧 `parseChecksums` 对齐）。
+- **token 形状 fail-fast**：npm 侧新增 `validateTokenShape`（前缀 + 长度），与
+  `scripts/install.py` 的 `_validate_github_token` 同规则，避免拼错的 PAT 一路
+  走到 401/403 才以模糊信息失败。
+
+### 修复 / Fixes — 健壮性与异常处理
+
+- **不可哈希的手改配置值不再让 doctor 崩溃**：`language: [zh]`、
+  `reasoning_effort: {a: 1}`、`review.scope: [full]` 会在成员判断处抛
+  `TypeError: unhashable type`；检查路径与 `doctor --fix` 路径都补 `isinstance`
+  前置守卫（前者报错/告警，后者修复）。
+- **doctor 的 known-safe 门禁逐条校验**：此前只检查每个模块的 `cmds[0]`，
+  于是 `[pytest, "curl x | sh"]` 被报为 healthy，而 `guard` 必然拒绝。
+- **`validate.py` 白名单与维度一致性**：白名单条目先 `strip()` 再做语法校验与
+  前缀匹配（与 doctor 一致，" pytest " 不再一边通过一边拒绝）；纯空白条目拒绝
+  （空前缀会让一切命令"被白名单"）；`dimension_sets`/`personalization` 一致性
+  检查不再对不可哈希成员调 `set()`，标量 `dimensions` 也不再被拆成单字符。
+- **install.py 下载/解压异常**：`ConnectionResetError`/`ssl.SSLError` 等
+  `OSError` 子类（非 `URLError`）此前裸崩，现纳入捕获并返回清晰 reason；
+  解压异常集补齐 `EOFError`/`ValueError`/`zlib.error`（与 `updater.py` 对齐），
+  校验通过但损坏的归档统一转为 `ReleaseStructureError`。
+- **`iterate update` 目录刷新语义与安装器对齐**：受管目录此前用
+  `copytree(dirs_exist_ok=True)` **合并**，上游删除的文件会永久残留；现整目录
+  替换（非受管文件保持不动），`iterate update` 与 `install.py --force` 结果一致。
+- **reonboard 取消/无变更时清理临时备份**：`NO_CHANGES`/`CANCELLED` 路径不再在
+  仓库根目录累积未跟踪的 `*.bak-*`（同时修正 CLI 提示文案）。
+- **`write_onboarding_outputs` 拒绝写入缺标记的生成结果**：模板损坏/过期时
+  `_replace_user_owned_section` 会静默返回未替换内容、用户手写区随之上盘丢失；
+  现与 refresh 路径对称，抛 `ValueError` 且不落盘。
+- **`publish_qoder.py`**：`git archive` 的临时 zip 改写系统临时目录并在 `finally`
+  清理（此前落在 stage 目录内，中断即被打包上传）；`check` 对不存在的路径给出
+  清晰错误而非 traceback。
+- **`doctor --json-out` 临时文件**：改用 pid+随机后缀的唯一名并在失败时清理
+  （固定 `.tmp` 名会被并发导出互相覆盖）。
+- **向导载回配置的类型归一**：`goal`/`max_rounds`/`atomic.*`/`scope_chunk_size`
+  在 re-onboarding 时按 schema 归一（此前 `max_rounds: "abc"` 会被原样回写，
+  doctor 持续报错）。
+- **`init_config` 创建目标目录**：`mkstemp(dir=target)` 需要 target 存在，
+  此前误 mkdir 了 `target.parent`。
+- **`prompt_dimensions` 保持顺序**：默认/EOF 路径不再经 `set()` 往返导致
+  `dimensions:` 顺序在每次运行时抖动（YAML diff 噪声）。
+
+### 修复 / Fixes — 输出契约与退出码一致性
+
+- **warning 统一走 stderr**：`tui.warning` 此前写 stdout，导致
+  `iterate refresh --json`、`config set --json`、`fingerprint verify --json`
+  等在 JSON 之前先打印 `⚠` 行，管道下游 `| jq` 直接解析失败——将 warning 迁移
+  到 stderr 后，所有命令的 stdout 恢复"只放数据/恰好一个 JSON 文档"。
+- **`config set/unset --json` 回显规范化键名**：`config set git.use_worktree`
+  与 `config get use_worktree` 现在报告同一个键名，脚本可直接互相映射。
+- **`fingerprint list --json` 不再对畸形 `onboarding:` 段崩溃**（标量/列表值
+  此前抛 `AttributeError` 且 stdout 无任何 JSON）。
+- **漂移原因改用稳定代码**：`drift_unavailable_code()` 返回
+  `corrupt_config`/`not_onboarded`/`drift_check_disabled`/`no_fingerprints`，
+  CLI 的退出码与提示分支改按代码判定（此前靠子串匹配人类文案，改一句提示语就
+  可能让 CI 误绿）；同时修正"drift_check 已开启但无指纹"时的提示——原提示让
+  用户去 `onboard`/开 `drift_check`，而两者本就已满足，正确动作是 `refresh`。
+- **`fingerprint verify` 只报一次配置解析错误**：`check_onboarding_drift` 支持
+  复用已加载的 config（新增哨兵参数，区分"未传"与"传入 None"），消除了同一
+  stderr 上重复两遍的解析错误。
+- **`show` 与 `status` 退出码对齐**：配置存在但无法解析时，`show` 在未 onboard
+  状态下同样 fail-closed（退出 1 且携带 `config_error`），并补齐未 onboard 载荷
+  的稳定键集，便于脚本无条件取值。
+- **用户取消统一退出 1**：`update` 交互取消与 `personalize --clear` 取消此前返回
+  0，与 `onboard`/`reonboard` 及 `main()` 文档化的"1 = 错误/取消"矛盾；现统一。
+- **用法错误退出 2**：`scripts/validate.py` 的未知子命令/缺参数、`install.py`
+  的无子命令调用改为 2（与同入口 argparse 的语义一致）；`iterate` CLI 新增缺失
+  依赖（PyYAML/rich）时的 127 契约实现（`_dependency_exit_code`）。
+- **中断提示不再断言"未写入任何文件"**：`config set`（备份已生成）、
+  `doctor --fix`（已应用修复）、`update`（已写入文件）等路径下该断言不成立，
+  现改为提示可能已留下时间戳备份。
+- **`config unset` 缺失 section 的文案**：区分"父段不存在（无可删除）"与
+  "父段类型错误"，不再把前者报成不存在的类型错误。
+- **`refresh --json` 标注统计口径**：新增 `stats_basis: "pre-apply"`，说明
+  `changed`/`md_changed_lines`/`stats` 取自 apply 之前的预扫快照。
+
+### 修复 / Fixes — 文档与发布流程
+
+- **SKILL.md**：`--list`/`--interactive` 更正为 `config --list`/`config
+  --interactive`（此前写法在 `install` 下会 argparse 报错退出 2）；补齐支持的
+  AI 助手表（13 → 26 项，与 `SUPPORTED_AI` 对齐）；补充"用户取消 = 1"与 127
+  的说明。
+- **RELEASE.md / npm-publish.yml**：步骤 5 更正为"由 workflow 自动发布"（此前
+  手册仍写手动 `npm publish`，与已存在的自动 workflow 冲突）；workflow 增加
+  `npm test` 与"package.json 版本 == release tag"断言，避免忘 bump 时静默发布
+  旧版本。
+- **npm 安装器提示**：`pipx install <repo>` 占位符改为可复制的真实命令
+  （仓库 git 地址 / 解压后的源码目录），并说明项目未发布到 PyPI；安装模式提问
+  改为中英双语且默认值与显示一致（此前显示 `[Y/n]` 但回车/EOF/超时均为 No）。
+- **doctor `--fix` 提示**：应用修复后明确告知配置被重写为纯 YAML、手写注释不会
+  保留、且已生成 `.doctorfix-*` 备份。
+- **`personalize` 丢弃项全量播报**：`extra_validation_commands` 中模块名非法的
+  条目此前被静默丢弃，现与其他结构错误一样进入 `dropped` 汇总提示。
+- **`_heading_level` 识别 TAB 分隔**：`##\t标题`（CommonMark 合法）此前不被识别
+  为标题边界，`merge_user_sections` 会连同正文删除该用户标题。
+
+### 测试 / Tests
+
+- Python：新增约 60 条用例，覆盖不可哈希配置（检查 + `--fix`）、known-safe 逐条
+  校验、白名单 strip/空白拒绝、维度一致性标量与不可哈希、下载层裸 `OSError`、
+  损坏归档 fail-closed、校验和严格化与冲突、`init_config` 目录创建、
+  `prompt_dimensions` 顺序、无子命令退出 2、受管目录删除语义、`publish_qoder`
+  临时文件与缺失路径、黑名单与操作者环境变量 fail-closed、`_is_plain_script_path`
+  路径逃逸、带 flag 的远程执行动词、`config set/unset --json` stdout 纯净性与
+  键名规范化、漂移原因代码、`fingerprint list --json` 畸形段、`show` 未 onboard
+  的退出码与稳定键、缺标记模板拒绝、`drift_check` 往返保持、refresh 模块级归一、
+  `tui.warning` 走 stderr、依赖退出码映射。
+- npm：新增 `test/tarball.test.js`（`FullBuffer` 溢出语义、**列表截断必须
+  fail-closed**、symlink/hardlink 拒绝、多顶层目录拒绝、解压预算、干净归档可解压）
+  并在 `mode.test.js` 补充 `validateTokenShape` 用例；`npm test` 现串联两个测试
+  文件。
+
+### 备注 / Notes
+
+- 明确**未采纳**的低风险建议（保留现状，理由如下）：`release.yml` 归档剔除
+  `RELEASE.md`/`DESIGN-*`（纯体积优化，不值得在发版当天改动发布管线）；
+  JS/Python 两侧超时与体积常量完全统一（工具语义不同，且当前值均 failsafe）；
+  npm 安装器"最新 release 挑选标准"改为与 Python 完全一致（已在 JS 侧补充
+  "跳过缺少校验和资产的 release"的显式告警，语义差异已可见）。
+- `harness/` 与 `kernel/` 的既有改动属于用户 WIP，本次未提交、未还原。
+
+
+---
+
 ## [3.5.0] — 2026-10-11
 
 本轮为无人值守的全量复检 + 修复 + 发版：4 个并行深评子代理产出约 45 条 findings，
