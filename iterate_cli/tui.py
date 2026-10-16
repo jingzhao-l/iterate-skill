@@ -243,15 +243,21 @@ class TUI:
         self.console.print(f"{prefix}[iterate.dim]{escape(message)}[/]")
 
     def warning(self, message: str, indent: int = 2) -> None:
-        """输出警告信息.
+        """输出警告信息到 stderr.
+
+        与 ``error`` 同走 stderr：stdout 只保留数据（``--json`` 模式承诺
+        "stdout 恰好一个 JSON 文档"）。此前 warning 写 stdout，导致
+        ``refresh --json`` / ``config set --json`` 等在 JSON 之前先打印
+        ``⚠`` 警告行，管道下游 ``| jq`` 直接解析失败。
 
         Args:
             message: 警告内容
             indent: 缩进空格数
         """
         prefix = " " * indent
-        self.console.print(
-            f"{prefix}[iterate.warning]{SYM_WARNING} {escape(message)}[/]"
+        self._stderr_console.print(
+            f"{prefix}[iterate.warning]{SYM_WARNING} {escape(message)}[/]",
+            soft_wrap=True,
         )
 
     def error(self, message: str, indent: int = 2) -> None:

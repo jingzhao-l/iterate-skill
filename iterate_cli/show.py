@@ -19,6 +19,7 @@ from typing import Any
 from iterate_cli.fingerprint import drift_advice, drift_summary
 from iterate_cli.personalize import load_existing_personalization
 from iterate_cli.refresh import (
+    CONFIG_YAML,
     check_onboarding_drift,
     drift_unavailable_reason,
     is_onboarding_complete,
@@ -109,20 +110,52 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
         project_root: Project root directory.
 
     Returns:
-        A dict with ``project``, ``onboarded``, and (when onboarded)
-        ``onboarding`` metadata, ``config``, ``drift`` and ``personalization``
-        details. Sensitive-looking values are NOT extracted from the config:
-        only the keys iterate knows about are surfaced.
+        A dict with ``project``, ``onboarded``, and the stable detail keys
+        (``onboarding``, ``config``, ``drift``, ``drift_advice``,
+        ``personalization``) present in EVERY payload — not-onboarded ones
+        filled with their unknown/empty defaults, mirroring ``status``'s
+        stable-key promise so ``--json`` consumers can index unconditionally.
+        ``config_error`` is set when the config exists but could not be
+        parsed (fails closed pre- and post-onboarding). Sensitive-looking
+        values are NOT extracted from the config: only the keys iterate
+        knows about are surfaced.
     """
     data: dict[str, Any] = {"project": str(project_root)}
 
+    config_path = project_root / CONFIG_YAML
+    config_exists = config_path.is_file()
+    raw_config = load_onboarding_config(project_root) if config_exists else None
+    # A config that exists but cannot be parsed fails closed REGARDLESS of
+    # onboarding state — `status --json` returns 1 for exactly this condition
+    # pre-onboarding too (cli._cmd_status), and show previously returned 0
+    # with a truncated payload, so one broken state had two verdicts depending
+    # on which command CI happened to watch.
+    corrupt_config = config_exists and raw_config is None
+
     if not is_onboarding_complete(project_root):
         data["onboarded"] = False
+        # Stable key set (parity with `status`): emit every top-level key in
+        # the not-onboarded payload too, so --json consumers can index
+        # unconditionally instead of guarding with `if key in payload`.
+        data["onboarding"] = {
+            "completed_at": "unknown",
+            "channel": "unknown",
+            "skill_version": "unknown",
+            "drift_check": True,
+            "fingerprint_count": 0,
+        }
+        data["config"] = (
+            _collect_resolved_config(raw_config) if raw_config is not None else {}
+        )
+        data["drift"] = "unknown"
+        data["drift_advice"] = drift_unavailable_reason(project_root, raw_config)
+        data["personalization"] = {}
+        if corrupt_config:
+            data["config_error"] = True
         return data
 
     data["onboarded"] = True
 
-    raw_config = load_onboarding_config(project_root)
     if raw_config is None:
         # ITERATE.md exists but the config is missing/unreadable/corrupt.
         # Flag it so the renderer can hint instead of showing a silent empty
@@ -236,13 +269,16 @@ def render_show(data: dict[str, Any], json_output: bool = False) -> int:
     # never notices a broken config. `show` accepted the same broken config and
     # returned 0, so the two commands contradicted each other on an identical
     # condition — a job watching `show` reported green while the config was
-    # unreadable.
+    # unreadable. This branch comes BEFORE the not-onboarded check on purpose:
+    # a corrupt config fails closed even before onboarding, matching status.
     if data.get("config_error"):
         if json_output:
             print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
             return 1
         tui.intro("Iterate Skill — Show")
-        tui.warning(
+        if not data.get("onboarded"):
+            tui.warning("Status: Not onboarded")
+        tui.error(
             "iterate.config.yaml is missing or unreadable — showing an empty "
             "config. Run `iterate doctor` for details."
         )
@@ -259,14 +295,6 @@ def render_show(data: dict[str, Any], json_output: bool = False) -> int:
         tui.warning("Status: Not onboarded")
         tui.hint("Run 'iterate onboard' to initialize.", indent=2)
         return 0
-
-    if data.get("config_error"):
-        # ITERATE.md exists but the config is unreadable/corrupt; surface it
-        # instead of showing a silently empty config.
-        tui.warning(
-            "iterate.config.yaml is missing or unreadable — showing an empty "
-            "config. Run `iterate doctor` for details."
-        )
 
     onboarding = data["onboarding"]
     tui.key_value("Completed", onboarding["completed_at"])

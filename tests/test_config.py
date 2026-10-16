@@ -792,3 +792,86 @@ class TestConfigUnset:
         # The flat alias resolves to the same path as the dotted form.
         assert run_config_unset(project, "atomic.max_lines") == 0
         assert "atomic" not in _read_config(project)
+
+
+class TestConfigJsonStdoutStaysPureWithComments:
+    """A commented config used to print the human "comments NOT preserved"
+    warning to STDOUT before the JSON object, so
+    `iterate config set ... --json | jq` died with a parse error."""
+
+    def test_set_json_with_comments_is_lone_json(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text(
+            "# review scope\nmax_rounds: 5\n", encoding="utf-8"
+        )
+        rc = run_config_set(project, "max_rounds", "7", json_output=True)
+        captured = capsys.readouterr()
+        assert rc == 0
+        payload = json.loads(captured.out)  # must not raise
+        assert payload["value"] == 7
+        assert "NOT preserved" not in captured.out
+        assert "NOT preserved" in captured.err
+
+    def test_unset_json_with_comments_is_lone_json(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text(
+            "# comment\nmax_rounds: 5\n", encoding="utf-8"
+        )
+        rc = run_config_unset(project, "max_rounds", json_output=True)
+        captured = capsys.readouterr()
+        assert rc == 0
+        json.loads(captured.out)
+        assert "\u26a0" not in captured.out
+
+
+class TestConfigJsonKeyIsCanonical:
+    def test_set_json_echoes_canonical_key_for_a_dotted_alias(
+        self, tmp_path, capsys
+    ) -> None:
+        """`config set git.use_worktree` and `config get use_worktree` must
+        agree on the key name, otherwise scripts cannot map one to the other."""
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        rc = run_config_set(project, "git.use_worktree", "true", json_output=True)
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert payload["key"] == "use_worktree"
+
+    def test_unset_json_echoes_canonical_key_for_a_dotted_alias(
+        self, tmp_path, capsys
+    ) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["git"] = {"use_worktree": True}
+        _write_config(project, config)
+        rc = run_config_unset(project, "git.use_worktree", json_output=True)
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert payload["key"] == "use_worktree"
+
+
+class TestConfigUnsetMissingSectionMessage:
+    def test_absent_section_says_absent_not_wrong_type(self, tmp_path, capsys) -> None:
+        """`config unset use_worktree` with no `git:` section used to report
+        "intermediate field 'git' is not a mapping" — a type error that does
+        not exist, sending the operator to hand-edit a healthy file."""
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())  # no `git` section
+        rc = run_config_unset(project, "use_worktree")
+        captured = capsys.readouterr()
+        assert rc == 1
+        combined = captured.out + captured.err
+        assert "absent" in combined
+        assert "is not a mapping" not in combined
+
+    def test_scalar_section_still_reports_the_type_problem(
+        self, tmp_path, capsys
+    ) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["git"] = "legacy-scalar"
+        _write_config(project, config)
+        rc = run_config_unset(project, "use_worktree")
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "is not a mapping" in captured.out + captured.err
