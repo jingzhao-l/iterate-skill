@@ -24,86 +24,6 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
-- **`iterate-kernel@0.1.6`：决策日志条目学会说"哪一种决定、第几轮、哪个维度、凭什么"，
-  并新增 `decision-log-transcribe` 把两侧**已经在写**的日志映射成这个形状（场景③的
-  契约半边）。** 条目此前只有 `{entryId, sequence, prevEntryHash, summary, outcome,
-  createdAt}`——够 GlassPane 记工具执行，但记不下 iterate 循环写的
-  `{timestamp, round, type, data}`：实测两侧词汇表已经在分叉（plugin 的 TS 认 10 种
-  `type`，Python 的 `VALID_ENTRY_TYPES` 只有 8 种，`round_failed`/`resume` 一进 Python
-  侧就被当成非法）。四个字段全部可选：省略即不进规范字节，因此**既有链节的摘要不变**，
-  这不只是"能过解析"——对照用例把"不带新字段的落盘行里不得出现 `null`"钉成具名断言，
-  并反向变异证明它咬得住（把"缺席"写成 `null` 时 15 条链测试同时变红）。`kind` 故意
-  **不做枚举**：两套词汇各归各家，内核只保证可比（形状/边界），否则每加一种决定都要发
-  一次内核版本——和 `dimension-context` 不持有维度清单同一个理由。`dimension` 复用
-  `DIMENSION_ID_PATTERN`（导入而非重述），这是"recorded 半边"能从任一生态的账本里被
-  覆盖率算术看见的前提。`payload` 有 8192 字符的规范 JSON 上限，且这条上限**JSON Schema
-  表达不出来**——按既有纪律写成具名分歧用例（ajv 放行、zod 拒绝），而不是默默当约束存在。
-  `decision-log-transcribe` 的十条规则连同 13 个用例落在
-  `kernel/fixtures/decision-record-transcription.ok-01.json`，Python 半边照这份档案实现，
-  不读 TypeScript。其中一条是测量逼出来的：`Date.parse("11/10/2026 02:28")` 在 V8 里会按
-  美式月/日猜出一个时刻，而 Python 直接拒绝——所以时间戳改由显式时区的 ISO-8601 模式先把关，
-  否则"同一条记录被谁转换就归谁解释"，账本不再是证据。225 条内核测试全绿（本批 +26），
-  `npm pack --dry-run` 实测 92 文件、新模块与新档案在包内。
-  **未随本批落地（下一批）**：Swift `DecisionLogEntry` 绑定还没加这四个可选字段——它解码时
-  会静默丢弃它们，重编码就丢审计信息；GlassPane 侧的 fork 重钉 0.1.6 与 kernel-conformance
-  的新 oracle 同属那一批。
-- **`iterate/kernel_decision_record.py`：转录层的 Python 半边，与 0.1.6 的 TS 实现当面比对
-  （场景③的对称半边）。** 第二份实现照
-  `tests/kernel_fixtures/decision-record-transcription.ok-01.json` 的 `comment` 写，不照
-  TypeScript 写——这才是"两套实现一致＝契约拿到证据"，而不是"抄了一份镜像"。三件照抄照不出
-  来的事：① 时间戳自己按"ISO-8601 带显式时区"的模式把关、日历运算手写截断，不用
-  `fromisoformat`——3.10 只接受 3 位或 6 位小数秒而 3.11+ 接受任意位，且
-  `Date.parse("11/10/2026 02:28")` 在 V8 里会猜成美式月/日、Python 却直接拒绝，两边必须按
-  同一条规则拒绝而不是各按各的解析器；② 可选字段缺席就是不写键，绝不写 `None`（链的摘要盖在
-  规范字节上，把"缺席"写成 null 会让每条既有链节换摘要）；③ `outcome` 只读不猜，读不到就是
-  `inconclusive`。
-  语料位点：manifest 升到 0.1.6，新增两条 sha256 钉（转录档案 + 扩展条目档案），
-  `test_kernel_fixtures.py` 的四条守卫（vendored==pin、消费测试存在、实时 kernel 检出与 pin
-  一致、篡改被拒）实测仍绿。18 条新单测；跨语言对照 `diff_kernel_implementations.py` 加进第
-  四个模块后实测 53 个用例判定一致（原 40 + 转录 13），并反向变异证明它咬得住——把 Python 侧
-  "没记到"改成"pass"时点名红在 `transcribe/silent-record-stays-inconclusive`。
-  本批纯增量：`decision_log.py` 的写侧还没翻成内核形状（那一步必须同批改读侧
-  `last_state.py`、WebUI 与 plugin 的 TS 副本，另批做）。
-
-- **`iterate/glasspane_reverification.py` + `scripts/check_glasspane_reverification.py`：
-  场景①的发送线，实机跑通。** 内核造出 `iterate.reverification/0.1` 之后，本模块负责把它
-  **发出去**并原样转述引擎答案：operationIds → `gp_last_evidence` + `gp_diagnose`，其余
-  一律不排。三条边界各是这条链的要点：① 绝不发变更型调用（`gp_act`/`gp_snapshot`/
-  `gp_restore`/`gp_attach`/`gp_export_evidence` 在名单里点名排除），重跑配方步骤是对用户
-  机器的决定，属于宿主权限面，不属于错误路径；② 没有通道就说 `NOT attempted`，不返回空集
-  让人读成"没意见"；③ 引擎的拒绝原样转述（连 remedy），不重新编码、不改写。
-  实机证明（`glasspane-mcp` 1.6.2 + 钉住的 `mcp` 2.0.0，16 工具在列）：真实
-  `check_invariants` 跑出 outcome=fail → 真请求
-  `iv_15d87c73d4ef809ec…` → 引擎回 `outcome=inconclusive`（attribution soft）与一条
-  `GP_E_NOT_ATTACHED: no app attached | remedy: call attach first`，2/2 转述成功。
-  缺字段的包（只有 `schemaVersion`）以前会被转成 `inconclusive` 结论——那是"没测到"不是
-  引擎判断，现在点名 `GP_E_PACK_INCOMPLETE` 拒绝转述。同步 runner 撞上 async 宿主时，
-  协程不再被当成答案，而是点名 `GP_E_ASYNC_HOST`（这条是它自己暴露的真 bug）。
-  17 条单测（真档案来自已发布语料、拒绝行来自实机捕获）；反向变异五刀各打中一条具名
-  用例：撤 async 守卫、把配方步骤排成 `gp_act`、撤包完整性闸、不解析 shell 的拒绝行、
-  无通道当跑过。
-- **`check_glasspane_channel.py`：把"没连上"与"不广告工具"分开说。** 之前它只读
-  `list_tools()`，一个连接失败的 server 会被报成"GlassPane 不提供 gp_*"——那是对产品的
-  一句假话。现在先读 `list_statuses()`，失败就写 `NOT measured` 并附 detail；detail 长得
-  像字段改名时，再报出 SDK pin 事实（本机 `mcp` 1.29.0，pyproject 钉 2.0.0；
-  `tool.input_schema` 只在 2.0.0 存在）。这台机器上 harness 的 MCP 层当前连不上任何
-  server，与本批无关（同一状态在我这批改动的"对照前"复跑里同样复现）。
-
-- **`scripts/check_run_plan_channel.py`：把场景②的共享通道真跑一遍，而不是各自自证。**
-  本仓真生产者（`build_run_plan` + `write_run_plan`）用 GlassPane 自己的
-  `iterate.config.yaml`（`gui` scope）造一份计划，交给 fork 的
-  `readRunPlan()`（bun 直接 import 产品里那份 `kernel.ts`，不是抄本）读回来，比
-  id 序列与 `rp_` 摘要。实测一致：两侧都是 `rp_25c3aeece0fa54293448fe0a1525f45a24f01ae797a766a23c54911bf5a5c2fe`，9 个 id 顺序一致。
-  两道红是**跑出来的**，不是推理的：`GP_CHANNEL_SELFTEST=corrupt`（把维度数组重排——
-  字节仍然合法，schema 看不见）→ exit 1；`GP_CHANNEL_SELFTEST=mismatch`（另一侧回同一
-  份字节但少报一个 id）→ exit 1。第二条是关键：只比摘要的话这个分歧会被盖住，所以摘要
-  之外还比 id。没有 bun／没有 harness／配置读不出来 → exit 2 明说"没测到"，不允许
-  静默通过。
-  写的过程中修掉两处自己的错：`load_config` 收的是项目**根目录**而不是文件路径，
-  传错会按 API 返回 None、进而伪装成生产者的 AttributeError；`mismatch` 那条对照的守卫
-  写成 `and not their_ids`，那侧非空所以分支从没执行——"对照自己没跑"这件事是先被
-  rc=0 暴露的，不是被读代码读出来的。
-
 - **`iterate/convergence_policy.py`：收敛规则的 Python 半边。** kernel 在 0.1.5 里把
   「一轮跑完下一步是什么」定成了契约（熔断 > 轮次预算 > error > findings > 证据不全 >
   未测量 > converged），本模块是对着已发布语料 `convergence.ok-01.json` 的 `comment`
@@ -136,42 +56,8 @@ All notable changes to iterate-harness should be recorded in this file.
   `run-plan.ok-01.json` 的 sha 变了但契约语义没变——kernel 那边只是把 label 的出处改口
   （配置里根本没有 label 词汇）。`tests/kernel_fixtures/manifest.json` 的 consumedBy
   规则把"语料进来了但没人读"判成死契约数据，这次三条新条目各自的消费者都在上面两条里。
-- **`iterate/kernel_decision_log.py`：哈希链的 Python 半边（场景③写侧翻转的能力前提）。**
-  锚点是新 vendored 的 `tests/kernel_fixtures/decision-log-chain.ok-01.json`：TS 侧用
-  openssl/shasum 重算、Python 侧用 hashlib 重算，两边都从**同一份落盘字节**出发——一条只有一种
-  语言能重算的链是主张而非证据，这正是该档案 comment 里写下的纪律。随链一起移植的还有
-  `verify / read / head / build / append / new_decision_entry_id` 与全套拒绝分支：路径必须绝对、
-  目录不得可被 group/other 写、文件 0600、写后回读再验链、`sequence`/`prevEntryHash` 由账本拥有
-  所以调用方发进来一律拒绝（伪造连续性是账本最不能允许的事故）。可选字段缺席一律不写 `null`，
-  否则每条既有链节的摘要都会换。
-  12 条用例，两处反向变异各打中一条具名断言（撤规范字节比较→红在
-  `test_a_non_canonical_storage_form_is_caught_not_rehashed`；撤目录权限守卫→红在
-  `test_a_group_writable_directory_is_refused`）。其中一条负例起初是**假绿**：
-  `mkdir(mode=0o777)` 被 umask 掩掉，守卫根本看不见松目录；改成显式 `chmod` 之后它才真的能红。
-  **本批纯增量，没动旧日志的生产者**：`decision_log.py` 仍照旧写 `{timestamp, round, type, data}`。
-  写侧翻转要同批改 `last_state`/`ci_report`/`html_report`/`replay` 与四个 web 路由（实测 8 个
-  读者），并用 `is_legacy_decision_record` 继续读历史行——那是单独一批协调改动；先把"能不能验"
-  落地，翻转时才只改"写什么"。
-  全量读数：2399 passed / 5 failed / 6 skipped，另有 `tests/test_mcp` 一处收集错误（本机 `mcp`
-  不是钉住的 2.0.0，缺 `mcp.server.mcpserver`）。这 5 条与收集错误**把本批两个新文件从树上摘掉后
-  逐条复跑仍然全红**（按 sha 核回），所以是既有环境性失败而非本批引入；点名留档，不当成已修。
 
 ### Fixed
-
-- **`iterate-kernel@0.1.7`：发布出去的 `selector` 契约不再承诺"空 role 可以"。** 这不是预防性
-  收紧，是被别人的闸抓出来的真缺陷：GlassPane 的 `mcp-shell/test/consumer-consistency.test.mjs`
-  有一条"daemon 判据 / 已发布 JSON Schema / 内核 zod 三处必须同规则"的闸，把根仓镜像语料按已
-  发布包刷新后它当场变红——`$defs.selector.role` 与 `.title` 在 canonical 侧只有 `maxLength`、
-  没有 `minLength`，zod 也只有 `.max(512)`；而引擎的 AX 匹配把空串读成"没有声明约束"，空 role
-  不是更窄的选择器，是**停止命名它指向的东西**，daemon 直接拒。契约在这里对 agent 许的诺和执行
-  它的规则是两个答案。修法落在同一个提交的两侧：zod `.min(1)`、schema `minLength: 1`；
-  `identifier` 保持无人裁定（daemon 对它没有守卫，内核也不替它发明判据，测试单独钉住这一点，
-  将来若加守卫必须同批改那条用例，而不是默默继续放行）。
-  内核加 4 条：role 空串两侧拒、title 空串两侧拒、identifier 空串两侧收、"schema 写明的下限必须
-  等于 zod 执行的下限"；两处反向变异各自变红（撤 zod `.min(1)` 只红 zod 侧那条；撤 schema
-  `minLength` 同时红掉跨绑定那条），两侧都咬得住。229 条内核测试全绿（本批 +4）。
-  harness 语料 manifest 版本随升到 0.1.7（档案字节未变，evidence-pack 的 5 份 ok-* 一字未动）。
-  Python 侧无需跟改：实测 iterate-harness 没有 selector 校验，命中的 `role` 全是聊天消息字段。
 
 - **`iterate/run_plan.py`：把 `iterate.config.yaml` 变成共享内核的 RunPlan 契约。** 维度
   覆盖那套算法一直拒绝自己发明计划（是对的），而计划此前只活在这份配置里——GlassPane 侧

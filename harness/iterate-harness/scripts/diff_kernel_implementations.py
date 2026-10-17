@@ -52,10 +52,6 @@ from iterate_harness.iterate.provider_registry import (  # noqa: E402
     register_provider,
     require_method,
 )
-from iterate_harness.iterate.kernel_decision_record import (  # noqa: E402
-    KernelDecisionTranscribeError,
-    decision_log_draft_from_record,
-)
 
 MANIFEST = REPO / "tests" / "kernel_fixtures" / "manifest.json"
 CORPUS = REPO / "tests" / "kernel_fixtures"
@@ -64,13 +60,12 @@ CORPUS = REPO / "tests" / "kernel_fixtures"
 #: from argv, prints one JSON document, and uses only the package's public exports.
 NODE_DRIVER = r"""
 const fs = require("fs");
-const [kernelDir, convPath, invPath, provPath, recPath] = process.argv.slice(2);
+const [kernelDir, convPath, invPath, provPath] = process.argv.slice(2);
 const conv = require(kernelDir + "/dist/convergence.js");
 const inv = require(kernelDir + "/dist/invariant-report.js");
 const prov = require(kernelDir + "/dist/provider-registration.js");
-const rec = require(kernelDir + "/dist/decision-log-transcribe.js");
 const J = (x) => JSON.stringify(x === undefined ? null : x);
-const out = { convergence: [], invariant: [], reverify: [], refs: {}, provider: {}, transcribe: [] };
+const out = { convergence: [], invariant: [], reverify: [], refs: {}, provider: {} };
 
 const convFx = JSON.parse(fs.readFileSync(convPath, "utf8"));
 const CONV_KEYS = { maxRounds: "max_rounds", invariantState: "invariant_state",
@@ -137,21 +132,6 @@ out.provider.input = (() => {
     return { verdict: "accepted", methods: p.methods.map((m) => m.name) };
   } catch (e) { return { verdict: "refused" }; }
 })();
-const recFx = JSON.parse(fs.readFileSync(recPath, "utf8"));
-for (const item of recFx.cases) {
-  // Rule 10 of the fixture: size cases repeat a character here rather than carry a literal.
-  const record = JSON.parse(JSON.stringify(item.record));
-  if (typeof item.blobRepeat === "number") record.data[item.blobKey ?? "blob"] = "x".repeat(item.blobRepeat);
-  if (typeof item.summaryRepeat === "number") record.data.summary = "s".repeat(item.summaryRepeat);
-  try {
-    out.transcribe.push({ name: item.id, verdict: "accepted",
-      answer: J(rec.decisionLogDraftFromRecord(record, item.entryId)) });
-  } catch (e) {
-    // Refusal codes here are KERNEL_E_* on BOTH sides by contract (unlike the provider
-    // module's per-language codes), so the code itself is part of what must agree.
-    out.transcribe.push({ name: item.id, verdict: "refused", answer: J({ code: e.code }) });
-  }
-}
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -310,28 +290,6 @@ def _python_answers(conv_fx: dict[str, Any], inv_fx: dict[str, Any], prov_fx: di
     return out
 
 
-def _transcribe_answers(rec_fx: dict[str, Any]) -> list[dict[str, str]]:
-    """Drive the transcription fixture through this repo's Python module.
-
-    The expected values come from the file, never from here — this function produces *answers*,
-    and the comparison below is what decides whether the two implementations agree.
-    """
-    answers: list[dict[str, str]] = []
-    for case in rec_fx["cases"]:
-        record = json.loads(json.dumps(case["record"]))
-        if "blobRepeat" in case:
-            record["data"][case.get("blobKey", "blob")] = "x" * case["blobRepeat"]
-        if "summaryRepeat" in case:
-            record["data"]["summary"] = "s" * case["summaryRepeat"]
-        try:
-            draft = decision_log_draft_from_record(record, case["entryId"])
-        except KernelDecisionTranscribeError as error:
-            answers.append({"name": case["id"], "verdict": "refused", "answer": json.dumps({"code": error.code})})
-            continue
-        answers.append({"name": case["id"], "verdict": "accepted", "answer": json.dumps(draft)})
-    return answers
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--kernel", help="path to a kernel directory with a built dist/")
@@ -351,14 +309,12 @@ def main(argv: list[str] | None = None) -> int:
     conv_fx = json.loads((CORPUS / "convergence.ok-01.json").read_text())
     inv_fx = json.loads((CORPUS / "invariant-report.ok-01.json").read_text())
     prov_fx = json.loads((CORPUS / "provider-registration.ok-01.json").read_text())
-    rec_fx = json.loads((CORPUS / "decision-record-transcription.ok-01.json").read_text())
 
     driver = Path("/tmp/kernel-diff-driver.cjs") if Path("/tmp").is_dir() else REPO / "kernel-diff-driver.cjs"
     driver.write_text(NODE_DRIVER)
     proc = subprocess.run(
         [node, str(driver), str(kernel), str(CORPUS / "convergence.ok-01.json"),
-         str(CORPUS / "invariant-report.ok-01.json"), str(CORPUS / "provider-registration.ok-01.json"),
-         str(CORPUS / "decision-record-transcription.ok-01.json")],
+         str(CORPUS / "invariant-report.ok-01.json"), str(CORPUS / "provider-registration.ok-01.json")],
         capture_output=True,
         text=True,
         check=False,
@@ -369,10 +325,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     theirs = json.loads(proc.stdout)
     ours = _python_answers(conv_fx, inv_fx, prov_fx)
-    ours["transcribe"] = _transcribe_answers(rec_fx)
 
     mismatches: list[str] = []
-    for section in ("convergence", "invariant", "reverify", "transcribe"):
+    for section in ("convergence", "invariant", "reverify"):
         if len(theirs[section]) != len(ours[section]):
             mismatches.append(f"{section}: {len(theirs[section])} answers from TS, {len(ours[section])} from Python")
             continue
@@ -382,10 +337,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             if t["verdict"] != o["verdict"]:
                 mismatches.append(f"{section}/{t['name']}: TS {t['verdict']}, Python {o['verdict']}")
-            else:
-                # Refused cases carry an `answer` too where the contract says the refusal code
-                # is shared (transcription refuses with KERNEL_E_* on both sides). Sections whose
-                # refused cases have no `answer` are untouched: the inner guard skips them.
+            elif t["verdict"] == "accepted":
                 for field in ("answer", "digest", "failing"):
                     if field in t or field in o:
                         if _norm(t.get(field)) != _norm(o.get(field)):
@@ -419,13 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     if _norm(theirs["provider"].get("input")) != _norm(ours["provider"].get("input")):
         mismatches.append(f"provider/input: TS {theirs['provider'].get('input')} != Python {ours['provider'].get('input')}")
 
-    total = (
-        len(theirs["convergence"])
-        + len(theirs["invariant"])
-        + len(theirs["reverify"])
-        + len(theirs["transcribe"])
-        + len(theirs["provider"]["cases"])
-    )
+    total = len(theirs["convergence"]) + len(theirs["invariant"]) + len(theirs["reverify"]) + len(theirs["provider"]["cases"])
     if mismatches:
         print(f"diff_kernel_implementations: {len(mismatches)} disagreement(s) between {kernel} and this repo:")
         for m in mismatches:

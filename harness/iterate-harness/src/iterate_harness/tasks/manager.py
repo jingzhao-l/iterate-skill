@@ -34,6 +34,18 @@ _WATCHER_DRAIN_SECONDS = 3.0
 #: evicted so a long swarm session cannot grow the manager without limit.
 _MAX_TERMINAL_RECORDS = 200
 
+#: How long the delivery monitor keeps watching a just-written agent process
+#: for the exit that would otherwise swallow the payload (see
+#: ``_delivery_monitor``). Bounded, so a dead process can never keep a monitor
+#: alive forever; generous, because a shell wrapper can linger for tens of
+#: seconds after the real agent has finished on slow volumes / under load.
+_DELIVERY_MONITOR_SECONDS = 15.0
+
+#: Grace before snapshotting the output baseline, so output that merely lagged
+#: the write through the async copier (``_copy_output``) is not mistaken for a
+#: reply to the payload.
+_DELIVERY_BASELINE_SETTLE = 0.1
+
 
 def _terminate_signal() -> signal.Signals:
     """Return the cooperative stop signal for this platform."""
@@ -68,6 +80,14 @@ def _signal_process_tree(
         except (ProcessLookupError, OSError, ValueError) as exc:
             if not ignore_missing:
                 log.debug("Could not signal task process %s: %s", pid, exc)
+
+
+def _safe_output_size(path: Path) -> int:
+    """Return a task's output file size, never raising on a missing file."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _trim_output_front(path: Path) -> None:
@@ -124,6 +144,10 @@ class BackgroundTaskManager:
         self._input_locks: dict[str, asyncio.Lock] = {}
         self._generations: dict[str, int] = {}
         self._completion_listeners: dict[str, CompletionListener] = {}
+        # Per-task delivery monitors (see ``_arm_delivery_monitor``): watch a
+        # just-written agent process for an exit that would silently swallow
+        # the payload, so a follow-up message can be resumed instead of lost.
+        self._delivery_monitors: dict[str, asyncio.Task[None]] = {}
         # In-process tasks have no subprocess; each one carries an async abort
         # callback (the swarm backend's graceful shutdown) so stop_task and
         # write_to_task can route to it instead of a stdin pipe.
@@ -321,6 +345,13 @@ class BackgroundTaskManager:
         task.status = "killed"
         task.ended_at = time.time()
 
+        # A delivery monitor must not resurrect a deliberately stopped task:
+        # cancel it now (the monitor also re-checks ``status == "killed"``
+        # before any restart, so this is belt-and-braces).
+        monitor = self._delivery_monitors.pop(task_id, None)
+        if monitor is not None and not monitor.done():
+            monitor.cancel()
+
         _signal_process_tree(process, _terminate_signal())
         try:
             await asyncio.wait_for(asyncio.shield(process.wait()), timeout=_STOP_GRACE_SECONDS)
@@ -359,21 +390,163 @@ class BackgroundTaskManager:
         # bare KeyError.
         async with self._input_locks.setdefault(task_id, asyncio.Lock()):
             process = await self._ensure_writable_process(task)
-            stdin = process.stdin
-            if stdin is None:
-                raise ValueError(f"Task {task_id} does not accept input") from None
-            stdin.write(payload)
+            await self._write_payload(task, process, payload)
+
+    async def _write_payload(
+        self,
+        task: TaskRecord,
+        process: asyncio.subprocess.Process,
+        payload: bytes,
+    ) -> None:
+        """Write one payload to a task's stdin, auto-resuming agent tasks on exit.
+
+        A local agent can exit in the window between the liveness check
+        (``_ensure_writable_process``) and ``stdin.drain()``: the shell is still
+        tearing down, the pipe still accepts bytes (the OS buffers them), and
+        the payload is silently swallowed — the write "succeeds" yet the agent
+        never reads it. Two layers close that window for agent tasks:
+
+        1. A synchronous re-check right after the drain (same non-blocking
+           probe as ``_ensure_writable_process``): a process that exited during
+           the write is resumed and the payload re-delivered immediately.
+        2. A background delivery monitor (``_arm_delivery_monitor``) for the
+           slower exit: shell wrappers can linger for seconds after the agent
+           itself is done, so the sync probe alone still loses messages on
+           slow machines. The monitor restarts + re-delivers only when the
+           process exits without producing *any new output* — which is the
+           signal that it never read the payload. If new output appeared, the
+           payload was consumed and nothing is re-sent.
+        """
+        stdin = process.stdin
+        if stdin is None:
+            raise ValueError(f"Task {task.id} does not accept input") from None
+        stdin.write(payload)
+        try:
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            if task.type not in {"local_agent", "remote_agent"}:
+                raise ValueError(f"Task {task.id} does not accept input") from None
+            await self._redeliver_after_restart(task, payload)
+
+        if task.type not in {"local_agent", "remote_agent"}:
+            return
+        # Layer 1: post-write exit re-check (non-blocking liveness probe;
+        # ``asyncio.shield`` keeps the shared ``wait()`` future alive for the
+        # watcher when the probe's own task is cancelled on the timeout path).
+        try:
+            await asyncio.wait_for(asyncio.shield(process.wait()), timeout=0)
+        except asyncio.TimeoutError:
+            pass
+        else:
+            # The process exited while we were writing. It cannot be trusted to
+            # have consumed the payload: resume the task and re-deliver.
+            await self._redeliver_after_restart(task, payload)
+            return
+        # Layer 2: background monitor for the slower exit.
+        await self._arm_delivery_monitor(task, process, payload)
+
+    async def _arm_delivery_monitor(
+        self,
+        task: TaskRecord,
+        process: asyncio.subprocess.Process,
+        payload: bytes,
+    ) -> None:
+        """Replace any prior delivery monitor for ``task`` with a fresh one.
+
+        Each write arms its own monitor; a newer write supersedes an older
+        monitor (the new payload is the one whose delivery matters).
+        """
+        monitor = self._delivery_monitors.get(task.id)
+        if monitor is not None and not monitor.done():
+            monitor.cancel()
+        new_monitor = asyncio.create_task(
+            self._delivery_monitor(task, process, payload),
+            name=f"delivery-monitor-{task.id}",
+        )
+        self._delivery_monitors[task.id] = new_monitor
+        new_monitor.add_done_callback(
+            lambda _done: self._delivery_monitors.pop(task.id, None)
+            if self._delivery_monitors.get(task.id) is new_monitor
+            else None
+        )
+
+    async def _delivery_monitor(
+        self,
+        task: TaskRecord,
+        process: asyncio.subprocess.Process,
+        payload: bytes,
+    ) -> None:
+        """Resume an agent task whose exit swallowed a just-written payload.
+
+        After a payload is written, the process may exit without ever reading
+        it (last output already flushed, shell still tearing down). We watch
+        for that exit; when it happens *without any new output appearing* the
+        payload was not consumed, so the task is restarted and the payload
+        re-delivered — a follow-up message can never evaporate. New output
+        means the payload WAS read (e.g. a one-shot worker that acts and
+        exits), and nothing is re-sent.
+        """
+        try:
+            # Let the async output copier settle so output that merely lagged
+            # the write does not count as a "reply" to the payload.
+            await asyncio.sleep(_DELIVERY_BASELINE_SETTLE)
+            base_size = _safe_output_size(task.output_file)
             try:
-                await stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                if task.type not in {"local_agent", "remote_agent", "in_process_teammate"}:
-                    raise ValueError(f"Task {task_id} does not accept input") from None
-                process = await self._restart_agent_task(task)
-                stdin = process.stdin
-                if stdin is None:
-                    raise ValueError(f"Task {task_id} does not accept input") from None
-                stdin.write(payload)
-                await stdin.drain()
+                await asyncio.wait_for(
+                    asyncio.shield(process.wait()), timeout=_DELIVERY_MONITOR_SECONDS
+                )
+            except asyncio.TimeoutError:
+                # Still genuinely running: the payload is in the pipe and the
+                # agent will read it on its next turn.
+                return
+            if _safe_output_size(task.output_file) > base_size:
+                # The process produced output after the write — it consumed
+                # the payload and then exited on its own. Nothing to resume.
+                return
+            if task.status == "killed":
+                # The operator deliberately stopped this task; never resurrect
+                # a killed process to deliver a stale message.
+                return
+            if self._processes.get(task.id) not in (None, process):
+                # A newer spawn superseded the process we wrote to; its own
+                # write path owns delivery now. (Note: at exit the watcher
+                # pops the process from ``_processes`` entirely, so a value of
+                # ``None`` means "exited behind our back" and is NOT a newer
+                # spawn — resume in that case.)
+                return
+            async with self._input_locks.setdefault(task.id, asyncio.Lock()):
+                try:
+                    await self._redeliver_after_restart(task, payload)
+                except (ValueError, BrokenPipeError, ConnectionResetError) as exc:
+                    log.warning(
+                        "Delivery monitor could not resume task %s with lost payload: %s",
+                        task.id,
+                        exc,
+                    )
+        except asyncio.CancelledError:
+            # A newer write (or a stop) superseded this monitor.
+            raise
+        except Exception:
+            # The monitor must never crash the task manager loop.
+            log.exception("Delivery monitor failed for task %s", task.id)
+
+    async def _redeliver_after_restart(
+        self,
+        task: TaskRecord,
+        payload: bytes,
+    ) -> None:
+        """Restart an agent task and write the payload to the fresh process."""
+        process = await self._restart_agent_task(task)
+        stdin = process.stdin
+        if stdin is None:
+            raise ValueError(f"Task {task.id} does not accept input") from None
+        stdin.write(payload)
+        try:
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            # A restart that dies before reading is a spawn-side failure; do
+            # not loop forever re-delivering into fresh corpses.
+            raise ValueError(f"Task {task.id} does not accept input") from None
 
     async def _write_in_process_mailbox(self, task: TaskRecord, data: str) -> None:
         """Route an input line to an in-process teammate's file-based mailbox."""
@@ -560,6 +733,11 @@ class BackgroundTaskManager:
             self._tasks.pop(task.id, None)
             self._output_locks.pop(task.id, None)
             self._input_locks.pop(task.id, None)
+            # A terminal task no longer needs its delivery monitor; cancel it
+            # so a stale monitor cannot resurrect an evicted record.
+            monitor = self._delivery_monitors.pop(task.id, None)
+            if monitor is not None and not monitor.done():
+                monitor.cancel()
             # Drop the generation counter too: it is only ever *added* during
             # a spawn, so without this the dict grows once per task for the
             # whole session even after the record itself has been evicted.
@@ -662,8 +840,7 @@ class BackgroundTaskManager:
             except asyncio.TimeoutError:
                 # Still genuinely running.
                 return process
-            # Process exited behind our back; fall through to restart.
-            process = self._processes.get(task.id)
+            # Process exited behind our back; fall through to the restart path.
         if task.type not in {"local_agent", "remote_agent", "in_process_teammate"}:
             raise ValueError(f"Task {task.id} does not accept input")
         return await self._restart_agent_task(task)

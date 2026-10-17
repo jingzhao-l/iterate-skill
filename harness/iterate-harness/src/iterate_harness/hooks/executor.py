@@ -294,18 +294,24 @@ def _matches_hook(hook: HookDefinition, payload: dict[str, Any]) -> bool:
     matcher = getattr(hook, "matcher", None)
     if not matcher:
         return True
-    # The matcher subject is the first of: tool name (tool events), prompt
-    # text (prompt events), event name, then — for notifications — the
-    # notification_type (``permission_prompt`` / ``iterate_pause``). Without
-    # the last fallback a matcher of "permission_prompt" could never match,
-    # because the subject resolved to the literal "notification".
-    subject = str(
-        payload.get("tool_name")
-        or payload.get("prompt")
-        or payload.get("notification_type")
-        or payload.get("event")
-        or ""
-    )
+    event = str(payload.get("event") or "")
+    if event == HookEvent.NOTIFICATION.value:
+        # Notifications are identified by their ``notification_type``
+        # (``permission_prompt`` / ``iterate_pause``). ``tool_name`` must NOT
+        # shadow it: the permission-prompt notification carries ``tool_name``
+        # (e.g. "bash"), and a matcher of "permission_prompt" would otherwise
+        # never match — the exact gap the last fallback was written to close.
+        subject = str(payload.get("notification_type") or event or "")
+    else:
+        # Tool events match on tool name, prompt events on prompt text; the
+        # event name is the final fallback for everything else.
+        subject = str(
+            payload.get("tool_name")
+            or payload.get("prompt")
+            or payload.get("notification_type")
+            or event
+            or ""
+        )
     return fnmatch.fnmatch(subject, matcher)
 
 

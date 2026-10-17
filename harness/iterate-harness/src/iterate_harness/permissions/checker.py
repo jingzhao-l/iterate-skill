@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -133,6 +134,7 @@ class PermissionChecker:
         is_read_only: bool,
         file_path: str | None = None,
         command: str | None = None,
+        command_paths: Sequence[str] | None = None,
         content: str | None = None,
         mode_override: str | None = None,
     ) -> PermissionDecision:
@@ -146,8 +148,21 @@ class PermissionChecker:
         built-in sensitive-path / forbidden-content / risk-area boundaries (and
         the explicit allow/deny lists) are applied BEFORE the mode check, so an
         override can never widen those hard limits.
+
+        ``command_paths`` is the defense-in-depth half of ``command``: shell
+        tools (``bash``) have no ``file_path`` field, so the engine derives
+        path-looking tokens from the command string (``cat ~/.ssh/id_rsa`` →
+        ``~/.ssh/id_rsa``) and feeds them here. Every hard path boundary
+        (sensitive paths, deny rules, risk areas) is evaluated against
+        ``file_path`` and every ``command_paths`` entry alike, so an
+        allowlisted ``bash`` cannot become a backdoor past the boundaries.
         """
         effective_mode = self._resolve_mode(mode_override)
+        candidate_paths: list[str] = []
+        if file_path:
+            candidate_paths.append(file_path)
+        if command_paths:
+            candidate_paths.extend(p for p in command_paths if p and p not in candidate_paths)
         # Decision ordering (hard boundaries first, mode shortcuts last):
         #   sensitive paths → forbidden content → denied_tools → path deny
         #   rules → risk areas → denied_commands → allowed_tools →
@@ -161,18 +176,18 @@ class PermissionChecker:
         # overridden by user settings or permission mode.  This is a
         # defence-in-depth measure against LLM-directed or prompt-injection
         # driven access to credential files.
-        if file_path:
-            for candidate_path in _policy_match_paths(file_path):
-                for pattern in SENSITIVE_PATH_PATTERNS:
-                    if _path_policy_match(candidate_path, pattern):
-                        return PermissionDecision(
-                            allowed=False,
-                            reason=(
-                                f"Access denied: {file_path} is a sensitive credential path "
-                                f"(matched built-in pattern '{pattern}')"
-                            ),
-                        )
-
+        if candidate_paths:
+            for candidate_file_path in candidate_paths:
+                for candidate_path in _policy_match_paths(candidate_file_path):
+                    for pattern in SENSITIVE_PATH_PATTERNS:
+                        if _path_policy_match(candidate_path, pattern):
+                            return PermissionDecision(
+                                allowed=False,
+                                reason=(
+                                    f"Access denied: {candidate_file_path} is a sensitive credential path "
+                                    f"(matched built-in pattern '{pattern}')"
+                                ),
+                            )
         # Iterate forbidden-fix boundary (iterate.forbidden_fix_patterns):
         # a mutating write payload matching any configured regex is rejected
         # outright.  Checked before tool allowlists so it cannot be bypassed.
@@ -202,33 +217,35 @@ class PermissionChecker:
         # risk-area branch below: a path that is BOTH protected (deny) and a
         # risk area must be denied outright, not softened into a
         # confirmation prompt.
-        if file_path and self._path_rules:
-            for candidate_path in _policy_match_paths(file_path):
-                for rule in self._path_rules:
-                    if _path_policy_match(candidate_path, rule.pattern):
-                        if not rule.allow:
-                            return PermissionDecision(
-                                allowed=False,
-                                reason=f"Path {file_path} matches deny rule: {rule.pattern}",
-                            )
+        if candidate_paths and self._path_rules:
+            for candidate_file_path in candidate_paths:
+                for candidate_path in _policy_match_paths(candidate_file_path):
+                    for rule in self._path_rules:
+                        if _path_policy_match(candidate_path, rule.pattern):
+                            if not rule.allow:
+                                return PermissionDecision(
+                                    allowed=False,
+                                    reason=f"Path {candidate_file_path} matches deny rule: {rule.pattern}",
+                                )
 
         # Iterate risk-area boundary (iterate.risk_area_paths + project
         # personalization.risk_areas, design §11.2.2): mutating tools that
         # target a risk-area path require explicit user confirmation even in
         # full_auto mode. Checked before tool allowlists so the gate cannot
         # be bypassed by an allowlisted tool. Reads stay ungated.
-        if file_path and self._risk_area_patterns and not is_read_only:
-            for candidate_path in _policy_match_paths(file_path):
-                for pattern in self._risk_area_patterns:
-                    if _path_policy_match(candidate_path, pattern):
-                        return PermissionDecision(
-                            allowed=False,
-                            requires_confirmation=True,
-                            reason=(
-                                f"Path {file_path} is in a configured risk area "
-                                f"(matched '{pattern}'); explicit approval required"
-                            ),
-                        )
+        if candidate_paths and self._risk_area_patterns and not is_read_only:
+            for candidate_file_path in candidate_paths:
+                for candidate_path in _policy_match_paths(candidate_file_path):
+                    for pattern in self._risk_area_patterns:
+                        if _path_policy_match(candidate_path, pattern):
+                            return PermissionDecision(
+                                allowed=False,
+                                requires_confirmation=True,
+                                reason=(
+                                    f"Path {candidate_file_path} is in a configured risk area "
+                                    f"(matched '{pattern}'); explicit approval required"
+                                ),
+                            )
 
         # Command deny patterns (e.g. deny "rm -rf /") — a hard boundary
         # that MUST run before the ``allowed_tools`` / ``allowed_commands``

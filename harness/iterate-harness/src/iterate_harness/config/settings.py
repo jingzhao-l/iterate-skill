@@ -64,8 +64,9 @@ class PermissionSettings(BaseModel):
     denied_tools: list[str] = Field(default_factory=list)
     path_rules: list[PathRuleConfig] = Field(default_factory=list)
     denied_commands: list[str] = Field(default_factory=list)
-    # Exact-match (after trim) command allowlist evaluated BEFORE
-    # denied_commands; only bash-like tools carry a command payload.
+    # Exact-match (after trim) command allowlist evaluated AFTER
+    # denied_commands (a deny pattern is a hard boundary and always wins);
+    # only bash-like tools carry a command payload.
     allowed_commands: list[str] = Field(default_factory=list)
 
 

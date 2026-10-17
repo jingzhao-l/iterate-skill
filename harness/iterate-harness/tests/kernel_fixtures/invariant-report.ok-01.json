@@ -21,7 +21,7 @@
         "name": "typescript:npm run compile",
         "kind": "command",
         "ok": false,
-        "detail": "exit 1 | npm error To see a list of scripts, run: | npm error   npm run | npm error A complete log of this run can be found in: /Users/ethanlin/.npm/_logs/2026-10-11T01_07_36_468Z-debug-0.log"
+        "detail": "exit 1 | npm error To see a list of scripts, run: | npm error   npm run | npm error A complete log of this run can be found in: /Users/<user>/.npm/_logs/2026-10-11T01_07_36_468Z-debug-0.log"
       },
       {
         "name": "python:ruff check src/ ; rm -rf /",
@@ -31,7 +31,7 @@
       }
     ]
   },
-  "expectedDigest": "iv_81373b5040663b9f56a4a0bc671ab55e0d92bc33e5980b5580f3e7cec5902332",
+  "expectedDigest": "iv_43e804c4a882ffc005388045770ab70da3368300d8eae4828805244190c1b64e",
   "expectedFailingChecks": [
     "ensure:iterate.config.yaml",
     "typescript:npm run compile",
@@ -289,7 +289,7 @@
     "schemaVersion": "iterate.reverification/0.1",
     "trigger": {
       "kind": "invariant",
-      "reportDigest": "iv_81373b5040663b9f56a4a0bc671ab55e0d92bc33e5980b5580f3e7cec5902332"
+      "reportDigest": "iv_43e804c4a882ffc005388045770ab70da3368300d8eae4828805244190c1b64e"
     },
     "targets": {
       "recipeSteps": [

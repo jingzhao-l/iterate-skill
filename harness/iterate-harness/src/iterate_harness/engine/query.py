@@ -6,7 +6,9 @@ import asyncio
 import contextlib
 import difflib
 import logging
+import os
 import re
+import shlex
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1360,6 +1362,7 @@ async def _execute_tool_call(
     # directory-scoped roots such as `glob`/`grep`.
     _file_path = _resolve_permission_file_path(context.cwd, tool_input, parsed_input)
     _command = _extract_permission_command(tool_input, parsed_input)
+    _command_paths = _extract_command_paths(_command, context.cwd) if _command else None
     _is_read_only = tool.is_read_only(parsed_input)
     # Mutating write payloads feed the iterate forbidden_fix_patterns
     # regex boundary; read-only tools never carry a write payload.
@@ -1371,6 +1374,7 @@ async def _execute_tool_call(
         is_read_only=_is_read_only,
         file_path=_file_path,
         command=_command,
+        command_paths=_command_paths,
         content=_content,
         # Session-scoped permission override (enter_plan_mode/exit_plan_mode
         # tools record ``session_permission_mode`` in tool metadata, which the
@@ -1619,6 +1623,65 @@ def _extract_permission_command(
         return value
 
     return None
+
+
+def _extract_command_paths(command: str, cwd: Path) -> list[str]:
+    """Best-effort extraction of path arguments from a shell command string.
+
+    Shell tools (``bash``) carry no ``file_path`` field, so an allowlisted
+    bash tool is a potential backdoor past the hard path boundaries
+    (sensitive paths / deny rules / risk areas): ``cat ~/.ssh/id_rsa`` names
+    no path field yet touches a credential file. This derives candidate
+    absolute paths from the command's whitespace-tokenized arguments — enough
+    to catch the common spellings. It is explicitly defence-in-depth, NOT a
+    substitute for real path tracking (obfuscation such as ``$HOME``
+    concatenation or command substitution can still evade it); the mode-based
+    permission prompt remains the backstop for everything it misses.
+    """
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return []
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if not token or token.startswith("-"):
+            continue
+        if not _looks_like_path_token(token):
+            continue
+        if "://" in token:
+            continue
+        expanded = os.path.expandvars(os.path.expanduser(token))
+        if not expanded:
+            continue
+        path = Path(expanded)
+        if not path.is_absolute():
+            path = cwd / path
+        try:
+            resolved_path = str(path.resolve())
+        except OSError:
+            resolved_path = str(path)
+        if resolved_path not in seen:
+            seen.add(resolved_path)
+            resolved.append(resolved_path)
+    return resolved
+
+
+def _looks_like_path_token(token: str) -> bool:
+    """Return whether ``token`` plausibly names a filesystem path argument.
+
+    A path-looking token starts with ``~`` (tilde expansion), or contains a
+    path separator, or is a dot-relative path (``./x`` / ``../x`` / ``.ssh/``).
+    Bare words (``rm``, ``grep``), flags, and env assignments are not paths;
+    they are skipped so legitimate commands are not over-blocked.
+    """
+    if token.startswith("~") or token.startswith("/"):
+        return True
+    if "/" in token:
+        return True
+    if token.startswith(".") and len(token) > 1:
+        return True
+    return False
 
 
 # Mutating write-payload field names recognized by the permission layer.
