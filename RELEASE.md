@@ -885,6 +885,51 @@ stamp 不匹配会自动重装到新 tag。
       > 提交（本提交零删除，工作区未动）；其过期 badges/downloads.json 快照（10-10 数据，落后于
       > 已推送的 10-15）在 rebase autostash 冲突中解析为远端新值，原始字节保留在 `stash@{0}`。
       >
+      > **2.7.0 发布记录（2026-10-17）**：例行「审查 → 修复 → UX 评审 → 缺口补齐 → 自检」发版
+      > （minor）。约 40 处修复横跨权限 / 引擎 / hooks / 防御 / 任务 / 工具 / CLI / Web / cron /
+      > 配置。**主体亮点**：① 任务投递——`send_message` 发给刚完成的 agent 时消息会被静默吞掉
+      > （进程在存活检查与 `drain()` 之间退出，写入落进将死管道；实测 10 次复现 2 次、慢机
+      > 6/12），新增同步退出复核 + 投递监视器（退出且**无新输出** ⇒ 重启重投递；有新输出 ⇒
+      > 已消费不重复；静默 worker 正常退出不复活；停止/换代取消监视器），watcher 的 stdout
+      > drain 与 bash 事后读取改为总预算（孙进程持管道不再永久挂住）；② 权限——`bash` 命令串
+      > 提取路径进入敏感路径/deny/风险区（`cat ~/.ssh/id_rsa` 不再被 `allowed_tools: [bash]`
+      > 放行）、`denied_commands` 按 `&&`/`;`/`|`/换行逐段匹配并解包 `bash -c`、`path_rules`
+      > 的 `allow` 生效、`glob pattern` 进入路径提取、grep 补沙箱边界；③ 引擎——取消/异常后为
+      > 未完成 `tool_use` 补 error `tool_result`（会话不再被 provider 拒绝）、STOP hook 的
+      > `blocked` 生效（有界）、被拒 prompt 不再改 task focus、`after_mutation` 异常回滚、
+      > 兄弟回滚恢复「最后接受内容」、零检查不变量 fail-closed；④ CLI——**print 模式透传
+      > `--permission-mode`**（此前 `ih iterate run` 实际以 DEFAULT 跑、所有写操作被拒）、
+      > `-p` 与 `--continue/--resume` 拒绝组合、命令/后端异常不再打死交互会话、`--serve`
+      > 隐含 HTML、工具列表按逗号/空格拆分、ANSI 清屏仅 TTY、`--branch` 恢复；⑤ Web——
+      > `--project` 下所有只读路由回落到启动项目（此前 403 且被前端误报为「令牌失效」）、
+      > `/chat/history` 重启可读、用户答复先落盘再唤醒引擎、stale prompt 清理、starting/pausing
+      > 可停止、权限姿态显示、`sse-gap` 消费 + hub resume 完整性按淘汰 id 判定；⑥ CI/配置——
+      > 无报告 + gate ⇒ exit 2、`ITERATE_BASE_URL` 等环境覆盖不被 profile 投影覆盖、
+      > `GEMINI_API_KEY`、非 UTF-8 credentials / 插件 MCP 配置降级、无效 settings.json 先隔离为
+      > `.invalid-<ts>`、聚合报告注入 dimensions/goal、invariant 失败阻断 converged、
+      > stall ≠ converged、worktree 合并失败报 FAILED、cron 进程组 + 有界输出、Anthropic 透传
+      > timeout、fix_scope 统计未跟踪文件、compact 路径正则。
+      > 版本号在 `__init__.py` / `npm/package.json` / `frontend/web/package.json`（+ lock）/
+      > `CHANGELOG.md` 同步至 2.7.0（`pyproject.toml` 为 `dynamic = ["version"]`，单一来源是
+      > `__init__.py`）。校验 **2692 pytest passed + 6 skipped**、ruff clean、mypy strict clean
+      > （259 源文件）、npm 包装器 **77 passed**、前端 `tsc --noEmit` + vitest **21 passed**；
+      > wheel 2.7.0 本地构建通过（含 `_frontend_web/dist` 与新增 `web/roots.py`）。subtree split
+      > push 再次 non-fast-forward（split 产物 head `5927469`），按替代路径在
+      > `.release/iterate-harness` rsync 已提交树后提交并快进推送（`a15d304..1a4661d`）；
+      > 主仓库 push 提交 `e184c70`。GitHub Release v2.7.0 已建（tag `v2.7.0` 即触发
+      > release.yml，run `38999335564` success，资产
+      > `iterate_harness-2.7.0-py3-none-any.whl`（950,885 B）+ `.asc` + `.sha256`，并自动发布
+      > PyPI 2.7.0——已验证 PyPI latest=2.7.0）；npm `iterate-harness@2.7.0` 已发布（PUT staged
+      > 约 45s 后 registry latest=2.7.0）。端到端验证：`npm install -g iterate-harness`（全局前缀
+      > `~/.npm-global`，bin 不在默认 PATH，按该前缀补 PATH）后 `ih --version` =
+      > `iterate_harness 2.7.0`（托管 venv 从 PyPI 实装、替换 2.6.0）。**环境注记**：本机
+      > Python/Node 信任库缺根证书（pip 与 Node fetch 均 TLS 校验失败，属 RELEASE.md 已记录的
+      > 本机问题），本次以 `PIP_CERT`/`SSL_CERT_FILE`/`NODE_OPTIONS=--use-system-ca` 指向 certifi
+      > 系统包后 bootstrap 成功，非产品缺陷。**范围注记**：并行 skill 发版会话把 harness 的
+      > 15 条在途删除（glasspane/kernel_decision* + kernel transcribe*）连同其本批 WIP 收进
+      > `backup/2026-10-17-out-of-scope-wip`（`912f044`）后清空工作区；本版 2.7.0 **不含**
+      > 该回收批次，按干净 main 树发布，回收仍由该批次所有者决定后续版本。
+      >
       > **2.5.0 发布记录（2026-09-30）**：整轮「审查 → 修复 → UX 评审 → 缺口补齐」的结果。
       > 主体是 WebUI 操作台 + 辅助干预通道这一层的真实缺口补齐，另含引擎 / swarm / 任务层一批
       > 正确性修复。**① Web/后端**：SSE 帧带单调 `id:`（重连时 `Last-Event-ID` 有意义，缺口两侧
