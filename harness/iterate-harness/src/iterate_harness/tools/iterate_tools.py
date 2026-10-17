@@ -30,7 +30,7 @@ from ..iterate import config_loader, decision_log, evidence, meta_review, person
 from ..iterate import types as itypes
 from ..iterate import validate as validate_mod
 from ..iterate.loop_policy import ITERATE_STATE_KEY
-from ..iterate.invariant_state import read_invariant_state
+from ..iterate.loop_gates import measured_gates
 from .base import BaseTool, ToolExecutionContext, ToolResult
 
 log = logging.getLogger(__name__)
@@ -353,12 +353,18 @@ class IterateReviewTool(BaseTool[BaseModel]):
             "converged": report.convergence.converged,
             "by_dimension": dict(report.summary.by_dimension),
         }
-        # The invariant gate's verdict, but only when some gate actually produced
-        # one. Absent means "nobody checked" and the reader must not turn that
-        # into a pass; see iterate/invariant_state.py.
-        measured = read_invariant_state(context.metadata)
-        if measured is not None:
-            state["invariant_state"] = measured
+        # Only the gates this round really measured stay in the state; see
+        # iterate/loop_gates.py for why an absent gate beats a default.
+        state.update(
+            measured_gates(
+                evidence_validation=config_loader.load_effective_config(
+                    context.cwd
+                ).config.reviewer.evidence_validation,
+                findings=report.findings,
+                cwd=context.cwd,
+                metadata=context.metadata,
+            )
+        )
         payload: dict[str, Any] = {"report": review.report_to_dict(report)}
         if usage_totals:
             # Engine-level per-dimension usage passthrough (v1.2-c): the

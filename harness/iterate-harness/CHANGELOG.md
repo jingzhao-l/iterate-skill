@@ -6,6 +6,19 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **`iterate/loop_gates.py`：轮次边界只报"真的量过的闸"（场景④后半：`evidence_complete`）。**
+  聚合发布点此前只有 `invariant_state` 一条；`evidence_complete` 的真值在**另一个 action**
+  （`_meta_review`，`iterate_tools.py:391`）里算，而循环是在轮次边界做判断的——拿一个可能还没
+  发生的调用的结论当测量不行，所以在发布点用同一个纯校验自己量一遍。选择逻辑收进一个函数，
+  工具侧只剩一行 `state.update(...)`，没有端到端用例的表面积就只有赋值那一行。
+  `breaker_level` 明确**不产**：本机没有断路器，填 0 与"有断路器且报告未跳闸"不可区分——
+  所以宁可让调用方继续拒绝咨询内核，也不喂它一个没人拥有的数字（用例
+  `test_breaker_level_is_never_invented` 把这条钉住）。另钉两条容易糊过去的：证据校验关闭时
+  键必须缺席（不得默认 True）；findings 为空是"无可验证＝完整"，那不是"项目已验证"——
+  后者由 `open_findings` 说。5 条新用例；`test_iterate_tools` + 循环策略 + 两份内核套件全绿，
+  ruff 干净。判定权仍归 `loop_policy`，本批不改任何收敛行为；翻转要等 `breaker_level` 定源。
+
+
 - **`iterate/invariant_state.py`：收敛契约那个"没人看过就别装成看过"的字段，终于有了唯一
   合法的来源（场景④的前半）。** 内核的 `RoundState.invariant_state` 取
   `pass|fail|error|unmeasured`，而规则把差别全押在这个档位上：闸门没跑过就不能当跑过。此前
