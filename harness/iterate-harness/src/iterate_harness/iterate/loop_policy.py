@@ -73,6 +73,10 @@ class AggregateSnapshot:
     # (empty when no budgets are configured or no usage was reported).
     exhausted_dimensions: list[str] = field(default_factory=list)
     all_dimensions_exhausted: bool = False
+    # The convergence contract's invariant verdict, or None when nothing measured
+    # it. Never defaulted: see iterate/invariant_state.py for why absent beats
+    # "unmeasured" beats "pass" here.
+    invariant_state: str | None = None
     # Reviewer-reported cumulative token totals per dimension (v1.2-c).
     # Subagent usage bills outside the main API stream, so these are reported
     # figures the policy relays into the CostMeter (monotonic running totals).
@@ -129,11 +133,23 @@ def _read_state_unsafe(tool_metadata: dict[str, object] | None) -> AggregateSnap
         converged=bool(state.get("converged", False)),
         by_dimension=by_dim,
         mode=str(state.get("mode", "dry-run")),
+        invariant_state=_read_invariant_state(state.get("invariant_state")),
         exhausted_dimensions=exhausted,
         all_dimensions_exhausted=bool(state.get("all_dimensions_exhausted", False)),
         dimension_usage=usage,
         dimension_usage_io=usage_io,
     )
+
+
+def _read_invariant_state(raw: object) -> str | None:
+    """Accept only the four contract verdicts; anything else stays absent.
+
+    A producer that misspells the value must not silently upgrade "nobody looked"
+    into a verdict the convergence policy can act on.
+    """
+    from .invariant_state import INVARIANT_STATE_VALUES
+
+    return raw if isinstance(raw, str) and raw in INVARIANT_STATE_VALUES else None
 
 
 def _clean_usage_io(raw: object) -> dict[str, dict[str, int]]:

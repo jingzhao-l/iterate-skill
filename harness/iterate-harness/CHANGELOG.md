@@ -4,6 +4,28 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`iterate/invariant_state.py`：收敛契约那个"没人看过就别装成看过"的字段，终于有了唯一
+  合法的来源（场景④的前半）。** 内核的 `RoundState.invariant_state` 取
+  `pass|fail|error|unmeasured`，而规则把差别全押在这个档位上：闸门没跑过就不能当跑过。此前
+  harness 里没有任何地方能给出这个值——不变量检查只在 code mode 的 `DefensiveKernel` 里跑
+  （`engine/query.py:262` 的 `_new_defensive_kernel` 在非 code mode 直接返回 None），而
+  `DEFENSIVE_KERNEL_KEY` 其实早已被 `engine/query.py:1464` 放进 exec metadata，工具层拿得到，
+  缺的只是那一次映射。本批把这一步做成一个模块：`checks_run<=0` 一律 `unmeasured`、
+  `kind=="refused"` 记 `error`（那是检查自己跑不起来，不是项目违例）、否则按 `passed` 给
+  `pass`/`fail`；**没有报告就返回 None**，调用方把键整个省掉——填 `pass` 是让没测过的跑凭一个
+  没人生产的结论收敛，填 `unmeasured` 也是一种主张。
+  第一版就藏着一个假绿，是探针抓出来的：`InvariantReport()` 的 dataclass 默认 `passed=True`，
+  旧映射在 `checks_run=0` 时穿过 `violations` 判空落回 `pass`——即"空报告"读成"闸是绿的"。
+  现在这条被写成用例钉住（`test_an_untouched_report_is_unmeasured_not_pass`）。读侧同理只收
+  四个合法值，拼错的字符串按缺席处理（`test_the_loop_state_never_invents_a_value`）。
+  `AggregateSnapshot.invariant_state` + `iterate_tools` 聚合发布各加一处，值缺席时不写键。
+  新 7 条用例；`test_iterate_tools`/循环策略/内核三套共 158 条全绿，ruff 干净。
+  **本批没做完、点名的**：聚合工具那行发布没有端到端用例（工具测试里没有 code-mode 的 kernel
+  实例），要等④翻转那批一起补；`breaker_level` 与 `evidence_complete` 两个入参仍无来源；
+  判定权仍归 `loop_policy` 自己——没改任何收敛行为。
+
 ### Fixed
 
 - **`scripts/install.py::_installed_version()` 在 Python 3.10 上不再报假版本。** 包里
