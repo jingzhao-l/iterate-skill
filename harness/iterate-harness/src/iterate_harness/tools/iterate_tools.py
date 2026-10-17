@@ -311,8 +311,19 @@ class IterateReviewTool(BaseTool[BaseModel]):
             return _json_output(
                 {"error": "aggregate requires rounds: [{round, findings}]"}, error=True
             )
+        # ``report_from_dict`` derives ``dimensions`` from the payload, and an
+        # omitted list becomes []. Meta-review then flags every finding as
+        # DIMENSION_UNKNOWN (the aggregate was always "needs_revision"), so
+        # feed the project's real dimension set and goal.
+        effective = config_loader.load_effective_config(context.cwd)
         report = review.report_from_dict(
-            {"mode": args.mode, "rounds": args.rounds, "maxReviewRounds": args.max_review_rounds}
+            {
+                "mode": args.mode,
+                "rounds": args.rounds,
+                "maxReviewRounds": args.max_review_rounds,
+                "dimensions": list(effective.config.dimensions),
+                "goal": effective.config.goal,
+            }
         )
         known = _load_known_intentional(context)
         if known:

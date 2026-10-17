@@ -395,6 +395,15 @@ class IterateLoopPolicy:
     def _decide(self, snapshot: AggregateSnapshot, progress: object) -> LoopDecision:
         last_new = snapshot.findings_by_round[-1] if snapshot.findings_by_round else 0
         if snapshot.converged:
+            # A failing invariant is a STOP, never a pass: the reviewer claiming
+            # convergence while the project's own invariant gate failed used to
+            # produce a green "converged" run (and green CI) on broken code.
+            # ``None`` means nobody measured — that keeps the historical
+            # behavior rather than blocking projects without invariant gates.
+            if snapshot.invariant_state == "fail":
+                return self._stop_decision(
+                    snapshot, "invariant gate failed (reported converged)", progress
+                )
             return self._stop_decision(snapshot, "converged", progress)
         if snapshot.rounds_seen >= self.max_review_rounds:
             return self._stop_decision(
@@ -432,9 +441,12 @@ class IterateLoopPolicy:
         # on their behalf.
         if last_new == 0:
             if self.stall_pause_rounds <= 0:
-                # Feature disabled: preserve the historical hard-stop behavior.
+                # Feature disabled: hard-stop, but never CALL it converged —
+                # the reviewer did not claim convergence and the report may
+                # still contain open findings. The reason string is surfaced in
+                # the UI and consumed by report/CI consumers as success.
                 return self._stop_decision(
-                    snapshot, "converged (0 new findings in the last round)", progress
+                    snapshot, "stalled: 0 new findings in the last round", progress
                 )
             self._consecutive_zero_rounds += 1
             if self._consecutive_zero_rounds >= self.stall_pause_rounds:
