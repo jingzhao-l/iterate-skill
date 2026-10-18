@@ -4,6 +4,41 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **场景④翻转：收敛判定权从审核报告交给内核（owner 2026-10-13 的裁决落地）。**
+  `loop_policy.IterateLoopPolicy._decide` 此前第一句就是 `if snapshot.converged:`——那是
+  `review.build_review_report` 对"最后一轮 0 条新发现"做的算术，不是任何人对"这一轮能不能停"的
+  判定。现在它把轮次喂给 `convergence_policy.convergence_decision`（内核 `iterate.convergence/0.1`
+  的第二份实现，53 例两侧一致由 `scripts/diff_kernel_implementations.py` 量），只有内核说
+  `halt`/`converged` 才停。**三个入参至此各有其主**：`invariant_state` 与 `evidence_complete` 由
+  轮次在 `iterate/loop_gates.py` 现场量（上一批），`breaker_level` 由**循环自己**数连续无进展轮
+  （0..3，3 即跳闸）——轮量不到所在跑的升级，所以 `loop_gates` 仍然不产它，理由从"本机没有断路器"
+  改成"它不属于轮次这一层"。跳闸在循环侧与内核规则 1 **两处都拦**：喂不进内核的跑（缺闸）正是需要
+  被拦的那个，只留内核一处就会漏。
+  **两条有意的行为改变，不是回归**：① 没测不变量闸、或没做证据举证的跑**不再自动收敛**，走到 round
+  cap 停，且停止理由点名原因——`round cap reached (3) — kernel not consulted: no invariant verdict
+  was measured; no evidence attestation was made`；② `invariant_state == "fail"` 从"停在 gate
+  failed"改成内核规则 5 的 `fix`（再多跑一轮去修），代价是一道坏掉的闸现在会花到 cap 而不是早停,
+  它守的诚实性由结构保证：`converged` 这个理由只能由内核产出。
+  `ReviewProgressEvent.converged` 随之改为**内核的结论**而非报告的旗标（UI/Web 上那句"已收敛"此前
+  可以在循环继续时亮着）；`services/compact` 跨压缩边界给模型的那行也从裸 `converged=True` 改成
+  `reviewerClaimedConverged=True` 加上实测闸位列——告诉模型一个 harness 已经不认的结论就是假指示器；
+  `iterate/prompts.py` 第 4 步的指令同步改成"停不停是循环的判断"。
+  证据：9 条新用例 + 2 条按新语义改写（旧的两条断的是"没闸也能收敛"，其前提已被裁决推翻）。其中
+  `test_the_breaker_level_is_actually_fed_to_the_contract` 是接缝用例：两处守门结果同串，不单独钉
+  "数字真喂进契约"的话，把 `breaker_level=0` 写死也没人红。变异九发各打中具名用例、前后 sha256 核回；
+  **其中第三发第一版是零红**——那道缺席门与内核自身的构造校验得出同样的停止行为、不可区分，所以没有
+  给它编一条"看起来能红"的断言，而是把拒绝原因写进停止理由，让它成为可观察、可红的 surface。整包
+  `pytest -q` 2715 passed / 6 skipped（基线 2702，本批 +13；本机需 `python→python3` shim），ruff
+  0.16.8 干净，`diff_kernel_implementations` 53 例一致。那 2 条 warning 来自本批未触碰的
+  `tests/test_swarm/test_imports.py` 与 `tests/test_tools/test_task_tools.py`（一条未 await 的
+  mock 协程、一条子进程 transport 析构），不是本批引入。顺带删掉
+  `tests/test_services/test_compact.py:640` 一处 HEAD 上就有的未用 import（F401）。
+  **点名未做**：报告侧的 `converged` 字段仍是"最后一轮 0 条新发现"的算术，checkpoint / `ih iterate
+  report` / html 报告读的都是它，于是它现在可能与循环结论不一致——不一致是可见的（停止理由 + compact
+  那行的闸位列），但把三处命名统一是另一批的活，本轮没有顺手改 30 个文件。
+
 ### Added
 
 - **场景④那两把闸的对照补到能红（只动测试，未动生产代码）。** 上一批的

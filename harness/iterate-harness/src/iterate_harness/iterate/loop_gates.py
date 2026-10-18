@@ -56,8 +56,9 @@ def measured_gates(
         # the project was verified — that is what `open_findings` says.
         gates["evidence_complete"] = audit.passed
 
-    # `breaker_level` is deliberately not produced. This host has no circuit
-    # breaker to read, and 0 would be indistinguishable from "a breaker exists and
-    # reports no trips" — the caller must therefore keep declining to consult the
-    # kernel rather than feeding it a number nobody owns.
+    # `breaker_level` is not produced here, and not because nothing owns it: the loop policy
+    # counts its own no-progress rounds and feeds that level to the kernel
+    # (`loop_policy.IterateLoopPolicy.breaker_level`). A *round* cannot measure the escalation of
+    # the run it sits inside, so the round stays silent on it rather than reporting a number it
+    # cannot see.
     return gates

@@ -23,6 +23,7 @@ from iterate_harness.services.compact import (
     AutoCompactState,
     _is_prompt_too_long_error,
     auto_compact_if_needed,
+    create_iterate_review_attachment_if_needed,
     estimate_message_tokens as estimate_compact_message_tokens,
     get_autocompact_threshold,
     microcompact_messages,
@@ -638,7 +639,7 @@ def test_should_autocompact_uses_custom_context_window():
 
 
 def test_extract_attachment_paths_keeps_letters_after_n() -> None:
-    from iterate_harness.engine.messages import ConversationMessage, TextBlock
+    from iterate_harness.engine.messages import ConversationMessage
     from iterate_harness.services.compact import _extract_attachment_paths
 
     message = ConversationMessage.from_user_text(
@@ -649,3 +650,42 @@ def test_extract_attachment_paths_keeps_letters_after_n() -> None:
     assert "src/main.py" in found
     assert "notes/a.png" in found
     assert "screens/hits.png" in found
+
+
+def test_iterate_attachment_names_the_claim_and_the_absent_gates() -> None:
+    """Since the kernel decides convergence, the carried-over line must not imply the claim won.
+
+    A bare `converged=True` here would tell the model, across a compaction boundary, that the run
+    had stopped on verdicts that were never measured.
+    """
+    attachment = create_iterate_review_attachment_if_needed(
+        {
+            "mode": "code",
+            "rounds_seen": 2,
+            "total_findings": 3,
+            "converged": True,
+            "findings_by_round": [3, 0],
+        }
+    )
+    assert attachment is not None
+    stats = attachment.body.splitlines()[1]
+    assert "reviewerClaimedConverged=True" in stats
+    assert "gates=none-measured" in stats
+    assert " converged=True" not in stats
+
+
+def test_iterate_attachment_shows_the_gates_the_kernel_would_have_read() -> None:
+    attachment = create_iterate_review_attachment_if_needed(
+        {
+            "mode": "code",
+            "rounds_seen": 2,
+            "total_findings": 0,
+            "converged": True,
+            "invariant_state": "pass",
+            "evidence_complete": True,
+        }
+    )
+    assert attachment is not None
+    stats = attachment.body.splitlines()[1]
+    assert "invariant_state=pass" in stats
+    assert "evidence_complete=True" in stats

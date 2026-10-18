@@ -722,7 +722,20 @@ def create_iterate_review_attachment_if_needed(
     rounds = iterate_state.get("rounds_seen", 0)
     total = iterate_state.get("total_findings", 0)
     converged = bool(iterate_state.get("converged", False))
-    lines.append(f"- mode={mode} rounds={rounds} totalFindings={total} converged={converged}")
+    # Named as the reviewer's claim, and shown next to the gates the loop actually measured: since
+    # the convergence decision moved to the kernel, a report can claim convergence while the loop
+    # keeps running (no invariant verdict, no evidence attestation). Telling the model a bare
+    # "converged=True" there would be relaying a verdict the harness does not believe.
+    gates = [
+        f"{key}={iterate_state[key]}"
+        for key in ("invariant_state", "evidence_complete")
+        if key in iterate_state
+    ]
+    lines.append(
+        f"- mode={mode} rounds={rounds} totalFindings={total} "
+        f"reviewerClaimedConverged={converged}"
+        + (" " + " ".join(gates) if gates else " gates=none-measured")
+    )
     by_round = iterate_state.get("findings_by_round")
     if isinstance(by_round, list) and by_round:
         lines.append(f"- findingsByRound={by_round}")
