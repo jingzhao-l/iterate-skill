@@ -14,12 +14,12 @@ assignment: the part with no end-to-end test is the wiring, not the decision.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .invariant_state import read_invariant_state
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .types import Finding
+    from .types import ReviewFinding
 
 GATE_KEYS = ("invariant_state", "evidence_complete")
 
@@ -27,9 +27,9 @@ GATE_KEYS = ("invariant_state", "evidence_complete")
 def measured_gates(
     *,
     evidence_validation: bool,
-    findings: "list[Finding] | None",
+    findings: "list[ReviewFinding] | None",
     cwd: Path | str,
-    metadata: dict[str, Any] | None,
+    metadata: dict[str, object] | None,
 ) -> dict[str, object]:
     """Report the gates this round actually measured.
 
