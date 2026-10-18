@@ -5,6 +5,216 @@
 
 ---
 
+## [3.5.3] — 2026-10-17
+
+本轮为无人值守的全量复审 + 修复：对 skill 本体做一轮完整审计并把全部 findings
+修复到位，每项修复都配有可复现的单元测试（Python 与 npm 安装器两侧），因此为
+patch 版本。测试套件 **1451 → 1563**（新增 `tests/test_prepush_hook.py`，并大幅扩充
+`test_signing.py` / `test_updater.py` / `test_release_meta.py` / `test_install_script.py` /
+`test_onboarding.py` / `test_config.py`；npm 侧扩充 `mode.test.js` / `tarball.test.js`）。
+评审范围限于 skill 本体（`iterate_cli/`、`npm-installer/`、`scripts/`、`templates/`、
+`tests/`、`config/`、`tools/`、`SKILL.md`、`pyproject.toml`、`CHANGELOG.md`）；
+`harness/` 与 `kernel/` 不在发布范围，仅在其独立仓库处理。
+
+### 修复 / Fixes — 安全与供应链
+
+- **GPG 签名验证只信 gpg 的退出码**：`verify_detached_signature` 此前只看退出码
+  0 加上 stdout 里的 `GOODSIG`。这把"某个受信密钥签过"当成了"就是钉住的这把
+  发布密钥签的"——在 `--auto-key-retrieve` 默认开启的机器上，gpg 会联网抓取一个
+  陌生的签名者公钥并用它验证，于是任何签名都能验证通过。现改为读
+  `[GNUPG:] VALIDSIG <fpr>` 并把该指纹与钉住的发布公钥指纹做**精确比对**；同时
+  `--no-auto-key-retrieve` 关掉联网取钥，验证结束后杀掉该临时 homedir 的 gpg-agent
+  （它会在缓存里留下已导入的密钥）。
+- **tar 硬链接逃逸（`scripts/install.py`）**：硬链接的 `linkname` 是**相对归档根**
+  的路径，而不是相对链接自身所在目录。此前按 `member.parent / linkname` 解析，
+  使 `a/b/evil → ../outside` 这类位于子目录的硬链接可以绕过包含性检查（其归档根
+  解析会逃出目标目录，但父目录解析不会）。现改为相对目标根解析。
+- **签名被拒时泄漏临时目录（`scripts/install.py`）**：`_download_release_source`
+  在验签**之后**才创建 `iterate-release-*` 临时目录，而签名门抛出的
+  `ReleaseIntegrityError` 不在解压段那个 `except` 元组内——所以已创建的目录
+  会残留，每次失败下载泄漏一份，重试累积在 `$TMPDIR` 里。现改为 `keep_temp_dir`
+  标记 + `finally`：只有成功路径把目录所有权交还给调用方，其余每条失败路径
+  （验签拒绝 / 布局不符 / 归档损坏）都清理干净。
+- **npm 安装器解压前未做体积预算**：`tar -xzf` 没有体积上限，`curl --max-filesize`
+  只限制**压缩后**大小，一个小而高度可压缩的归档可以解压出多个 GiB。现从已有的
+  `tar -tvzf` 列表解析每个成员的**声明解压体积**并在写入任何字节之前拒绝
+  （兼容 GNU tar 的 ISO 日期与 bsdtar/macOS 的月份缩写两种格式，否则某平台会静默
+  得到 total=0 而永远不触发）。
+- **npm 安装器不再拒绝设备/FIFO 节点**：`rejectLinkEntries` 此前只拒绝符号/硬链接，
+  现同时拒绝 `b`/`c`/`p`/`s`（块设备/字符设备/FIFO/套接字）——发布包从不携带这些
+  特殊节点，FIFO 还会挂住后续对解压树的读取。
+- **npm 安装器 curl 选项注入**：URL 现以 `--` 之后传入，使以 `-` 开头的
+  `browser_download_url` 不可能被当成 curl 参数。
+- **npm 安装器校验和比较改为常量时间 + 大小写无关**：`sha256sum` 可能输出大写十六进制，
+  而大小写敏感比较会拒绝一份完全正常的 release；且期望值与 tarball 走同一条网络链路，
+  提前退出的字符串不等会泄露前缀信息。现统一小写 + `timingSafeEqual`
+  （附长度守卫，避免长度不等时抛异常）。
+- **GitHub token 归一化**：`normalizeToken` 现同时去掉首尾空白与换行
+  （Windows 生成的文件常带 `\r`），并在 `buildAuthFlags` 里**再次**归一化——
+  那才是 token 被拼进请求头的确切位置；内嵌换行会造成 CRLF/头注入或静默破坏鉴权。
+- **GPG 签名策略的可选开关取值收紧（三端）**：`ITERATE_ALLOW_UNSIGNED` 此前是"任何
+  非空值即生效"，于是字面符合预期的 `=0`（"保持强制签名"）反而**关闭**了签名强制。
+  现三处（`iterate_cli/signing.py`、`scripts/install.py`、
+  `npm-installer/lib/installer.js`）统一只认 `1`/`true`/`yes`（大小写无关），
+  `0`/`false`/`no`/`off`/空白一律保持强制签名。新增跨端守护测试
+  （`tests/test_release_meta.py`）：三处取值集合必须完全一致，否则任一安装器会给出
+  **不同的安全姿态**而无处可见。
+
+### 修复 / Fixes — CLI 契约与健壮性
+
+- **`iterate status --json` 的 drift 语义修正**：未 onboard 时不再计算/上报
+  `drift_detected: true` 及具体漂移清单（此时无基线可比，而 `show --json` 与 TUI
+  分支都把它描述为 "unknown"）。新增机器可读的 `drift_reason` 字段
+  （`not_onboarded` / `disabled` / `corrupt` / `no_fingerprints` / `unknown`），
+  与 `doctor`/`fingerprint` 共用同一判定，避免三个命令对同一状态给出矛盾答案。
+- **`iterate fingerprint list` 退出码**：空基线（未 onboard / drift 关闭 /
+  尚未采集）是信息性状态，退出 0；只有配置损坏才 fail-closed 退出 1。此前
+  `verify` 对同一状态退出 0 而 `list` 退出 1，CI 脚本会踩到不一致。
+  `verify --json` 的 `added`/`removed`/`changed`/`unchanged` 现排序，与 TUI 渲染一致。
+- **`--json` 契约在用法错误路径上也成立**：`iterate <任意错误用法> --json` 现在
+  保证 stdout 恰好一个 JSON 文档（此前 argparse 的用法错误会让
+  `iterate fingerprint bogus --json | jq` 得到空 body 而解析失败）。
+  同理 `iterate onboard --json` 这条交互命令拒绝路径也补上了 JSON 输出。
+- **`BrokenPipeError` 处理**：`iterate status --json | head` 不再抛
+  `BrokenPipeError` traceback（重定向 stdout 到 devnull 后再退出，避免解释器最终
+  flush 时二次抛出）。
+- **`-V` 别名**：`iterate -V` 现与 `-v`/`--version` 等价（保持 `-v` 向后兼容）。
+  顶层帮助现列出各退出码语义。
+- **`iterate personalize --yes` 校验**：`--yes` 只对 `--clear` 有意义；单独传入
+  此前被静默忽略，会让使用者误以为交互向导已被自动确认，现在明确报错。
+- **`iterate config unset --json`**：被移除后的值现输出 `null`（此前是字符串
+  `"default"`），与 `config get KEY --json` 对同一状态报告的原始值一致；
+  TUI 侧仍显示 "default"。
+- **`iterate config get` 隐式键**：`config_action` 的 `choices` 已移除，
+  `iterate config <key>` 现在能被正确解析为取值而非 argparse 直接拒绝；
+  `_cmd_config` 相应地把参数位从 action 移到 key。
+- **`scripts/publish_qoder.py`**：`validate_zip` 调用处按真实的三返回值解包
+  （`errors, warnings, size`），复用其返回的体积而不重复 stat；诊断类 warning
+  改为写入 stderr，stdout 只保留机器可读 JSON；移除了一段从未可达的 top-level
+  目录重命名死代码。
+
+### 修复 / Fixes — doctor / refresh / onboarding
+
+- **`doctor` 新增两项检查接入**：`_check_invariants`（invariants 配置项校验）与
+  `_check_manifest_drift`（技术栈漂移）此前未接入 `run_doctor`，现均参与诊断。
+  `_check_invariants` 现额外校验 `ensure` 路径**不得逃出项目根**（`_ensure_path_escapes`）。
+- **`_check_manifest_drift` 复用已加载的配置**：此前在这里重新读一遍配置文件，
+  既浪费一次解析，也有可能与其它所有检查基于**不同修订版本**的配置判定（TOCTOU）。
+- **`_check_personalization` 不再崩溃**：dimension 为非字符串（list/dict）时
+  `x not in enabled` 会抛 `TypeError`，把唯一用于诊断坏配置的命令自己搞崩。现跳过非
+  字符串条目（与 `scripts/validate.py` 的容错一致）。
+- **`_check_validation_commands` / `_check_validation_whitelist` 措辞修正**：
+  明确 `validation.command_whitelist` **没有运行时效果**（该用
+  `ITERATE_EXTRA_SAFE_COMMAND_PREFIXES`），且仅在 `commands` 确为 mapping 时才声称
+  "已检查 shell 元字符"。
+- **`refresh`**：`drift_unavailable_code` 在配置缺失时返回 `not_onboarded`；
+  `_as_dict_list` 现拷贝而非直接返回引用；`_build_refresh_data` 移除死掉的
+  personalization 加载；reonboard 成功时提示保留的备份。
+- **`wizard` / onboarding 加载侧的标量归一化**：加载既有配置时，
+  `target_branch`/`reasoning_effort`/`language`/`max_rounds` 等值现按类型与取值域
+  归一化（非字符串的 `target_branch`、越界的 `max_rounds`、无效的
+  `reasoning_effort`/`language` 回落到默认值），避免把坏值原样写回配置后又被
+  `doctor` 反复标记。
+- **`fingerprint.capture_fingerprints`**：清单文件仍在但**读不到**（权限错误）时
+  复用上次记录的摘要，不再被误报为 `removed` 而提示用户去 refresh；真正被删除的
+  清单（`FileNotFoundError`）仍照常报告为 removed。
+- **`show`**：TUI 模式对 `completed_at`/`channel`/`skill_version` 先转字符串，
+  否则手改的 `skill_version: 1.0`（float）或未加引号的日期会让
+  `rich.markup.escape` 抛 `TypeError` 而崩溃（`--json` 侧本就安全）。
+- **`scan`**：目录列举失败的裸 `print` 改走 `tui.warning`（保持 `--json` 的 stdout
+  纯净）；`spec` 从 `TEST_DIR_CANDIDATES` 移除（它既是 Ruby 的测试目录约定，也是
+  其他技术栈的**规格文档**目录，同时列入两处会让只有 specs 的项目报告 `has_tests=True`
+  并建议去跑 `pytest spec`），Ruby 项目在 `_scan_features`/`_detect_test_dir` 中单独处理；
+  建议命令去掉 `--timeout=60`（该参数需第三方插件，裸 `pytest` 会报未知参数）。
+- **`updater`**：`_default_runner` 的子进程输出解码加 `errors="replace"`（此前可能因
+  非 UTF-8 字节抛 `UnicodeDecodeError`）；失败路径统一清理临时目录（不再泄漏
+  `iterate-update-*`）；latest release 的挑选改为**最高语义版本**而非列表首个
+  （此前可能选中带 tarball 的更早 release 而漏掉真正的最新版）；
+  `communicate()` 补超时并杀整个进程组；`_copy_release_path` 改为**原子替换**
+  （写临时同名再 `os.replace`，中途失败不会留下半新半旧的文件）。
+- **`generator`**：`atomic_write` 收紧为 `O_CREAT|O_EXCL|O_NOFOLLOW`（不跟随符号链接、
+  不覆盖已有文件），按目标权限创建，异常走 `BaseException` 清理；
+  新增 `user_owned_bounds` 供 user-owned 区块边界统一解析。
+- **`publish_qoder`** 与 npm 侧均补齐归档成员校验：重复成员、`harness/`/`kernel/`
+  等禁止项、单一 top-level 目录、绝对路径与 `..` 分量，均在发布前拒绝。
+
+### 文档与示例 / Docs & Examples
+
+- **示例命令去掉 `--timeout=60`**：`scan.py` 已不再建议该参数（它需要第三方的
+  pytest-timeout 插件，裸 `pytest` 会报 `unrecognized arguments: --timeout=60`），
+  但随包分发的示例仍带着它——即 onboarding 会把一条**对未装插件的用户永远失败**
+  的命令写进 `validation.commands`，导致验证步骤从装好那天起就在报红。现统一去掉：
+  `config/iterate.config.yaml`、`templates/onboarding-playbook.md`、`SKILL.md`、
+  `README.md`、`README.zh-CN.md`、`examples/python-project.md`。
+- **playbook 的白名单自检项写错了（`templates/onboarding-playbook.md`）**：
+  原检查项要求"`validation.command_whitelist` 包含所有 `validation.commands` 中使用的
+  命令前缀"，但该字段**没有任何运行时效果**——把它填满并不会让
+  `iterate guard pre-check` 放行任何命令。现改为可执行的检查：每条命令必须能通过
+  `guard pre-check`，确需执行其它工具时用 `ITERATE_EXTRA_SAFE_COMMAND_PREFIXES`
+  登记前缀。这是唯一还写错该字段语义的文档（`config/iterate.config.yaml`、
+  `tools/SKILL.{claude,cursor,trae}.md` 此前已正确）。
+
+### 修复 / Fixes — 发布工具与钩子
+
+- **`.githooks/pre-push`**：作者身份白名单改为**单行逗号分隔**
+  （BSD awk/macOS 拒绝多行的 `-v` 赋值，此前在 macOS 上该门会静默失效）；
+  并按**整个待推范围**做单次 `git log | awk` 扫描（此前逐提交扫描，一次常规推送
+  会派生数千个进程而卡死推送门）；同时去掉 `|| true`——扫描失败时应当 fail-closed，
+  而不是放一个未经审计的作者身份通过。
+- **`scripts/publish_qoder.py` 校验的是打包后的归档，而不是暂存目录**：此前只校验
+  暂存树，然后打包上传——一个通过树检查的包仍然可能是坏的归档。现对产出的 zip
+  本身再跑一次 `validate_zip`，任一 error 直接中止构建（`ValueError`，列出全部问题），
+  因此坏包不可能被上传。
+
+### 测试 / Tests
+
+- 新增 `tests/test_prepush_hook.py`（11 例）：把真实钩子拷进一次性 git 仓库的
+  `.git/hooks/` 并按 `git push` 的真实方式喂 ref 列表，覆盖作者身份门
+  （允许/拒绝/仅扫待推范围/多方身份白名单）、作用域与逃生口
+  （非 main 不拦、`SKIP_PREPUSH=1`、空 ref 列表），以及 lint 门的分派契约
+  （干净通过、失败阻塞、退出码 3 表示"本地无匹配 ruff 无法验证"且必须提示
+  `--no-verify`、缺 `scripts/check.sh` 的旧 checkout 不阻塞）。
+- `tests/test_signing.py`：`allow_unsigned` 全分支参数化
+  （`1`/`true`/`yes`/大小写/空白 → 生效；`0`/`false`/`no`/`off`/空白/未设置 → 不生效）；
+  签名验证的**真值判据**改为指纹比对后补对应用例：伪造 gpg 输出时
+  VALIDSIG 指纹与钉住指纹不一致必须判为 invalid，`--auto-key-retrieve` 必须被关闭，
+  未知状态与超时均 fail-closed，验证后临时 homedir 的 gpg-agent 必须被清理。
+- `tests/test_release_meta.py`：新增"三处 `ITERATE_ALLOW_UNSIGNED` 取值集合一致"守护。
+- `tests/test_updater.py`：补最高语义版本挑选、非 UTF-8 输出解码、失败路径临时目录
+  清理、原子替换等用例。
+- `tests/test_onboarding.py`：补 `scan` 的 `spec/` 判定
+  （非 Ruby 项目的 spec/ 只算文档不算测试、不得被建议 `pytest spec`；Ruby 项目的
+  spec/ 仍是测试目录）与"建议命令不得携带 `--timeout`"；补 `show` TUI 模式对
+  手改的非字符串取值（`skill_version: 1.0` float、未加引号的日期）不崩溃，
+  并断言 TUI 与 `--json` 两种模式对同一配置都返回 0。以上用例均已先用旧实现
+  跑过一遍确认会失败（6 例中 5 例失败）。
+- `tests/test_onboarding.py`：补 onboarding 加载侧标量归一化全分支
+  （`"false"`/`"yes"`/`"incremental"`/`"low"`/整数/越界取值域/空白/非字符串
+  `target_branch`/全空维度列表）；`atomic_write` 的符号链接竞争（临时路径上预先放置
+  symlink 必须 fail-closed 且不动目标文件）、按目标权限创建、编码失败不留临时文件；
+  USER-OWNED 边界对渲染进 AI 区的**字面标记**不产生错位；单趟占位符替换（注入的
+  `{{TECH_STACK}}` 不得被二次展开）；`capture_fingerprints` 的不可读清单回落；
+  非 UTF-8 配置的 `UnicodeDecodeError` → `CorruptConfigError`；
+  `dimension_sets` 两个 drop 回调都会报出丢掉的 id。
+  以上全部用例都先用**旧实现**跑过一遍确认会失败，避免"只测现状"的空测试。
+- `tests/test_publish_qoder.py`：`validate_zip` 的 rival top-level / 重复成员 /
+  任意深度的 `harness/` / 缺 SKILL.md 用例（原有），补 build_package 接线用例
+  ——zip 校验失败必须中止构建而不是产出归档。
+- `tests/test_install_script.py`：补 `ITERATE_ALLOW_UNSIGNED` 取值语义与
+  硬链接包含性用例。
+- `tests/test_install_script.py`：补**子目录**硬链接逃逸（`a/b/evil → ../../outside`
+  必须被拒）与子目录硬链接相对归档根解析（`a/b/evil → target.txt` 必须真正指向
+  `target.txt`——用 inode 相等断言，而不只是"没抛错"，否则旧的错误解析也算通过）；
+  另补临时目录清理：验签拒绝 / 布局不符 / 归档损坏三条失败路径各断言目录被删除，
+  成功路径断言目录必须存活（调用方拥有它），共 6 例。
+- npm `mode.test.js` / `tarball.test.js`：补 `parseArgs` 抛错契约
+  （含"库函数不得调用 `process.exit`"与 `bin/cli.js` 的退出码）、`constantTimeHashEqual`
+  全分支、`declaredEntrySize`/`sumDeclaredSizes` 两种 tar 日期格式、成员名校验、
+  解压前体积预算、FIFO 拒绝等用例。
+- 同步更新 `iterate config unset --json` 的既有断言（`"default"` → `null`）。
+
+---
+
 ## [3.5.2] — 2026-10-16
 
 本轮为发布链路加固（patch）：**把「发布签名」从"尽力而为"改为强制**，并修复 npm
