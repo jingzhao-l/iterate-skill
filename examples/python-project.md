@@ -35,7 +35,7 @@ validation:
     python:
       - "ruff check src/ tests/"
       - "mypy src/ --ignore-missing-imports"
-      - "pytest tests/ -x -q --timeout=60"
+      - "pytest tests/ -x -q"
 ```
 
 触发方式：

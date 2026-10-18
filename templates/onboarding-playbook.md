@@ -78,7 +78,7 @@ AI onboarding 时应并行检查以下内容（均为只读操作）：
 | Lint | `ruff check src/` | 若项目使用 ruff |
 | Lint | `flake8 src/` | 若项目使用 flake8 |
 | Type check | `mypy src/ --ignore-missing-imports` | 若项目使用 mypy |
-| Test | `pytest tests/ -x -q --timeout=60` | 常见 pytest 命令 |
+| Test | `pytest tests/ -x -q` | 常见 pytest 命令 |
 | Test | `python -m unittest discover -s tests` | 若使用 unittest |
 
 ### JavaScript / TypeScript
@@ -173,6 +173,6 @@ AI onboarding 完成后应自检：
 - [ ] ITERATE.md 的 AI 维护区和用户维护区分区标记完整。
 - [ ] iterate.config.yaml 的 `onboarding.fingerprints` 包含所有检测到的 manifest 文件。
 - [ ] `validation.commands` 中的命令均经过用户确认（涉及自动执行）。
-- [ ] `validation.command_whitelist` 包含所有 `validation.commands` 中使用的命令前缀。
+- [ ] 每条 `validation.commands` 命令都能通过 `iterate guard pre-check`——guard 只放行它认识的安全工具前缀，`validation.command_whitelist` **没有任何运行时效果**，登记在那里并不会让 guard 放行；确需执行其它工具时，请用环境变量 `ITERATE_EXTRA_SAFE_COMMAND_PREFIXES` 登记该工具前缀。
 - [ ] 推荐的维度列表与项目实际模块结构一致（无空转维度）。
 - [ ] ITERATE.md 中的项目概述、技术栈、模块地图均基于扫描结果，非凭空生成。

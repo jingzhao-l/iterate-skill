@@ -573,7 +573,7 @@ invariants:
     - "README.md"
   commands:
     python:
-      - "pytest tests/ -x -q --timeout=60"
+      - "pytest tests/ -x -q"
 
 validation:
   command_whitelist:
@@ -586,7 +586,7 @@ validation:
     python:
       - "ruff check src/"
       - "mypy src/ --ignore-missing-imports"
-      - "pytest tests/ -x -q --timeout=60"
+      - "pytest tests/ -x -q"
     swift:
       - "swift build -c debug"
     typescript:

@@ -741,7 +741,7 @@ if empty AND deferredArchitectural is empty:
 
    示例 / Examples：
 
-   - `python/`：`ruff check src/ && mypy src/ --ignore-missing-imports && pytest tests/ -x -q --timeout=60`
+   - `python/`：`ruff check src/ && mypy src/ --ignore-missing-imports && pytest tests/ -x -q`
    - `swift/`：`swift build -c debug`
    - `typescript/`：`npm run compile`
 

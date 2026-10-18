@@ -85,14 +85,14 @@ validation:
   # 键名对应项目模块（示例），AI 会根据改动的模块选择执行。
   # 使用者决定：这些命令完全由你配置，AI 只读取并执行你信任的命令。
   # 运行时校验要求命令与下方某条【完全一致】（去除首尾空白后），
-  # 例如只能执行 "pytest tests/ -x -q --timeout=60"，不能改参数也不能拼接。
+  # 例如只能执行 "pytest tests/ -x -q"，不能改参数也不能拼接。
   # User decides: these commands are fully configurable. The AI only reads and
   # executes commands you trust — and only if they match EXACTLY (after trim).
   commands:
     python:
       - "ruff check src/"
       - "mypy src/ --ignore-missing-imports"
-      - "pytest tests/ -x -q --timeout=60"
+      - "pytest tests/ -x -q"
     swift:
       - "swift build -c debug"
     typescript:
@@ -116,7 +116,7 @@ invariants:
   # 收尾时必须通过的命令 / Commands that must pass at delivery
   commands:
     python:
-      - "pytest tests/ -x -q --timeout=60"
+      - "pytest tests/ -x -q"
     typescript:
       - "npm run compile"
 
