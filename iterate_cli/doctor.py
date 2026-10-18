@@ -297,9 +297,9 @@ def run_doctor(project_root: Path) -> DoctorReport:
     _check_git_branch(report, config)
     _check_validation_commands(report, config)
     _check_validation_whitelist(report, config)
-    _check_invariants(report, config)
+    _check_invariants(report, config, project_root)
     _check_skill_version(report, config)
-    _check_manifest_drift(report, project_root)
+    _check_manifest_drift(report, project_root, config)
     _check_personalization(report, config)
     _check_dimension_sets(report, config)
     _check_iterate_md_markers(report, project_root)
@@ -635,8 +635,10 @@ def _check_validation_commands(report: DoctorReport, config: dict[str, Any]) -> 
             report,
             "validation.commands",
             "validation command(s) use a tool guard does not recognise as "
-            "known-safe — `iterate guard pre-check` will refuse them unless "
-            "covered by validation.command_whitelist.",
+            "known-safe — `iterate guard pre-check` will refuse them. The "
+            "optional validation.command_whitelist has NO runtime effect; add "
+            "the tool to guard's known-safe prefixes "
+            "(ITERATE_EXTRA_SAFE_COMMAND_PREFIXES) instead.",
             "; ".join(unknown_tool[:SCHEMA_MAX_ERRORS]),
         )
         return
@@ -664,10 +666,18 @@ def _check_validation_whitelist(report: DoctorReport, config: dict[str, Any]) ->
             # above; do not also print a message claiming the commands "were
             # checked" and passed, which would contradict the error.
             return
+        # Only claim the commands were checked when they were actually a
+        # mapping: a non-dict ``commands`` is malformed (flagged by
+        # _check_validation_commands) and nothing was examined here.
+        detail = (
+            "commands checked for shell metacharacters."
+            if isinstance(commands, dict)
+            else "no validation commands to check."
+        )
         _ok(
             report,
             "validation.command_whitelist",
-            "no command_whitelist configured (optional); commands checked for shell metacharacters.",
+            f"no command_whitelist configured (optional); {detail}",
         )
         return
 
@@ -853,13 +863,18 @@ def _check_skill_version(report: DoctorReport, config: dict[str, Any]) -> None:
     _ok(report, "skill_version", f"Skill version {SKILL_VERSION!r} matches onboarding record.")
 
 
-def _check_manifest_drift(report: DoctorReport, project_root: Path) -> None:
+def _check_manifest_drift(
+    report: DoctorReport, project_root: Path, config: dict[str, Any] | None
+) -> None:
     """Manifest drift (tech-stack changed since onboarding)."""
-    drift = check_onboarding_drift(project_root)
+    # Reuse the ALREADY-LOADED config instead of re-reading the file here: the
+    # previous re-load both wasted a parse and risked computing the drift
+    # verdict from a different config revision than the one every other check
+    # validated (TOCTOU / non-determinism).
+    drift = check_onboarding_drift(project_root, config)
     if drift is None:
         # Explain *why* drift detection did not run (three distinct causes),
         # instead of conflating them in a single ok line.
-        config = load_onboarding_config(project_root)
         reason = "config could not be read"
         if config is not None:
             onboarding = config.get("onboarding")
@@ -908,8 +923,11 @@ def _check_personalization(report: DoctorReport, config: dict[str, Any]) -> None
         # Missing/empty dimension entries are skipped (matching
         # scripts/validate.py::validate_personalization_consistency) so a
         # hand-edited config with an incomplete entry is not misreported as
-        # "points to disabled dimension None".
-        if dimension and dimension not in enabled:
+        # "points to disabled dimension None". A non-string dimension (list /
+        # dict) must ALSO be skipped: `x not in enabled` raises TypeError on an
+        # unhashable value, crashing the very command meant to diagnose a
+        # broken config.
+        if isinstance(dimension, str) and dimension and dimension not in enabled:
             broken.append(f"dimension_focus[{idx}] {dimension!r}")
     raw_known = personalization.get("known_intentional") or []
     if not isinstance(raw_known, list):
@@ -918,7 +936,7 @@ def _check_personalization(report: DoctorReport, config: dict[str, Any]) -> None
         if not isinstance(item, dict):
             continue
         dimension = item.get("dimension")
-        if dimension and dimension not in enabled:
+        if isinstance(dimension, str) and dimension and dimension not in enabled:
             broken.append(f"known_intentional[{idx}] {dimension!r}")
     if broken:
         _warn(
@@ -940,7 +958,10 @@ def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
     an absent ``dimension_sets`` is healthy.
     """
     raw = config.get("dimension_sets")
-    if raw is None:
+    if not raw:
+        # Absent key and an explicit-empty mapping are semantically identical
+        # (both mean "no sets configured"); report the same message for both
+        # instead of "All 0 dimension_set(s) are well-formed".
         _ok(report, "dimension_sets", "No dimension_sets configured (defaults to global dimensions).")
         return
     if not isinstance(raw, dict):
@@ -1008,13 +1029,38 @@ def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
     )
 
 
-def _check_invariants(report: DoctorReport, config: dict[str, Any]) -> None:
+def _ensure_path_escapes(root: Path, entry: str) -> bool:
+    """Return True when an ``invariants.ensure`` entry is absolute or escapes ``root``.
+
+    Mirrors the delivery-time check in ``iterate invariant`` (guard.py): an
+    absolute path, or a relative path that resolves outside the project root,
+    is rejected there, so doctor must flag it too instead of reporting healthy.
+    ``root`` must already be resolved.
+    """
+    if Path(entry).is_absolute():
+        return True
+    try:
+        target = (root / entry).resolve()
+    except OSError:
+        # A path that cannot be resolved at all cannot be inside the root.
+        return True
+    return not target.is_relative_to(root)
+
+
+def _check_invariants(
+    report: DoctorReport, config: dict[str, Any], project_root: Path
+) -> None:
     """invariants section structure + invariant command metachar safety.
 
     ``iterate invariant`` executes ``invariants.commands`` as shell commands
     at delivery time, so a metachar command there is the same command-chaining
     risk as an unsafe ``validation.commands`` entry — the standalone safety
     net must cover it too.
+
+    ``invariants.ensure`` entries are also checked for the same
+    relative-path/containment rule ``iterate invariant`` enforces at delivery
+    time, so doctor never reports healthy for a config that will be rejected
+    later.
     """
     invariants = config.get("invariants")
     if invariants is not None and not isinstance(invariants, dict):
@@ -1053,7 +1099,23 @@ def _check_invariants(report: DoctorReport, config: dict[str, Any]) -> None:
             "invariants.ensure contains duplicate path entries.",
         )
     else:
-        _ok(report, "invariants.ensure", f"{len(ensure)} invariant file assertion(s).")
+        # Reject absolute paths and entries that escape the project root: the
+        # error message above promises "relative path strings", and
+        # `iterate invariant` refuses these at delivery time, so accepting them
+        # here would be a false green light.
+        root = project_root.resolve()
+        escaping = [e for e in ensure if _ensure_path_escapes(root, e)]
+        if escaping:
+            _err(
+                report,
+                "invariants.ensure",
+                "invariants.ensure entries must be relative paths inside the "
+                "project root (absolute or '..' paths are rejected by "
+                "`iterate invariant`).",
+                "; ".join(escaping[:SCHEMA_MAX_ERRORS]),
+            )
+        else:
+            _ok(report, "invariants.ensure", f"{len(ensure)} invariant file assertion(s).")
 
     commands = invariants.get("commands")
     if commands is None:
@@ -1168,6 +1230,13 @@ def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]
             deduped = list(CANONICAL_DIMENSIONS)
             fixes.append("dimensions: empty, restored canonical defaults.")
         new_config["dimensions"] = deduped
+    elif dims is not None:
+        # A non-list ``dimensions`` (e.g. the scalar "correctness") is an ERROR
+        # in _check_dimensions, but repairing only lists made ``doctor --fix``
+        # report "no safe fixes needed" while doctor kept flagging the same
+        # config forever.
+        new_config["dimensions"] = list(CANONICAL_DIMENSIONS)
+        fixes.append("dimensions: non-list value reset to canonical defaults.")
 
     # language: must be one of zh/en. isinstance guard first so an unhashable
     # hand-edited value (`language: [zh]`) is repaired instead of crashing
@@ -1242,11 +1311,25 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
 
     config = load_onboarding_config(project_root)
     if config is None:
-        tui.error(
-            "Doctor --fix: iterate.config.yaml exists but could not be parsed; "
-            "run `iterate doctor` without --fix for details."
-        )
-        return False, []
+        # An EMPTY config file is a repairable state, not a parse failure —
+        # load_onboarding_config reports it as None, and reporting "could not be
+        # parsed" sent the user chasing a YAML error that does not exist.
+        raw_text: str | None
+        try:
+            raw_text = config_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            raw_text = None
+        if raw_text is not None and not raw_text.strip():
+            tui.warning(
+                "Doctor --fix: iterate.config.yaml is empty; rebuilding it with safe defaults."
+            )
+            config = {}
+        else:
+            tui.error(
+                "Doctor --fix: iterate.config.yaml exists but could not be parsed; "
+                "run `iterate doctor` without --fix for details."
+            )
+            return False, []
 
     new_config, fixes = apply_safe_fixes(config)
 
