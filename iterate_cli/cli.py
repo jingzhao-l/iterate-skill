@@ -132,11 +132,35 @@ def main(argv: list[str] | None = None) -> int:
         argv: Command-line arguments (defaults to sys.argv[1:]).
 
     Returns:
-        Exit code: 0 for success, 1 for error/cancel.
+        Exit code:
+
+        - ``0`` success
+        - ``1`` error / cancellation (also ``doctor --strict`` with warnings,
+          ``status``/``show`` with a config that exists but cannot be parsed)
+        - ``2`` usage error (invalid/unknown arguments, bare ``iterate``, or
+          ``--json`` passed to an interactive command)
+        - ``127`` a required external dependency is missing
     """
     _force_utf8_stdio()
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    # Detect --json from the RAW argv: argparse has not run yet, and the
+    # global --json help promises "stdout holds exactly one JSON document,
+    # including on failure" — so a usage error must still emit JSON when the
+    # caller asked for it (a script doing `iterate fingerprint bogus --json |
+    # jq` otherwise gets an empty body and a jq parse error).
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    json_requested = "--json" in raw_argv
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if json_requested and exc.code not in (0, None):
+            print(
+                json.dumps(
+                    {"error": "invalid usage", "hint": "run `iterate --help`"},
+                    ensure_ascii=False,
+                )
+            )
+        raise
 
     if args.version:
         # `iterate --json --version` honours the JSON contract of the other
@@ -167,11 +191,16 @@ def main(argv: list[str] | None = None) -> int:
     # --json to them has a misunderstanding, not a silent success.
     non_json_commands = {"onboard", "personalize", "reonboard"}
     if getattr(args, "json", False) and args.command in non_json_commands:
-        tui.error(
+        message = (
             f"--json is not supported for '{args.command}' (interactive command). "
             "Use `iterate status/show/doctor --json` for structured output, or "
             "`iterate config get KEY --json` for single values."
         )
+        # Honour the global --json contract on this failure path too: a script
+        # piping `iterate onboard --json | jq` must get one JSON document, not
+        # an empty body.
+        print(json.dumps({"error": message}, ensure_ascii=False))
+        tui.error(message)
         return 2
 
     project_root = Path(args.project).resolve()
@@ -220,6 +249,17 @@ def main(argv: list[str] | None = None) -> int:
             "the project directory.",
             indent=2,
         )
+        return 1
+    except BrokenPipeError:
+        # A downstream consumer closed the pipe early (`iterate status --json |
+        # head`). Suppress the spurious traceback: redirect stdout to devnull so
+        # the interpreter's final flush does not re-raise, then exit non-zero
+        # quietly like every other early-terminated stream.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except (OSError, ValueError, AttributeError):
+            pass
         return 1
 
 
@@ -333,8 +373,10 @@ def _dispatch_command(
             )
         )
         return 2
-    parser.print_help()
-    # No subcommand given (bare `iterate`): this is a usage error, not success.
+    # Bare `iterate` is a usage error: print help to stderr so `iterate | head`
+    # in a script does not receive 60 lines of help on the data stream, and
+    # return 2 (usage) rather than 0.
+    parser.print_help(file=sys.stderr)
     return 2
 
 
@@ -343,13 +385,22 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="iterate",
         description="Iterate skill onboarding and project knowledge management.",
+        epilog=(
+            "Exit codes:\n"
+            "  0    success\n"
+            "  1    error / cancellation\n"
+            "  2    usage error (invalid or unknown arguments)\n"
+            "  127  a required external dependency is missing\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "-V",
         "-v",
         "--version",
         action="store_true",
         default=False,
-        help="Show version and exit.",
+        help="Show version and exit (also -v for backwards compatibility).",
     )
     parser.add_argument(
         "--no-banner",
@@ -543,10 +594,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "timestamped backup; 'unset KEY' removes one value so it falls back "
         "to its documented default.",
     )
+    # NOTE: no `choices=` here on purpose. The help promises `get` is the
+    # default action ("`iterate config get [KEY]`... get is the default when
+    # omitted"), so `iterate config language` must mean `config get language`.
+    # With `choices=["get","set","unset"]`, argparse rejected "language" as an
+    # invalid choice before `_cmd_config` could reinterpret it as the implicit
+    # key. `_cmd_config` now treats any non-action first positional as the key.
     config_parser.add_argument(
         "config_action",
         nargs="?",
-        choices=["get", "set", "unset"],
         default=None,
         help="Action to perform: 'get' (default when omitted), 'set', or "
         "'unset' (restore the documented default).",
@@ -816,6 +872,16 @@ def _cmd_personalize(project_root: Path, clear: bool = False, yes: bool = False)
         save_personalization,
     )
 
+    # ``--yes`` only has meaning with ``--clear`` (its own help says so).
+    # Silently ignoring it let a user believe the interactive wizard had been
+    # auto-confirmed; make it a usage error instead.
+    if yes and not clear:
+        tui.error(
+            "--yes is only meaningful with --clear; the personalize wizard "
+            "prompts for each step and has no confirmation to skip."
+        )
+        return 2
+
     # Personalization requires existing onboarding (ITERATE.md + config).
     if not is_onboarding_complete(project_root):
         tui.warning("Onboarding not yet completed. Run 'iterate onboard' first.")
@@ -828,6 +894,19 @@ def _cmd_personalize(project_root: Path, clear: bool = False, yes: bool = False)
 
     if clear:
         return _cmd_personalize_clear(project_root, yes=yes, has=has_personalization)
+
+    # Validate the config BEFORE running the 9-step wizard: the strict loader
+    # is otherwise only reached at save time, so the user would complete every
+    # prompt and then have all of it discarded by a CorruptConfigError.
+    # `personalize --clear` and `onboard` both fail fast here too.
+    try:
+        from iterate_cli.personalize import load_config_strict
+
+        load_config_strict(config_path)
+    except CorruptConfigError as exc:
+        tui.error(str(exc))
+        tui.hint("Run `iterate doctor` for details.", indent=2)
+        return 1
 
     # Load existing personalization for editing (structured from config +
     # free-form notes/conventions from ITERATE.md) so re-running the wizard
@@ -1179,8 +1258,12 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     Output is routed through the TUI layer but keeps plain-text keywords
     (``Onboarded``, ``Not onboarded``, ``Drift``, ``No drift``,
     ``Personalization: N rule(s)``) so that automated tests and grep-based
-    checks continue to work. When ``json_output`` is True, a structured JSON
-    blob is emitted instead (useful for scripts and CI).
+    checks continue to work. Note that ``tui.warning``/``tui.error`` write to
+    **stderr** (stdout is the data stream): a not-onboarded or drifted verdict
+    is a warning, so grep on stdout alone will not see it — use
+    ``--json`` (whose payload carries ``onboarded``/``drift``/
+    ``drift_detected``/``drift_reason``) for machine checks. When
+    ``json_output`` is True, a structured JSON blob is emitted instead.
     """
     # Structured gathering shared by both render modes. Onboarding state and
     # config are loaded exactly once so the JSON and TUI branches cannot drift
@@ -1214,6 +1297,7 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     data["personalization_rules"] = 0
     data["drift"] = "unknown"
     data["drift_detected"] = None
+    data["drift_reason"] = "unknown"
     data["drifted_added"] = []
     data["drifted_removed"] = []
     data["drifted_changed"] = []
@@ -1242,9 +1326,22 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
             _count_personalization_rules(personalization) if personalization else 0
         )
 
-        drift = check_onboarding_drift(project_root)
-        drift_enabled = data["drift_check"]
-        if not drift_enabled:
+        # Only run drift detection for an ONBOARDED project (and only when the
+        # check is enabled). Without ITERATE.md there is no baseline to drift
+        # from, and computing it anyway made `status --json` emit
+        # `drift_detected: true` with concrete drifted_* lists for a project
+        # that `show --json` and the TUI branch below both describe as
+        # "unknown" — one project state, two contradictory answers. Reuse the
+        # already-loaded config instead of re-reading the file.
+        drift = (
+            check_onboarding_drift(project_root, config)
+            if (onboarded and data["drift_check"])
+            else None
+        )
+        # Machine-readable "why is there no drift result" code, derived from the
+        # shared helper so status/show/fingerprint cannot disagree.
+        data["drift_reason"] = drift_unavailable_code(project_root, config)
+        if not data["drift_check"]:
             # "Check disabled" must be distinguishable from a genuine
             # "unknown" state for JSON consumers (the TUI already renders it
             # correctly).
@@ -1291,9 +1388,12 @@ def _render_status_tui(
     if not data["onboarded"]:
         tui.warning("Status: Not onboarded")
         if data["config_exists"] and not data["config_ok"]:
-            # Surface a corrupt config even pre-onboarding, and exit 1 to
+            # Surface a corrupt/empty config even pre-onboarding, and exit 1 to
             # match the --json branch: one state, one exit code.
-            tui.error("Status: iterate.config.yaml is present but could not be parsed")
+            tui.error(
+                "Status: iterate.config.yaml is present but is empty or could "
+                "not be parsed"
+            )
             tui.hint("Run 'iterate doctor' for details.", indent=2)
             return 1
         tui.hint("Run 'iterate onboard' to initialize.", indent=2)
@@ -1303,7 +1403,10 @@ def _render_status_tui(
 
     if config is None:
         if data["config_exists"]:
-            tui.error("Status: iterate.config.yaml is present but could not be parsed")
+            tui.error(
+                "Status: iterate.config.yaml is present but is empty or could "
+                "not be parsed"
+            )
             tui.hint("Run 'iterate doctor' for details.", indent=2)
             return 1
         tui.hint("(iterate.config.yaml not found — only ITERATE.md exists)", indent=2)
@@ -1398,7 +1501,10 @@ def _cmd_doctor(
                             "strict": strict,
                             "has_errors": True,
                             "has_warnings": False,
-                            "fixes": [],
+                            # run_doctor_fix returns the fixes it detected even
+                            # when the write fails; surface them so a failed run
+                            # carries the same keys/content as a successful one.
+                            "fixes": fixes,
                             "findings": [
                                 {
                                     "severity": "error",
@@ -1507,6 +1613,20 @@ def _cmd_config(
         run_config_unset,
     )
 
+    # Implicit `get`: `iterate config KEY` ≡ `iterate config get KEY`. The
+    # first positional is normally the action, so when it is not one of the
+    # three known verbs (and is therefore a config key like `language`), shift
+    # it into `key` and treat the action as "get".
+    if action is not None and action not in ("get", "set", "unset"):
+        if key is not None:
+            _config_usage_error(
+                "Usage: iterate config get [KEY]  (get takes no VALUE)",
+                json_output,
+            )
+            return 2
+        key = action
+        action = "get"
+
     if action == "set":
         # Usage errors must be exit 2 everywhere (bare `iterate`, `--json` on
         # an interactive command, `update --json` without `--yes` all use 2), so
@@ -1614,12 +1734,43 @@ def _cmd_fingerprint_list(
         json_output: When True, emit a structured JSON object instead of TUI.
 
     Returns:
-        Exit code: 0 on success, 1 when the config is unreadable.
+        Exit code: 0 on success / no config to read; 1 only when the config
+        exists but is corrupt (fail closed).
     """
     if config is None:
-        # Fail closed, matching `verify`: a corrupt config is not "no
-        # fingerprints recorded", it is an unknown state.
+        code = drift_unavailable_code(project_root, config)
         reason = drift_unavailable_reason(project_root, config)
+        if code != DRIFT_REASON_CORRUPT:
+            # No config (fresh/not-onboarded project), drift disabled, or no
+            # fingerprints recorded yet: an EMPTY baseline is informational,
+            # not a failure. `fingerprint verify` already exits 0 here and
+            # SKILL.md documents list as exit 0 "even if empty"; returning 1
+            # for a simply-missing config (while verify returned 0 for the very
+            # same state) was an inconsistency CI scripts tripped over.
+            if json_output:
+                print(
+                    json.dumps(
+                        {
+                            "project": str(project_root),
+                            "available": False,
+                            "reason": reason,
+                            "fingerprints": [],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            else:
+                tui.intro(f"Iterate Skill — Fingerprint List / {project_root.name}")
+                tui.info(f"No fingerprints recorded yet ({reason}).", indent=2)
+                tui.hint(
+                    "Run 'iterate onboard' to initialize, or 'iterate refresh' "
+                    "to capture them.",
+                    indent=4,
+                )
+            return 0
+        # A corrupt config is not "no fingerprints recorded", it is an unknown
+        # state — fail closed, matching `verify`.
         if json_output:
             print(
                 json.dumps(
@@ -1760,10 +1911,12 @@ def _cmd_fingerprint(
                     "available": True,
                     "drift": drift.has_drift,
                     "summary": drift.summary(),
-                    "added": drift.added,
-                    "removed": drift.removed,
-                    "changed": drift.changed,
-                    "unchanged": drift.unchanged,
+                    # Sorted to match the TUI renderer (which sorts every list)
+                    # and to be deterministic regardless of config/scan order.
+                    "added": sorted(drift.added),
+                    "removed": sorted(drift.removed),
+                    "changed": sorted(drift.changed),
+                    "unchanged": sorted(drift.unchanged),
                 },
                 ensure_ascii=False,
                 indent=2,

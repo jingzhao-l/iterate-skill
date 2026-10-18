@@ -400,6 +400,57 @@ class TestConfigCli:
         assert code == 1
 
 
+class TestConfigCliImplicitGet:
+    """`iterate config KEY` is documented as `iterate config get KEY`.
+
+    A `choices=["get","set","unset"]` on the action positional used to make
+    argparse reject the key as an "invalid choice" before dispatch, so the
+    documented implicit form was unreachable.
+    """
+
+    def test_implicit_get_flat_key(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["language"] = "en"
+        _write_config(project, config)
+        code = cli_main(["config", "language", "-p", str(project), "--no-banner"])
+        assert code == 0
+        assert capsys.readouterr().out.strip() == "en"
+
+    def test_implicit_get_json(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["language"] = "en"
+        _write_config(project, config)
+        code = cli_main(
+            ["config", "language", "--json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {"language": "en"}
+
+    def test_implicit_get_unknown_key_is_operation_error(self, tmp_path, capsys) -> None:
+        """An unknown KEY is an operational failure (exit 1), not a usage error."""
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(["config", "nope", "-p", str(project), "--no-banner"])
+        assert code == 1
+        assert "Unknown config key" in capsys.readouterr().err
+
+    def test_implicit_get_with_stray_value_is_usage_error(
+        self, tmp_path, capsys
+    ) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["language"] = "en"
+        _write_config(project, config)
+        code = cli_main(
+            ["config", "language", "stray", "-p", str(project), "--no-banner"]
+        )
+        assert code == 2
+        assert "Usage" in capsys.readouterr().err
+
+
 class TestConfigJson:
     """``iterate config --json`` emits a clean, parseable JSON object."""
 
@@ -726,7 +777,9 @@ class TestConfigUnset:
         assert payload["key"] == "max_rounds"
         assert payload["removed"] is True
         assert payload["previous_value"] == 12
-        assert payload["value"] == "default"
+        # `null` matches what `config get max_rounds --json` reports once the
+        # key is absent (raw value), so scripts can compare the two documents.
+        assert payload["value"] is None
 
     def test_unset_json_error(self, tmp_path, capsys) -> None:
         project = _make_project(tmp_path)

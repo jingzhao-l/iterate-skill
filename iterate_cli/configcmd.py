@@ -660,7 +660,11 @@ def run_config_unset(
                     "key": spec.name,
                     "removed": True,
                     "previous_value": removed_value,
-                    "value": "default",
+                    # `null` (not the string "default") so the JSON value
+                    # matches what `config get KEY --json` reports for the same
+                    # state — that also emits the key's raw value, which is
+                    # `null` once the key is absent. TUI renders it as "default".
+                    "value": None,
                 },
                 ensure_ascii=False,
                 default=str,
