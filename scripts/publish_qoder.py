@@ -328,14 +328,6 @@ def build_package(
         meta["name"] = detected_name
         meta["version"] = frontmatter_version(skill_text)
 
-        if detected_name == "iterate" and os.path.basename(stage) != detected_name:
-            warnings.append(
-                f"top-level dir is {os.path.basename(stage)!r}, renamed to {detected_name!r}"
-            )
-            alt = os.path.join(tmp, detected_name)
-            shutil.move(stage, alt)
-            stage = alt
-
         if frontmatter == "minimal":
             qoder_description = description if description is not None else QODER_DESCRIPTION
             if any(
@@ -369,7 +361,19 @@ def build_package(
         )
         zip_path = os.path.join(tmp, f"iterate-{version}-qoder.zip")
         _zip_dir(stage, zip_path)
-        meta["size"] = os.path.getsize(zip_path)
+        # Validate the ARTIFACT that actually ships, not only the staged tree:
+        # the zip-level check additionally catches duplicate members and any
+        # forbidden top-level component (harness/, kernel/, ...) that slipped
+        # into the archive itself, so a broken package can never be published.
+        # validate_zip returns (errors, warnings, size) — the size is the
+        # artifact's own byte count, so reuse it instead of a second stat.
+        zip_errors, zip_warnings, zip_size = validate_zip(zip_path)
+        if zip_errors:
+            raise ValueError(
+                "produced zip failed Qoder checks:\n- " + "\n- ".join(zip_errors)
+            )
+        warnings.extend(zip_warnings)
+        meta["size"] = zip_size
         meta["zip"] = final_path
         meta["top_level"] = os.path.basename(stage)
         shutil.move(zip_path, final_path)
@@ -552,17 +556,28 @@ def validate_zip(zip_path: str) -> tuple[list[str], list[str], int]:
         errors.append("not a valid zip")
         return errors, warnings, zip_size
     names: list[str] = []
+    seen: set[str] = set()
     with zipfile.ZipFile(zip_path) as archive:
         names = archive.namelist()
         for entry in names:
-            info = archive.getinfo(entry)
-            if info.is_dir():
-                continue
-            if "harness" in entry.split("/"):
-                errors.append(f"harness/ present in package: {entry}")
+            if entry in seen:
+                # A zip may legally list the same name twice; the second entry
+                # silently shadows the first on extraction, so a package must
+                # never carry duplicates.
+                errors.append(f"duplicate member in package: {entry}")
+            seen.add(entry)
+            parts = entry.split("/")
+            # Skill-only rule: no harness/ or kernel/ (or any other mandatory
+            # exclude) anywhere in the package, at any depth.
+            for forbidden in MANDATORY_EXCLUDES:
+                if forbidden in parts:
+                    errors.append(f"{forbidden}/ present in package: {entry}")
     if not names:
         errors.append("empty zip")
         return errors, warnings, zip_size
+    # The skill entry point must be present at the package root.
+    if "iterate/SKILL.md" not in seen:
+        errors.append("SKILL.md missing at package root")
     # Every entry must live under a single 'iterate' top-level component. A
     # check on names[0] alone can be fooled by a hand-built zip whose sorted
     # first entry happens to be iterate/ while later entries smuggle in a rival
@@ -654,7 +669,10 @@ def main(argv: list[str] | None = None) -> int:
             description=args.description,
         )
         for warning in warnings:
-            print("warning: " + warning)
+            # Diagnostics go to stderr; stdout carries ONLY the machine-readable
+            # JSON, so a `publish_qoder.py build ... | jq` consumer parses a
+            # clean stream instead of choking on the warning lines.
+            print("warning: " + warning, file=sys.stderr)
         print(json.dumps(meta, ensure_ascii=False, indent=2))
         return 0
 

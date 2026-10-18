@@ -239,6 +239,28 @@ class TestBuildPackageDefaultOut:
         assert Path(first).read_bytes() == Path(second).read_bytes()
 
 
+    def test_build_aborts_when_the_produced_zip_fails_validation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The zip-level verdict must be honoured, not just the staged tree's.
+
+        The staged tree is checked before zipping, but the archive is what a
+        consumer actually downloads: it is checked on its own, and a failure
+        there must abort the build instead of publishing a broken package.
+        """
+        source = _minimal_source(tmp_path)
+        monkeypatch.setattr(
+            publish_qoder,
+            "validate_zip",
+            lambda _zip_path: (["duplicate member in package: iterate/SKILL.md"], [], 0),
+        )
+
+        with pytest.raises(ValueError, match="failed Qoder checks"):
+            publish_qoder.build_package(
+                "9.9.9", source=str(source), out=str(tmp_path / "bad.zip")
+            )
+
+
 class TestCopyTreeDotfiles:
     def test_copy_tree_keeps_dotfiles_drops_only_git_and_excludes(
         self, tmp_path: Path
