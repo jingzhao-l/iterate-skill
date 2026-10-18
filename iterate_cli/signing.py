@@ -40,11 +40,20 @@ __all__ = [
     "verify_detached_signature",
 ]
 
-#: Opt-out for hosts with no ``gpg`` binary. Any non-empty value disables the
-#: mandatory-signature policy; it is deliberately an ENVIRONMENT variable (not
-#: a config file / flag) so it cannot be enabled by a hand-edited project config
-#: and shows up in the invoking environment for audit.
+#: Opt-out for hosts with no ``gpg`` binary. Only explicit truthy values
+#: (``1``/``true``/``yes``, case-insensitive) disable the mandatory-signature
+#: policy; ``0``/``false``/``no``/blank all keep it in force. It is deliberately
+#: an ENVIRONMENT variable (not a config file / flag) so it cannot be enabled by
+#: a hand-edited project config and shows up in the invoking environment for
+#: audit.
 ALLOW_UNSIGNED_ENV: Final[str] = "ITERATE_ALLOW_UNSIGNED"
+
+#: Values that explicitly opt OUT of signature enforcement. MUST stay identical
+#: to ``scripts/install.py`` ``_ALLOW_UNSIGNED_TRUE_VALUES`` and
+#: ``npm-installer/lib/installer.js`` ``ALLOW_UNSIGNED_TRUTHY`` — all three
+#: paths must agree on what "unsigned is allowed" means, or one installer would
+#: silently accept what another refused (see tests/test_signing.py).
+ALLOW_UNSIGNED_TRUE_VALUES: Final[frozenset[str]] = frozenset({"1", "true", "yes"})
 
 #: Fingerprint of the pinned signing key (GPG_PRIVATE_KEY in CI). Printed in
 #: diagnostics so an operator can see WHICH key was expected.
@@ -110,8 +119,16 @@ _VERIFY_TIMEOUT_SECONDS: Final[int] = 30
 
 
 def allow_unsigned() -> bool:
-    """True when the operator explicitly opted out of signature enforcement."""
-    return bool(os.environ.get(ALLOW_UNSIGNED_ENV, "").strip())
+    """True when the operator explicitly opted out of signature enforcement.
+
+    Requires an explicit truthy value (``1`` / ``true`` / ``yes``,
+    case-insensitive). A bare truthiness test treated every non-empty value as
+    an opt-out, so the intuitive ``ITERATE_ALLOW_UNSIGNED=0`` ("keep signatures
+    mandatory") silently DISABLED signature enforcement — the exact opposite of
+    the operator's intent, and a silent downgrade of the authenticity gate.
+    """
+    value = os.environ.get(ALLOW_UNSIGNED_ENV, "").strip().lower()
+    return value in ALLOW_UNSIGNED_TRUE_VALUES
 
 
 def enforce_signature_policy(

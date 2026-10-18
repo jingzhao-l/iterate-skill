@@ -230,3 +230,66 @@ def test_signing_fingerprint_is_declared_in_every_copy() -> None:
     ):
         text = (REPO_ROOT / relative).read_text(encoding="utf-8")
         assert _SIGNING_FINGERPRINT in text, f"{relative} does not name the pinned key fingerprint"
+
+
+# ---------------------------------------------------------------------------
+# ITERATE_ALLOW_UNSIGNED: the "unsigned is allowed" value set must agree
+# across every path that reads it
+# ---------------------------------------------------------------------------
+
+
+def _frozenset_from_python(path: Path, assignment: str) -> frozenset[str]:
+    """Extract ``assignment = frozenset({...})`` literals, preserving order."""
+    source = path.read_text(encoding="utf-8")
+    pattern = rf"{re.escape(assignment)}\s*(?::\s*Final\[frozenset\[str\]\])?\s*=\s*frozenset\({{([^}}]*)}}\)"
+    match = re.search(pattern, source)
+    assert match, f"{path} is missing a `frozenset(...)` assignment for {assignment}"
+    return frozenset(v.strip().strip("'\"") for v in match.group(1).split(",") if v.strip())
+
+
+def _set_from_js(path: Path, assignment: str) -> frozenset[str]:
+    """Extract ``const assignment = new Set([...])`` string entries."""
+    source = path.read_text(encoding="utf-8")
+    pattern = rf"const\s+{re.escape(assignment)}\s*=\s*new Set\(\[([^\]]*)\]\)"
+    match = re.search(pattern, source)
+    assert match, f"{path} is missing a `new Set([...])` constant for {assignment}"
+    return frozenset(v.strip().strip("'\"") for v in match.group(1).split(",") if v.strip())
+
+
+def test_allow_unsigned_value_sets_agree_across_all_paths() -> None:
+    """All three code paths must agree on which values disable signature
+    enforcement.
+
+    A truthiness test that treats every non-empty value as an opt-out means
+    ``ITERATE_ALLOW_UNSIGNED=0`` ("keep signatures mandatory") silently DISABLES
+    them — the opposite of the operator's intent. That fix landed independently
+    in each of the three installers; if one copy is loosened or widened without
+    the others, an operator would get a *different* security posture depending on
+    which binary they ran, and there is no single place to see the discrepancy.
+    Lock the value set together so drift is a build failure.
+    """
+    values = {
+        "iterate_cli/signing.py": _frozenset_from_python(
+            REPO_ROOT / "iterate_cli" / "signing.py",
+            "ALLOW_UNSIGNED_TRUE_VALUES",
+        ),
+        "scripts/install.py": _frozenset_from_python(
+            REPO_ROOT / "scripts" / "install.py",
+            "_ALLOW_UNSIGNED_TRUE_VALUES",
+        ),
+        "npm-installer/lib/installer.js": _set_from_js(
+            REPO_ROOT / "npm-installer" / "lib" / "installer.js",
+            "ALLOW_UNSIGNED_TRUTHY",
+        ),
+    }
+    assert len(set(values.values())) == 1, f"ALLOW_UNSIGNED value sets drifted: {values}"
+
+    canonical = values["iterate_cli/signing.py"]
+    assert {"1", "true", "yes"} <= canonical, (
+        f"the documented opt-out values are missing: {sorted(canonical)}"
+    )
+    # A value that must NEVER enable the override, whichever path reads it.
+    for forbidden in ("0", "false", "no", "off"):
+        assert forbidden not in canonical, (
+            f"{forbidden!r} must not enable the unsigned-install override"
+        )

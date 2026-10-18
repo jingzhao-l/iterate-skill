@@ -493,9 +493,23 @@ YVXa4IEQs7aBxKO+n+T2AvUYiKQ=
 -----END PGP PUBLIC KEY BLOCK-----"""
 
 
+#: Values that explicitly opt OUT of signature enforcement. Anything else —
+#: including "0", "false", "no" and the empty string — keeps the
+#: mandatory-signature policy in force. A bare truthiness test treated every
+#: non-empty value as an opt-out, so the intuitive ``ITERATE_ALLOW_UNSIGNED=0``
+#: ("keep signatures mandatory") silently DISABLED signature enforcement.
+_ALLOW_UNSIGNED_TRUE_VALUES = frozenset({"1", "true", "yes"})
+
+
 def _allow_unsigned() -> bool:
-    """True when the operator explicitly opted out of signature enforcement."""
-    return bool(os.environ.get(ALLOW_UNSIGNED_ENV, "").strip())
+    """True only when the operator explicitly opted out of signature enforcement.
+
+    Requires an explicit truthy value (``1`` / ``true`` / ``yes``,
+    case-insensitive); ``0`` / ``false`` / ``no`` / blank all leave the
+    mandatory-signature gate in force.
+    """
+    value = os.environ.get(ALLOW_UNSIGNED_ENV, "").strip().lower()
+    return value in _ALLOW_UNSIGNED_TRUE_VALUES
 
 
 def _verify_detached_signature(

@@ -47,12 +47,26 @@ class TestAllowUnsignedEnv:
         monkeypatch.delenv(ALLOW_UNSIGNED_ENV, raising=False)
         assert allow_unsigned() is False
 
-    def test_non_empty_value_enables(self, monkeypatch) -> None:
-        monkeypatch.setenv(ALLOW_UNSIGNED_ENV, "1")
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", " YES ", "True"])
+    def test_explicit_truthy_value_enables(self, monkeypatch, value: str) -> None:
+        monkeypatch.setenv(ALLOW_UNSIGNED_ENV, value)
         assert allow_unsigned() is True
 
-    def test_blank_value_is_not_an_opt_out(self, monkeypatch) -> None:
-        monkeypatch.setenv(ALLOW_UNSIGNED_ENV, "   ")
+    @pytest.mark.parametrize(
+        "value",
+        ["", "   ", "0", "false", "FALSE", "no", "off", "maybe", "yesplease"],
+    )
+    def test_non_truthy_value_does_not_enable(self, monkeypatch, value: str) -> None:
+        """A bare truthiness test treated every non-empty value as an opt-out,
+        so the intuitive ``ITERATE_ALLOW_UNSIGNED=0`` ("keep signatures
+        mandatory") silently DISABLED signature enforcement — the exact opposite
+        of the operator's intent, and a silent downgrade of the authenticity
+        gate. Only explicit truthy values count."""
+        monkeypatch.setenv(ALLOW_UNSIGNED_ENV, value)
+        assert allow_unsigned() is False, f"{value!r} must not enable the override"
+
+    def test_unset_variable_does_not_enable(self, monkeypatch) -> None:
+        monkeypatch.delenv(ALLOW_UNSIGNED_ENV, raising=False)
         assert allow_unsigned() is False
 
 
