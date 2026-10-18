@@ -1546,6 +1546,36 @@ stamp 不匹配会自动重装到新 tag。
 >         **npm**：`iterate-plugin@3.9.1` 已发布（shasum
 >         `9935282628d8be2e4e74eabfdffe46cdaaa652bf`，92 文件 / 585.0 kB /
 >         解包 2.2 MB）；发布后约 2.5 分钟复查 `dist-tags.latest=3.9.1` 生效。
+>
+>         **3.9.2 发布记录（2026-10-18，同日补丁，步骤 3「无锁读改写」扫尾）**：
+>         在复核 3.9.1 的锁修复时发现最后一处未加锁的读改写——
+>         `markFixRolledBackInTranscript`（`iterate_fix` 回滚路径）重读 / 重水化 /
+>         重写 `.iterate/transcript.json` 全程**不持锁**，两个并发回滚各自读到同一
+>         基线，后写者静默丢弃前者的回滚标记（与 3.9.1 修掉的 `nudge` 同类丢更新）
+>         → 改为在共享 `transcript` 锁内执行，并借助 3.9.1 新增的 promise 重载跨
+>         `await` 持有。全量扫描 `src/**` 的「读→改→写」路径后确认：其余写入方
+>         （config / triage / checkpoint / prune / fix / defense / experience /
+>         quality-store 快照 / report 导出）均已加锁或为整体覆盖写；仅
+>         `appendLive` 的字节封顶活动流**有意保持无锁**（纯追加、可自愈的派生
+>         投影，逐事件跨进程加锁会在工具调用热路径上引入最长 1s 等待），该取舍已
+>         写入 3.9.2 CHANGELOG 与本记录。
+>         验证：主仓 `npm run typecheck` 0 错误、`npm test` **1281** / 0 fail、
+>         `npm run build && npm run build:client` 干净。主仓：6 文件（`src/tools/
+>         transcript.ts`、`test/transcript.test.ts`、`dist/tools/transcript.js`、
+>         `package.json`、`package-lock.json`、`CHANGELOG.md`）提交 `235b2eeb` 快进
+>         推送 `4c313157..235b2eeb`。独立仓：`git subtree split ... -b
+>         subtree-plugin-392` → `b1c3fab0`；推送仍被独立历史拒绝（non-fast-forward）
+>         → `.release/iterate-plugin`：`git pull --ff-only`（`1a28b1a`）→
+>         **`git apply`（不加 `--3way`）** 施加 `83ee3abd..b1c3fab0` 的 6 文件补丁
+>         （全部 clean，无 `.rej`/`.orig`）——注：本轮 `git apply --3way` 因补丁
+>         前置 blob 不在独立仓对象库而报 `does not match index`，改用普通 `git apply`
+>         即全部 clean（工作树与前置版本逐文件一致，已用 `hash-object --no-filters`
+>         对 6 文件与 split 产物比对通过）→ 重跑验证 **1281 / 0 fail**，且
+>         `git status node_modules` 为空（非 dsh 升级版本，按先例不动 `node_modules`）
+>         → 提交 `e783412` 快进推送 `1a28b1a..e783412`。tag `v3.9.2` + GitHub
+>         Release 已创建。**npm**：`iterate-plugin@3.9.2` 已发布（shasum
+>         `210e7d82580dfc8a9a360b527c31c5b506f39a2e`，92 文件 / 585.3 kB / 解包
+>         2.2 MB）；发布后约 3 分钟复查 `dist-tags.latest=3.9.2` 生效。
 
 ---
 
