@@ -485,16 +485,26 @@ class TestIterateDecisionLogTool:
         assert payload["entryCount"] == 1
         assert payload["entries"][0]["type"] == "round_start"
 
-    async def test_append_rejects_bad_type_and_missing_round(self, tmp_path):
+    async def test_append_refuses_a_kind_the_kernel_cannot_carry(self, tmp_path):
+        """The gate is the kernel's shape rule, not this shell's list.
+
+        It used to be a ``frozenset`` of eight names, and the TypeScript plugin's list had ten
+        — so the same decision was legal in one shell and rejected in the other. That was the
+        divergence, so the test now states both directions: a kind that cannot be *compared*
+        is refused, and a kind nobody has ever listed is recorded.
+        """
         from iterate_harness.tools.iterate_tools import IterateDecisionLogInput
 
         context = make_context(tmp_path)
         result = await run_tool(
             IterateDecisionLogTool(),
-            IterateDecisionLogInput(operation="append", type="nonsense", round=1),
+            IterateDecisionLogInput(operation="append", type="Round Failed!", round=1),
             context,
         )
-        assert json.loads(result.output)["error"]
+        payload = json.loads(result.output)
+        assert payload["error"], payload
+        assert payload["code"] == "KERNEL_E_DECISION_KIND"
+        assert "snake_case" in payload["remedy"]
 
         result = await run_tool(
             IterateDecisionLogTool(),
@@ -502,6 +512,21 @@ class TestIterateDecisionLogTool:
             context,
         )
         assert json.loads(result.output)["error"]
+
+        result = await run_tool(
+            IterateDecisionLogTool(),
+            IterateDecisionLogInput(operation="append", type="resume", round=2, data={"why": "user"}),
+            context,
+        )
+        appended = json.loads(result.output)
+        assert appended.get("success") is True, appended
+        lines = [
+            json.loads(line)
+            for line in (tmp_path / ".iterate" / "decision-log.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [entry["kind"] for entry in lines] == ["resume"], "a kind outside the old list must reach the ledger"
+        assert lines[0]["payload"] == {"why": "user"}
 
 
 class TestIterateContextTool:

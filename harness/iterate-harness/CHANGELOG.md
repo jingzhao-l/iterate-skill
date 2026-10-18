@@ -6,6 +6,35 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Changed
 
+- **场景③写侧翻转：`.iterate/decision-log.jsonl` 现在装的是内核的规范条目，不是本壳的私有形状。**
+  `decision_log.append_entry` 不再 `json.dumps({timestamp, round, type, data})`：它把这条记录经
+  `kernel_decision_record.decision_log_draft_from_record` 转录，再用 `kernel_decision_log` 追加成带哈希链的
+  条目（`sequence`/`prevEntryHash` 由链自己拥有，调用方塞不进去）。**读侧一字未改的读者**（`last_state`、
+  `ci_report`、`html_report`、`replay`、`batch`、`trend_store` 与四条 web 路由）继续拿到同一个
+  `DecisionLogEntry(timestamp, round, type, data)` 视图——转录规则 3 把 `data` 整份复制进 `payload`，
+  所以投影是有意义的，不是靠发明字段。
+  **`VALID_ENTRY_TYPES` 不再是闸门**：内核故意没有决策 kind 的封闭集（`^[a-z][a-z0-9_]{0,31}$` 是形状规则），
+  因为"加一种决定就要发一次内核"正是分叉的成因。本壳那份 8 项清单与 plugin 那份 10 项清单的差
+  （`round_failed`/`resume` 在这里被拒、在那里合法）就此结束——`append type=resume` 现在写得进去，
+  `type="Round Failed!"` 被拒并给出 remedy。清单留作 `KNOWN_ENTRY_TYPES`（文档，非校验），旧名字保留为别名。
+  **三件有意的行为改变，都不是回归**：① 全 legacy 的历史在**下一次写入时迁移**成链（逐条转录、id 的
+  时间前缀取记录自己的 `createdAt`、原字节留在同目录 `.pre-ledger-*.bak`，新链先在内存里 verify 再换文件）
+  ——id 若取迁移那一刻，八月的决定会排到它自己之后，而链照样 verify 得过，所以这条单独钉住；② 内核读不进
+  的历史（时间戳不可解析等）**拒绝追加**而不是写过去，且一个字节都不改：静默跳过正是让账本缺口看不见的方式，
+  而审计面与报告面是两个问题——`read_entries` 照旧宽容（坏行跳过、不抛）；③ 链已开始之后又出现 legacy 行
+  （TypeScript plugin 至今写旧形状）＝**拒绝**，并给出可执行出路 `archive_contested_log()`（无损归档、0600、
+  下一写从 sequence 0 重启）。这里不能"就地修好"：重算一条已带哈希的行就是伪造它，留着它则整本 verify 不过；
+  把重启做成静默行为等于抹掉连续性，所以它必须是人说的那一句——也因此归档一个健康的账本同样被拒。
+  两个 best-effort 边界（`defensive/kernel.py` 记假设、`iterate_assumption` 工具）原来只吞 `OSError`，
+  现一并吞 `DECISION_LOG_REFUSALS` 并把 code 打进日志/回包——否则一条被拒的假设记录会把它本要告知的编辑
+  循环打断。
+  证据：`tests/test_iterate/test_decision_log.py` 13 → 21 条（迁移与原字节留存、id 的时刻来源、交织拒绝
+  ＋归档往返、非交织不许归档、磁盘字节能被 `hashlib` 独立重算、目录 `0700`、kind 形状双向）；两条按新语义
+  改写（旧断言要的是 `json.dumps` 冒号后的空格，以及"坏 type 就是不在 8 项里"），一条旧宽容用例
+  （`corrupt entry 不影响后续追加`）换成"拒绝且零改动"。**未做完的一半点名**：`harness/iterate-plugin`
+  那份 TS 仍写旧形状，而它今天完全不依赖 `iterate-kernel`（只有 js-yaml 与宿主 peer 依赖）——翻转它等于给
+  一个已发布插件加一份运行时依赖，那是取号与打包的决定，不在这里替它做。
+
 - **场景④翻转：收敛判定权从审核报告交给内核（owner 2026-10-13 的裁决落地）。**
   `loop_policy.IterateLoopPolicy._decide` 此前第一句就是 `if snapshot.converged:`——那是
   `review.build_review_report` 对"最后一轮 0 条新发现"做的算术，不是任何人对"这一轮能不能停"的

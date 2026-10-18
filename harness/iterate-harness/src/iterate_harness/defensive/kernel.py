@@ -37,6 +37,14 @@ from iterate_harness.defensive.invariants import (
 )
 from iterate_harness.defensive.transaction import FileTransactionBuffer
 from iterate_harness.iterate.config_loader import EffectiveConfig
+from iterate_harness.iterate.decision_log import (
+    # A decision that cannot enter the ledger is a refusal with a code and a remedy, not an
+    # ``OSError``: since the write side became canonical, an unverifiable history or an
+    # interleaved legacy line stops the append instead of being written over. These best-effort
+    # boundaries must name that class too, or a declared assumption would break the edit loop
+    # it exists to inform.
+    DECISION_LOG_REFUSALS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -158,8 +166,8 @@ class DefensiveKernel:
             return
         try:
             record_assumption(self._project_root, statement, status, detail)
-        except OSError as exc:
-            log.warning("defensive assumption record failed: %s", exc)
+        except (OSError, *DECISION_LOG_REFUSALS) as exc:
+            log.warning("defensive assumption record failed: %s (%s)", exc, getattr(exc, "code", "OSError"))
 
     def record_assumption_checked(self, statement: str, holds: bool, detail: str = "") -> None:
         """Record the verification result of a declared assumption."""
@@ -167,8 +175,8 @@ class DefensiveKernel:
             return
         try:
             record_assumption_checked(self._project_root, statement, holds, detail)
-        except OSError as exc:
-            log.warning("defensive assumption record failed: %s", exc)
+        except (OSError, *DECISION_LOG_REFUSALS) as exc:
+            log.warning("defensive assumption record failed: %s (%s)", exc, getattr(exc, "code", "OSError"))
 
     async def check_invariants(self) -> InvariantReport:
         """Run the project invariants (never blocks the event loop)."""

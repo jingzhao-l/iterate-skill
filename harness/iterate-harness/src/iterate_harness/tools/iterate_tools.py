@@ -517,15 +517,36 @@ class IterateDecisionLogTool(BaseTool[BaseModel]):
             return _json_output(
                 {"error": "type and round are required for append"}, error=True
             )
-        if args.type not in decision_log.VALID_ENTRY_TYPES:
+        if not decision_log.is_decision_kind(args.type):
             return _json_output(
-                {"error": f"unknown type '{args.type}'; valid: {sorted(decision_log.VALID_ENTRY_TYPES)}"},
+                {
+                    "error": f"'{args.type}' is not a decision kind the shared ledger can carry",
+                    "code": "KERNEL_E_DECISION_KIND",
+                    "remedy": "a kind is lowercase snake_case, at most 32 characters "
+                              "(`^[a-z][a-z0-9_]{0,31}$`). It is no longer checked against a fixed "
+                              "list — that list was this shell's opinion and the TypeScript plugin's "
+                              "was wider, which was the divergence, not a rule.",
+                },
                 error=True,
             )
         entry = decision_log.make_entry(
             entry_type=args.type, round_number=args.round, data=args.data
         )
-        count, path = decision_log.append_entry(context.cwd, entry)
+        try:
+            count, path = decision_log.append_entry(context.cwd, entry)
+        except decision_log.DECISION_LOG_REFUSALS as error:
+            # A decision that cannot be recorded is reported, not swallowed and not raised: the
+            # agent is the one who can fix the ledger (permissions, an interleaved writer, a
+            # timestamp this kernel cannot date).
+            return _json_output(
+                {
+                    "error": str(error),
+                    "code": getattr(error, "code", "KERNEL_E_DECISION_LOG_WRITE"),
+                    "remedy": getattr(error, "remedy", ""),
+                    "success": False,
+                },
+                error=True,
+            )
         payload: dict[str, Any] = {
             "operation": "append",
             "success": True,
@@ -638,8 +659,15 @@ class IterateAssumptionTool(BaseTool[BaseModel]):
                     holds=arguments.status == "holds",
                     detail=arguments.detail,
                 )
-        except OSError as exc:
-            return _json_output({"error": f"could not write decision log: {exc}"}, error=True)
+        except (OSError, *decision_log.DECISION_LOG_REFUSALS) as exc:
+            return _json_output(
+                {
+                    "error": f"could not write decision log: {exc}",
+                    "code": getattr(exc, "code", "OSError"),
+                    "remedy": getattr(exc, "remedy", "fix the file permissions or ownership"),
+                },
+                error=True,
+            )
         return _json_output(
             {
                 "operation": "record_assumption",
