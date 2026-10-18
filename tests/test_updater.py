@@ -11,7 +11,9 @@ import hashlib
 import io
 import json
 import subprocess
+import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -285,6 +287,63 @@ def test_fetch_latest_release_skips_draft_and_prerelease() -> None:
     assert release.tag == "9.9.7"
 
 
+def _versioned_release(tag: str) -> dict:
+    return {
+        "tag_name": tag,
+        "assets": [
+            {
+                "name": TARBALL_ASSET_NAME,
+                "browser_download_url": f"https://example.invalid/{tag}/t",
+            },
+            {
+                "name": CHECKSUMS_ASSET_NAME,
+                "browser_download_url": f"https://example.invalid/{tag}/s",
+            },
+        ],
+    }
+
+
+def test_fetch_latest_release_picks_highest_semver_not_first() -> None:
+    """Out-of-order releases: the HIGHEST version wins, not the first listed.
+
+    The list endpoint orders by publish time, so a back-ported patch to an
+    older line can be returned first. Taking the first match made the updater
+    treat the lower version as "latest" and even resolve the download to it.
+    """
+    payload = json.dumps(
+        [
+            _versioned_release("v3.5.2"),
+            _versioned_release("v3.4.0"),
+            _versioned_release("v3.6.0"),
+            _versioned_release("v3.5.10"),
+        ]
+    ).encode()
+
+    def fetch(url: str, *, timeout: float, headers: dict[str, str]):
+        return updater._Fetched(status=200, body=payload)
+
+    release, error = fetch_latest_release(fetch=fetch)
+    assert error is None
+    assert release is not None
+    assert release.tag == "3.6.0"
+    assert release.tarball_url.endswith("/v3.6.0/t")
+
+
+def test_fetch_latest_release_ignores_non_semver_tags_gracefully() -> None:
+    """A tag with no ``X.Y.Z`` is skipped, not treated as an error/crash."""
+    payload = json.dumps(
+        [_versioned_release("nightly-2026-01-01"), _versioned_release("v3.5.2")]
+    ).encode()
+
+    def fetch(url: str, *, timeout: float, headers: dict[str, str]):
+        return updater._Fetched(status=200, body=payload)
+
+    release, error = fetch_latest_release(fetch=fetch)
+    assert error is None
+    assert release is not None
+    assert release.tag == "3.5.2"
+
+
 def test_fetch_latest_release_never_uses_releases_latest_endpoint() -> None:
     """The updater must not query ``/releases/latest``.
 
@@ -466,6 +525,64 @@ def test_download_verified_release_rejects_wrong_top_level_layout(tmp_path) -> N
     source, error = download_verified_release(release, fetch=fetch)
     assert source is None
     assert "top-level layout" in (error or "")
+
+
+def _tracking_mkdtemp(monkeypatch) -> list[Path]:
+    """Patch ``tempfile.mkdtemp`` to record every created path."""
+    created: list[Path] = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def tracking_mkdtemp(*args, **kwargs):
+        path = Path(real_mkdtemp(*args, **kwargs))
+        created.append(path)
+        return str(path)
+
+    monkeypatch.setattr(updater.tempfile, "mkdtemp", tracking_mkdtemp)
+    return created
+
+
+def test_download_verified_release_removes_temp_on_signature_failure(
+    tmp_path, monkeypatch
+) -> None:
+    """A failed signature check must not leak the extracted temp tree.
+
+    Regression: the ``return None, detail`` on a rejected signature ran before
+    any cleanup, so every tampered release left an ``iterate-update-*`` tree
+    behind.
+    """
+    fetch = make_ok_fetch(tmp_path)
+    release, _ = fetch_latest_release(fetch=fetch)
+    assert release is not None
+    created = _tracking_mkdtemp(monkeypatch)
+    monkeypatch.setattr(
+        updater, "enforce_signature_policy", lambda *a, **k: (False, "bad signature")
+    )
+
+    source, error = download_verified_release(release, fetch=fetch)
+    assert source is None
+    assert "bad signature" in (error or "")
+    assert created, "expected a temp directory to have been created"
+    assert all(not path.exists() for path in created), created
+
+
+def test_download_verified_release_removes_temp_on_signature_fetch_failure(
+    tmp_path, monkeypatch
+) -> None:
+    """A signature asset that cannot be fetched (404) must also clean up."""
+    source_tree = build_release_tree(tmp_path)
+    tarball = tar_wrap(source_tree)
+    checksums = f"{hashlib.sha256(tarball).hexdigest()}  {TARBALL_ASSET_NAME}\n".encode()
+    fetch, urls = make_fetch(tarball=tarball, checksums=checksums)
+    urls.pop("https://example.invalid/iterate-skill.tar.gz.asc")
+    release, _ = fetch_latest_release(fetch=fetch)
+    assert release is not None
+    created = _tracking_mkdtemp(monkeypatch)
+
+    source, error = download_verified_release(release, fetch=fetch)
+    assert source is None
+    assert "signature" in (error or "").lower()
+    assert created, "expected a temp directory to have been created"
+    assert all(not path.exists() for path in created), created
 
 
 # ---------------------------------------------------------------------------
@@ -871,6 +988,51 @@ def test_run_command_timeout_expired_reports_runtime_error(monkeypatch) -> None:
         updater._run_command(
             ["pip", "install"], updater._default_runner, 600, "pip install"
         )
+
+
+def test_default_runner_survives_non_utf8_output() -> None:
+    """Non-UTF-8 bytes from a child must not crash the runner.
+
+    Regression: text mode without ``errors=`` decoded with ``strict``, so a
+    command that emitted a stray non-UTF-8 byte raised UnicodeDecodeError
+    instead of returning (lossily decoded) output.
+    """
+    result = updater._default_runner(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'\\xff\\xfeok')",
+        ]
+    )
+    assert result.returncode == 0
+    assert "\ufffd" in result.stdout
+
+
+def test_default_runner_without_timeout_is_bounded(monkeypatch) -> None:
+    """A direct ``_default_runner`` call with no timeout must not be unbounded.
+
+    Regression: the ``timeout is None`` branch called ``subprocess.run(...,
+    timeout=None)``, so a hung child could block forever.
+    """
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        def __init__(self, argv, **kwargs):
+            captured["kwargs"] = kwargs
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            captured["timeout"] = timeout
+            return "", ""
+
+    monkeypatch.setattr(updater.subprocess, "Popen", FakeProcess)
+    updater._default_runner(["some-command"])
+    assert captured["timeout"] == updater.DEFAULT_COMMAND_TIMEOUT_SECONDS
+    assert isinstance(captured["timeout"], (int, float))
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["errors"] == "replace"
+    assert kwargs["text"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1328,6 +1490,66 @@ def test_update_assistant_dir_optional_missing_still_succeeds(tmp_path) -> None:
     destination = tmp_path / "skills" / "iterate"
     update_assistant_dir(source, destination)
     assert (destination / "SKILL.md").is_file()
+
+
+def test_copy_release_path_file_failure_preserves_destination(
+    tmp_path, monkeypatch
+) -> None:
+    """A failed file copy must leave the existing destination intact.
+
+    Regression: ``copy2`` wrote directly to the destination, so a mid-write
+    failure (disk full) left a truncated/partial file in the assistant dir.
+    """
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "SKILL.md").write_text("new content\n", encoding="utf-8")
+    destination = (tmp_path / "dest").resolve()
+    destination.mkdir()
+    dst_file = destination / "SKILL.md"
+    dst_file.write_text("old content\n", encoding="utf-8")
+
+    def failing_copy2(src, dst, *args, **kwargs):
+        Path(dst).write_text("partial", encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(updater.shutil, "copy2", failing_copy2)
+
+    with pytest.raises(OSError):
+        updater._copy_release_path(source, destination, "SKILL.md")
+
+    assert dst_file.read_text(encoding="utf-8") == "old content\n"
+    assert [p.name for p in destination.iterdir() if ".tmp-" in p.name] == []
+
+
+def test_copy_release_path_dir_failure_preserves_destination(
+    tmp_path, monkeypatch
+) -> None:
+    """A failed directory copy must leave the existing tree intact.
+
+    Regression: the old code ``rmtree``'d the destination BEFORE ``copytree``,
+    so any failure mid-copy lost the previous install entirely.
+    """
+    source = tmp_path / "src"
+    (source / "iterate_cli").mkdir(parents=True)
+    (source / "iterate_cli" / "new.py").write_text("new\n", encoding="utf-8")
+    destination = (tmp_path / "dest").resolve()
+    dest_dir = destination / "iterate_cli"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "old.py").write_text("old\n", encoding="utf-8")
+
+    def failing_copytree(src, dst, *args, **kwargs):
+        Path(dst).mkdir(parents=True, exist_ok=True)
+        (Path(dst) / "partial.py").write_text("partial\n", encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(updater.shutil, "copytree", failing_copytree)
+
+    with pytest.raises(OSError):
+        updater._copy_release_path(source, destination, "iterate_cli")
+
+    assert (dest_dir / "old.py").read_text(encoding="utf-8") == "old\n"
+    assert not (dest_dir / "partial.py").exists()
+    assert [p.name for p in destination.iterdir() if ".tmp-" in p.name] == []
 
 
 # ---------------------------------------------------------------------------

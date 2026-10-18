@@ -98,6 +98,11 @@ MAX_EXTRACT_BYTES = 600 * 1024 * 1024  # total uncompressed (decompression-bomb 
 MAX_EXTRACT_MEMBER_BYTES = 300 * 1024 * 1024  # per-member cap
 GIT_TIMEOUT_SECONDS = 120
 PIP_TIMEOUT_SECONDS = 600
+#: Fallback bound for a *direct* ``_default_runner`` call. Every production
+#: invocation already passes an explicit per-command timeout via
+#: ``_run_command`` (git 120s / pip 600s); this only ensures a caller that
+#: omits one still cannot block forever on a hung subprocess.
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 600
 
 # Cap on the failing-command detail embedded in an error message. A noisy
 # pip/pytest run can emit megabytes; the message only needs a diagnostic tail.
@@ -389,10 +394,14 @@ def fetch_latest_release(
     checksum_url: str | None = None
     signature_url: str | None = None
     saw_versioned_release = False
-    # The list endpoint returns releases newest-published first; take the first
-    # that both parses to a version and ships the tarball, so a release from
-    # another sub-project (or one mid-upload, with no assets yet) is skipped
-    # instead of being mistaken for the latest skill release.
+    best_key: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    # Scan EVERY release and keep the HIGHEST semantic version that both parses
+    # and ships the tarball. The list endpoint orders by publish time, not by
+    # version, so taking the first match let a back-ported patch to an older
+    # line (or any release published later under a lower version) become
+    # "latest", downgrading the comparison. Drafts/prereleases and sub-project
+    # releases with no tarball are still skipped; a non-semver tag is ignored
+    # rather than aborting the scan.
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
@@ -426,9 +435,19 @@ def fetch_latest_release(
                     candidate_signature = url
         if not isinstance(candidate_tarball, str):
             continue
-        tag, tarball_url, checksum_url = candidate_tag, candidate_tarball, candidate_checksum
+        try:
+            candidate_key = _version_tuple(candidate_tag)
+        except ValueError:
+            # Defensive: normalize_version yields ``X.Y.Z``, so this cannot fire
+            # today, but a malformed tag must never abort the whole scan.
+            continue
+        if best_key is not None and candidate_key <= best_key:
+            continue
+        best_key = candidate_key
+        tag = candidate_tag
+        tarball_url = candidate_tarball
+        checksum_url = candidate_checksum
         signature_url = candidate_signature
-        break
 
     if tag is None or not isinstance(tarball_url, str):
         # Distinguish "the payload held no versioned release at all" from
@@ -621,6 +640,11 @@ def download_verified_release(
 
     # GPG authenticity check (mandatory — see enforce_signature_policy).
     temp_parent = Path(tempfile.mkdtemp(prefix="iterate-update-"))
+    # The extracted source root is handed back to the caller, which owns
+    # cleanup of ``temp_parent``; every FAILURE path below must remove it, else
+    # a failed signature check / archive load leaks a temp tree. ``keep`` is set
+    # only immediately before the sole success return.
+    keep = False
     try:
         signature_bytes: bytes | None = None
         if release.signature_url:
@@ -653,16 +677,21 @@ def download_verified_release(
         # instead of an uncaught OSError escaping run_update's never-raise
         # contract.
         candidates = sorted(p for p in extract_root.iterdir() if p.is_dir())
+        if len(candidates) != 1:
+            return None, "release archive has an unexpected top-level layout"
+        # Hand the extracted tree to the caller, which owns its cleanup: mark
+        # it as kept so the ``finally`` below leaves it in place.
+        keep = True
+        return candidates[0], None
     except (tarfile.TarError, OSError, EOFError, ValueError, zlib.error) as exc:
         # zlib.error: corrupt deflate stream. It is NOT a TarError/OSError
         # subclass, so without this arm a damaged-but-correctly-checksummed
         # archive would raise a raw traceback instead of a clean error.
-        shutil.rmtree(temp_parent, ignore_errors=True)
         return None, f"release archive invalid: {exc}"
-    if len(candidates) != 1:
-        shutil.rmtree(temp_parent, ignore_errors=True)
-        return None, "release archive has an unexpected top-level layout"
-    return candidates[0], None
+    finally:
+        # Remove the temp tree on every path that did NOT hand it to the caller.
+        if not keep:
+            shutil.rmtree(temp_parent, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -748,24 +777,45 @@ def _copy_release_path(source: Path, destination: Path, relative: str) -> None:
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
-        if dst.is_symlink() or dst.exists() and not dst.is_dir():
-            dst.unlink()
-        # REPLACE (not merge) a managed directory: copytree(dirs_exist_ok=True)
-        # merged, so a file deleted upstream (e.g. a removed iterate_cli
-        # module) survived in the assistant dir forever, while
-        # scripts/install.py's force path rmtree+copied — `iterate update`
-        # and the installer disagreed about what "refresh to the release"
-        # means. Replacing makes the managed paths byte-identical to the
-        # verified release.
-        if dst.is_dir():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
+        # Atomic-ish replace: build the new tree in a temp SIBLING first, then
+        # swap it in with os.replace. A failure mid-copy (disk full, permission
+        # error) therefore leaves the existing destination untouched instead of
+        # half-refreshed. REPLACE (not merge) is deliberate: copytree(...,
+        # dirs_exist_ok=True) merged, so a file deleted upstream (e.g. a removed
+        # iterate_cli module) survived in the assistant dir forever, while
+        # scripts/install.py's force path rmtree+copied — `iterate update` and
+        # the installer disagreed about what "refresh to the release" means.
+        tmp_dir = Path(tempfile.mkdtemp(dir=dst.parent, prefix=f".{dst.name}.tmp-"))
+        replaced = False
+        try:
+            shutil.rmtree(tmp_dir)  # let copytree recreate it with the source's mode
+            shutil.copytree(src, tmp_dir)
+            if dst.is_symlink() or dst.is_file():
+                dst.unlink()
+            elif dst.is_dir():
+                shutil.rmtree(dst)
+            os.replace(tmp_dir, dst)
+            replaced = True
+        finally:
+            if not replaced:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
     else:
-        if dst.is_symlink():
-            dst.unlink()
-        elif dst.exists() and dst.is_dir():
-            shutil.rmtree(dst)
-        shutil.copy2(src, dst)
+        fd, tmp_name = tempfile.mkstemp(dir=dst.parent, prefix=f".{dst.name}.tmp-")
+        os.close(fd)
+        tmp_file = Path(tmp_name)
+        replaced = False
+        try:
+            shutil.copy2(src, tmp_file)
+            # os.replace atomically overwrites an existing file or symlink; only
+            # a real directory must be cleared first.
+            if dst.is_dir() and not dst.is_symlink():
+                shutil.rmtree(dst)
+            os.replace(tmp_file, dst)
+            replaced = True
+        finally:
+            if not replaced:
+                with contextlib.suppress(OSError):
+                    tmp_file.unlink()
 
 
 def update_assistant_dir(source: Path, destination: Path) -> None:
@@ -821,23 +871,30 @@ def _default_runner(
 ) -> subprocess.CompletedProcess[str]:
     # ``check=False`` is deliberate: callers read ``returncode`` / ``success``
     # and turn a non-zero exit into a structured message themselves.
-    if timeout is None:
-        return subprocess.run(
-            argv, capture_output=True, text=True, timeout=None, check=False
-        )
-    # A timeout that kills the whole child process group: subprocess.run only
-    # SIGKILLs the direct child on TimeoutExpired, so a stalled ``pip`` build
-    # step (grandchild sharing the captured pipes) could otherwise outlive the
-    # reported timeout. start_new_session isolates the tree; killpg reaps it.
+    #
+    # ``errors="replace"``: a command that emits non-UTF-8 bytes (a stray
+    # locale-specific byte in pip/git output) must never crash the runner with a
+    # UnicodeDecodeError — undecodable bytes become U+FFFD in the captured text.
+    #
+    # A bounded timeout ALWAYS applies: callers pass an explicit per-command
+    # value, but a direct call must not be able to block forever either. The
+    # child runs in its own session so a timeout can kill the whole process
+    # tree — ``subprocess.run`` only SIGKILLs the direct child, so a stalled
+    # ``pip`` build step (grandchild sharing the captured pipes) could otherwise
+    # outlive the reported timeout.
+    effective_timeout = (
+        DEFAULT_COMMAND_TIMEOUT_SECONDS if timeout is None else timeout
+    )
     proc = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",
         start_new_session=True,
     )
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(timeout=effective_timeout)
     except subprocess.TimeoutExpired:
         _kill_process_tree(proc)
         # Drain the pipes so a blocked child cannot wedge cleanup, then re-raise
