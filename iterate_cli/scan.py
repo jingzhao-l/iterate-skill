@@ -6,9 +6,10 @@ to populate onboarding suggestions and the ITERATE.md knowledge base.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from iterate_cli.tui import tui
 
 # Mapping from manifest file name to (language, package_manager).
 MANIFEST_TO_LANG: dict[str, tuple[str, str]] = {
@@ -48,8 +49,12 @@ SKIP_DIRS: frozenset[str] = frozenset({
 # Spec directory candidates (checked relative to project root).
 SPEC_DIR_CANDIDATES: tuple[str, ...] = ("specs", "spec", "docs/specs", "docs/spec")
 
-# Test directory candidates.
-TEST_DIR_CANDIDATES: tuple[str, ...] = ("tests", "test", "__tests__", "spec")
+# Test directory candidates. ``spec`` is deliberately NOT listed here: it is
+# Ruby's test convention but also a *spec-documents* dir in other stacks, and
+# listing it in both SPEC_DIR_CANDIDATES and TEST_DIR_CANDIDATES made a
+# specs-only project report has_tests=True. Ruby projects are handled
+# explicitly in _scan_features/_detect_test_dir.
+TEST_DIR_CANDIDATES: tuple[str, ...] = ("tests", "test", "__tests__")
 
 # CI config paths to check.
 CI_PATHS: tuple[str, ...] = (
@@ -125,8 +130,9 @@ def _scan_top_level_dirs(project_root: Path, result: ScanResult) -> None:
                 result.top_level_dirs.append(entry.name)
     except OSError as exc:
         # 目录列表失败（如权限不足、目录在扫描过程中被删除、挂载点出错）
-        # 不阻断扫描，但记录到 stderr 以便排查。
-        print(f"scan: warning: cannot list directories in {project_root}: {exc}", file=sys.stderr)
+        # 不阻断扫描，但经 tui 记录到 stderr 以便排查（所有面向用户的输出
+        # 都必须走 iterate_cli.tui，保持 --json 的 stdout 纯净）。
+        tui.warning(f"scan: cannot list directories in {project_root}: {exc}")
 
 
 def _scan_features(project_root: Path, result: ScanResult) -> None:
@@ -140,6 +146,14 @@ def _scan_features(project_root: Path, result: ScanResult) -> None:
         if (project_root / candidate).is_dir():
             result.has_tests = True
             break
+    # Ruby's test dir is ``spec/`` (kept out of TEST_DIR_CANDIDATES so it is not
+    # misread as tests for other stacks).
+    if (
+        not result.has_tests
+        and "Ruby" in result.detected_languages
+        and (project_root / "spec").is_dir()
+    ):
+        result.has_tests = True
 
     for ci_path in CI_PATHS:
         if (project_root / ci_path).exists():
@@ -202,6 +216,11 @@ def _detect_test_dir(scan: ScanResult) -> str:
     for candidate in TEST_DIR_CANDIDATES:
         if candidate in scan.top_level_dirs:
             return candidate
+    # ``spec/`` is Ruby's test directory; for every other stack it is treated as
+    # a spec-documents dir (see TEST_DIR_CANDIDATES), so only honour it for Ruby
+    # — otherwise a specs-only project would be told to run `pytest spec`.
+    if "spec" in scan.top_level_dirs and "Ruby" in scan.detected_languages:
+        return "spec"
     return "tests"
 
 
@@ -244,7 +263,7 @@ def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
             commands["python"] = [
                 f"ruff check {src_root}",
                 f"mypy {src_root} --ignore-missing-imports",
-                f"pytest {test_dir} -x -q --timeout=60",
+                f"pytest {test_dir} -x -q",
             ]
         elif lang in ("JavaScript/TypeScript", "TypeScript"):
             commands["typescript"] = [

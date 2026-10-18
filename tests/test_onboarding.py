@@ -353,6 +353,43 @@ class TestScanProject:
         assert not result.has_specs
         assert not result.has_tests
 
+    def test_specs_only_project_is_not_reported_as_having_tests(self, tmp_path: Path) -> None:
+        """`spec/` is Ruby's test dir but a spec-documents dir elsewhere.
+
+        Listing it in both SPEC_DIR_CANDIDATES and TEST_DIR_CANDIDATES made a
+        non-Ruby project with only a spec/ dir report has_tests=True and get
+        handed `pytest spec` — a command that fails on the first run.
+        """
+        project = tmp_path / "docs_only"
+        project.mkdir()
+        (project / "pyproject.toml").write_text(
+            '[project]\nname = "docs_only"\nversion = "0.1.0"\n', encoding="utf-8"
+        )
+        (project / "spec").mkdir()
+
+        result = scan_project(project)
+        assert result.has_specs is True
+        assert result.has_tests is False, "a spec/ docs dir must not count as tests"
+
+        commands = suggest_validation_commands(result)
+        assert commands.get("python", [])
+        for command in commands["python"]:
+            assert "spec" not in command, f"a specs-only project must not be told to run {command}"
+            assert "pytest" not in command or "tests" in command
+
+    def test_ruby_spec_dir_is_reported_as_tests(self, tmp_path: Path) -> None:
+        """Ruby projects keep `spec/` as their test directory."""
+        project = tmp_path / "rails_app"
+        project.mkdir()
+        (project / "Gemfile").write_text("source 'https://rubygems.org'\n", encoding="utf-8")
+        (project / "spec").mkdir()
+
+        result = scan_project(project)
+        assert "Ruby" in result.detected_languages
+        assert result.has_tests is True
+        commands = suggest_validation_commands(result)
+        assert "rspec" in " ".join(commands.get("ruby", []))
+
 
 class TestSuggestDimensions:
     def test_python_project_suggests_base_dims(self, fake_project: Path) -> None:
@@ -387,6 +424,17 @@ class TestSuggestValidationCommands:
     def test_empty_project(self, empty_project: Path) -> None:
         scan = scan_project(empty_project)
         assert suggest_validation_commands(scan) == {}
+
+    def test_suggested_commands_carry_no_timeout_flag(self, fake_project: Path) -> None:
+        """--timeout needs the third-party pytest-timeout plugin.
+
+        Onboarding writes these suggestions straight into validation.commands,
+        so a flag that plain pytest rejects would fail every fresh install that
+        has not installed the plugin.
+        """
+        for command in suggest_validation_commands(scan_project(fake_project)).values():
+            for entry in command:
+                assert "--timeout" not in entry, f"{entry!r} must not use --timeout"
 
 
 class TestSuggestCommandWhitelist:
