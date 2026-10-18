@@ -35,15 +35,58 @@ USER_START_MARKER = "<!-- ITERATE:USER-OWNED:START -->"
 USER_END_MARKER = "<!-- ITERATE:USER-OWNED:END -->"
 
 
+def user_owned_bounds(content: str) -> tuple[int, int] | None:
+    """Locate the USER-OWNED section markers in ``content``.
+
+    Returns ``(start, end)`` where ``start`` is the index of the opening
+    ``USER_START_MARKER`` and ``end`` is the index of the closing
+    ``USER_END_MARKER`` — the whole block is
+    ``content[start : end + len(USER_END_MARKER)]`` — or ``None`` when the
+    markers are missing or degenerate.
+
+    Robust against user text that embeds the literal marker string: the opening
+    marker is searched for *after* the ``AI_END_MARKER`` partition, where the
+    genuine user-owned block always lives, so a marker literal rendered into a
+    generated AI section (project description, conventions, notes) can never be
+    mistaken for it. The closing marker is taken as the last occurrence so a
+    pasted marker literal inside the block cannot truncate it.
+
+    Args:
+        content: Full ITERATE.md content.
+
+    Returns:
+        ``(start, end)`` marker indices, or ``None`` when unusable.
+    """
+    # Generated content embeds user-supplied values in the AI-maintained area,
+    # and those values may contain the marker text verbatim. A plain find()
+    # would match that injected copy, splice mid-file and silently drop every
+    # AI section below it. Anchor the search just past the AI partition.
+    ai_end = content.rfind(AI_END_MARKER)
+    search_from = ai_end + len(AI_END_MARKER) if ai_end != -1 else 0
+    start_idx = content.find(USER_START_MARKER, search_from)
+    if start_idx == -1:
+        return None
+    # Use the *last* occurrence of the END marker: user paste content may
+    # legitimately contain the literal marker string (e.g. a pasted HTML
+    # comment), and the true closing marker is the trailing one.
+    end_idx = content.rfind(USER_END_MARKER)
+    if end_idx == -1:
+        return None
+    # Strict ``end_idx > start_idx + len(USER_START_MARKER)`` (rather than
+    # ``end_idx > start_idx``) rejects degenerate content where the two markers
+    # are adjacent or the END marker overlaps the START marker text, which
+    # yields an empty user-owned section.
+    if end_idx <= start_idx + len(USER_START_MARKER):
+        return None
+    return start_idx, end_idx
+
+
 def has_valid_user_owned_markers(content: str) -> bool:
     """Return True when ``content`` has ordered, non-overlapping USER-OWNED markers.
 
     "Valid" means both markers exist and the END marker appears strictly after
-    the END of the START marker string. The strict ``end_idx >
-    start_idx + len(USER_START_MARKER)`` form (rather than ``end_idx >
-    start_idx``) rejects degenerate content where the two markers are adjacent
-    or the END marker overlaps the START marker text, which yields an empty
-    user-owned section.
+    the END of the START marker string, so the section is non-empty. See
+    :func:`user_owned_bounds` for how the markers are located.
 
     Args:
         content: Full ITERATE.md content.
@@ -51,19 +94,13 @@ def has_valid_user_owned_markers(content: str) -> bool:
     Returns:
         True when the markers form a usable user-owned section.
     """
-    start_idx = content.find(USER_START_MARKER)
-    if start_idx == -1:
-        return False
-    # Use the *last* occurrence of the END marker: user paste content may
-    # legitimately contain the literal marker string (e.g. a pasted HTML
-    # comment), and the true closing marker is the trailing one.
-    end_idx = content.rfind(USER_END_MARKER)
-    if end_idx == -1:
-        return False
-    return end_idx > start_idx + len(USER_START_MARKER)
+    return user_owned_bounds(content) is not None
 
 # Matches the "完成时间 / Completed" row in the ITERATE.md Meta table.
 _COMPLETED_AT_RE = re.compile(r"\| 完成时间 / Completed \| ([^|\n]+) \|")
+
+# Matches exactly one ``{{PLACEHOLDER}}`` token in the ITERATE.md template.
+_PLACEHOLDER_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
 
 
 def _extract_completed_at(existing_md: str) -> str | None:
@@ -215,9 +252,15 @@ def generate_iterate_md(data: OnboardingData, completed_at: str | None = None) -
         "{{ITERATE_NOTES}}": _render_iterate_notes(data),
     }
 
-    content = template
-    for placeholder, value in replacements.items():
-        content = content.replace(placeholder, value)
+    # Single pass over the template: a substituted value may itself contain a
+    # {{PLACEHOLDER}} literal (a user-entered project description or code
+    # convention), and a sequential str.replace loop would expand that injected
+    # copy on a later iteration, duplicating whole sections. re.sub never
+    # rescans the text it inserts.
+    content = _PLACEHOLDER_RE.sub(
+        lambda match: replacements.get(match.group(0), match.group(0)),
+        template,
+    )
 
     # If personalization data is present, replace the default user-owned
     # section with the personalised content.
@@ -274,7 +317,6 @@ def generate_config_yaml(data: OnboardingData) -> str:
             "auto_merge": data.auto_merge,
         },
         "validation": {
-            "command_whitelist": data.command_whitelist,
             "commands": data.validation_commands,
         },
         "reviewer": {
@@ -285,6 +327,13 @@ def generate_config_yaml(data: OnboardingData) -> str:
         },
         "onboarding": onboarding,
     }
+    # The schema requires command_whitelist to be non-empty when present
+    # (minItems: 1). Emitting ``command_whitelist: []`` would make the freshly
+    # written config schema-invalid and doctor complain about a file we just
+    # generated, so omit the key entirely when there is nothing to whitelist —
+    # matching refresh.py / personalize.py.
+    if data.command_whitelist:
+        config["validation"]["command_whitelist"] = list(data.command_whitelist)
 
     # Merge personalization structured fields into config.
     if data.personalization is not None:
@@ -320,8 +369,23 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
         original_mode = path.stat().st_mode & 0o777
     except OSError:
         original_mode = None
+    # Create the temp file ourselves with O_EXCL|O_NOFOLLOW *and* the final mode
+    # from the first byte: O_EXCL|O_NOFOLLOW stops a pre-seeded symlink at the
+    # (randomised) temp path from redirecting the write, and opening with the
+    # destination's own mode means a restricted file (e.g. 0600) is never
+    # transiently world-readable during the write window. New files use 0o666 so
+    # the umask still decides their mode, matching prior behaviour.
+    create_mode = original_mode if original_mode is not None else 0o666
+    open_flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        with open(tmp_path, "w", encoding=encoding) as handle:
+        fd = os.open(tmp_path, open_flags, create_mode)
+        try:
+            handle = os.fdopen(fd, "w", encoding=encoding)
+        except BaseException:
+            # fdopen did not take ownership; close the raw descriptor ourselves.
+            os.close(fd)
+            raise
+        with handle:
             handle.write(content)
             # Flush + fsync before the rename so a crash after os.replace
             # cannot leave a truncated file at the destination path.
@@ -345,7 +409,11 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
                 os.close(dir_fd)
         except OSError:
             pass
-    except OSError:
+    except BaseException:
+        # Clean up on *any* failure (not just OSError): a UnicodeEncodeError
+        # from a limited ``encoding`` reaches here too and must not leave a
+        # stray temp file behind. KeyboardInterrupt/SystemExit propagate after
+        # cleanup.
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError as cleanup_err:
@@ -491,20 +559,16 @@ def extract_user_owned_section(existing_md: str) -> str:
         The user-owned section content (without the marker comments).
         If markers are not found, returns the default user-owned section.
     """
-    start_idx = existing_md.find(USER_START_MARKER)
-
-    if not has_valid_user_owned_markers(existing_md):
+    bounds = user_owned_bounds(existing_md)
+    if bounds is None:
         return DEFAULT_USER_OWNED_SECTION
+    start_idx, end_idx = bounds
 
     # Extract content between markers (after the start marker line). The
-    # trailing END marker is matched with rfind so pasted user content that
-    # itself contains the marker string cannot truncate the section.
-    after_start = existing_md[start_idx + len(USER_START_MARKER):]
-    end_in_after = after_start.rfind(USER_END_MARKER)
-    if end_in_after == -1:
-        return DEFAULT_USER_OWNED_SECTION
-
-    return after_start[:end_in_after].strip("\n")
+    # closing marker is the trailing one (see user_owned_bounds), so a marker
+    # literal pasted inside the block cannot truncate the section.
+    after_start = existing_md[start_idx + len(USER_START_MARKER):end_idx]
+    return after_start.strip("\n")
 
 
 def _replace_user_owned_section(content: str, new_user_content: str) -> str:
@@ -517,11 +581,10 @@ def _replace_user_owned_section(content: str, new_user_content: str) -> str:
     Returns:
         Updated content with the user-owned section replaced.
     """
-    start_idx = content.find(USER_START_MARKER)
-    end_idx = content.rfind(USER_END_MARKER)
-
-    if not has_valid_user_owned_markers(content):
+    bounds = user_owned_bounds(content)
+    if bounds is None:
         return content
+    start_idx, end_idx = bounds
 
     before = content[: start_idx + len(USER_START_MARKER)]
     after = content[end_idx:]
@@ -559,24 +622,15 @@ def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
             possibly hand-edited content instead of silently discarding it.
     """
     # Locate markers in the existing file.
-    if not has_valid_user_owned_markers(existing_md):
+    existing_bounds = user_owned_bounds(existing_md)
+    if existing_bounds is None:
         raise ValueError(
             "ITERATE.md is missing the USER-OWNED section markers; refusing to "
             "overwrite possibly hand-edited content. Restore the markers "
             "<!-- ITERATE:USER-OWNED:START --> / ...END --> or run "
             "`iterate reonboard` to regenerate the file."
         )
-    e_start = existing_md.find(USER_START_MARKER)
-    # Take the LAST occurrence of the end marker on both sides. A user-owned
-    # block may legitimately contain the literal marker text in its own
-    # content, and the freshly rendered content embeds user-supplied values
-    # (description, goal, tech stack) that may contain it too. Using `find`
-    # would match that earlier occurrence, splice the block mid-file and then
-    # re-append the tail — duplicating generated sections and corrupting
-    # ITERATE.md on every subsequent refresh. Mirrors
-    # ``_replace_user_owned_section`` and ``has_valid_user_owned_markers``,
-    # which both use rfind.
-    e_end = existing_md.rfind(USER_END_MARKER)
+    e_start, e_end = existing_bounds
 
     # Generate fresh content with default user section, reusing the previous
     # completion timestamp so an unchanged refresh is a byte-for-byte no-op.
@@ -587,14 +641,18 @@ def generate_refreshed_md(data: OnboardingData, existing_md: str) -> str:
     # byte-for-byte no-op instead of silently rewriting whitespace.
     user_block = existing_md[e_start : e_end + len(USER_END_MARKER)]
 
-    # Locate markers in the freshly regenerated content.
-    if not has_valid_user_owned_markers(fresh):
+    # Locate markers in the freshly regenerated content. user_owned_bounds
+    # anchors the opening marker after the AI partition so user-supplied text
+    # that embeds the marker literal in a generated AI section cannot be
+    # mistaken for the real user-owned block (which would splice mid-file and
+    # drop every AI section below it).
+    fresh_bounds = user_owned_bounds(fresh)
+    if fresh_bounds is None:
         raise ValueError(
             "Generated ITERATE.md is missing the USER-OWNED markers; "
             "refresh aborted."
         )
-    f_start = fresh.find(USER_START_MARKER)
-    f_end = fresh.rfind(USER_END_MARKER)
+    f_start, f_end = fresh_bounds
 
     # Splice the verbatim user block into the regenerated AI-maintained parts.
     return fresh[:f_start] + user_block + fresh[f_end + len(USER_END_MARKER):]

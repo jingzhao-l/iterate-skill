@@ -6095,3 +6095,140 @@ class TestCliDependencyExitCode:
 
         assert _dependency_exit_code("iterate_cli") is None
         assert _dependency_exit_code("") is None
+
+
+# ---------------------------------------------------------------------------
+# atomic_write hardening (symlink race, mode, cleanup on non-OSError)
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicWriteHardening:
+    """atomic_write must not follow a symlink seeded at the temp path, must carry
+    the destination's mode from the first byte, and must clean up on failures
+    that are not OSError."""
+
+    def test_refuses_to_write_through_a_seeded_symlink(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """O_EXCL|O_NOFOLLOW must stop a pre-seeded symlink at the (randomised)
+        temp path from redirecting the write, or an attacker with directory write
+        access could steer atomic_write at an arbitrary file."""
+        import iterate_cli.generator as generator_mod
+
+        destination = tmp_path / "iterate.config.yaml"
+        victim = tmp_path / "victim.yaml"
+        victim.write_text("precious\n", encoding="utf-8")
+        destination.write_text("original\n", encoding="utf-8")
+
+        # Pin the temp-name randomness so we can plant a symlink exactly where
+        # atomic_write would create its temp file.
+        class _FixedUuid:
+            hex = "0123456789abcdef"
+
+        monkeypatch.setattr(generator_mod, "uuid4", lambda: _FixedUuid())
+        temp = tmp_path / f".{destination.name}.tmp-{os.getpid()}-01234567"
+        temp.symlink_to(victim)
+
+        with pytest.raises(OSError):
+            atomic_write(destination, "rewritten\n")
+
+        assert victim.read_text(encoding="utf-8") == "precious\n"
+        assert destination.read_text(encoding="utf-8") == "original\n"
+        assert not temp.exists() and not temp.is_symlink()
+
+    def test_no_temp_file_left_after_an_encoding_failure(self, tmp_path: Path) -> None:
+        """A UnicodeEncodeError is not an OSError: a handler scoped to OSError
+        would skip cleanup and leave a stray .tmp-* file behind."""
+        destination = tmp_path / "iterate.config.yaml"
+        destination.write_text("x\n", encoding="utf-8")
+
+        with pytest.raises(UnicodeEncodeError):
+            atomic_write(destination, "café\n", encoding="ascii")
+
+        assert list(tmp_path.glob(".iterate.config.yaml.tmp-*")) == []
+        assert destination.read_text(encoding="utf-8") == "x\n"
+
+    def test_restricted_mode_is_not_transiently_world_readable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 0600 config is opened with its own mode from the first byte, so the
+        write window is never world-readable even though a bare os.open would
+        create the temp file with the umask-derived mode."""
+        destination = tmp_path / "iterate.config.yaml"
+        destination.write_text("secret\n", encoding="utf-8")
+        destination.chmod(0o600)
+
+        seen_modes: list[int] = []
+        original_open = os.open
+
+        def recording_open(path, flags, mode=0o777, *args, **kwargs):
+            if Path(str(path)).name.startswith(".iterate.config.yaml.tmp-"):
+                seen_modes.append(mode)
+            return original_open(path, flags, mode, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", recording_open)
+        atomic_write(destination, "still secret\n")
+
+        assert seen_modes == [0o600], "the temp file must be created 0600"
+        assert destination.stat().st_mode & 0o777 == 0o600
+        assert destination.read_text(encoding="utf-8") == "still secret\n"
+
+
+# ---------------------------------------------------------------------------
+# USER-OWNED marker location + placeholder substitution
+# ---------------------------------------------------------------------------
+
+
+class TestUserOwnedMarkerAnchoring:
+    """Generated content embeds user-supplied text in the AI-maintained area, and
+    that text may contain the marker comments verbatim. A plain find() would match
+    the injected copy, splice mid-file, and silently drop every AI section below
+    it."""
+
+    def _md_with_injected_markers(self, extra: str = "") -> str:
+        return (
+            f"{AI_START_MARKER}\n"
+            "## Notes\n"
+            f"If you see {USER_START_MARKER} or {USER_END_MARKER} in this text it is "
+            "just an example of the convention.\n"
+            f"{extra}\n"
+            f"{AI_END_MARKER}\n"
+            f"{USER_START_MARKER}\n"
+            "## Rules\nuser text\n"
+            f"{USER_END_MARKER}\n"
+        )
+
+    def test_extracted_section_ignores_a_marker_literal_in_the_ai_area(self) -> None:
+        md = self._md_with_injected_markers()
+        assert extract_user_owned_section(md) == "## Rules\nuser text"
+
+    def test_replace_keeps_the_ai_sections_below_the_injected_marker(self) -> None:
+        import iterate_cli.generator as generator_mod
+
+        md = self._md_with_injected_markers("## Keep me\nstill AI content\n")
+        ai_start = md.index(AI_END_MARKER) + len(AI_END_MARKER)
+        ai_slice = md[ai_start : md.index(USER_START_MARKER, ai_start)]
+
+        refreshed = generator_mod._replace_user_owned_section(md, "## Rules\nnew text\n")
+
+        # Everything between the AI partition and the real user block survives
+        # verbatim: the injected start marker must not have been taken for a
+        # splice point, which would have swallowed this slice and duplicated an
+        # END marker. (USER_START_MARKER legitimately appears twice -- the
+        # literal quoted in the prose is still prose.)
+        assert refreshed[ai_start : ai_start + len(ai_slice)] == ai_slice
+        assert refreshed.count(AI_END_MARKER) == 1
+        assert "## Rules\nnew text\n" in refreshed
+        assert "user text" not in refreshed
+
+    def test_bounds_reports_marker_indices(self) -> None:
+        import iterate_cli.generator as generator_mod
+
+        md = self._md_with_injected_markers()
+        bounds = generator_mod.user_owned_bounds(md)
+        assert bounds is not None
+        start, end = bounds
+        assert md[start : start + len(USER_START_MARKER)] == USER_START_MARKER
+        assert md[end : end + len(USER_END_MARKER)] == USER_END_MARKER
+        assert end > start
+# ---------------------------------------------------------------------------
