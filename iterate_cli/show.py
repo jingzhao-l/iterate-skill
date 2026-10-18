@@ -297,9 +297,13 @@ def render_show(data: dict[str, Any], json_output: bool = False) -> int:
         return 0
 
     onboarding = data["onboarding"]
-    tui.key_value("Completed", onboarding["completed_at"])
-    tui.key_value("Channel", onboarding["channel"])
-    tui.key_value("Skill version", onboarding["skill_version"])
+    # Coerce to str before handing values to tui.key_value: a hand-edited
+    # `skill_version: 1.0` (float) or an unquoted `completed_at: 2024-01-01`
+    # (date) makes rich.markup.escape raise TypeError, crashing `iterate show`
+    # in TUI mode even though --json is safe (default=str).
+    tui.key_value("Completed", str(onboarding["completed_at"]))
+    tui.key_value("Channel", str(onboarding["channel"]))
+    tui.key_value("Skill version", str(onboarding["skill_version"]))
     tui.key_value(
         "Drift check", "enabled" if onboarding["drift_check"] else "disabled"
     )
@@ -445,7 +449,7 @@ def run_show(project_root: Path, json_output: bool = False) -> int:
         json_output: When True, emit structured JSON to stdout.
 
     Returns:
-        Exit code: 0 on success.
+        Exit code: 0 on success, 1 when the config exists but cannot be read.
     """
     data = collect_show_data(project_root)
     return render_show(data, json_output=json_output)

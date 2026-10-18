@@ -5575,6 +5575,50 @@ class TestShowCommand:
         assert "none set" in captured.out
 
 
+class TestShowTuiToleratesNonStringOnboardingValues:
+    """``iterate show`` in TUI mode must survive a config a human edited.
+
+    ``skill_version: 1.0`` parses to a float, and an unquoted
+    ``completed_at: 2024-01-01`` parses to a date. Both were passed straight to
+    ``tui.key_value`` -> ``rich.markup.escape``, which raises TypeError on a
+    non-string, so a two-character config edit crashed the command -- while
+    ``show --json`` handled the same config fine, because it serialises with
+    ``default=str``.
+    """
+
+    def _edit_config_to_non_strings(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        config_path = fake_project / "iterate.config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        onboarding = config["onboarding"]
+        onboarding["skill_version"] = 1.0          # float
+        onboarding["completed_at"] = "2024-01-01"  # parses to a date
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    def test_tui_mode_does_not_crash(self, fake_project: Path, capsys) -> None:
+        self._edit_config_to_non_strings(fake_project)
+
+        ret = cli_main(["show", "-p", str(fake_project)])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "TypeError" not in (captured.out + captured.err)
+        assert "Traceback" not in (captured.out + captured.err)
+
+    @pytest.mark.parametrize("field,value", [("skill_version", 1.0), ("completed_at", 2024)])
+    def test_tui_and_json_agree_the_command_succeeds(
+        self, fake_project: Path, field: str, value
+    ) -> None:
+        """Both modes must report success for the same config, not just agree
+        on the crash."""
+        self._edit_config_to_non_strings(fake_project)
+
+        tui_ret = cli_main(["show", "-p", str(fake_project)])
+        json_ret = cli_main(["show", "-p", str(fake_project), "--json"])
+        assert tui_ret == 0
+        assert json_ret == 0
+
+
 # ---------------------------------------------------------------------------
 # personalize --clear tests
 # ---------------------------------------------------------------------------
