@@ -18,6 +18,7 @@ import hashlib
 import http.client
 import io
 import json
+import os
 import shutil
 import sys
 import tarfile
@@ -1179,6 +1180,63 @@ class TestSafeExtractall:
             install._safe_extractall(tar, dest)
         assert (dest / "evil-hl").exists()
 
+    def test_rejects_hardlink_escaping_from_a_subdirectory(self, tmp_path: Path):
+        """REGRESSION: a hard link's ``linkname`` is relative to the ARCHIVE
+        ROOT, not to the link's own directory.
+
+        Resolving it against the member's parent instead meant the guard
+        evaluated the wrong path: ``a/b/evil -> ../../outside`` has a clean
+        member name and its parent-relative resolution (``a/outside``) sits
+        inside the destination, so the check passed — while the correct
+        archive-root resolution (``../outside``) escapes it entirely. A
+        subdirectory was the whole gap: every link member at the archive root
+        resolved identically either way.
+        """
+        tar_path = tmp_path / "hl-subdir.tar"
+        with tarfile.open(tar_path, "w") as tar:
+            sub = tarfile.TarInfo("a/b/")
+            sub.type = tarfile.DIRTYPE
+            tar.addfile(sub)
+            link = tarfile.TarInfo("a/b/evil")
+            link.type = tarfile.LNKTYPE
+            link.linkname = "../../outside"
+            tar.addfile(link)
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(tarfile.TarError), tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+        assert not (dest / "a" / "b" / "evil").exists()
+
+    def test_subdirectory_hardlink_resolves_against_archive_root(self, tmp_path: Path):
+        """The allowed case, and the one that proves the resolution is right.
+
+        ``a/b/evil -> target.txt`` is legitimate: the link should point at
+        ``dest/target.txt``. The old parent-relative resolution would have
+        pointed at the non-existent ``dest/a/b/target.txt``, so this asserts
+        the link really targets the archive-root file (same inode), not merely
+        that the guard did not raise.
+        """
+        tar_path = tmp_path / "hl-root-target.tar"
+        with tarfile.open(tar_path, "w") as tar:
+            target = tarfile.TarInfo("target.txt")
+            target.size = 1
+            tar.addfile(target, io.BytesIO(b"a"))
+            sub = tarfile.TarInfo("a/b/")
+            sub.type = tarfile.DIRTYPE
+            tar.addfile(sub)
+            link = tarfile.TarInfo("a/b/evil")
+            link.type = tarfile.LNKTYPE
+            link.linkname = "target.txt"
+            tar.addfile(link)
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with tarfile.open(tar_path) as tar:
+            install._safe_extractall(tar, dest)
+        assert (dest / "a" / "b" / "evil").exists()
+        assert os.stat(dest / "a" / "b" / "evil").st_ino == os.stat(
+            dest / "target.txt"
+        ).st_ino, "a subdir hard link must target the archive-root file"
+
     def test_rejects_oversized_member(self, tmp_path: Path, monkeypatch):
         """A single member larger than the per-member cap is a decompression
         bomb symptom and must be refused before extraction."""
@@ -1275,6 +1333,122 @@ class TestDownloadReleaseSource:
         data = self._tar_bytes({"a": ["SKILL.md"], "b": ["SKILL.md"]})
         with pytest.raises(install.ReleaseStructureError, match="found 2"):
             self._run(monkeypatch, data)
+
+    def _patched_run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        data: bytes,
+        *,
+        signature_url: str | None = None,
+        signature_ok: bool = True,
+    ) -> list[Path]:
+        """Run ``_download_release_source`` and record every temp dir created.
+
+        The temp dirs are created under ``tmp_path`` (via a captive ``mkdtemp``)
+        so the tests can observe them being removed rather than relying on
+        globbing a shared ``$TMPDIR`` that other tests may legitimately hold.
+        """
+        created: list[Path] = []
+        outer = tmp_path / "tmp-capture"
+        outer.mkdir()
+        checksum_text = (
+            f"{hashlib.sha256(data).hexdigest()}  iterate-skill.tar.gz\n"
+        ).encode()
+
+        class _CaptiveTempfile:
+            @staticmethod
+            def mkdtemp(prefix: str = "", suffix: str = "", dir=None):
+                p = tempfile.mkdtemp(prefix=prefix, suffix=suffix, dir=str(outer))
+                created.append(Path(p))
+                return p
+
+        def fake_download(url: str, token: str | None, timeout: int = 30):
+            if "SHA256SUMS" in url:
+                return checksum_text, None
+            if url.endswith(".asc"):
+                return b"-----BEGIN PGP SIGNATURE-----\n\n", None
+            return data, None
+
+        monkeypatch.setattr(install, "tempfile", _CaptiveTempfile)
+        monkeypatch.setattr(install, "_download_bytes", fake_download)
+        monkeypatch.setattr(
+            install,
+            "_enforce_signature_policy",
+            lambda artifact, signature_path: (signature_ok, "verified" if signature_ok else "refused"),
+        )
+        return created
+
+    def test_removes_temp_dir_when_signature_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A refused release must not leave its temp dir behind.
+
+        Regression: the signature gate raises ReleaseIntegrityError, which is
+        NOT in the extraction except-tuple — so the temp dir it had already
+        created survived the attempt, leaking one `iterate-release-*`
+        directory per failed download (accumulating in $TMPDIR across retries).
+        """
+        created = self._patched_run(
+            monkeypatch, tmp_path, self._tar_bytes({"srcdir": ["SKILL.md"]}),
+            signature_url="https://example.com/iterate-skill.tar.gz.asc",
+            signature_ok=False,
+        )
+        with pytest.raises(install.ReleaseIntegrityError, match="refused"):
+            install._download_release_source(
+                "https://example.com/iterate-skill.tar.gz",
+                "https://example.com/SHA256SUMS.txt",
+                None,
+                "https://example.com/iterate-skill.tar.gz.asc",
+            )
+        assert len(created) == 1, "exactly one temp dir is created per attempt"
+        assert not created[0].exists(), "a refused release must clean up its temp dir"
+
+    def test_removes_temp_dir_when_structure_is_broken(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A verified release with the wrong layout also must not leak."""
+        created = self._patched_run(monkeypatch, tmp_path, self._tar_bytes({"docs": ["README.md"]}))
+        with pytest.raises(install.ReleaseStructureError, match="exactly one"):
+            install._download_release_source(
+                "https://example.com/iterate-skill.tar.gz",
+                "https://example.com/SHA256SUMS.txt",
+                None,
+            )
+        assert len(created) == 1
+        assert not created[0].exists()
+
+    def test_removes_temp_dir_when_archive_wont_extract(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A corrupt-but-correctly-checksummed archive fails closed AND cleans up."""
+        created = self._patched_run(monkeypatch, tmp_path, b"not a tarball at all")
+        with pytest.raises(install.ReleaseStructureError, match="could not be extracted"):
+            install._download_release_source(
+                "https://example.com/iterate-skill.tar.gz",
+                "https://example.com/SHA256SUMS.txt",
+                None,
+            )
+        assert len(created) == 1
+        assert not created[0].exists()
+
+    def test_keeps_temp_dir_on_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The success path hands ownership of the tree to the caller, so it must
+        survive — the caller removes its parent. Removing it here would break
+        every legitimate install."""
+        created = self._patched_run(
+            monkeypatch, tmp_path, self._tar_bytes({"srcdir": ["SKILL.md"]})
+        )
+        result = install._download_release_source(
+            "https://example.com/iterate-skill.tar.gz",
+            "https://example.com/SHA256SUMS.txt",
+            None,
+        )
+        assert result is not None and (result / "SKILL.md").is_file()
+        assert created and created[0].exists(), "the successful tree must survive the call"
+        assert created[0] == result.parent
 
 
 # --------------------------------------------------------------------------- #

@@ -1787,10 +1787,14 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
          every individual member under it too (a tiny compressed tarball must
          not decompress into hundreds of GiB on disk).
 
-    Python 3.12+'s built-in ``filter="data"`` handles (1) and (2) but NOT the
-    size caps, so the caps are applied on both code paths.
+    Checks (1) and (2) are applied on EVERY Python version, not only the
+    ``filter="data"`` path: the containment guarantee must not depend on the
+    interpreter (the device/fifo guard below is enforced the same way). On
+    Python 3.12+ ``filter="data"`` is still passed to ``extractall`` as
+    defence in depth.
     """
     members = tar.getmembers()
+    base = path.resolve()
     total_uncompressed = 0
     for member in members:
         if member.size > MAX_EXTRACT_MEMBER_BYTES:
@@ -1813,23 +1817,18 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
             raise tarfile.TarError(
                 f"Refusing device/fifo member in archive: {member.name}"
             )
-
-    if hasattr(tarfile, "data_filter"):
-        tar.extractall(path=path, filter="data")
-        return
-
-    # Fallback for Python < 3.12: validate each member resolves inside path.
-    # Uses is_relative_to (platform-agnostic) instead of a hardcoded "/" join,
-    # which would break on Windows backslash separators.
-    base = path.resolve()
-    for member in members:
+        # The member's OWN path must resolve inside the destination. Uses
+        # is_relative_to (platform-agnostic) instead of a hardcoded "/" join,
+        # which would break on Windows backslash separators.
         member_path = (path / member.name).resolve()
         if not member_path.is_relative_to(base):
             raise tarfile.TarError(f"Suspicious member path: {member.name}")
         # Symlinks are the classic escape vector even when their own path is
         # inside the destination: the link *target* may point outside it.
         # Absolute targets and relative targets that climb out of the
-        # destination are both rejected here (mirrors data_filter behaviour).
+        # destination are both rejected here. A symlink's target is resolved
+        # relative to the LINK's own directory (POSIX semantics, and what
+        # ``filter="data"`` does).
         if member.issym():
             link_target = (path / member.name).parent / member.linkname
             if not link_target.resolve().is_relative_to(base):
@@ -1837,15 +1836,24 @@ def _safe_extractall(tar: tarfile.TarFile, path: Path) -> None:
                     f"Suspicious symlink target in member {member.name}: {member.linkname}"
                 )
         # Hard links are equally dangerous: extracting a hard link whose
-        # linkname resolves outside the destination would create a hard link
-        # to an arbitrary file on disk. Apply the same containment check.
+        # linkname resolves outside the destination would create a file entry
+        # pointing at an arbitrary file on disk. A hard link's ``linkname`` is
+        # an archive-root-relative path (NOT relative to the link's directory),
+        # so it must be resolved against ``base`` — resolving it against the
+        # member's parent let a link in a subdirectory (``a/b/evil`` ->
+        # ``../outside``) slip past the guard even though the archive root
+        # resolution escapes.
         if member.islnk():
-            link_target = (path / member.name).parent / member.linkname
-            if not link_target.resolve().is_relative_to(base):
+            link_target = (base / member.linkname).resolve()
+            if not link_target.is_relative_to(base):
                 raise tarfile.TarError(
                     f"Suspicious hard link target in member {member.name}: {member.linkname}"
                 )
-    tar.extractall(path=path)
+
+    if hasattr(tarfile, "data_filter"):
+        tar.extractall(path=path, filter="data")
+    else:
+        tar.extractall(path=path)
 
 
 def _download_bytes(
@@ -2103,6 +2111,13 @@ def _download_release_source(
     _success("Release tarball checksum verified.")
 
     temp_dir = Path(tempfile.mkdtemp(prefix="iterate-release-"))
+    # The extracted tree is returned to the caller, who owns it and removes its
+    # parent afterwards — so it must survive this function on SUCCESS only. On
+    # every failure path (including ``ReleaseIntegrityError`` from the signature
+    # gate, which is NOT in the except tuple below) the ``finally`` below removes
+    # the temp dir; without it a failed signature check leaked one
+    # ``iterate-release-*`` directory per attempt.
+    keep_temp_dir = False
     try:
         # Mandatory authenticity gate (see _enforce_signature_policy): the
         # signature is written next to the tarball inside the temp dir so gpg
@@ -2133,12 +2148,12 @@ def _download_release_source(
             root_candidates = [p for p in temp_dir.iterdir() if p.is_dir()]
             skill_roots = [d for d in root_candidates if (d / "SKILL.md").is_file()]
             if len(skill_roots) != 1:
-                shutil.rmtree(temp_dir, ignore_errors=True)
                 raise ReleaseStructureError(
                     "release tarball must contain exactly one top-level directory "
                     "with a SKILL.md marker, "
                     f"found {len(skill_roots)}."
                 )
+            keep_temp_dir = True
             return skill_roots[0]
     except (tarfile.TarError, OSError, EOFError, ValueError, zlib.error):
         # A checksum-verified archive that cannot be extracted is a broken
@@ -2148,8 +2163,10 @@ def _download_release_source(
         # TarError/OSError subclasses — without them a damaged-but-correctly-
         # checksummed archive raised a raw traceback (same fix as
         # updater._download_verified_release; keep the two in sync).
-        shutil.rmtree(temp_dir, ignore_errors=True)
         raise ReleaseStructureError("release tarball could not be extracted.")
+    finally:
+        if not keep_temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def _update_one_assistant(
