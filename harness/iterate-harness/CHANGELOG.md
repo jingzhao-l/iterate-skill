@@ -51,6 +51,27 @@ All notable changes to iterate-harness should be recorded in this file.
   report` / html 报告读的都是它，于是它现在可能与循环结论不一致——不一致是可见的（停止理由 + compact
   那行的闸位列），但把三处命名统一是另一批的活，本轮没有顺手改 30 个文件。
 
+### Fixed
+
+- **`scripts/diff_kernel_implementations.py` 不再把"契约有两个版本"读成"两份实现分叉"。** 它原先按
+  候选路径拿到**第一个**有 `dist/convergence.js` 的 `iterate-kernel` 就用，不核版本。10-18 实测：
+  语料已随 `9d6d9036` 重钉到 0.1.8，而默认解析落到 GlassPane harness 里那份**已发布的 0.1.7**，
+  于是 0.1.8 新增的 `convergence/absent-breaker-still-halts-on-budget` 报成
+  `TS refused, Python accepted`。这条红又不在 CI 里（grep `.github/workflows` 无引用），下一轮跑
+  尺子的人按提示去看会以为 Python 侧写错了——最省事的"修法"是把对的那一侧改弱去对齐旧产物。
+  现在候选的版本必须等于 manifest 钉的版本，否则**跳过并打印具名拒绝**（`the wrong artifact, not a
+  disagreement`，附两条补救：内核线发布该版本后重钉，或 `--kernel` 指到按它构建的 checkout）；
+  `package.json` 读不出版本同样拒——不能假设手里那份就是钉的那份。全部候选被拒 ⇒ exit 2，与既有
+  "取不到就是红、不许静默跳过"的口径一致。
+  新 5 条用例（importlib 直接驱动脚本函数，`REPO`/`MANIFEST` 都 monkeypatch 到 tmp，不依赖本机
+  装了什么）；变异三发各打中具名用例（接受任意构建／把钉的那份判成过期／walk 直接回第一个 dist），
+  前后 sha256 核回；ruff 0.16.8 干净。实测这条红现在长成：`refused: resolved …iterate-kernel is
+  iterate-kernel@0.1.7 but the vendored corpus pins 0.1.8 …`，exit=2。
+  **决定记在这里**：本批**不代发布** `iterate-kernel@0.1.8`。npm 版本不可变，而 0.1.8 的 TS 与语料
+  仍可能在那条线上继续动，发出去就只能越过、不能替换；pin 追平属内核发布线的动作。补救命令：
+  `cd kernel && npm ci && npm run build && npm publish`，之后把 `tests/kernel_fixtures` 的语料与
+  manifest 按**已发布包**逐文件重记。
+
 ### Added
 
 - **场景④那两把闸的对照补到能红（只动测试，未动生产代码）。** 上一批的
