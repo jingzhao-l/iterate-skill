@@ -135,8 +135,8 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       >
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
-- [~] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
-      > 本版：**2/3 达成**（ClawHub ✅、SkillHub ✅、ModelScope ⚠️ 凭据过期待补发，见下方状态块）。
+- [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > 本版 **3/3 达成**：ClawHub / ModelScope / SkillHub 的 `tags.latest` 均为 `3.5.3`。
       > **3.5.3 状态（2026-10-18 发版 / CHANGELOG 条目落笔 2026-10-17）**：patch（无人值守
       > 全量复审 + 修复）。测试套件 **1451 → 1563**（新增 `tests/test_prepush_hook.py`，
       > 并大幅扩充 `test_signing` / `test_updater` / `test_release_meta` /
@@ -165,14 +165,17 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > npm-installer/LICENSE）`.skillhub publish` 成功（`ok:true`，versionId `444021`，
       > `tags.latest=3.5.3`，`reviewStatus/securityScanStatus/contentAuditStatus=pending`
       > 为平台异步审核）；
-      > ⚠️ **ModelScope 未完成（凭据过期，需人工）**：`~/.modelscope/credentials/session`
-      > 的会话令牌已失效——`api.upload_file_to_openapi(iterate-skill-ms-3.5.3.zip)`
-      > 返回 `[E3001] [401] Invalid authentication: user not authenticated`
-      > （`POST /openapi/v1/files/upload`）。公开读接口仍可用，
-      > `get_skill('jingzhao0/iterate-skill').last_modified = 2026-10-16T13:27:28Z`，
-      > 即平台仍指向 **3.5.2**。补发命令（重新登录后执行）：
-      > `/opt/miniconda3/bin/python .dist_tmp/verify_update_353.py`
-      > ——脚本已就绪，只需 `MODELSCOPE_API_TOKEN` 或有效的交互式登录会话。
+      > ✅ **ModelScope 已补发完成**：`~/.modelscope/credentials/session` 原只有
+      > 一个会话 cookie（`d6194e0d…`），SDK 拿它当 API token 用被服务器拒
+      > （`[E3001] [401] Invalid authentication`，`POST /openapi/v1/files/upload`）。
+      > 到 `https://modelscope.cn/my/myaccesstoken` 取 `ms-` 开头的 API token，
+      > `HubApi().login(token)` 换取并持久化会话凭据后重跑
+      > `/opt/miniconda3/bin/python .dist_tmp/verify_update_353.py` 即通：
+      > `last_modified` 由 `2026-10-16T13:27:28Z`（3.5.2）前进到
+      > `2026-10-18T08:02:41Z`。**消费端已实测**：`api.download_skill(
+      > 'jingzhao0/iterate-skill')` 落地 61 文件、harness/kernel/tests/.githooks/
+      > badges 均为 0，`SKILL.md version: 3.5.3`、`pyproject.toml 3.5.3`、
+      > `npm-installer/package.json 3.5.3` 三处一致。
       > 精简包 `iterate-skill-ms-3.5.3.zip` 已构建并自检（61 文件 / 566,624 字节，
       > < 5MiB，harness/kernel/tests/.githooks/badges 均为 0，SKILL.md 3.5.3）。
       >
