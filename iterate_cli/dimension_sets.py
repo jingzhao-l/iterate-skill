@@ -81,12 +81,16 @@ def is_valid_set_name(name: str) -> bool:
     return bool(_SCOPE_NAME_RE.match(name))
 
 
-def _normalize_set(raw: Any) -> dict[str, Any] | None:
+def _normalize_set(
+    raw: Any, on_drop_dimension: Callable[[str], None] | None = None
+) -> dict[str, Any] | None:
     """Normalize a raw dimension-set value to ``{dimensions, focus}``.
 
     Returns None when the shape is invalid. Focus overrides are kept only for
     dimensions actually present in that set's ``dimensions``, so a stale focus
-    key can never reference a disabled dimension.
+    key can never reference a disabled dimension. Non-canonical dimension ids
+    are dropped; ``on_drop_dimension`` (when given) is called with each so a
+    caller that writes the result back can announce the loss.
     """
     if not isinstance(raw, dict):
         return None
@@ -96,7 +100,12 @@ def _normalize_set(raw: Any) -> dict[str, Any] | None:
         return None
     if not all(isinstance(d, str) for d in dims_raw):
         return None
-    dims = [d for d in dims_raw if d in CANONICAL_DIMENSIONS]
+    dims = []
+    for d in dims_raw:
+        if d in CANONICAL_DIMENSIONS:
+            dims.append(d)
+        elif on_drop_dimension is not None:
+            on_drop_dimension(d)
     if not dims:
         return None
 
@@ -119,7 +128,9 @@ def _normalize_set(raw: Any) -> dict[str, Any] | None:
 
 
 def normalize_dimension_sets(
-    raw: Any, on_drop: Callable[[str], None] | None = None
+    raw: Any,
+    on_drop: Callable[[str], None] | None = None,
+    on_drop_dimension: Callable[[str, str], None] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Normalize an arbitrary dimension_sets value to a clean ``{name: {...}}`` map.
 
@@ -133,6 +144,10 @@ def normalize_dimension_sets(
             this (e.g. ``tui.warning``) — silently deleting a hand-written
             entry on the next ``iterate refresh`` with exit 0 and no output
             was data loss the operator never saw. Read-only callers may omit it.
+        on_drop_dimension: Optional callback invoked with ``(set_name,
+            dimension)`` for each non-canonical dimension id dropped from a set.
+            Without it, a dropped dimension is reported through ``on_drop``
+            (so a writing caller still announces the loss).
 
     Returns:
         Ordered mapping of scope-name -> normalized set spec.
@@ -145,7 +160,16 @@ def normalize_dimension_sets(
             if on_drop is not None:
                 on_drop(str(name))
             continue
-        normalized = _normalize_set(raw_set)
+
+        def _report_dimension(
+            dimension: str, _name: str = name,
+        ) -> None:
+            if on_drop_dimension is not None:
+                on_drop_dimension(_name, dimension)
+            elif on_drop is not None:
+                on_drop(f"{_name}.dimensions: {dimension}")
+
+        normalized = _normalize_set(raw_set, on_drop_dimension=_report_dimension)
         if normalized is not None:
             out[name] = normalized
         elif on_drop is not None:
@@ -161,8 +185,9 @@ def suggest_dimension_sets(scan: ScanResult) -> dict[str, dict[str, Any]]:
 
     Returns:
         Ordered mapping of scope-name -> normalized set spec. Always includes
-        the ``security`` and ``performance`` cross-cutting audits regardless of
-        stack; layer-specific sets are added only when detected.
+        the ``security``, ``performance`` and ``style-tests`` cross-cutting
+        audits regardless of stack; layer-specific sets are added only when
+        detected.
     """
     from iterate_cli.scan import _has_api_layer
 

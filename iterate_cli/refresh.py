@@ -216,18 +216,21 @@ def drift_unavailable_code(
     config_path = project_root / CONFIG_YAML
     if config_path.is_file() and config is None:
         return DRIFT_REASON_CORRUPT
+    # Onboarding state outranks every other reason: without a completed
+    # onboarding, `iterate refresh` refuses to run ("onboarding not
+    # completed"), so advertising "run `iterate refresh`" here would send the
+    # user to a command guaranteed to reject them. Evaluate this BEFORE the
+    # config-presence guard: a never-onboarded project usually has no
+    # iterate.config.yaml at all, so ``config`` is ``None`` there and the code
+    # would otherwise fall through to the vaguer "unknown".
+    if not is_onboarding_complete(project_root):
+        return DRIFT_REASON_NOT_ONBOARDED
     if config is not None:
         onboarding = (
             config.get("onboarding")
             if isinstance(config.get("onboarding"), dict)
             else {}
         )
-        # Onboarding state outranks every other reason: without a completed
-        # onboarding, `iterate refresh` refuses to run ("onboarding not
-        # completed"), so advertising "run `iterate refresh`" here would send
-        # the user to a command guaranteed to reject them.
-        if not is_onboarding_complete(project_root):
-            return DRIFT_REASON_NOT_ONBOARDED
         if not onboarding.get("drift_check", True):
             return DRIFT_REASON_DISABLED
         stored = onboarding.get("fingerprints") or []
@@ -558,7 +561,7 @@ def _build_refreshed_config(
     """
 
     def _as_dict_list(value: object) -> dict[str, Any]:
-        return value if isinstance(value, dict) else {}
+        return dict(value) if isinstance(value, dict) else {}
 
     def _as_list(value: object) -> list[str]:
         return list(value) if isinstance(value, list) else []
@@ -771,6 +774,16 @@ def full_reonboard(
         tui.error(f"Failed to write onboarding outputs: {exc}")
         return REONBOARD_FAILED
 
+    # On success the pre-write snapshots are intentionally kept as a safety net.
+    # Name them: otherwise every re-onboard silently leaves untracked
+    # ``*.bak-*`` files in the project root with no hint they exist.
+    kept_backups = [
+        f"{name}.bak-{backup_suffix}"
+        for name in (ITERATE_MD, CONFIG_YAML)
+        if (project_root / f"{name}.bak-{backup_suffix}").is_file()
+    ]
+    if kept_backups:
+        tui.hint("Pre-re-onboard backup kept: " + ", ".join(kept_backups))
     return REONBOARD_COMPLETED
 
 
@@ -964,7 +977,7 @@ def _build_refresh_data(
         # dropped hand-written entry must be announced — silently deleting it
         # on the next `iterate refresh` (exit 0, no output) was data loss.
         on_drop=lambda name: tui.warning(
-            f"dimension_sets.{name!r} is malformed and was dropped from the "
+            f"dimension_sets entry {name!r} was dropped from the "
             "refreshed config (see `iterate doctor`)."
         ),
     )
@@ -999,12 +1012,12 @@ def _build_refresh_data(
     if language not in ("zh", "en"):
         language = DEFAULT_LANGUAGE
 
-    # Preserve existing personalization so refresh does not lose it.
-    personalization = None
-    if existing_config.get("personalization"):
-        from iterate_cli.personalize import load_personalization_from_config
-
-        personalization = load_personalization_from_config(existing_config)
+    # NOTE: the raw ``personalization`` block is preserved verbatim by
+    # _build_refreshed_config, and generate_refreshed_md splices the existing
+    # ITERATE.md user-owned section back in unchanged. Loading it into
+    # OnboardingData here would therefore be dead work -- and worse, the loader
+    # emits "malformed ... will not be preserved" warnings that are false for
+    # refresh (refresh *does* preserve the raw dict). Deliberately not loaded.
 
     # Capture fresh fingerprints, honouring drift-ignore patterns.
     ignore_patterns = get_drift_ignore(existing_config)
@@ -1039,5 +1052,4 @@ def _build_refresh_data(
         coverage_validation=reviewer["coverage_validation"],
         scope_chunk_size=reviewer["scope_chunk_size"],
         drift_ignore=ignore_patterns,
-        personalization=personalization,
     )

@@ -172,7 +172,9 @@ def scan_manifests(project_root: Path, ignore_patterns: list[str] | None = None)
 
 
 def capture_fingerprints(
-    project_root: Path, ignore_patterns: list[str] | None = None
+    project_root: Path,
+    ignore_patterns: list[str] | None = None,
+    fallback_fingerprints: list[dict[str, str]] | None = None,
 ) -> list[FingerprintEntry]:
     """Capture fingerprints for all existing manifest files.
 
@@ -183,6 +185,12 @@ def capture_fingerprints(
     Args:
         project_root: The project root directory to scan.
         ignore_patterns: Optional fnmatch patterns of manifest names to skip.
+        fallback_fingerprints: Optional previously stored fingerprints. When a
+            manifest still exists but cannot be read (e.g. a permission error),
+            the previously recorded digest for that manifest is reused so the
+            unreadable file does not surface as a false ``removed`` drift that
+            tells the user to run ``iterate refresh``. A genuinely deleted
+            manifest (``FileNotFoundError``) is still reported as removed.
 
     Returns:
         List of FingerprintEntry objects, one per readable manifest file.
@@ -191,16 +199,47 @@ def capture_fingerprints(
     for manifest in scan_manifests(project_root, ignore_patterns):
         try:
             digest = compute_sha256(manifest)
+        except FileNotFoundError:
+            # Genuinely gone: a real removal, reported by the drift comparison.
+            continue
         except OSError as exc:
             # Route through the TUI layer (project convention: all user-facing
             # output goes through iterate_cli.tui) instead of a bare print
             # with an ad-hoc "fingerprint: warning:" prefix.
             from iterate_cli.tui import tui
 
+            stored_digest = _fallback_digest(fallback_fingerprints, manifest.name)
+            if stored_digest is not None:
+                # The file is still there, just unreadable right now. Keep the
+                # last known digest so compare_fingerprints does not classify it
+                # as removed (which would advise a needless `iterate refresh`).
+                tui.warning(
+                    f"cannot fingerprint {manifest.name}: {exc}; keeping the "
+                    "previously recorded digest."
+                )
+                entries.append(FingerprintEntry(path=manifest.name, sha256=stored_digest))
+                continue
             tui.warning(f"cannot fingerprint {manifest.name}: {exc}")
             continue
         entries.append(FingerprintEntry(path=manifest.name, sha256=digest))
     return entries
+
+
+def _fallback_digest(
+    fallback_fingerprints: list[dict[str, str]] | None, name: str
+) -> str | None:
+    """Return the stored digest for manifest ``name``, or None when unknown."""
+    if not fallback_fingerprints:
+        return None
+    for entry in fallback_fingerprints:
+        if (
+            isinstance(entry, dict)
+            and entry.get("path") == name
+            and isinstance(entry.get("sha256"), str)
+            and entry["sha256"]
+        ):
+            return entry["sha256"]
+    return None
 
 
 def fingerprints_to_dict(entries: list[FingerprintEntry]) -> list[dict[str, str]]:
@@ -337,7 +376,7 @@ def check_drift(
         DriftResult describing what changed since last onboarding.
     """
     current = fingerprints_to_dict(
-        capture_fingerprints(project_root, ignore_patterns)
+        capture_fingerprints(project_root, ignore_patterns, stored_fingerprints)
     )
     if ignore_patterns:
         # Guard non-dict entries so a hand-edited config with junk stored

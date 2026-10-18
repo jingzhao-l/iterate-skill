@@ -6232,3 +6232,90 @@ class TestUserOwnedMarkerAnchoring:
         assert md[end : end + len(USER_END_MARKER)] == USER_END_MARKER
         assert end > start
 # ---------------------------------------------------------------------------
+# Fingerprint fallback + corrupt-config classification
+# ---------------------------------------------------------------------------
+
+
+class TestCaptureFingerprintsFallback:
+    """An unreadable manifest is not a deleted manifest. Without the stored
+    digest as a fallback it would surface as a false 'removed' drift and tell the
+    user to run `iterate refresh` for a file that is still there."""
+
+    def test_unreadable_manifest_keeps_the_stored_digest(
+        self, fake_project: Path, capsys
+    ) -> None:
+        manifest = fake_project / "pyproject.toml"
+        first = capture_fingerprints(fake_project)
+        stored = fingerprints_to_dict(first)
+        assert len(stored) == 1
+
+        original_mode = manifest.stat().st_mode
+        try:
+            manifest.chmod(0o000)
+            try:
+                second = capture_fingerprints(fake_project, fallback_fingerprints=stored)
+            finally:
+                manifest.chmod(original_mode)
+        except OSError:
+            pytest.skip("cannot drop read permission in this environment")
+
+        assert len(second) == 1, "the manifest still exists and must still be listed"
+        assert second[0].sha256 == first[0].sha256
+        assert "keeping the previously recorded digest" in capsys.readouterr().err
+
+    def test_without_fallback_an_unreadable_manifest_is_dropped(self, fake_project: Path) -> None:
+        manifest = fake_project / "pyproject.toml"
+        original_mode = manifest.stat().st_mode
+        try:
+            manifest.chmod(0o000)
+            try:
+                assert capture_fingerprints(fake_project) == []
+            finally:
+                manifest.chmod(original_mode)
+        except OSError:
+            pytest.skip("cannot drop read permission in this environment")
+
+    def test_a_genuinely_deleted_manifest_is_still_reported(self, fake_project: Path) -> None:
+        stored = fingerprints_to_dict(capture_fingerprints(fake_project))
+        (fake_project / "pyproject.toml").unlink()
+        current = capture_fingerprints(fake_project, fallback_fingerprints=stored)
+        assert current == []
+        assert compare_fingerprints(stored, fingerprints_to_dict(current)).removed == [
+            "pyproject.toml"
+        ]
+
+    def test_a_fallback_for_another_file_does_not_apply(self, fake_project: Path) -> None:
+        stored = [{"path": "package.json", "sha256": "a" * 64}]
+        entries = capture_fingerprints(fake_project, fallback_fingerprints=stored)
+        assert [e.path for e in entries] == ["pyproject.toml"]
+        assert entries[0].sha256 != "a" * 64
+
+
+class TestLoadConfigStrictUtf8:
+    def test_non_utf8_raises_corrupt_config_error(self, tmp_path: Path) -> None:
+        """A non-UTF-8 file raises UnicodeDecodeError (a ValueError, not OSError),
+        so it must be caught explicitly: otherwise it escapes as a raw traceback
+        instead of the CorruptConfigError the callers and `--clear` expect."""
+        config = tmp_path / "iterate.config.yaml"
+        config.write_bytes(b"\xff\xfe\x00invalid utf-8")
+
+        from iterate_cli.personalize import CorruptConfigError, load_config_strict
+
+        with pytest.raises(CorruptConfigError):
+            load_config_strict(config)
+
+    def test_valid_utf8_config_still_parses(self, tmp_path: Path) -> None:
+        config = tmp_path / "iterate.config.yaml"
+        config.write_text("validation:\n  commands: {}\n", encoding="utf-8")
+
+        from iterate_cli.personalize import load_config_strict
+
+        assert load_config_strict(config) == {"validation": {"commands": {}}}
+
+    def test_missing_and_empty_config_return_empty_dict(self, tmp_path: Path) -> None:
+        from iterate_cli.personalize import load_config_strict
+
+        assert load_config_strict(tmp_path / "absent.yaml") == {}
+        empty = tmp_path / "empty.yaml"
+        empty.write_text("", encoding="utf-8")
+        assert load_config_strict(empty) == {}

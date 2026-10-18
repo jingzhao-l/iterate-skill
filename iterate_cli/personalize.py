@@ -13,6 +13,7 @@ user-owned section of ``ITERATE.md``.
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 from collections.abc import Callable
@@ -66,7 +67,17 @@ def load_config_strict(config_path: Path) -> dict[str, Any]:
     """
     if not config_path.is_file():
         return {}
-    raw = config_path.read_text(encoding="utf-8")
+    # A non-UTF-8 file raises UnicodeDecodeError (a ValueError, not OSError), so
+    # it must be caught explicitly: otherwise it escapes as a raw traceback
+    # instead of the CorruptConfigError the callers (and --clear) expect.
+    # refresh.load_onboarding_config already guards the read this way.
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise CorruptConfigError(
+            "iterate.config.yaml 不是合法 UTF-8 文本，已拒绝写入以免覆盖损坏配置："
+            f"{exc}"
+        ) from exc
     try:
         parsed = yaml.safe_load(raw)
     except yaml.YAMLError as exc:
@@ -651,7 +662,11 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     if not isinstance(raw_protected, list):
         dropped.append("protected_paths")
         raw_protected = []
-    protected = [str(p) for p in raw_protected]
+    # Skip null/empty entries: str(None) would persist the literal "None" as a
+    # protected path and render a bogus `- \`None\`` bullet into ITERATE.md.
+    protected = [
+        str(p) for p in raw_protected if p is not None and str(p).strip()
+    ]
 
     risk_areas: list[RiskArea] = []
     raw_risk_areas = raw.get("risk_areas") or []
@@ -659,10 +674,11 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
         dropped.append("risk_areas")
         raw_risk_areas = []
     for item in raw_risk_areas:
-        if isinstance(item, dict) and "path" in item:
+        path = item.get("path") if isinstance(item, dict) else None
+        if path is not None and str(path).strip():
             risk_areas.append(
                 RiskArea(
-                    path=str(item["path"]),
+                    path=str(path),
                     reason=str(item.get("reason", "")),
                 )
             )
@@ -675,13 +691,14 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
         dropped.append("known_intentional")
         raw_known = []
     for item in raw_known:
-        if isinstance(item, dict) and "file" in item:
+        file_value = item.get("file") if isinstance(item, dict) else None
+        if file_value is not None and str(file_value).strip():
             # Defensive parse of line: YAML may contain non-integer strings
             # if manually edited. Fall back to 0 (whole-file suppression).
             line = _coerce_line_number(item.get("line"))
             known.append(
                 KnownIntentional(
-                    file=str(item["file"]),
+                    file=str(file_value),
                     line=line,
                     dimension=str(item.get("dimension", "")),
                     reason=str(item.get("reason", "")),
@@ -696,10 +713,11 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
         dropped.append("dimension_focus")
         raw_dim_focus = []
     for item in raw_dim_focus:
-        if isinstance(item, dict) and "dimension" in item:
+        dimension = item.get("dimension") if isinstance(item, dict) else None
+        if dimension is not None and str(dimension).strip():
             dim_focus.append(
                 DimensionFocusOverride(
-                    dimension=str(item["dimension"]),
+                    dimension=str(dimension),
                     focus=str(item.get("focus", "")),
                 )
             )
@@ -914,12 +932,15 @@ def merge_personalization_into_config(
     }
     raw_whitelist = validation.get("command_whitelist") or []
     # A hand-edited scalar ``command_whitelist: pytest`` must not be char-split
-    # into ['p','y','t','e','s','t'] and persisted; coerce to string entries
-    # only for genuine list members, degrading any other shape to an empty
-    # whitelist (dropping the key below keeps the config schema-valid).
-    whitelist = [str(w) for w in raw_whitelist if isinstance(w, (str, int, float))] if isinstance(
-        raw_whitelist, list
-    ) else []
+    # into ['p','y','t','e','s','t'] and persisted. Keep only non-empty string
+    # entries: ``bool`` is a subclass of ``int``, so accepting ints/floats would
+    # coerce ``command_whitelist: [true, 5]`` to the meaningless prefixes
+    # ``["True", "5"]`` and persist them.
+    whitelist = (
+        [w for w in raw_whitelist if isinstance(w, str) and w.strip()]
+        if isinstance(raw_whitelist, list)
+        else []
+    )
 
     def _owned_strings(module: str) -> set[str]:
         """Return the previously personalization-owned strings for a module."""
@@ -1322,7 +1343,10 @@ def run_personalize_wizard(
     if not _ensure_interactive(input_func):
         return None
 
-    data = existing or PersonalizationData()
+    # Work on a copy: every step reassigns fields on ``data`` in place, so a
+    # cancellation mid-wizard would otherwise leave the caller's ``existing``
+    # object half-edited (its later reuse would see partially applied input).
+    data = copy.deepcopy(existing) if existing is not None else PersonalizationData()
 
     _print_personalize_welcome()
 
