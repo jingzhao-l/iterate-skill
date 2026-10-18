@@ -42,28 +42,48 @@ Examples:
 }
 
 async function run() {
-  const options = parseArgs(process.argv.slice(2));
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    // Hard argument errors are THROWN by parseArgs (library code never calls
+    // process.exit); report them cleanly at this boundary.
+    console.error(`Error: ${err.message}`);
+    return 1;
+  }
 
   if (options.mode === 'help') {
     printHelp();
-    process.exit(0);
+    return 0;
   }
 
   if (options.mode === 'version') {
     console.log(`iterate-skill-installer ${VERSION}`);
-    process.exit(0);
+    return 0;
   }
 
   try {
     const code = await main(options);
     // Normalize: a null/non-numeric code (main should never produce one, but a
     // signal-killed child upstream does) must surface as a failure, never as
-    // the success exit 0 that `process.exit(null)` would yield.
-    process.exit(typeof code === 'number' ? code : 1);
+    // the success exit 0 that a null exit code would yield.
+    return typeof code === 'number' ? code : 1;
   } catch (err) {
     console.error(`\nUnexpected error: ${err.message}`);
-    process.exit(1);
+    return 1;
   }
 }
 
-run();
+// CLI boundary: set process.exitCode rather than calling process.exit(), so
+// buffered stdout/stderr still flush and no caller cleanup is skipped. The
+// trailing catch is the top-level net: an unexpected rejection (e.g. a throw
+// before run()'s inner try) becomes a clean message + non-zero code, never an
+// unhandled-rejection stack trace.
+run()
+  .then((code) => {
+    process.exitCode = typeof code === 'number' ? code : 1;
+  })
+  .catch((err) => {
+    console.error(`\nUnexpected error: ${err && err.message ? err.message : err}`);
+    process.exitCode = 1;
+  });

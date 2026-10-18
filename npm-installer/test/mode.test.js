@@ -9,7 +9,8 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { resolveInstallMode, parseChecksums, enforceDownloadedSize, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, validateTokenShape, buildAuthFlags, InstallerError, runCommand, runPythonInstall, signaturePolicyError, allowUnsigned, ALLOW_UNSIGNED_ENV } = require('../lib/installer');
+const { spawnSync } = require('node:child_process');
+const { resolveInstallMode, parseChecksums, constantTimeHashEqual, enforceDownloadedSize, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, validateTokenShape, buildAuthFlags, InstallerError, runCommand, runPythonInstall, signaturePolicyError, allowUnsigned, ALLOW_UNSIGNED_ENV } = require('../lib/installer');
 
 // 64-char lowercase hex digest, as sha256 actually produces.
 const H = 'a'.repeat(64);
@@ -247,20 +248,36 @@ async function run() {
   // parseArgs: value-consuming flags must reject a following flag as their
   // value instead of silently swallowing it (regression: `--ai --force`
   // previously set ai='--force' and misled the Python side with an invalid
-  // choice). process.exit is stubbed so the error path is assertable.
+  // choice). Hard argument errors are now THROWN as InstallerError rather than
+  // calling process.exit: library code must not kill the host process, so the
+  // exit code is set once, at the bin/cli.js boundary.
+  assert.throws(() => parseArgs(['--ai', '--force']), InstallerError, '--ai must reject a flag as its value');
+  assert.throws(() => parseArgs(['--target', '--global']), InstallerError, '--target must reject a flag as its value');
+  assert.throws(() => parseArgs(['--token', '--yes']), InstallerError, '--token must reject a flag as its value');
+  assert.throws(() => parseArgs(['--ai']), InstallerError, '--ai without a value must error');
+  assert.throws(() => parseArgs(['--token']), InstallerError, '--token without a value must error');
+
+  // The errors must be actionable, not a bare "requires a value".
+  assert.throws(() => parseArgs(['--ai', '--force']), /--ai requires a value/);
+  assert.throws(() => parseArgs(['--ai']), /--ai requires a value/);
+  // parseArgs must never reach the process exit API (a library function that
+  // called process.exit would have terminated the test runner above).
   const origExit = process.exit;
-  process.exit = (code) => {
-    throw new Error(`exit(${code})`);
-  };
+  let exitCalled = false;
+  process.exit = () => { exitCalled = true; };
   try {
-    assert.throws(() => parseArgs(['--ai', '--force']), /exit\(1\)/, '--ai must reject a flag as its value');
-    assert.throws(() => parseArgs(['--target', '--global']), /exit\(1\)/, '--target must reject a flag as its value');
-    assert.throws(() => parseArgs(['--token', '--yes']), /exit\(1\)/, '--token must reject a flag as its value');
-    assert.throws(() => parseArgs(['--ai']), /exit\(1\)/, '--ai without a value must error');
-    assert.throws(() => parseArgs(['--token']), /exit\(1\)/, '--token without a value must error');
+    for (const bad of [['--ai', '--force'], ['--target', '--global'], ['--token', '--yes'], ['--ai'], ['--token']]) {
+      try {
+        parseArgs(bad);
+        assert.fail(`parseArgs(${JSON.stringify(bad)}) should have thrown`);
+      } catch (err) {
+        assert.ok(err instanceof InstallerError, `parseArgs(${JSON.stringify(bad)}) should throw InstallerError, got ${err}`);
+      }
+    }
   } finally {
     process.exit = origExit;
   }
+  assert.strictEqual(exitCalled, false, 'parseArgs must throw instead of calling process.exit');
 
   // parseArgs: a bare positional argument must produce a warning instead of
   // being silently ignored (fix: typos like "npx iterate-skill-installer trae").
@@ -475,8 +492,66 @@ async function run() {
 
   testEnforceDownloadedSize();
   testSignaturePolicy();
+  testConstantTimeHashEqual();
+  testCliBoundary();
 
   console.log('mode.test.js: all runCommand/runPythonInstall hardening tests passed');
+}
+
+// ---------------------------------------------------------------------------
+// Constant-time, case-insensitive digest comparison
+// ---------------------------------------------------------------------------
+
+function testConstantTimeHashEqual() {
+  assert.strictEqual(constantTimeHashEqual(H, H), true, 'identical digests match');
+  assert.strictEqual(constantTimeHashEqual(H.toUpperCase(), H), true, 'casing must never decide');
+  assert.strictEqual(constantTimeHashEqual(H, I), false, 'different digests do not match');
+  assert.strictEqual(constantTimeHashEqual('  ' + H + '  ', H), true, 'surrounding whitespace is trimmed');
+  // The length guard exists because timingSafeEqual THROWS on unequal lengths;
+  // an empty/short value must refuse cleanly instead.
+  assert.strictEqual(constantTimeHashEqual('', ''), false, 'empty digests are refused');
+  assert.strictEqual(constantTimeHashEqual('abc', 'abcdef'), false, 'length mismatch is refused without throwing');
+  assert.strictEqual(constantTimeHashEqual('a', 'zz'), false, 'single-char mismatch is refused without throwing');
+  assert.strictEqual(constantTimeHashEqual('abc', 'abc'), true, 'equal short strings still compare honestly');
+  assert.strictEqual(constantTimeHashEqual(H, null), false, 'non-string input is refused');
+  assert.strictEqual(constantTimeHashEqual(H, undefined), false, 'undefined input is refused');
+  assert.strictEqual(constantTimeHashEqual(H, 123), false, 'numeric input is refused');
+}
+
+// ---------------------------------------------------------------------------
+// CLI boundary (bin/cli.js): exit codes, not process.exit()
+// ---------------------------------------------------------------------------
+
+function testCliBoundary() {
+  const cliPath = path.join(__dirname, '..', 'bin', 'cli.js');
+  const runCli = (args) => spawnSync(process.execPath, [cliPath, ...args], {
+    encoding: 'utf8',
+    cwd: originalCwd,
+  });
+
+  // `--help` and `--version` must exit 0 (no install attempted).
+  const help = runCli(['--help']);
+  assert.strictEqual(help.status, 0, `--help must exit 0, got ${help.status}`);
+
+  const version = runCli(['--version']);
+  assert.strictEqual(version.status, 0, `--version must exit 0, got ${version.status}`);
+  assert.ok(version.stdout.includes('iterate-skill-installer'), 'version prints the package name');
+
+  // A hard argument error must exit non-zero with a clean message and no
+  // unhandled-rejection stack trace.
+  for (const bad of [['--ai', '--force'], ['--ai'], ['--target', '--global']]) {
+    const result = runCli(bad);
+    assert.notStrictEqual(result.status, 0, `parseArgs ${JSON.stringify(bad)} must exit non-zero`);
+    assert.ok(
+      !String(result.stderr).includes('UnhandledPromiseRejection') &&
+        !String(result.stderr).includes('ERR_UNHANDLED_REJECTION'),
+      `a parse error must not surface as an unhandled rejection: ${JSON.stringify(result.stderr)}`,
+    );
+    assert.ok(
+      /requires a value/.test(String(result.stderr)),
+      `the failure message must say which flag needs a value: ${JSON.stringify(result.stderr)}`,
+    );
+  }
 }
 
 run().catch((err) => {
@@ -545,12 +620,27 @@ function testSignaturePolicy() {
   assert.ok(/Could not download/.test(fetchFailed), 'an unfetchable signature must refuse');
 
   // allowUnsigned() reads the environment variable.
+  //
+  // REGRESSION: a bare "any non-empty string" check meant
+  // ITERATE_ALLOW_UNSIGNED=0 (or "false", or a stray "no") ENABLED unsigned
+  // installs — the exact opposite of the operator's intent, and a silent
+  // downgrade of the authenticity gate. Only explicit truthy values count.
   const previous = process.env[ALLOW_UNSIGNED_ENV];
   try {
-    process.env[ALLOW_UNSIGNED_ENV] = '1';
-    assert.strictEqual(allowUnsigned(), true);
-    process.env[ALLOW_UNSIGNED_ENV] = '   ';
-    assert.strictEqual(allowUnsigned(), false, 'blank is not an opt-out');
+    for (const on of ['1', 'true', 'TRUE', 'yes', ' Yes ', 'True']) {
+      process.env[ALLOW_UNSIGNED_ENV] = on;
+      assert.strictEqual(allowUnsigned(), true, `value ${JSON.stringify(on)} must enable the override`);
+    }
+    for (const off of ['', '   ', '0', 'false', 'FALSE', 'no', 'off', 'maybe', 'yesplease']) {
+      process.env[ALLOW_UNSIGNED_ENV] = off;
+      assert.strictEqual(
+        allowUnsigned(),
+        false,
+        `value ${JSON.stringify(off)} must NOT enable the override (silent downgrade)`,
+      );
+    }
+    delete process.env[ALLOW_UNSIGNED_ENV];
+    assert.strictEqual(allowUnsigned(), false, 'an unset variable must not enable the override');
   } finally {
     if (previous === undefined) delete process.env[ALLOW_UNSIGNED_ENV];
     else process.env[ALLOW_UNSIGNED_ENV] = previous;

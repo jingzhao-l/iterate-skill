@@ -25,6 +25,10 @@ const {
   measureTree,
   FullBuffer,
   MAX_LISTING_CHARS,
+  MAX_EXTRACTED_BYTES,
+  declaredEntrySize,
+  sumDeclaredSizes,
+  validateEntryNames,
   InstallerError,
 } = require('../lib/installer');
 
@@ -40,14 +44,36 @@ function runTar(args, cwd) {
 }
 
 /**
+ * Create a FIFO with the `mkfifo` tool.
+ *
+ * `fs.mkfifoSync` was removed from Node's fs module (it sat in the
+ * "deprecated since v24" bucket), so the only portable way to build one is the
+ * shell builtin, which exists on macOS and Linux. Returns false when the tool
+ * is absent so the caller can skip the case instead of failing the run.
+ *
+ * @param {string} fifoPath
+ * @returns {boolean} whether the FIFO was created
+ */
+function makeFifo(fifoPath) {
+  const res = spawnSync('mkfifo', [fifoPath], { encoding: 'utf8' });
+  return res.status === 0 && fs.existsSync(fifoPath);
+}
+
+/**
  * Build a release-shaped tarball (single top-level `iterate/` directory).
  *
  * @param {object} opts
- * @param {'sym'|'hard'|null} opts.link  optional link entry to smuggle in
+ * @param {'sym'|'hard'|'fifo'|null} opts.link  optional special entry to smuggle in
  * @param {number} opts.filler           number of long-named filler files
+ * @param {number} opts.fillerBytes      bytes per filler file
  * @param {boolean} opts.extraTopLevel   add a second top-level directory
  */
-function buildTarball({ link = null, filler = 0, extraTopLevel = false } = {}) {
+function buildTarball({
+  link = null,
+  filler = 0,
+  fillerBytes = 1,
+  extraTopLevel = false,
+} = {}) {
   const stage = tmpDir('iterate-tar-');
   const root = path.join(stage, 'iterate');
   fs.mkdirSync(root, { recursive: true });
@@ -56,10 +82,12 @@ function buildTarball({ link = null, filler = 0, extraTopLevel = false } = {}) {
     fs.symlinkSync('/etc', path.join(root, 'sneaky-link'));
   } else if (link === 'hard') {
     fs.linkSync(path.join(root, 'SKILL.md'), path.join(root, 'sneaky-hard'));
+  } else if (link === 'fifo') {
+    assert.ok(makeFifo(path.join(root, 'sneaky-fifo')), 'mkfifo is unavailable here');
   }
   for (let i = 0; i < filler; i += 1) {
     const name = `filler-${String(i).padStart(6, '0')}-${'x'.repeat(180)}`;
-    fs.writeFileSync(path.join(root, name), 'x');
+    fs.writeFileSync(path.join(root, name), 'x'.repeat(fillerBytes));
   }
   if (extraTopLevel) {
     const other = path.join(stage, 'z-pwn');
@@ -121,10 +149,25 @@ async function testListingCapFailClosed() {
 }
 
 async function testLinkRejection() {
-  for (const [kind, needle] of [
+  // A FIFO is built through the `mkfifo` tool; when it is absent the case is
+  // skipped rather than failing the whole run (see makeFifo).
+  const probe = path.join(tmpDir('iterate-fifo-probe-'), 'probe');
+  let kinds = [
     ['sym', 'symbolic link'],
     ['hard', 'hard link'],
-  ]) {
+    // A FIFO/device node is refused for the same reason as a link: the release
+    // never ships one, and a special node could wedge or bypass a later read of
+    // the extracted tree.
+    ['fifo', 'FIFO'],
+  ];
+  if (!makeFifo(probe)) {
+    fs.rmSync(path.dirname(probe), { recursive: true, force: true });
+    console.log('tarball.test.js: skipping FIFO case (mkfifo unavailable)');
+    kinds = kinds.filter(([kind]) => kind !== 'fifo');
+  } else {
+    fs.rmSync(path.dirname(probe), { recursive: true, force: true });
+  }
+  for (const [kind, needle] of kinds) {
     const { tarball, stage } = buildTarball({ link: kind });
     try {
       await expectInstallerError(rejectLinkEntries(tarball), needle);
@@ -135,6 +178,61 @@ async function testLinkRejection() {
       fs.rmSync(stage, { recursive: true, force: true });
     }
   }
+}
+
+async function testDeclaredSizeRefusedBeforeExtraction() {
+  // PRE-extraction half of the decompression-bomb guard: a tarball whose
+  // declared uncompressed total exceeds the budget must be refused BEFORE any
+  // byte is written (tar has no size bound and the download cap only bounds the
+  // COMPRESSED size).
+  const { tarball, stage } = buildTarball({ filler: 4, fillerBytes: 2048 });
+  try {
+    const dest = path.join(stage, 'out');
+    await expectInstallerError(
+      extractTarball(tarball, dest, { declaredSizeCap: 1024 }),
+      'declared uncompressed size',
+    );
+    // The guards all run before `mkdirSync`, so a refused archive must not
+    // leave a destination directory behind at all.
+    assert.ok(!fs.existsSync(dest), 'a refused archive must not create the dest tree');
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
+}
+
+function testEntryNameValidation() {
+  const dest = '/tmp/iterate-dest';
+  const good = ['iterate/', 'iterate/SKILL.md'];
+
+  assert.strictEqual(validateEntryNames(good, dest), 'iterate', 'a clean archive is accepted');
+
+  assert.throws(() => validateEntryNames(['/etc/passwd'], dest), /absolute path/);
+  assert.throws(() => validateEntryNames(['C:\\evil'], dest), /absolute path/);
+  assert.throws(() => validateEntryNames(['iterate/../etc/passwd'], dest), /\.\./);
+  assert.throws(() => validateEntryNames(['..'], dest), /\.\./);
+  assert.throws(
+    () => validateEntryNames(['iterate/', 'other/', 'other/evil'], dest),
+    /exactly one top-level directory/,
+  );
+}
+
+function testDeclaredSizeParsing() {
+  // GNU tar (ISO date) and bsdtar (macOS, month abbreviation) formats must both
+  // yield the entry's declared size — otherwise a platform would silently get
+  // total=0 and the pre-extraction budget would never fire.
+  assert.strictEqual(declaredEntrySize('drwxr-xr-x  0 0 0        0 2026-01-01 12:00 iterate/'), 0);
+  assert.strictEqual(declaredEntrySize('-rw-r--r--  0 0 0      4096 Jan  1 12:00 iterate/SKILL.md'), 4096);
+  assert.strictEqual(
+    declaredEntrySize('-rw-r--r--  0 0 0      1234 Dec 31 23:59 iterate/a.txt'),
+    1234,
+  );
+  assert.deepStrictEqual(
+    sumDeclaredSizes('-rw-r--r--  0 0 0      4096 Jan  1 12:00 iterate/a\n' +
+      'drwxr-xr-x  0 0 0         0 Jan  1 12:00 iterate/\n' +
+      '-rw-r--r--  0 0 0      1024 Jan  1 12:00 iterate/b\n'),
+    { total: 5120, parsed: 3, entries: 3 },
+    'declared sizes must sum across entries',
+  );
 }
 
 async function testCleanArchiveExtracts() {
@@ -192,12 +290,18 @@ function testListingCapIsGenerous() {
 async function run() {
   await testFullBuffer();
   console.log('tarball.test.js: FullBuffer tests passed');
+  // Pure parsing/validation tests run on every platform, including Windows
+  // where the tar-backed tests below are skipped.
+  testDeclaredSizeParsing();
+  testEntryNameValidation();
+  console.log('tarball.test.js: declared-size + entry-name validation tests passed');
   if (isWindows) {
     console.log('tarball.test.js: skipping tar-backed tests on Windows');
     return;
   }
   await testListingCapFailClosed();
   await testLinkRejection();
+  await testDeclaredSizeRefusedBeforeExtraction();
   await testCleanArchiveExtracts();
   await testMultiTopLevelRejected();
   await testExtractedSizeBudget();

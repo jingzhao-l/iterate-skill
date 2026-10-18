@@ -339,9 +339,14 @@ function validateTokenShape(token) {
  * loudly instead of leaking the PAT to a foreign host.
  */
 function buildAuthFlags(url, token) {
-  if (!token) return [];
+  // Re-normalize here as well as at the CLI boundary: this is the exact point
+  // the token is interpolated into a header, so a raw CR/LF (e.g. a token read
+  // from a Windows-created file) must never reach curl — an embedded newline
+  // would split the header (CRLF/header injection) or silently break auth.
+  const clean = normalizeToken(token);
+  if (!clean) return [];
   if (!isGithubApiUrl(url)) return [];
-  return ['-H', `Authorization: Bearer ${token}`, '--max-redirs', '0'];
+  return ['-H', `Authorization: Bearer ${clean}`, '--max-redirs', '0'];
 }
 
 async function fetchJson(url, token) {
@@ -349,7 +354,10 @@ async function fetchJson(url, token) {
   // and avoids Node-specific certificate issues in some environments.
   const failFlag = (await supportsCurlFailWithBody()) ? '--fail-with-body' : '--fail';
   const args = ['-sSL', failFlag, '--max-time', CURL_MAX_TIME_SECONDS, '--max-filesize', String(JSON_MAX_BYTES), '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'User-Agent: iterate-skill-installer', ...buildAuthFlags(url, token)];
-  args.push(url);
+  // `--` ends curl's option parsing so a URL that begins with `-` (e.g. a
+  // hostile/odd `browser_download_url` served by the API) is treated as a URL,
+  // never smuggled in as a curl flag.
+  args.push('--', url);
   // stdoutMustBeComplete with an explicit cap: the default 1 MiB TailBuffer
   // would truncate a large /releases payload and JSON.parse then failed with a
   // baffling "Unexpected end of JSON input". The cap now matches the
@@ -381,7 +389,9 @@ async function downloadFile(url, destPath, token, { progress = false, maxBytes =
   const failFlag = (await supportsCurlFailWithBody()) ? '--fail-with-body' : '--fail';
   const args = ['-sSL', failFlag, '--max-time', CURL_MAX_TIME_SECONDS, '--max-filesize', String(maxBytes), '-o', destPath, '-H', 'User-Agent: iterate-skill-installer', ...buildAuthFlags(url, token)];
   if (progress) args.push('--progress-bar');
-  args.push(url);
+  // `--` ends curl's option parsing so a `-`-leading URL can never be read as
+  // a curl flag (option injection); it is always the final positional URL.
+  args.push('--', url);
   if (progress) {
     // Let curl write its progress bar directly to the terminal.
     await runCommand('curl', args, { stdio: ['ignore', 'ignore', 'inherit'] });
@@ -429,8 +439,16 @@ function enforceDownloadedSize(destPath, maxBytes) {
 // project config and shows up in the invoking environment for audit.
 const ALLOW_UNSIGNED_ENV = 'ITERATE_ALLOW_UNSIGNED';
 
+// Only these (case-insensitive) values enable the override. A bare "any
+// non-empty string" check meant `ITERATE_ALLOW_UNSIGNED=0` (or "false", or a
+// stray "no") ENABLED unsigned installs — the exact opposite of what the
+// operator intended, and a silent downgrade of the authenticity gate.
+const ALLOW_UNSIGNED_TRUTHY = new Set(['1', 'true', 'yes']);
+
 function allowUnsigned() {
-  return String(process.env[ALLOW_UNSIGNED_ENV] || '').trim() !== '';
+  const raw = process.env[ALLOW_UNSIGNED_ENV];
+  if (raw == null) return false;
+  return ALLOW_UNSIGNED_TRUTHY.has(String(raw).trim().toLowerCase());
 }
 
 /**
@@ -497,6 +515,31 @@ function sha256File(filePath) {
     stream.on('end', () => resolve(hash.digest('hex')));
     stream.pipe(hash);
   });
+}
+
+/**
+ * Constant-time, case-insensitive comparison of two SHA256 hex digests.
+ *
+ * Casing must never decide the outcome: `sha256sum`/other tools may emit
+ * upper-case hex, and a case-sensitive `===` would reject a perfectly good
+ * release. Both sides are lower-cased and compared with `timingSafeEqual` —
+ * the expected hash travels over the network beside the tarball, so an
+ * early-exit string inequality would leak prefix information usable to forge a
+ * checksum. The length guard keeps `timingSafeEqual` from throwing on
+ * mismatched lengths (an empty/short value is refused outright).
+ *
+ * Exported so the comparison itself is unit-testable (the inline version it
+ * replaces could only be exercised by a full network install).
+ */
+function constantTimeHashEqual(actualHash, expectedHash) {
+  if (typeof actualHash !== 'string' || typeof expectedHash !== 'string') return false;
+  const actualBuf = Buffer.from(actualHash.trim().toLowerCase(), 'utf8');
+  const expectedBuf = Buffer.from(expectedHash.trim().toLowerCase(), 'utf8');
+  return (
+    actualBuf.length === expectedBuf.length &&
+    actualBuf.length > 0 &&
+    crypto.timingSafeEqual(actualBuf, expectedBuf)
+  );
 }
 
 // Best-effort GPG authenticity verification of a downloaded artifact against
@@ -747,77 +790,118 @@ function runCommand(bin, args, options = {}) {
 
 async function rejectLinkEntries(tarballPath, { listingCap = MAX_LISTING_CHARS } = {}) {
   // Inspect the verbose listing and reject any symbolic ("l") or hard ("h")
-  // link entry. We deliberately reject *all* links rather than validating
-  // their targets: the release tarball contains none, so any link is a sign
-  // of a tampered archive and refusing it outright is the safest response to
-  // a symlink-escape attempt (see extractTarball above).
+  // link entry — and any device ("b" block / "c" character), FIFO ("p") or
+  // socket special node. We deliberately reject *all* links rather than
+  // validating their targets: the release tarball contains none, so any link is
+  // a sign of a tampered archive and refusing it outright is the safest
+  // response to a symlink-escape attempt (see extractTarball above). Special
+  // nodes are rejected for the same reason: neither the release nor its
+  // installer ever ships one, and a FIFO/device could wedge or bypass a later
+  // read of the extracted tree.
   //
   // stdoutMustBeComplete: this listing is a SECURITY input. The old 1 MiB
   // tail buffer silently dropped the OLDEST entries, so an archive with enough
   // filler members to push its listing past the cap hid a symlink/hardlink
   // entry from this scan entirely (while `tar -xzf` still extracted it).
   // A listing over the cap now fails closed instead.
+  //
+  // Returns the COMPLETE verbose listing so callers (extractTarball) can reuse
+  // it for the pre-extraction declared-size check without a second tar run.
   const verbose = await runCommand('tar', ['-tvzf', tarballPath], {
     stdoutCap: listingCap,
     stdoutMustBeComplete: true,
   });
+  const TYPE_LABELS = {
+    l: 'symbolic link',
+    h: 'hard link',
+    b: 'block device node',
+    c: 'character device node',
+    p: 'FIFO',
+    s: 'socket',
+  };
   for (const line of verbose.split(/\r?\n/)) {
     if (!line) {
       continue;
     }
     const type = line[0];
-    if (type === 'l') {
+    const label = TYPE_LABELS[type];
+    if (label) {
       throw new InstallerError(
-        'Refusing to extract tarball: archive contains a symbolic link, which the release never ships.',
-      );
-    }
-    if (type === 'h') {
-      throw new InstallerError(
-        'Refusing to extract tarball: archive contains a hard link, which the release never ships.',
+        `Refusing to extract tarball: archive contains a ${label}, which the release never ships.`,
       );
     }
   }
+  return verbose;
 }
 
-async function extractTarball(tarballPath, destDir, { listingCap = MAX_LISTING_CHARS } = {}) {
-  // Use the system tar command (available on macOS, Linux, and Windows 10+),
-  // but defend against path-traversal tarballs: before extracting we list the
-  // archive contents and refuse to extract any entry whose resolved path
-  // escapes destDir (e.g. a "../" prefix). This keeps the installer
-  // dependency-free while closing the theoretical escape vector.
-  //
-  // Extraction uses --strip-components=1, which relies on the archive having
-  // exactly one top-level directory (see README "Release tarball structure").
-  // Archives that violate that contract — multiple top-level directories, or
-  // entries with no path left after stripping — are rejected outright.
-  //
-  // A name-based `../` check alone is not enough: a tarball can smuggle a
-  // symlink whose in-archive name looks safe but whose target points outside
-  // destDir, then place files "through" that symlink (e.g. `link/passwd` where
-  // `link -> /etc`). Because extraction happens with a system `tar`, the write
-  // would follow the link before we could validate — so any symbolic or hard
-  // link is rejected *before* extraction. The release tarball never uses links.
-  const absoluteDest = path.resolve(destDir);
-  fs.mkdirSync(absoluteDest, { recursive: true });
+// A month abbreviation ("Jan".."Dec") appears in the timestamp column of the
+// bsdtar verbose listing; GNU tar prints an ISO date ("2023-01-01"). Both mark
+// the end of the size/user fields, so the numeric token immediately before the
+// first such token is the entry's declared uncompressed size in EITHER format.
+const MONTH_ABBR_RE = /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-  // 1. List archive entries (no extraction yet). Must be complete — see
-  //    rejectLinkEntries: every guard below reads THIS listing, and a tail
-  //    buffer would let a big archive hide entries from all of them.
-  const listing = await runCommand('tar', ['-tzf', tarballPath], {
-    stdoutCap: listingCap,
-    stdoutMustBeComplete: true,
-  });
-  const entries = listing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  if (entries.length === 0) {
-    throw new InstallerError('Refusing to extract tarball: archive contains no entries.');
+/**
+ * Parse one `tar -tvzf` line's declared uncompressed size, or null when the
+ * line cannot be parsed. `size` is the numeric field immediately preceding the
+ * timestamp column (see MONTH_ABBR_RE / ISO_DATE_RE).
+ */
+function declaredEntrySize(line) {
+  const tokens = line.trim().split(/\s+/);
+  for (let i = 1; i < tokens.length; i += 1) {
+    if (ISO_DATE_RE.test(tokens[i]) || MONTH_ABBR_RE.test(tokens[i])) {
+      const candidate = tokens[i - 1];
+      return /^\d+$/.test(candidate) ? Number(candidate) : null;
+    }
   }
+  return null;
+}
 
-  // 1a. Reject absolute-path entries outright before any other accounting.
-  // A member named ``/etc/cron.d/x`` or ``C:\\...`` would resolve through the
-  // top-level-strip logic into destDir, but accepting its name as a "safe"
-  // component invites ambiguity between tar implementations about what the
-  // first component really is — never claim a release archive can contain
-  // absolute paths, so fail closed instead.
+/**
+ * Sum the declared uncompressed sizes in a `tar -tvzf` listing.
+ *
+ * This is the PRE-extraction half of the decompression-bomb guard: `tar -xzf`
+ * has no size bound and the download cap only limits the COMPRESSED size, so a
+ * small highly-compressible archive can declare (and would expand to) many GiB.
+ * Reading the declared sizes out of the listing lets us refuse BEFORE writing
+ * anything to disk. Returns the total plus how many entries were parsed so a
+ * caller can distinguish "empty" from "unparseable format".
+ */
+function sumDeclaredSizes(verboseListing) {
+  let total = 0;
+  let parsed = 0;
+  let entries = 0;
+  for (const line of verboseListing.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    entries += 1;
+    const size = declaredEntrySize(line);
+    if (size !== null) {
+      total += size;
+      parsed += 1;
+    }
+  }
+  return { total, parsed, entries };
+}
+
+/**
+ * Validate every archive member NAME before extraction.
+ *
+ * Rejects, in order:
+ *   - absolute paths (`/etc/...`, `C:\...`), which invite ambiguity between
+ *     tar implementations about what the "first component" is;
+ *   - any `..` path component (path traversal), which — even when the
+ *     top-level-strip logic happens to keep it inside destDir — violates the
+ *     release's "single top-level directory" contract and must never appear;
+ *   - archives without exactly one top-level directory (required by
+ *     --strip-components=1);
+ *   - entries that still escape destDir after the top-level component is
+ *     stripped.
+ *
+ * Pure and exported so the guards are unit-testable without crafting hostile
+ * tarballs. Returns the resolved top-level directory name.
+ */
+function validateEntryNames(entries, absoluteDest) {
+  // Reject absolute-path entries outright before any other accounting.
   for (const entry of entries) {
     if (entry.startsWith('/') || /^[A-Za-z]:[\\/]/.test(entry)) {
       throw new InstallerError(
@@ -826,15 +910,20 @@ async function extractTarball(tarballPath, destDir, { listingCap = MAX_LISTING_C
     }
   }
 
-  // 1b. Reject any symbolic or hard link entry before touching the tree.
-  // The verbose listing's first character is the entry type for both GNU tar
-  // and bsdtar (macOS): '-' regular, 'd' directory, 'l' symbolic link, 'h'
-  // hard link. We only need to detect links, so a cheap first-char scan is
-  // sufficient and avoids relying on the rest of the format.
-  await rejectLinkEntries(tarballPath, { listingCap });
+  // Reject any ``..`` component. A name-based resolve() check below already
+  // catches escapes, but an explicit rejection is unambiguous and also refuses
+  // the "stripped away" cases (e.g. a lone `..` top-level) that resolve back
+  // inside destDir while still violating the archive contract.
+  for (const entry of entries) {
+    if (entry.split('/').includes('..')) {
+      throw new InstallerError(
+        `Refusing to extract tarball: entry "${entry}" contains a ".." path component.`,
+      );
+    }
+  }
 
-  // 2. Enforce the single-top-level-directory contract required by
-  //    --strip-components=1.
+  // Enforce the single-top-level-directory contract required by
+  // --strip-components=1.
   const topLevelComponents = new Set(entries.map((entry) => entry.split('/')[0]));
   if (topLevelComponents.size !== 1) {
     const tops = [...topLevelComponents].join(', ');
@@ -844,8 +933,8 @@ async function extractTarball(tarballPath, destDir, { listingCap = MAX_LISTING_C
   }
   const topLevel = entries[0].split('/')[0];
 
-  // 3. Validate every entry stays inside destDir after stripping the single
-  //    top-level directory component (--strip-components=1).
+  // Validate every entry stays inside destDir after stripping the single
+  // top-level directory component (--strip-components=1).
   for (const entry of entries) {
     const stripped = entry.split('/').slice(1).join('/');
     if (stripped === '') {
@@ -867,7 +956,73 @@ async function extractTarball(tarballPath, destDir, { listingCap = MAX_LISTING_C
     }
   }
 
+  return topLevel;
+}
+
+async function extractTarball(
+  tarballPath,
+  destDir,
+  { listingCap = MAX_LISTING_CHARS, declaredSizeCap = MAX_EXTRACTED_BYTES } = {},
+) {
+  // Use the system tar command (available on macOS, Linux, and Windows 10+),
+  // but defend against path-traversal tarballs: before extracting we list the
+  // archive contents and refuse to extract any entry whose resolved path
+  // escapes destDir (e.g. a "../" prefix). This keeps the installer
+  // dependency-free while closing the theoretical escape vector.
+  //
+  // Extraction uses --strip-components=1, which relies on the archive having
+  // exactly one top-level directory (see README "Release tarball structure").
+  // Archives that violate that contract — multiple top-level directories, or
+  // entries with no path left after stripping — are rejected outright.
+  //
+  // A name-based `../` check alone is not enough: a tarball can smuggle a
+  // symlink whose in-archive name looks safe but whose target points outside
+  // destDir, then place files "through" that symlink (e.g. `link/passwd` where
+  // `link -> /etc`). Because extraction happens with a system `tar`, the write
+  // would follow the link before we could validate — so any symbolic or hard
+  // link is rejected *before* extraction. The release tarball never uses links.
+  // Note: dest is created AFTER every guard below (not before), so a refused
+  // archive never leaves a directory behind. `tar -xzf` requires the target to
+  // exist, so mkdir stays inside this function rather than with the caller.
+  const absoluteDest = path.resolve(destDir);
+
+  // 1. List archive entries (no extraction yet). Must be complete — see
+  //    rejectLinkEntries: every guard below reads THIS listing, and a tail
+  //    buffer would let a big archive hide entries from all of them.
+  const listing = await runCommand('tar', ['-tzf', tarballPath], {
+    stdoutCap: listingCap,
+    stdoutMustBeComplete: true,
+  });
+  const entries = listing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (entries.length === 0) {
+    throw new InstallerError('Refusing to extract tarball: archive contains no entries.');
+  }
+
+  // 1a/2/3. Reject absolute paths and `..` components, enforce the single
+  //         top-level directory, and prove every entry stays inside destDir.
+  validateEntryNames(entries, absoluteDest);
+
+  // 1b. Reject any symbolic/hard link — and any device/FIFO/socket node —
+  // before touching the tree. The verbose listing's first character is the
+  // entry type for both GNU tar and bsdtar (macOS): '-' regular, 'd' directory,
+  // 'l' symbolic link, 'h' hard link, 'b'/'c' device, 'p' FIFO. The COMPLETE
+  // listing is returned so the declared-size check below can reuse it.
+  const verbose = await rejectLinkEntries(tarballPath, { listingCap });
+
+  // 1c. PRE-extraction decompression-bomb check: refuse an archive whose
+  //     declared uncompressed total exceeds the budget, using the sizes from
+  //     the listing we already parsed. This fails before a single byte is
+  //     written, complementing the post-extraction re-measure in step 5.
+  const declared = sumDeclaredSizes(verbose);
+  if (declared.total > declaredSizeCap) {
+    throw new InstallerError(
+      `Refusing to extract tarball: declared uncompressed size ${declared.total} bytes ` +
+        `exceeds the safety budget (${declaredSizeCap} bytes).`,
+    );
+  }
+
   // 4. Now extract safely — the content has been validated above.
+  fs.mkdirSync(absoluteDest, { recursive: true });
   await runCommand('tar', ['-xzf', tarballPath, '-C', absoluteDest, '--strip-components=1']);
 
   // 5. Decompression-bomb guard (mirrors scripts/install.py). ``tar`` itself
@@ -1164,8 +1319,10 @@ function buildPythonInstallArgs(options) {
  *
  * Kept as a pure function (exported) so the flag surface — including the
  * skill-only ``--no-cli`` switch — can be unit-tested without spawning the
- * full download-and-install pipeline. ``process.exit`` is only reached for
- * hard argument errors (e.g. a value-consuming flag missing its value).
+ * full download-and-install pipeline. Hard argument errors (a value-consuming
+ * flag missing its value, an unknown option) THROW an ``InstallerError`` for
+ * the CLI boundary to report; library code must never call ``process.exit``
+ * (which would skip the caller's cleanup/flush and is untestable in-process).
  */
 function parseArgs(argv) {
   const options = {
@@ -1203,16 +1360,14 @@ function parseArgs(argv) {
     switch (arg) {
       case '--ai':
         if (!next || next.startsWith('-')) {
-          console.error('Error: --ai requires a value (a flag was found instead)');
-          process.exit(1);
+          throw new InstallerError('--ai requires a value (a flag was found instead)');
         }
         options.ai = next;
         i++;
         break;
       case '--target':
         if (!next || next.startsWith('-')) {
-          console.error('Error: --target requires a value (a flag was found instead)');
-          process.exit(1);
+          throw new InstallerError('--target requires a value (a flag was found instead)');
         }
         if (options.globalExplicit) {
           warning('--target overrides --global: installing into the project directory instead.');
@@ -1240,16 +1395,14 @@ function parseArgs(argv) {
         break;
       case '--token':
         if (!next || next.startsWith('-')) {
-          console.error('Error: --token requires a value (a flag was found instead)');
-          process.exit(1);
+          throw new InstallerError('--token requires a value (a flag was found instead)');
         }
         options.token = normalizeToken(next);
         i++;
         break;
       default:
         if (arg.startsWith('-')) {
-          console.error(`Error: unknown option ${arg}`);
-          process.exit(1);
+          throw new InstallerError(`unknown option ${arg}`);
         }
         // A bare positional argument is not a valid installer flag; warn so a
         // typo like "npx iterate-skill-installer trae" is not silently ignored.
@@ -1416,16 +1569,8 @@ async function main(options = {}) {
       return 1;
     }
     const actualHash = await sha256File(tarballPath);
-    // Constant-time compare (timingSafeEqual): the expected hash travels
-    // over the network with the tarball, so an early-exit string inequality
-    // would leak prefix information usable to forge a checksum. The length
-    // guard keeps timingSafeEqual from throwing on mismatched lengths.
-    const actualBuf = Buffer.from(actualHash.toLowerCase(), 'utf8');
-    const expectedBuf = Buffer.from(expectedHash.toLowerCase(), 'utf8');
-    const hashMatches =
-      actualBuf.length === expectedBuf.length &&
-      actualBuf.length > 0 &&
-      crypto.timingSafeEqual(actualBuf, expectedBuf);
+    // Constant-time, case-insensitive compare (see constantTimeHashEqual).
+    const hashMatches = constantTimeHashEqual(actualHash, expectedHash);
     if (!hashMatches) {
       error('Checksum mismatch — refusing to install.');
       return 1;
@@ -1558,9 +1703,13 @@ module.exports = {
   resolveInstallMode,
   askYesNo,
   parseChecksums,
+  constantTimeHashEqual,
   enforceDownloadedSize,
   extractTarball,
   rejectLinkEntries,
+  sumDeclaredSizes,
+  declaredEntrySize,
+  validateEntryNames,
   isGithubApiUrl,
   normalizeToken,
   validateTokenShape,
