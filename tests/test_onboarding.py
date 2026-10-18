@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from iterate_cli import __version__
 from iterate_cli.cli import main as cli_main
+from iterate_cli.dimension_sets import CANONICAL_DIMENSIONS
 from iterate_cli.fingerprint import (
     FINGERPRINT_VERSION,
     FingerprintEntry,
@@ -43,9 +45,12 @@ from iterate_cli.generator import (
     DEFAULT_GOAL,
     DEFAULT_LANGUAGE,
     DEFAULT_MAX_ROUNDS,
+    DEFAULT_REVIEW_SCOPE,
+    DEFAULT_TARGET_BRANCH,
     USER_END_MARKER,
     USER_START_MARKER,
     OnboardingData,
+    atomic_write,
     extract_user_owned_section,
     generate_config_yaml,
     generate_iterate_md,
@@ -90,9 +95,13 @@ from iterate_cli.scan import (
     suggest_validation_commands,
 )
 from iterate_cli.wizard import (
+    _FALSE_STRINGS,
+    _TRUE_STRINGS,
     NO_CHANGES_NEEDED,
     _ask_yes_no,
     _load_existing_onboarding_data,
+    _normalize_loaded_bool,
+    _normalize_loaded_scope,
     _optionally_collect_advanced_config,
     _parse_dimension_selection,
     _read_drift_ignore,
@@ -1655,7 +1664,11 @@ class TestLoadExistingOnboardingDataUnicode:
         result = _load_existing_onboarding_data(fake_project)
         assert result is None
         captured = capsys.readouterr()
-        assert "Failed to load" in captured.err
+        # A non-UTF-8 config is surfaced through the same CorruptConfigError
+        # path as any other unparseable config (previously it escaped as a bare
+        # UnicodeDecodeError from one loader while another caught it), so the
+        # user sees a single, consistent "corrupt config" message.
+        assert "iterate.config.yaml" in captured.err
 
 
 class TestLoadExistingOnboardingDataNonDictSections:
@@ -1669,7 +1682,11 @@ class TestLoadExistingOnboardingDataNonDictSections:
         )
         result = _load_existing_onboarding_data(fake_project)
         assert result is not None
-        assert result.dimensions == []
+        # A non-list `dimensions` must NOT be re-persisted as an empty list:
+        # doctor treats an empty dimensions list as an error, so writing `[]`
+        # back would keep flagging a config the wizard had just "loaded" —
+        # the canonical defaults are restored instead (mirrors doctor --fix).
+        assert result.dimensions == list(CANONICAL_DIMENSIONS)
         assert result.target_branch == "main"
         assert result.review_scope == "full"
         assert result.push_per_round is False
@@ -1701,6 +1718,147 @@ class TestLoadExistingOnboardingDataNonDictSections:
         result = _load_existing_onboarding_data(fake_project)
         assert result is not None
         assert result.language == DEFAULT_LANGUAGE
+
+
+class TestLoadExistingOnboardingDataNormalizesBooleans:
+    """Config-loaded booleans must come back as real ``bool`` values.
+
+    The wizard re-persists the values it loads, so a hand-edited
+    ``push_per_round: "yes"`` used to be written back as the literal string
+    ``yes`` — schema-invalid, and it made the wizard report a value it had just
+    "loaded" while doctor kept flagging it.
+    """
+
+    def test_truthy_strings_coerce_to_true(self, fake_project: Path) -> None:
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "goal: test\ngit:\n  use_worktree: 'yes'\n  push_per_round: '1'\n"
+            "  auto_merge: 'true'\n  target_branch: 'develop'\nreviewer:\n"
+            "  output_schema_validation: 'on'\n  evidence_validation: 'true'\n",
+            encoding="utf-8",
+        )
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.use_worktree is True
+        assert result.push_per_round is True
+        assert result.auto_merge is True
+        assert result.output_schema_validation is True
+        assert result.evidence_validation is True
+        assert result.target_branch == "develop"
+
+    def test_falsy_strings_coerce_to_false(self, fake_project: Path) -> None:
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "goal: test\ngit:\n  use_worktree: 'no'\n  push_per_round: '0'\n"
+            "  auto_merge: false\nreviewer:\n  evidence_validation: 'false'\n"
+            "  coverage_validation: 'off'\n",
+            encoding="utf-8",
+        )
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.use_worktree is False
+        assert result.push_per_round is False
+        assert result.auto_merge is False
+        assert result.evidence_validation is False
+        assert result.coverage_validation is False
+
+    def test_ambiguous_values_fall_back_to_defaults(self, fake_project: Path) -> None:
+        """Anything unparseable falls back to the documented default instead of
+        being persisted verbatim or guessed at."""
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "goal: test\ngit:\n  use_worktree: 'disabled'\n  push_per_round: 1\n"
+            "  auto_merge: null\nreviewer:\n  output_schema_validation: 0\n",
+            encoding="utf-8",
+        )
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.use_worktree is False
+        assert result.push_per_round is False
+        assert result.auto_merge is False
+        assert result.output_schema_validation is True
+
+    def test_review_scope_out_of_enum_falls_back(self, fake_project: Path) -> None:
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("goal: test\nreview:\n  scope: everything\n", encoding="utf-8")
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.review_scope == DEFAULT_REVIEW_SCOPE
+
+        config_path.write_text(
+            "goal: test\nreview:\n  scope: changed-only\n", encoding="utf-8"
+        )
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.review_scope == "changed-only"
+
+    def test_target_branch_non_string_falls_back(self, fake_project: Path) -> None:
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("goal: test\ngit:\n  target_branch: 123\n", encoding="utf-8")
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.target_branch == DEFAULT_TARGET_BRANCH
+
+        config_path.write_text(
+            "goal: test\ngit:\n  target_branch: '   '\n", encoding="utf-8"
+        )
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.target_branch == DEFAULT_TARGET_BRANCH
+
+    def test_dimensions_are_deduped_and_cleaned(self, fake_project: Path) -> None:
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "goal: test\ndimensions:\n  - correctness\n  - '  correctness  '\n"
+            "  - 42\n  - ''\n  - security\n",
+            encoding="utf-8",
+        )
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.dimensions == ["correctness", "42", "security"]
+
+    def test_dimensions_all_empty_fall_back_to_canonical(
+        self, fake_project: Path
+    ) -> None:
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("goal: test\ndimensions:\n  - ''\n  - null\n", encoding="utf-8")
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.dimensions == list(CANONICAL_DIMENSIONS)
+
+
+class TestLoadedValueNormalizers:
+    """Unit tests for the config-load normalizers used by the wizard."""
+
+    @pytest.mark.parametrize("value", sorted(_TRUE_STRINGS))
+    def test_bool_truth_strings(self, value: str) -> None:
+        assert _normalize_loaded_bool(value, False) is True
+
+    @pytest.mark.parametrize("value", sorted(_FALSE_STRINGS))
+    def test_bool_falsy_strings(self, value: str) -> None:
+        assert _normalize_loaded_bool(value, True) is False
+
+    @pytest.mark.parametrize(
+        "value", [1, 0, None, [], {}, "maybe", "Y", 1.0, True, False]
+    )
+    def test_bool_passthrough_and_fallback(self, value: object) -> None:
+        if value is True:
+            assert _normalize_loaded_bool(value, False) is True
+        elif value is False:
+            assert _normalize_loaded_bool(value, True) is False
+        else:
+            assert _normalize_loaded_bool(value, False) is False
+
+    def test_bool_is_case_insensitive_and_trims(self) -> None:
+        assert _normalize_loaded_bool("  YES ", False) is True
+        assert _normalize_loaded_bool("Off", True) is False
+
+    def test_scope_accepts_supported_values_only(self) -> None:
+        assert _normalize_loaded_scope("  full ", "full") == "full"
+        assert _normalize_loaded_scope("changed-only", "full") == "changed-only"
+        assert _normalize_loaded_scope("everything", "full") == "full"
+        assert _normalize_loaded_scope(None, "full") == "full"
+        assert _normalize_loaded_scope("FULL", "full") == "full"
 
 
 class TestMergePersonalizationFiltersEmptyCommands:

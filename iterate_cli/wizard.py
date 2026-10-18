@@ -432,6 +432,51 @@ def _normalize_loaded_int(value: object, default: int, lo: int, hi: int | None =
     return value
 
 
+#: Truth/falsity strings accepted when normalising a hand-edited boolean config
+#: value. MUST stay identical to ``configcmd._parse_bool`` — the two are the
+#: only places a string is turned into a config boolean, and they must agree on
+#: what "true" means.
+_TRUE_STRINGS: frozenset[str] = frozenset({"true", "yes", "1", "on"})
+_FALSE_STRINGS: frozenset[str] = frozenset({"false", "no", "0", "off"})
+
+
+def _normalize_loaded_scope(value: object, default: str) -> str:
+    """Return ``value`` when it is a supported review scope, else ``default``.
+
+    A hand-edited ``review.scope: everything`` used to be re-persisted verbatim
+    by the wizard, so ``doctor`` kept flagging a value the wizard had just
+    reported as loaded. The supported set is imported lazily: ``doctor`` imports
+    ``refresh``/``personalize``, which import ``wizard``, so a module-level
+    import here would be circular.
+    """
+    from iterate_cli.doctor import SUPPORTED_SCOPES
+
+    if not isinstance(value, str) or value.strip() not in SUPPORTED_SCOPES:
+        return default
+    return value.strip()
+
+
+def _normalize_loaded_bool(value: object, default: bool) -> bool:
+    """Return ``value`` as a real ``bool``, else ``default``.
+
+    Config-loaded booleans are re-persisted verbatim by the wizard, so a
+    hand-edited ``push_per_round: "yes"`` used to be written back as the
+    literal string ``yes`` — schema-invalid, and it made the wizard report a
+    value it had just "loaded". Unambiguous strings are coerced so the
+    operator's intent survives (the inverse of ``configcmd._parse_bool``);
+    anything else falls back to the documented default rather than guessing.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUE_STRINGS:
+            return True
+        if normalized in _FALSE_STRINGS:
+            return False
+    return default
+
+
 def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
     """Load existing onboarding data from iterate.config.yaml.
 
@@ -503,9 +548,29 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         validation = validation if isinstance(validation, dict) else {}
 
         raw_dimensions = config.get("dimensions")
-        dimensions = (
-            [str(d) for d in raw_dimensions] if isinstance(raw_dimensions, list) else []
-        )
+        # Normalize: coerce non-string list elements to strings, drop empty and
+        # YAML-null entries, drop duplicates, and fall back to the canonical
+        # set when nothing survives. A scalar/non-list hand edit (`dimensions:
+        # "correctness"`) must not be iterated character-by-character, and an
+        # all-empty list must not be persisted — doctor treats both as errors,
+        # so a wizard that re-persisted either would keep flagging a config it
+        # had just "loaded" (same class of defect as the goal/max_rounds
+        # normalization below). Mirrors refresh._build_refresh_data, which has
+        # no ScanResult available here and therefore falls back to the
+        # canonical defaults instead of scan suggestions.
+        from iterate_cli.dimension_sets import CANONICAL_DIMENSIONS
+
+        dimensions: list[str] = []
+        if isinstance(raw_dimensions, list):
+            for raw in raw_dimensions:
+                if raw is None:
+                    continue
+                text = str(raw).strip()
+                if not text or text in dimensions:
+                    continue
+                dimensions.append(text)
+        if not dimensions:
+            dimensions = list(CANONICAL_DIMENSIONS)
         # Normalize validation.commands: a hand-edited config with a non-dict
         # value (list/scalar) would otherwise propagate into OnboardingData (a
         # dict-typed field) and be re-serialized as a broken structure.
@@ -540,8 +605,8 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         dimension_sets = normalize_dimension_sets(
             config.get("dimension_sets"),
             on_drop=lambda name: tui.warning(
-                f"dimension_sets.{name!r} is malformed and will be dropped "
-                "when the config is saved."
+                f"dimension_sets entry {name!r} was dropped and will not be "
+                "saved."
             ),
         )
 
@@ -559,9 +624,24 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             code_conventions=code_conventions,
             dimensions=dimensions,
             dimension_sets=dimension_sets,
-            target_branch=git.get("target_branch", DEFAULT_TARGET_BRANCH),
-            review_scope=review.get("scope", DEFAULT_REVIEW_SCOPE),
-            push_per_round=git.get("push_per_round", False),
+            # Hand-edited values must be normalized, not re-persisted verbatim:
+            # `git.target_branch: 123`, `review.scope: everything`,
+            # `git.push_per_round: "yes"`, `reviewer.evidence_validation: 1`
+            # would otherwise flow straight back into the regenerated config
+            # (the same class of defect already fixed for goal/max_rounds/
+            # atomic.* above), leaving doctor flagging a value the wizard just
+            # reported as "loaded".
+            target_branch=_normalize_loaded_str(
+                git.get("target_branch", DEFAULT_TARGET_BRANCH),
+                DEFAULT_TARGET_BRANCH,
+            ),
+            review_scope=_normalize_loaded_scope(
+                review.get("scope", DEFAULT_REVIEW_SCOPE),
+                DEFAULT_REVIEW_SCOPE,
+            ),
+            push_per_round=_normalize_loaded_bool(
+                git.get("push_per_round", False), False
+            ),
             validation_commands=validation_commands,
             command_whitelist=command_whitelist,
             # Filter by the preserved drift-ignore patterns: refresh captures
@@ -596,11 +676,17 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
                 DEFAULT_ATOMIC_MAX_ADJACENT_METHODS,
                 1,
             ),
-            use_worktree=git.get("use_worktree", False),
-            auto_merge=git.get("auto_merge", False),
-            output_schema_validation=reviewer.get("output_schema_validation", True),
-            evidence_validation=reviewer.get("evidence_validation", True),
-            coverage_validation=reviewer.get("coverage_validation", True),
+            use_worktree=_normalize_loaded_bool(git.get("use_worktree", False), False),
+            auto_merge=_normalize_loaded_bool(git.get("auto_merge", False), False),
+            output_schema_validation=_normalize_loaded_bool(
+                reviewer.get("output_schema_validation", True), True
+            ),
+            evidence_validation=_normalize_loaded_bool(
+                reviewer.get("evidence_validation", True), True
+            ),
+            coverage_validation=_normalize_loaded_bool(
+                reviewer.get("coverage_validation", True), True
+            ),
             scope_chunk_size=_normalize_loaded_int(
                 reviewer.get("scope_chunk_size", DEFAULT_SCOPE_CHUNK_SIZE),
                 DEFAULT_SCOPE_CHUNK_SIZE,
