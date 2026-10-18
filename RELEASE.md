@@ -135,7 +135,79 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       >
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
-- [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+- [~] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
+      > 本版：**2/3 达成**（ClawHub ✅、SkillHub ✅、ModelScope ⚠️ 凭据过期待补发，见下方状态块）。
+      > **3.5.3 状态（2026-10-18 发版 / CHANGELOG 条目落笔 2026-10-17）**：patch（无人值守
+      > 全量复审 + 修复）。测试套件 **1451 → 1563**（新增 `tests/test_prepush_hook.py`，
+      > 并大幅扩充 `test_signing` / `test_updater` / `test_release_meta` /
+      > `test_install_script` / `test_onboarding` / `test_config`；npm 侧扩充
+      > `mode.test.js` / `tarball.test.js`）。评审范围限于 skill 本体；
+      > `harness/` 与 `kernel/` 未改、未发。
+      > 主仓库 `main` `505a78d`（**纯线性历史**，12 个逻辑提交全部 GPG 签名，
+      > 前缀 `fix:` / `docs:` / `chore:`）；signed annotated tag `v3.5.3`
+      > （GPG `0929EA31DF4F7429F63FC53189D88B1D043A1298`）指向同一提交；
+      > ✅ **GitHub Release v3.5.3 已创建**（`release.yml` success run 39101282868）：
+      > 6 资产齐备，三份 `.asc` 均对本机校验通过、签发指纹与钉死值一致；
+      > `iterate-skill.tar.gz` 616,347 字节 / 91 条目、`harness|kernel` 均为 0、
+      > `shasum -a 256 -c SHA256SUMS.txt` OK；`iterate-qoder.zip` 656,509 字节、
+      > `harness|kernel` 均为 0；tar 与 zip 内 `SKILL.md version: 3.5.3`、
+      > `pyproject.toml 3.5.3`、`npm-installer/package.json 3.5.3` 三处一致；
+      > ✅ **npm CI 发布链路实测**（success run 39101282992），
+      > registry `latest=3.5.3`；`main` 推送 CI success run 39100891039；
+      > ClawHub（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）经 stage
+      > `.dist_tmp/clawhub-stage-3.5.3/iterate-skill`（75 文件，`git archive` 同一
+      > `:!harness :!kernel :!tests :!.githooks :!badges` pathspec；harness/kernel/tests/
+      > .githooks/badges 均为 0）以 `.dist_tmp/clawhub_publish.py --concurrency 16`
+      > 发布 3.5.3（`ok:true`，versionId `k97f07fda8r2c634eacjcq92pd8ghgqa`，
+      > 68 文件 / 1,821,470 字节，`status=pending` 为平台异步审核）；
+      > SkillHub（skillId `104490`）经 `.dist_tmp/rebuild_skillhub_353.py` 精简包
+      > （57 文件 / 564,241 字节、harness 0、剔除 LICENSE/.gitignore/.gitmodules/
+      > npm-installer/LICENSE）`.skillhub publish` 成功（`ok:true`，versionId `444021`，
+      > `tags.latest=3.5.3`，`reviewStatus/securityScanStatus/contentAuditStatus=pending`
+      > 为平台异步审核）；
+      > ⚠️ **ModelScope 未完成（凭据过期，需人工）**：`~/.modelscope/credentials/session`
+      > 的会话令牌已失效——`api.upload_file_to_openapi(iterate-skill-ms-3.5.3.zip)`
+      > 返回 `[E3001] [401] Invalid authentication: user not authenticated`
+      > （`POST /openapi/v1/files/upload`）。公开读接口仍可用，
+      > `get_skill('jingzhao0/iterate-skill').last_modified = 2026-10-16T13:27:28Z`，
+      > 即平台仍指向 **3.5.2**。补发命令（重新登录后执行）：
+      > `/opt/miniconda3/bin/python .dist_tmp/verify_update_353.py`
+      > ——脚本已就绪，只需 `MODELSCOPE_API_TOKEN` 或有效的交互式登录会话。
+      > 精简包 `iterate-skill-ms-3.5.3.zip` 已构建并自检（61 文件 / 566,624 字节，
+      > < 5MiB，harness/kernel/tests/.githooks/badges 均为 0，SKILL.md 3.5.3）。
+      >
+      > **⚠️ 本机 pre-push 钩子已过期并静默失效（已修复）**：`.git/hooks/pre-push`
+      > 仍是旧版——`ALLOWED_AUTHOR_EMAILS` 为多行 `-v` 赋值，BSD awk（macOS）拒绝，
+      > 于是本次推送输出两次 `awk: newline in string ET_lin@outlook.com` 且 `offenders`
+      > 为空、作者门**fail-open 放行**。`cp .githooks/pre-push .git/hooks/pre-push`
+      > 后实测：作者门对真实范围 0 命中、对合成外来身份 1 命中，
+      > `./scripts/check.sh --lint-only` 通过、退出 0。
+      >
+      > **✅ 清洁门禁**：`git status` 干净、`origin/main == main == 505a78d`；
+      > Dependabot 0 open 告警 × 3 仓（`iterate-skill` / `-harness` / `-plugin`）；
+      > 0 open issue / 0 open PR × 3 仓。
+      > `iterate-harness` 原先有 1 条 open 告警（#46，`mcp >= 2.0.0, < 2.2.0`，medium）
+      > 与 1 个卡住的 Dependabot PR #4——该 PR 无法合并，因其 `Python quality` 作业被
+      > **main 上既有的** F401（`tests/test_services/test_compact.py` 未使用的
+      > `TextBlock` 导入）拖红，与本次依赖升级无关。已在独立发布仓直接落地
+      > `ca67ac3`（修 F401，恢复 `Python quality` success）+ `2cf5bce`
+      > （`mcp 2.0.0 → 2.2.0`，与 PR #4 逐字相同），据此关闭 PR #4 并删除其分支；
+      > 告警 #46 于 2026-10-18T06:24:31Z 置为 `fixed`。属 harness 仓自身的
+      > 告警处置，未触及 skill 发布包内容。
+      > 分支清理：删除本地 `backup/2026-10-17-out-of-scope-wip`（远端同名分支已保留
+      > 同一提交）；**保留** `backup/docs-glasspane-cross-link`（2 个独有提交）、
+      > `backup/pre-rebase-20260930`（38 个独有提交）、`kernel/decision-log-chain`、
+      > `kernel/npm-canonical`——均含未被 `origin/main` 收录的提交，删除即丢历史。
+      > worktree **一个未删**：`/Volumes/Eng-Dev/.worktrees/it-kernel-rebase`
+      > （`kernel/npm-canonical`）持有 12 个未提交文件（kernel decision-log /
+      > evidence-pack 及 `scripts/install.py`、`tests/test_install_script.py`），
+      > 属 kernel lane 的 WIP，删了就是删别人的活；其余 7 个 worktree 虽已 ≥6 天
+      > 无改动，但全部挂在 harness/kernel 分支上，同属并发 lane，未动。
+      >
+      > **备注**：CHANGELOG 的 `## [3.5.3]` 条目日期为 2026-10-17（复审完成、
+      > 条目落笔当日），实际发版执行于 2026-10-18；不为此重写已推送的
+      > release 提交与 tag。
+      >
       > **3.5.2 状态（2026-10-16）**：patch（发布链路加固：强制签名 + npm CI 认证修复）。
       > 测试套件 1434 → 1456；新增 `tests/test_signing.py`（策略全分支 + 真实 gpg 往返 +
       > 钉死公钥指纹）与 `test_release_meta.py` 的"三处公钥字节一致"守护。
