@@ -24,6 +24,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from iterate_cli import signing
 from iterate_cli.signing import (
     ALLOW_UNSIGNED_ENV,
     ITERATE_SIGNING_PUBLIC_KEY,
@@ -122,6 +123,126 @@ class TestEnforceSignaturePolicy:
         assert ok is False
         assert "FAILED" in detail or "failed" in detail
         assert ALLOW_UNSIGNED_ENV in detail  # tells the user it will not help here
+
+
+# ---------------------------------------------------------------------------
+# VALIDSIG fingerprint comparison + agent teardown (no real gpg required)
+# ---------------------------------------------------------------------------
+
+_FPR_A = "AAAABBBBCCCCDDDDEEEEFFFF0000111122223333"
+_FPR_B = "BBBBCCCCDDDDEEEEFFFF00001111222233334444"
+
+
+def _fake_gpg_run(verify_stdout: str, *, verify_rc: int = 0, fingerprints=(_FPR_A,)):
+    """Fake ``subprocess.run`` dispatching import / list-keys / verify / gpgconf."""
+    calls: list[list[str]] = []
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        if "--import" in argv:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if "--list-keys" in argv:
+            body = "".join(f"fpr:::::::::{f}:\n" for f in fingerprints)
+            return subprocess.CompletedProcess(argv, 0, body, "")
+        if "--verify" in argv:
+            return subprocess.CompletedProcess(argv, verify_rc, verify_stdout, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    return run, calls
+
+
+def _status_for(fingerprint: str) -> str:
+    return (
+        "[GNUPG:] NEWSIG\n"
+        "[GNUPG:] GOODSIG DEADBEEF Someone <x@example.invalid>\n"
+        f"[GNUPG:] VALIDSIG {fingerprint} 2026-01-01 1 0 4 0 1 8 00 {fingerprint}\n"
+    )
+
+
+class TestValidsigFingerprintEnforcement:
+    def _paths(self, tmp_path: Path) -> tuple[Path, Path]:
+        artifact = tmp_path / "a.bin"
+        artifact.write_bytes(b"payload\n")
+        signature = tmp_path / "a.bin.asc"
+        signature.write_text("sig\n", encoding="utf-8")
+        return artifact, signature
+
+    def test_matching_fingerprint_verifies_and_disables_key_retrieval(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        artifact, signature = self._paths(tmp_path)
+        run, calls = _fake_gpg_run(_status_for(_FPR_A), fingerprints=(_FPR_A,))
+        monkeypatch.setattr(signing.subprocess, "run", run)
+
+        status, detail = verify_detached_signature(
+            artifact, signature, gpg_bin="/usr/bin/gpg"
+        )
+        assert status == "verified", detail
+        verify_argv = next(a for a in calls if "--verify" in a)
+        assert "--no-auto-key-retrieve" in verify_argv
+
+    def test_valid_signature_from_another_key_is_rejected(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Exit 0 + GOODSIG is not enough: VALIDSIG must be the pinned key.
+
+        A gpg that reports a GOOD signature under a NON-pinned fingerprint
+        (e.g. an auto-retrieved or pre-seeded key) must be refused.
+        """
+        artifact, signature = self._paths(tmp_path)
+        run, _calls = _fake_gpg_run(_status_for(_FPR_B), fingerprints=(_FPR_A,))
+        monkeypatch.setattr(signing.subprocess, "run", run)
+
+        status, _detail = verify_detached_signature(
+            artifact, signature, gpg_bin="/usr/bin/gpg"
+        )
+        assert status == "invalid"
+
+    def test_goodsig_without_validsig_is_rejected(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        artifact, signature = self._paths(tmp_path)
+        run, _calls = _fake_gpg_run(
+            "[GNUPG:] GOODSIG DEADBEEF X\n", fingerprints=(_FPR_A,)
+        )
+        monkeypatch.setattr(signing.subprocess, "run", run)
+
+        status, _detail = verify_detached_signature(
+            artifact, signature, gpg_bin="/usr/bin/gpg"
+        )
+        assert status == "invalid"
+
+
+class TestGpgAgentTeardown:
+    def _paths(self, tmp_path: Path) -> tuple[Path, Path]:
+        artifact = tmp_path / "a.bin"
+        artifact.write_bytes(b"payload\n")
+        signature = tmp_path / "a.bin.asc"
+        signature.write_text("sig\n", encoding="utf-8")
+        return artifact, signature
+
+    def test_verification_kills_the_throwaway_agent(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        artifact, signature = self._paths(tmp_path)
+        run, calls = _fake_gpg_run(_status_for(_FPR_A), fingerprints=(_FPR_A,))
+        monkeypatch.setattr(signing.subprocess, "run", run)
+        monkeypatch.setattr(
+            signing.shutil,
+            "which",
+            lambda name: "/usr/bin/gpgconf" if name == "gpgconf" else None,
+        )
+
+        verify_detached_signature(artifact, signature, gpg_bin="/usr/bin/gpg")
+        assert any("--kill" in a and "gpg-agent" in a for a in calls), calls
+
+    def test_kill_gpg_agent_never_raises(self, monkeypatch, tmp_path: Path) -> None:
+        def boom(*args, **kwargs):
+            raise OSError("gpgconf exploded")
+
+        monkeypatch.setattr(signing.subprocess, "run", boom)
+        monkeypatch.setattr(signing.shutil, "which", lambda name: "/usr/bin/gpgconf")
+        signing._kill_gpg_agent("/usr/bin/gpg", tmp_path, 5)  # must not raise
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ binary), which downgrades the failure to a loud warning.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -183,6 +184,67 @@ def enforce_signature_policy(
     )
 
 
+def _list_key_fingerprints(gpg: str, home: Path, timeout: int) -> list[str]:
+    """Return every fingerprint (primary + subkeys) in ``home``'s keyring.
+
+    Used to establish WHICH key a signature must have been made by: the verify
+    step compares gpg's ``VALIDSIG`` fingerprint against this set, so passing
+    gpg's exit code alone is never enough.
+    """
+    listing = subprocess.run(
+        [gpg, "--homedir", str(home), "--batch", "--with-colons", "--list-keys"],
+        capture_output=True, text=True, timeout=timeout, check=False,
+    )
+    if listing.returncode != 0:
+        return []
+    fingerprints: list[str] = []
+    for line in listing.stdout.splitlines():
+        if not line.startswith("fpr:"):
+            continue
+        fields = line.split(":")
+        if len(fields) > 9 and fields[9]:
+            fingerprints.append(fields[9].upper())
+    return fingerprints
+
+
+def _validsig_fingerprints(status_output: str) -> list[str]:
+    """Extract the fingerprints gpg reported as ``VALIDSIG`` in ``--status-fd``.
+
+    A status line looks like ``[GNUPG:] VALIDSIG <fpr> <date> …``; the
+    fingerprint is the token right after the ``VALIDSIG`` keyword.
+    """
+    fingerprints: list[str] = []
+    for line in status_output.splitlines():
+        if not line.startswith("[GNUPG:] VALIDSIG "):
+            continue
+        parts = line.split()
+        if len(parts) >= 3 and parts[2]:
+            fingerprints.append(parts[2].upper())
+    return fingerprints
+
+
+def _kill_gpg_agent(gpg: str, home: Path, timeout: int) -> None:
+    """Best-effort ``gpgconf --kill gpg-agent`` for the throwaway homedir.
+
+    gpg may leave an agent running with the imported key cached; killing it
+    ensures no stale agent (pinning an old/cached key) outlives the
+    verification. This is cleanup, never part of the security decision, so it
+    swallows every error and never raises.
+    """
+    gpgconf = shutil.which("gpgconf")
+    if not gpgconf and os.sep in gpg:
+        candidate = str(Path(gpg).with_name("gpgconf"))
+        if os.path.exists(candidate):
+            gpgconf = candidate
+    if not gpgconf:
+        return
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            [gpgconf, "--homedir", str(home), "--kill", "gpg-agent"],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+
+
 def verify_detached_signature(
     artifact_path: Path | str,
     signature_path: Path | str,
@@ -196,9 +258,11 @@ def verify_detached_signature(
     Returns:
         ``(status, detail)`` where ``status`` is one of:
 
-        * ``"verified"``    — gpg is present and the signature is VALID.
+        * ``"verified"``    — gpg is present and the signature is VALID *and*
+          gpg's ``VALIDSIG`` fingerprint belongs to the pinned key.
         * ``"invalid"``     — gpg is present but the signature did not verify
-          (wrong key, tampered artifact, or tampered signature).
+          (wrong key, tampered artifact, or tampered signature), or it verified
+          under a fingerprint that is not the pinned key.
         * ``"unavailable"`` — no gpg binary, or the pinned key could not be
           imported into the throwaway keyring.
 
@@ -235,17 +299,36 @@ def verify_detached_signature(
                     "could not import the pinned public key"
                     + (f": {detail[-1][:160]}" if detail else "")
                 )
-            verified = subprocess.run(
-                [
-                    gpg, "--homedir", str(home), "--batch",
-                    "--status-fd", "1", "--verify", str(signature_path), str(artifact_path),
-                ],
-                capture_output=True, text=True, timeout=timeout, check=False,
-            )
+            pinned_fingerprints = _list_key_fingerprints(gpg, home, timeout)
+            if not pinned_fingerprints:
+                return "unavailable", "could not read the pinned key fingerprint"
+            try:
+                # --no-auto-key-retrieve: never let gpg fetch a signer's key
+                # over the network behind our back — the only key that may
+                # verify here is the one we just imported.
+                verified = subprocess.run(
+                    [
+                        gpg, "--homedir", str(home), "--batch",
+                        "--no-auto-key-retrieve",
+                        "--status-fd", "1", "--verify", str(signature_path),
+                        str(artifact_path),
+                    ],
+                    capture_output=True, text=True, timeout=timeout, check=False,
+                )
+            finally:
+                _kill_gpg_agent(gpg, home, timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         return "unavailable", f"gpg could not run: {exc}"
 
-    if verified.returncode == 0 and "GOODSIG" in verified.stdout:
-        return "verified", f"signature matches the pinned key ({SIGNING_KEY_FINGERPRINT})"
+    signer_fingerprints = _validsig_fingerprints(verified.stdout)
+    if (
+        verified.returncode == 0
+        and signer_fingerprints
+        and any(fpr in pinned_fingerprints for fpr in signer_fingerprints)
+    ):
+        return (
+            "verified",
+            f"signature matches the pinned key ({pinned_fingerprints[0]})",
+        )
     detail_lines = [ln for ln in verified.stderr.strip().splitlines() if ln.strip()]
     return "invalid", (detail_lines[-1][:200] if detail_lines else "gpg reported a bad signature")
