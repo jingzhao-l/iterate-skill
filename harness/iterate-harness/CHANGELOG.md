@@ -23,6 +23,18 @@ All notable changes to iterate-harness should be recorded in this file.
   **未提交**的并行编辑把它改掉——那是别人的批次，我不抄不覆盖；② `AggregateSnapshot` 仍不带
   `evidence_complete`，因为此刻没有任何读者会读它，等④翻转那批把字段和用法一起加（先加就是没人读的
   计数）。
+- **`iterate-kernel@0.1.8`：`RoundState.breakerLevel` 改为可选，缺席不等于 0（场景④最后一闸）。**
+  契约原文说 `breakerLevel` 是"引擎自己为这次运行报的等级"，可 iterate 循环里根本没有这个值：
+  实测 harness 只在按需复核（`gp_last_evidence`）时取证据包，没有任何地方把某个包缓存在轮次
+  metadata 里，而本机也没有断路器概念。此前 producers 只有两种选择，都不诚实：要么不发状态，
+  要么填 0——而 0 断言的是"存在断路器且未跳闸"。现在缺席合法，规则 1 显式跳过；TS/JSON Schema/
+  Python 三处同一批改，缺席与 `0..3` 在类型上就分得开。
+  对照是拿**真发布物**取的，不是自说自话：同一份 `{round:2, maxRounds:7, invariantState:pass,
+  openFindings:0, evidenceComplete:true}` 在 0.1.7 上被 `KernelSchemaError` 拒在
+  `breakerLevel`，在 0.1.8 上判 `converged / all-gates-green`；再加一条 `absent-breaker-still-halts-on-budget`
+  钉住"跳过规则 1 不等于放水"——预算到了照样 halt。语料两例 + manifest 升到 0.1.8（9 条
+  sha 全重钉）；内核 231 条、Python 收敛与语料守卫 40 条、跨语言当面比对全一致，ruff 干净。
+
 
 - **`iterate/loop_gates.py`：轮次边界只报"真的量过的闸"（场景④后半：`evidence_complete`）。**
   聚合发布点此前只有 `invariant_state` 一条；`evidence_complete` 的真值在**另一个 action**

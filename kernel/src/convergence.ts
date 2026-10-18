@@ -26,8 +26,17 @@ export const RoundStateSchema = z.strictObject({
   openFindings: z.number().int().min(0),
   /** False when the engine never got to evidence something (refused, crashed, unattached). */
   evidenceComplete: z.boolean(),
-  /** The engine's own circuit-breaker level for this run; 3 is tripped. */
-  breakerLevel: z.number().int().min(0).max(3)
+  /**
+   * The engine's own circuit-breaker level for this run; 3 is tripped.
+   *
+   * OPTIONAL, and absence is not the same claim as 0. `0` says "a breaker exists and it has
+   * not tripped"; absence says "this run has no breaker channel at all" — which is the normal
+   * shape of an iterate loop that never touched the GUI engine. The distinction changes no
+   * verdict today (only `>= 3` halts), but collapsing it would force a producer that never
+   * looked to assert a measurement it did not take, and that is the exact failure this
+   * contract's `unmeasured` state exists to prevent.
+   */
+  breakerLevel: z.number().int().min(0).max(3).optional()
 });
 export type RoundState = z.infer<typeof RoundStateSchema>;
 
@@ -91,7 +100,9 @@ export function convergenceDecision(state: RoundState): ConvergenceDecision {
     maxRounds: input.maxRounds
   });
 
-  if (input.breakerLevel >= 3) return decided("halt", CONVERGENCE_REASONS.breakerTripped);
+  if (input.breakerLevel !== undefined && input.breakerLevel >= 3) {
+    return decided("halt", CONVERGENCE_REASONS.breakerTripped);
+  }
   if (input.round >= input.maxRounds) return decided("halt", CONVERGENCE_REASONS.budgetExhausted);
   if (input.invariantState === "error") return decided("halt", CONVERGENCE_REASONS.invariantErrored);
   if (input.openFindings > 0) return decided("fix", CONVERGENCE_REASONS.openFindings);
