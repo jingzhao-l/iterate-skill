@@ -149,6 +149,64 @@ class TestIterateReviewTool:
         assert context.metadata[ITERATE_STATE_KEY]["rounds_seen"] == 2
         assert context.metadata[ITERATE_STATE_KEY]["total_findings"] == 1
 
+    async def _aggregate_state(self, tmp_path, rounds):
+        """Run one aggregate and hand back the loop state the tool published."""
+        from iterate_harness.iterate.loop_policy import ITERATE_STATE_KEY
+        from iterate_harness.tools.iterate_tools import IterateReviewInput
+
+        context = make_context(tmp_path)
+        result = await run_tool(
+            IterateReviewTool(),
+            IterateReviewInput(operation="aggregate", rounds=rounds, max_review_rounds=2),
+            context,
+        )
+        assert result.is_error is False
+        return context, context.metadata[ITERATE_STATE_KEY]
+
+    async def test_aggregate_publishes_evidence_complete_for_real_anchors(self, tmp_path):
+        """End-to-end on the publish line: the tool wrote the gate it measured, not a default."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "a.py").write_text("\n".join(f"line{i}" for i in range(1, 12)), encoding="utf-8")
+        _, state = await self._aggregate_state(tmp_path, [{"round": 1, "findings": [FINDING]}])
+        assert state["evidence_complete"] is True
+
+    async def test_aggregate_publishes_false_for_a_fabricated_anchor(self, tmp_path):
+        # FINDING anchors src/a.py:10; this project has no such file.
+        _, state = await self._aggregate_state(tmp_path, [{"round": 1, "findings": [FINDING]}])
+        assert state["evidence_complete"] is False
+
+    async def test_aggregate_omits_evidence_complete_when_the_channel_is_off(self, tmp_path):
+        write_config(tmp_path, "reviewer:\n  evidence_validation: false\n")
+        _, state = await self._aggregate_state(tmp_path, [{"round": 1, "findings": [FINDING]}])
+        assert "evidence_complete" not in state, "an unmeasured gate must be absent, not defaulted"
+
+    async def test_aggregate_publishes_invariant_state_from_a_kernel_in_metadata(self, tmp_path):
+        """The end-to-end line `8664b0e` named as missing: a real kernel instance reaches the state."""
+        from iterate_harness.defensive.invariants import InvariantReport
+        from iterate_harness.defensive.kernel import DEFENSIVE_KERNEL_KEY
+
+        class _Kernel:
+            last_invariant_report = InvariantReport(passed=True, checks_run=2)
+
+        context = make_context(tmp_path)
+        context.metadata[DEFENSIVE_KERNEL_KEY] = _Kernel()
+        from iterate_harness.iterate.loop_policy import ITERATE_STATE_KEY
+        from iterate_harness.tools.iterate_tools import IterateReviewInput
+
+        await run_tool(
+            IterateReviewTool(),
+            IterateReviewInput(
+                operation="aggregate", rounds=[{"round": 1, "findings": [FINDING]}], max_review_rounds=2
+            ),
+            context,
+        )
+        assert context.metadata[ITERATE_STATE_KEY]["invariant_state"] == "pass"
+
+    async def test_aggregate_omits_invariant_state_without_a_kernel(self, tmp_path):
+        _, state = await self._aggregate_state(tmp_path, [{"round": 1, "findings": [FINDING]}])
+        assert "invariant_state" not in state
+
     async def test_aggregate_rejects_malformed_findings(self, tmp_path):
         from iterate_harness.tools.iterate_tools import IterateReviewInput
 

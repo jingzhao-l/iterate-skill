@@ -6,6 +6,24 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **场景④那两把闸的对照补到能红（只动测试，未动生产代码）。** 上一批的
+  `test_breaker_level_is_never_invented` 断的是 `"breaker_level" not in GATE_KEYS`，而
+  `GATE_KEYS` 这个常量在生产代码里**没有任何读者**（grep 实测只命中声明与这条测试）——于是它测的是
+  一张清单而不是行为。本批发了一版对照证据：把 `gates["breaker_level"] = 0` 真的打进
+  `measured_gates()` 后，按原式子重放那条断言**仍然绿**，而新断言（五种输入形状逐个跑
+  `measured_gates()`，断返回的键 ⊆ `GATE_KEYS` 且永不含 `breaker_level`）当场点名变红。
+  另补 `8664b0e` 点名的端到端欠账：aggregate 发布那行原先只有单元级覆盖，现在 5 条工具级用例钉住
+  真锚点⇒`True`、编造路径⇒`False`、通道关⇒键缺席、kernel 实例进 metadata⇒`invariant_state=pass`、
+  没 kernel⇒缺席。
+  变异五发（打 0 档 breaker / 硬编码 True / 无视通道开关 / 摘掉 invariant / 停止发布）各打中具名
+  用例，变异前后按 sha256 核回。`tests/test_iterate` 1065→1070，整包 `pytest -q` 2702 passed /
+  6 skipped，ruff 干净。
+  **两条如实记在案、本批不做的**：① `loop_gates.py:22` 的 `from .types import Finding` 是悬空引用
+  （真名 `ReviewFinding`，mypy 实测 `attr-defined`），origin/main 上仍在、但共享工作树里已有一条
+  **未提交**的并行编辑把它改掉——那是别人的批次，我不抄不覆盖；② `AggregateSnapshot` 仍不带
+  `evidence_complete`，因为此刻没有任何读者会读它，等④翻转那批把字段和用法一起加（先加就是没人读的
+  计数）。
+
 - **`iterate/loop_gates.py`：轮次边界只报"真的量过的闸"（场景④后半：`evidence_complete`）。**
   聚合发布点此前只有 `invariant_state` 一条；`evidence_complete` 的真值在**另一个 action**
   （`_meta_review`，`iterate_tools.py:391`）里算，而循环是在轮次边界做判断的——拿一个可能还没
