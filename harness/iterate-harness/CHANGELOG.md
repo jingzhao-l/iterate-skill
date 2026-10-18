@@ -29,12 +29,24 @@ All notable changes to iterate-harness should be recorded in this file.
   `test_the_breaker_level_is_actually_fed_to_the_contract` 是接缝用例：两处守门结果同串，不单独钉
   "数字真喂进契约"的话，把 `breaker_level=0` 写死也没人红。变异九发各打中具名用例、前后 sha256 核回；
   **其中第三发第一版是零红**——那道缺席门与内核自身的构造校验得出同样的停止行为、不可区分，所以没有
-  给它编一条"看起来能红"的断言，而是把拒绝原因写进停止理由，让它成为可观察、可红的 surface。整包
-  `pytest -q` 2715 passed / 6 skipped（基线 2702，本批 +13；本机需 `python→python3` shim），ruff
-  0.16.8 干净，`diff_kernel_implementations` 53 例一致。那 2 条 warning 来自本批未触碰的
-  `tests/test_swarm/test_imports.py` 与 `tests/test_tools/test_task_tools.py`（一条未 await 的
-  mock 协程、一条子进程 transport 析构），不是本批引入。顺带删掉
-  `tests/test_services/test_compact.py:640` 一处 HEAD 上就有的未用 import（F401）。
+  给它编一条"看起来能红"的断言，而是把拒绝原因写进停止理由，让它成为可观察、可红的 surface。
+  整包 `pytest -q` 2715 passed / 6 skipped（基线 2702，本批 +13；本机需 `python→python3` shim），
+  rebase 到 0.1.8 之后复跑 **2717 passed / 6 skipped**（多出的 2 条是契约那批自己加的 Python
+  用例），ruff 0.16.8 干净。那 2 条 warning 来自本批未触碰的 `tests/test_swarm/test_imports.py` 与
+  `tests/test_tools/test_task_tools.py`（一条未 await 的 mock 协程、一条子进程 transport 析构），
+  不是本批引入。顺带删掉 `tests/test_services/test_compact.py:640` 一处 HEAD 上就有的未用
+  import（F401）。
+  **与本批同日落地的内核 `0.1.8`（`9d6d9036`，`breakerLevel` 改为可选）关系要说清**：那批把
+  "缺席"与"0"在类型上分开，为的是让没有断路器的跑不必填一个主张"存在断路器且未跳闸"的 0；本批则
+  让 iterate 循环**有了**断路器（数连续无进展轮），所以每次咨询都带一个真实的 0..3。两种形状在这份
+  契约下都合法、主张不同，互不覆盖。
+  **一条实测的红记在案，不是本批造成的**：`scripts/diff_kernel_implementations.py` 默认解析的是
+  **已发布**产物 `node_modules/iterate-kernel@0.1.7`，那份按 required 拒收缺 `breakerLevel` 的
+  state，于是 0.1.8 新增的 `convergence/absent-breaker-still-halts-on-budget` 判成
+  `TS refused, Python accepted`。把尺子指向我按 0.1.8 源码现编的 dist 时 **55 例一致**（TS 侧
+  `test/convergence.test.mjs` 实测 24 例全过）。所以这条红不是两侧实现分叉，而是 **0.1.8 尚未发布、
+  harness 的 pin 未升级**；CI 不跑这把尺子（grep `.github/workflows` 无引用），上游不会替我喊红。
+  发布 0.1.8 并追平 `tests/kernel_fixtures` 的 pin 属内核发布线的动作（npm 不可逆），本批不代做。
   **点名未做**：报告侧的 `converged` 字段仍是"最后一轮 0 条新发现"的算术，checkpoint / `ih iterate
   report` / html 报告读的都是它，于是它现在可能与循环结论不一致——不一致是可见的（停止理由 + compact
   那行的闸位列），但把三处命名统一是另一批的活，本轮没有顺手改 30 个文件。
