@@ -294,7 +294,7 @@ cmd_audit() {
         any=1
       fi
     done
-  done < <(targets_filtered)
+  done < <(targets_filtered "$@")
   [ "$any" -eq 1 ] || ok "no silent-skip signing found"
   cat <<'NOTE'
 
