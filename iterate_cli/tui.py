@@ -100,6 +100,51 @@ def _display_width(text: str) -> int:
         width += 1
     return width
 
+
+def _fit_prefix(text: str, width: int) -> str:
+    """Return the longest prefix of ``text`` whose display width is ≤ ``width``.
+
+    Always returns at least one character (when ``text`` is non-empty), so a
+    caller looping on the remainder is guaranteed to make progress even when a
+    single character is wider than the budget.
+    """
+    taken = 0
+    for index in range(1, len(text) + 1):
+        if _display_width(text[:index]) > width:
+            break
+        taken = index
+    return text[:taken] or text[:1]
+
+
+def _wrap_display(text: str, width: int) -> list[str]:
+    """Greedy word-wrap measured in *display* width, not character count.
+
+    ``str`` length is the wrong ruler for this CLI: a Chinese value of 40
+    characters occupies 80 columns, so ``textwrap`` would emit a line twice as
+    wide as the terminal. Words break at spaces where possible and are
+    hard-split otherwise (long paths, URLs); existing newlines stay hard breaks.
+    """
+    if width <= 0:
+        return text.split("\n")
+    lines: list[str] = []
+    for paragraph in text.split("\n"):
+        current = ""
+        for word in paragraph.split(" "):
+            candidate = word if not current else f"{current} {word}"
+            if _display_width(candidate) <= width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+            current = word
+            while _display_width(current) > width:
+                head = _fit_prefix(current, width)
+                lines.append(head)
+                current = current[len(head):]
+        lines.append(current)
+    return lines
+
+
 # ITERATE 立体 ASCII 横幅 — 仿 skills.sh 顶部 Logo
 _ITERATE_BANNER_LINES = (
     "██╗████████╗███████╗██████╗  █████╗ ████████╗███████╗",
@@ -300,18 +345,48 @@ class TUI:
     def key_value(self, key: str, value: str, indent: int = 2) -> None:
         """输出键值对（key 加粗，value 正常）.
 
+        值过长而折行时，**续行与首行同列**：以前续行从第 0 列开始，看起来
+        像新的一段而不是同一个值，复制出去对齐也已经坏掉（`iterate scan` 的
+        "Top-level dirs" 就是第一个撞上的例子）。rich 只对首行加缩进，所以
+        折行在这里按**显示宽度**自己做（CJK 双宽不会被按字符数算错），
+        续行预先补好左缩进。
+
         Args:
             key: 键名
             value: 值
             indent: 缩进空格数
         """
         # 按显示宽度（CJK 双宽）对齐 key，避免中文错位
-        label = escape(f"{key}:")
-        padded_key = label + " " * max(KEY_VALUE_WIDTH - _display_width(label), 1)
-        prefix = " " * indent
-        self.console.print(
-            f"{prefix}[iterate.label]{padded_key}[/] [iterate.value]{escape(value)}[/]"
+        # Pad by the width of the *visible* label. Measuring the escaped text
+        # over-counted every `[` (rich renders `\[` as one column), so a key
+        # containing a bracket pushed the value column right by one per
+        # bracket. Escape only when embedding into markup.
+        raw_label = f"{key}:"
+        padded_key = escape(
+            raw_label + " " * max(KEY_VALUE_WIDTH - _display_width(raw_label), 1)
         )
+        prefix = " " * indent
+        # Budget for the value column: terminal width minus both the left
+        # indent and the key column. Floored at 16 so a very narrow terminal
+        # still gets readable chunks instead of one character per line.
+        budget = max(
+            (getattr(self.console, "width", None) or 80) - indent - KEY_VALUE_WIDTH, 16
+        )
+        wrapped = _wrap_display(value, budget)
+        continuation = " " * (indent + KEY_VALUE_WIDTH)
+        rendered = [
+            (
+                f"{prefix}[iterate.label]{padded_key}[/] "
+                f"[iterate.value]{escape(wrapped[0])}[/]"
+            )
+        ]
+        rendered.extend(
+            f"{continuation}[iterate.value]{escape(line)}[/]" for line in wrapped[1:]
+        )
+        # One print call for the whole value: splitting it would let rich
+        # interleave other output (or a spinner repaint) into the middle of a
+        # single key/value row.
+        self.console.print("\n".join(rendered))
 
     # ------------------------------------------------------------------
     # 列表展示

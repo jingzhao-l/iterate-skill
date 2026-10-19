@@ -166,6 +166,34 @@ class TestRenderMethods:
         assert "语言" in rendered
         assert "zh" in rendered
 
+    def test_key_value_label_width_ignores_markup_escaping(self) -> None:
+        """A ``[`` in the key must not widen the label column.
+
+        The label is escaped for rich markup (``[`` -> ``\\[``); measuring the
+        *escaped* text over-counted each bracket by one column and pushed the
+        value to the right. The visible padded label must stay exactly
+        ``KEY_VALUE_WIDTH`` columns wide either way.
+        """
+        import re
+
+        from iterate_cli.tui import KEY_VALUE_WIDTH
+
+        def _visible_label_width(render: str) -> int:
+            match = re.search(r"\[iterate\.label\](.*?)\[/\]", render)
+            assert match, render
+            visible = match.group(1).replace(r"\[", "[")
+            return _display_width(visible)
+
+        tui_a, console_a = _make_tui()
+        tui_a.key_value("a[b]", "v")
+        tui_b, console_b = _make_tui()
+        tui_b.key_value("axxb", "v")
+
+        assert _visible_label_width(_rendered(console_a)) == KEY_VALUE_WIDTH
+        assert _visible_label_width(_rendered(console_a)) == _visible_label_width(
+            _rendered(console_b)
+        )
+
     def test_numbered_list_with_markers(self) -> None:
         tui, console = _make_tui()
         tui.numbered_list(["a", "b"], markers=["✓", ""])
@@ -278,6 +306,7 @@ class TestJsonHelpText:
 
     JSON_CAPABLE = (
         "status",
+        "scan",
         "show",
         "doctor",
         "refresh",
