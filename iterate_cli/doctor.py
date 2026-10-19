@@ -1420,7 +1420,37 @@ def export_report_json(
             pass  # cleanup is best-effort; the real error surfaces above
 
 
-def render_report(report: DoctorReport, json_output: bool = False, strict: bool = False) -> int:
+def _resolve_output_language(project_root: Path) -> str:
+    """Best-effort read of the project's configured output ``language``.
+
+    Doctor's structured findings are English-only, but the "Next action(s)"
+    hints are operator-facing prose and must follow the project's ``language``
+    setting. Reads the config directly (rather than via
+    ``load_onboarding_config``, which logs to stderr) so a corrupt config —
+    already reported as a ``config.parse`` finding above — does not print a
+    second, duplicate error line during rendering. Falls back to ``"en"`` for
+    a missing/unreadable config or an unsupported value; rendering must never
+    crash on a hand-edited config.
+    """
+    config_path = project_root / CONFIG_YAML
+    try:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return "en"
+    if not isinstance(raw, dict):
+        return "en"
+    language = raw.get("language")
+    if isinstance(language, str) and language in SUPPORTED_LANGUAGES:
+        return language
+    return "en"
+
+
+def render_report(
+    report: DoctorReport,
+    json_output: bool = False,
+    strict: bool = False,
+    language: str | None = None,
+) -> int:
     """Render a DoctorReport to the terminal.
 
     Args:
@@ -1429,6 +1459,9 @@ def render_report(report: DoctorReport, json_output: bool = False, strict: bool 
         strict: When True, warnings also flip the exit code to 1 (default
             doctor exit semantics: only errors are blocking; ``--strict``
             lets CI gate on any non-clean state, mirroring the summary line).
+        language: Output language for the "Next action(s)" hints (``zh`` /
+            ``en``). When None, it is read from the project's config so the
+            hints match the rest of the operator's setup.
 
     Returns:
         Exit code: 0 when healthy (errors absent); 1 when errors are present.
@@ -1438,6 +1471,11 @@ def render_report(report: DoctorReport, json_output: bool = False, strict: bool 
     if json_output:
         print(json.dumps(report.to_dict(strict=strict), ensure_ascii=False, indent=2))
         return 1 if blocking else 0
+
+    if language is None:
+        language = _resolve_output_language(Path(report.project))
+    if language not in SUPPORTED_LANGUAGES:
+        language = "en"
 
     tui.intro(f"Iterate Skill — Doctor / {report.project}")
 
@@ -1453,7 +1491,7 @@ def render_report(report: DoctorReport, json_output: bool = False, strict: bool 
             if finding.detail:
                 tui.hint(finding.detail, indent=4)
 
-    _render_next_actions(tui, report)
+    _render_next_actions(tui, report, language=language)
 
     _render_summary(tui, report)
     return 1 if blocking else 0
@@ -1487,45 +1525,114 @@ def _render_summary(tui: Any, report: DoctorReport) -> None:
     tui.success(f"Doctor: healthy ({len(report.findings)} checks passed).")
 
 
-def _render_next_actions(tui: Any, report: DoctorReport) -> None:
+def _render_next_actions(
+    tui: Any, report: DoctorReport, language: str = "en"
+) -> None:
     """Aggregate actionable next steps for a doctor run.
 
     Grep-friendly, forge a single ``Next action(s):`` block mapping the most
     common problems to the command that fixes them, so users are not left
     guessing what to do after seeing warnings/errors.
+
+    The hint prose follows the project's configured ``language`` (``zh`` /
+    ``en``) — it used to be hardcoded Chinese even though the rest of the
+    doctor output is English, so an English-language project saw a mixed
+    report. Unknown languages fall back to English.
     """
     checks = {f.check for f in report.findings if f.severity in ("warn", "error")}
     if not checks:
         return
 
+    zh = language == "zh"
+
+    def _t(
+        zh_label: str,
+        zh_command: str,
+        en_label: str,
+        en_command: str,
+    ) -> tuple[str, str]:
+        return (zh_label, zh_command) if zh else (en_label, en_command)
+
     actions: list[tuple[str, str]] = []
     if "config.parse" in checks:
-        actions.append(("修复 iterate.config.yaml 的语法错误", "编辑配置后运行 `iterate doctor`"))
+        actions.append(
+            _t(
+                "修复 iterate.config.yaml 的语法错误",
+                "编辑配置后运行 `iterate doctor`",
+                "Fix the YAML syntax error in iterate.config.yaml",
+                "edit the config, then run `iterate doctor`",
+            )
+        )
     if "config.schema" in checks:
         actions.append(
-            ("配置字段不符合规范", "编辑 iterate.config.yaml 中所示字段，或运行 `iterate reonboard` 重新生成")
+            _t(
+                "配置字段不符合规范",
+                "编辑 iterate.config.yaml 中所示字段，或运行 `iterate reonboard` 重新生成",
+                "Config fields do not conform to the schema",
+                "edit the fields shown in iterate.config.yaml, or run `iterate reonboard` to regenerate",
+            )
         )
     if "validation.commands" in checks:
-        actions.append(("validation.commands 结构异常", "编辑配置使每个模块对应非空命令列表"))
+        actions.append(
+            _t(
+                "validation.commands 结构异常",
+                "编辑配置使每个模块对应非空命令列表",
+                "validation.commands structure is invalid",
+                "edit the config so every module maps to a non-empty command list",
+            )
+        )
     if (
         "validation.command_whitelist" in checks
         or "validation.whitelist" in checks
     ):
         actions.append(
-            ("命令白名单/验证命令含非法字符", "运行 `iterate personalize` 重新配置验证命令，或在配置中修正白名单")
+            _t(
+                "命令白名单/验证命令含非法字符",
+                "运行 `iterate personalize` 重新配置验证命令，或在配置中修正白名单",
+                "Command whitelist / validation command contains an illegal character",
+                "run `iterate personalize` to reconfigure validation commands, or fix the whitelist in the config",
+            )
         )
     if (
         "invariants" in checks
         or "invariants.commands" in checks
         or "invariants.ensure" in checks
     ):
-        actions.append(("invariants 配置异常", "在 iterate.config.yaml 中修正 invariants.commands / invariants.ensure"))
+        actions.append(
+            _t(
+                "invariants 配置异常",
+                "在 iterate.config.yaml 中修正 invariants.commands / invariants.ensure",
+                "invariants config is invalid",
+                "fix invariants.commands / invariants.ensure in iterate.config.yaml",
+            )
+        )
     if "skill_version" in checks:
-        actions.append(("录制的技能版本过旧", "运行 `iterate refresh` 更新录制版本"))
+        actions.append(
+            _t(
+                "录制的技能版本过旧",
+                "运行 `iterate refresh` 更新录制版本",
+                "Recorded skill version is out of date",
+                "run `iterate refresh` to update the recorded version",
+            )
+        )
     if "dimensions" in checks or "review.scope" in checks:
-        actions.append(("维度/范围配置异常", "在 iterate.config.yaml 中修正或运行 `iterate reonboard`"))
+        actions.append(
+            _t(
+                "维度/范围配置异常",
+                "在 iterate.config.yaml 中修正或运行 `iterate reonboard`",
+                "dimensions / review scope config is invalid",
+                "fix it in iterate.config.yaml or run `iterate reonboard`",
+            )
+        )
     if "drift" in checks:
-        actions.append(("技术栈漂移", "运行 `iterate refresh` 同步知识库（非阻塞）"))
+        actions.append(
+            _t(
+                "技术栈漂移",
+                "运行 `iterate refresh` 同步知识库（非阻塞）",
+                "Tech-stack drift",
+                "run `iterate refresh` to sync the knowledge base (non-blocking)",
+            )
+        )
     if actions:
         tui.empty_line()
         tui.info("Next action(s): ", indent=2)

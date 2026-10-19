@@ -1335,7 +1335,33 @@ class TestRenderNextActionsInvariantsEnsure:
         )
         render_report(report)
         out = capsys.readouterr().out
+        # No ``language`` in the config -> English, matching the rest of the
+        # doctor output (the hints used to be hardcoded Chinese).
+        assert "invariants config is invalid" in out
+
+    def test_next_actions_follow_configured_language(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["invariants"] = {"ensure": []}
+        config["language"] = "zh"
+        _write_config(project, config)
+        report = run_doctor(project)
+        render_report(report)
+        out = capsys.readouterr().out
         assert "invariants 配置异常" in out
+        assert "invariants config is invalid" not in out
+
+    def test_explicit_language_argument_wins(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["invariants"] = {"ensure": []}
+        config["language"] = "zh"
+        _write_config(project, config)
+        report = run_doctor(project)
+        render_report(report, language="en")
+        out = capsys.readouterr().out
+        assert "invariants config is invalid" in out
+
 
 # ---------------------------------------------------------------------------
 # validation.commands check: multi-module reporting, guard parity, empty=warn
