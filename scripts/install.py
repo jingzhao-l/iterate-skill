@@ -3121,7 +3121,11 @@ def parse_legacy_args(argv: list[str] | None) -> argparse.Namespace | None:
         return None
     if args[0] in ("install", "uninstall", "validate", "config", "update"):
         return None
-    if "--ai" not in args:
+    # Accept both ``--ai trae`` and ``--ai=trae``. The equality-only test
+    # missed the ``--ai=<value>`` spelling, so the legacy direct invocation
+    # (``install.py --ai=trae``) fell through to the subcommand parser and
+    # exited 2 with a usage error instead of installing.
+    if not any(arg == "--ai" or arg.startswith("--ai=") for arg in args):
         return None
 
     parser = argparse.ArgumentParser()

@@ -1164,6 +1164,33 @@ class TestInstallScript:
         )
         assert not (target / ".trae").exists()
 
+    def test_legacy_invocation_accepts_equals_syntax(self, tmp_path: Path) -> None:
+        # `--ai=trae` used to fall through to the subcommand parser (which
+        # rejects the unknown option with exit 2) because parse_legacy_args
+        # only tested for the exact token "--ai". Both spellings must work.
+        source = _build_minimal_source(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        from install import main as install_main
+
+        assert (
+            install_main(
+                ["--ai=trae", "--target", str(target), "--dry-run"], source=source
+            )
+            == 0
+        )
+        assert not (target / ".trae").exists()
+
+    def test_legacy_invocation_equals_syntax_installs(self, tmp_path: Path) -> None:
+        from install import parse_legacy_args
+
+        ns = parse_legacy_args(["--ai=trae", "--dry-run"])
+        assert ns is not None
+        assert ns.ai == "trae"
+        assert ns.command == "install"
+        assert ns.dry_run is True
+
     def test_install_copies_files(self, tmp_path: Path) -> None:
         source = _build_minimal_source(tmp_path)
         target = tmp_path / "target"
