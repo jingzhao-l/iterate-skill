@@ -16,6 +16,7 @@ All notable changes to iterate-harness should be recorded in this file.
   让"声明与发光版本不一致"变不可发布（精确性、装机==声明、`.d.ts` 仍是 zod 3 形状）。反向变异三发
   各打中具名用例，收尾 sha256 核回。将来真要换 zod major 是一次契约事件：release note 里点名、
   与这条 canary 同批改，而不是让消费者自己撞见 `any`。
+  **已发布并追平**：`npm publish` 后 registry `latest` = 0.1.9（shasum `270a119729d3…`），`tests/kernel_fixtures/manifest.json` 升到 0.1.9，`scripts/check_kernel_fixtures.py` 对**已发布包**逐文件核过 9 份；`scripts/diff_kernel_implementations.py --kernel <0.1.9 dist>` 55 例判决、摘要与注册表语义两侧一致。
 
 
 - **场景③写侧翻转：`.iterate/decision-log.jsonl` 现在装的是内核的规范条目，不是本壳的私有形状。**
