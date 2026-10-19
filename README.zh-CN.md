@@ -368,6 +368,33 @@ iterate doctor --fix      # 先应用安全、非破坏性修复（自动写时�
 
 `--fix` 只做可安全自动修复的项，且每次修复前都会为 `iterate.config.yaml` 生成带时间戳的备份（`.doctorfix-<时间戳>` 后缀）；破坏性/有歧义的修复不会自动执行，会在报告中提示你手工处理。目前可自动修复的项包括：`dimensions` 去重/空时恢复默认、`language` 非法值重置为 `en`、`max_rounds` 非整数移除/越界收敛到 `[1, 50]`、`git.target_branch` 空值重置为 `main`、`onboarding.skill_version` 同步为当前安装版本。
 
+### iterate scan（只读导出项目扫描结果）
+
+`iterate scan` 展示项目扫描器识别到的内容——与 onboarding 内部使用的是同一套检测，但无需走完交互向导即可查看。它**只读文件/目录是否存在**（manifest、顶层目录名、特性目录），**绝不写入任何文件**，因此可安全地在任意项目与 CI 中运行。它**恒退出 0**：完全没识别出技术栈是正常结果，不是失败。
+
+```bash
+iterate scan         # TUI 报告
+iterate scan --json  # stdout 输出单个 JSON 文档
+```
+
+报告包含识别到的 `manifests`、`detected_languages`、`detected_package_managers` 与 `top_level_dirs`，四个特性开关（`has_specs` / `has_tests` / `has_ci` / `has_frontend`），以及由它们推导出的建议：`suggested_dimensions`、`suggested_validation_commands`（可直接用作 `validation.commands` 的形状）与 `suggested_command_whitelist`（用于 `validation.whitelist`）。
+
+```json
+{
+  "project": "/path/to/project",
+  "manifests": ["pyproject.toml"],
+  "detected_languages": ["Python"],
+  "detected_package_managers": ["pip/poetry"],
+  "top_level_dirs": ["iterate_cli", "scripts", "tests"],
+  "has_specs": false, "has_tests": true, "has_ci": true, "has_frontend": false,
+  "suggested_dimensions": ["correctness", "security", "..."],
+  "suggested_validation_commands": {"python": ["ruff check .", "mypy . --ignore-missing-imports", "pytest tests -x -q"]},
+  "suggested_command_whitelist": ["python", "python3", "ruff", "mypy", "pytest"]
+}
+```
+
+用 `iterate onboard`（交互式）或 `iterate config set <key> <value>` 落地这些建议。
+
 ### iterate fingerprint（校验 manifest 指纹 / 漂移）
 
 `iterate fingerprint`（默认动作 `verify`）将 onboarding / refresh 时记录的 manifest SHA-256 指纹与当前项目根目录比对，检测技术栈清单的新增 / 移除 / 变更——属于**非阻塞**的信息化健康检查。无漂移（或漂移检查不可用）时退出码 0，检测到漂移时退出码 1，适合接入 CI：
@@ -413,7 +440,7 @@ iterate config set language zh # 校验并写回单个值（写入前自动生�
 iterate config set goal "..."  # 成功时输出确认对象 {"key": ..., "value": ...}
 ```
 
-支持扁平键（`goal`、`max_rounds`、`reasoning_effort`、`language`、`mode`、`dimensions`）与嵌套段（`atomic.*`、`git.*`、`review.scope`、`reviewer.*`、`validation.commands`、`invariants.*`）。损坏配置**不会被覆写**——`set` 会中止并报清晰错误。
+支持扁平键（`goal`、`max_rounds`、`reasoning_effort`、`language`、`mode`、`dimensions`）以及每个嵌套键的点分形式（`atomic.max_lines`、`atomic.max_adjacent_methods`、`git.target_branch`、`git.use_worktree`、`git.push_per_round`、`git.auto_merge`、`review.scope`、`reviewer.output_schema_validation`、`reviewer.evidence_validation`、`reviewer.coverage_validation`、`reviewer.scope_chunk_size`）。`validation.commands` / `command_whitelist` 与 `invariants.*` **不支持**在此设置——请在 `iterate.config.yaml` 中编辑（或由 `iterate onboard` 写入），并用 `python scripts/validate.py config` 重新校验。损坏配置**不会被覆写**——`set` 会中止并报清晰错误。
 
 ### iterate guard（防御式模式动手前/后校验，v3.0）
 
@@ -427,6 +454,32 @@ iterate config set goal "..."  # 成功时输出确认对象 {"key": ..., "value
 ### iterate invariant（防御式模式交付门禁，v3.0）
 
 `iterate invariant` 校验配置中声明的项目级 `invariants`（`invariants.ensure` 文件存在断言 + `invariants.commands` 精确按模块命令列表）。未配置 `invariants` 段时**自动退化为执行 `validation.commands`**，因此旧配置无需任何改动。退出码 0 = 不变量成立，1 = 存在违反项。支持 `--json` / `--dry-run`。
+
+### iterate help（帮助与拼写容错）
+
+`iterate help` 打印命令总览，`iterate help <command>` 打印单个命令的详细帮助——不必记住 `--help` 该放在哪：
+
+```bash
+iterate help          # 等价 `iterate --help`
+iterate help doctor   # doctor 的帮助文本
+```
+
+命令拼错时会直接给出最接近的真实命令，而不是只丢一堵 usage 墙：
+
+```text
+$ iterate statu
+iterate: error: argument command: invalid choice: 'statu' (choose from onboard, …, help)
+did you mean 'status'? Run `iterate help` to list every command.
+```
+
+子命令动作同样适用（`iterate fingerprint verfy` → `did you mean 'verify'?`）。用法错误退出码仍为 2；带 `--json` 时 stdout 仍是恰好一个 JSON 文档，建议放在 `did_you_mean` 字段：
+
+```bash
+iterate statu --json
+# {"error": "invalid usage", "hint": "run `iterate --help`", "did_you_mean": "status"}
+```
+
+若没有足够接近的候选就不猜（错误的建议比没有更糟），原始诊断信息保持原样。
 
 ---
 

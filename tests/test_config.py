@@ -8,8 +8,10 @@ invalid-value handling, corrupt-config protection, and CLI exit codes.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import yaml
@@ -928,3 +930,55 @@ class TestConfigUnsetMissingSectionMessage:
         captured = capsys.readouterr()
         assert rc == 1
         assert "is not a mapping" in captured.out + captured.err
+
+
+class TestSettableKeysDocumentedInReadmes:
+    """README's documented ``config set`` key list must match SETTABLE_KEYS.
+
+    Finding: the README used to advertise ``validation.commands`` and
+    ``invariants.*`` as settable, but ``_resolve_key`` only accepts the flat
+    keys and their dotted-section forms below — a documented-but-broken CLI.
+    Guard both prose languages against the same drift in either direction.
+    """
+
+    _EXPECTED_FLAT: ClassVar[set[str]] = {
+        name for name, spec in SETTABLE_KEYS.items() if not spec.path
+    }
+    _EXPECTED_DOTTED: ClassVar[set[str]] = {
+        ".".join(spec.path) for spec in SETTABLE_KEYS.values() if spec.path
+    }
+
+    def _parse_documented_keys(self, text: str) -> tuple[list[str], list[str]]:
+        en = re.search(
+            r"Supports flat keys \(([^)]*)\) and every nested key in its "
+            r"dotted form \(([^)]*)\)",
+            text,
+        )
+        zh = re.search(
+            r"支持扁平键（([^）]*)）以及每个嵌套键的点分形式（([^）]*)）",
+            text,
+        )
+        assert en or zh, "README is missing the config-set key list sentence"
+        if en:
+            return re.findall(r"`([^`]+)`", en.group(1)), re.findall(
+                r"`([^`]+)`", en.group(2)
+            )
+        return re.findall(r"`([^`]+)`", zh.group(1)), re.findall(
+            r"`([^`]+)`", zh.group(2)
+        )
+
+    def test_english_readme_matches_settable_keys(self) -> None:
+        text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        flat, dotted = self._parse_documented_keys(text)
+        assert set(flat) == self._EXPECTED_FLAT
+        assert set(dotted) == self._EXPECTED_DOTTED
+        # The unsupported values must be explicitly called out as unsupported,
+        # not silently listed among the settable keys.
+        assert "validation.commands" in text and "are **not** settable here" in text
+
+    def test_chinese_readme_matches_settable_keys(self) -> None:
+        text = (REPO_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+        flat, dotted = self._parse_documented_keys(text)
+        assert set(flat) == self._EXPECTED_FLAT
+        assert set(dotted) == self._EXPECTED_DOTTED
+        assert "invariants.*" in text and "不支持" in text

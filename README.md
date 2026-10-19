@@ -364,6 +364,33 @@ iterate doctor --fix      # apply safe, non-destructive fixes (auto timestamped 
 
 `--fix` only does items that can be safely auto-fixed, and always creates a timestamped backup of `iterate.config.yaml` (`.doctorfix-<timestamp>` suffix) before fixing. Destructive/ambiguous fixes are never applied automatically — they're reported for you to handle manually. Currently auto-fixable: `dimensions` de-dupe/empty-restore-to-default, `language` invalid value reset to `en`, `max_rounds` non-integer removal / out-of-range clamp to `[1, 50]`, `git.target_branch` empty reset to `main`, `onboarding.skill_version` sync to installed version.
 
+### iterate scan (read-only tech-stack export)
+
+`iterate scan` shows what the project scanner detected — the same detection that onboarding runs internally, but readable without walking the wizard. It reads **existence only** (manifests, top-level directory names, feature directories) and **never writes a file**, so it is safe on any project and from CI. It always exits `0`: a project that matches nothing recognisable is a normal outcome, not a failure.
+
+```bash
+iterate scan         # TUI report
+iterate scan --json  # one JSON document on stdout
+```
+
+The report contains the detected `manifests`, `detected_languages`, `detected_package_managers` and `top_level_dirs`, the four feature flags (`has_specs` / `has_tests` / `has_ci` / `has_frontend`), and the suggestions the scanner derives from them: `suggested_dimensions`, `suggested_validation_commands` (a drop-in shape for `validation.commands`) and `suggested_command_whitelist` (for `validation.whitelist`).
+
+```json
+{
+  "project": "/path/to/project",
+  "manifests": ["pyproject.toml"],
+  "detected_languages": ["Python"],
+  "detected_package_managers": ["pip/poetry"],
+  "top_level_dirs": ["iterate_cli", "scripts", "tests"],
+  "has_specs": false, "has_tests": true, "has_ci": true, "has_frontend": false,
+  "suggested_dimensions": ["correctness", "security", "..."],
+  "suggested_validation_commands": {"python": ["ruff check .", "mypy . --ignore-missing-imports", "pytest tests -x -q"]},
+  "suggested_command_whitelist": ["python", "python3", "ruff", "mypy", "pytest"]
+}
+```
+
+Apply a suggestion with `iterate onboard` (interactive) or `iterate config set <key> <value>`.
+
 ### iterate fingerprint (verify manifest drift)
 
 `iterate fingerprint` (default action `verify`) compares the SHA-256 manifest fingerprints recorded at onboarding/refresh time against the current project root, detecting added / removed / changed tech-stack manifests — a non-blocking informational health check. It exits `0` when there is no drift (or drift checking is unavailable), and `1` when drift is detected, making it CI-friendly:
@@ -409,7 +436,7 @@ iterate config set language zh # validate + write one value (auto timestamped ba
 iterate config set reasoning_effort high --json  # confirm object {"key": ..., "value": ...}
 ```
 
-Supports flat keys (`goal`, `max_rounds`, `reasoning_effort`, `language`, `mode`, `dimensions`) and nested segments (`atomic.*`, `git.*`, `review.scope`, `reviewer.*`, `validation.commands`, `invariants.*`). A corrupted config is never overwritten — `set` aborts with a clear error.
+Supports flat keys (`goal`, `max_rounds`, `reasoning_effort`, `language`, `mode`, `dimensions`) and every nested key in its dotted form (`atomic.max_lines`, `atomic.max_adjacent_methods`, `git.target_branch`, `git.use_worktree`, `git.push_per_round`, `git.auto_merge`, `review.scope`, `reviewer.output_schema_validation`, `reviewer.evidence_validation`, `reviewer.coverage_validation`, `reviewer.scope_chunk_size`). `validation.commands` / `command_whitelist` and `invariants.*` are **not** settable here — edit them in `iterate.config.yaml` (or let `iterate onboard` write them) and re-check with `python scripts/validate.py config`. A corrupted config is never overwritten — `set` aborts with a clear error.
 
 ### iterate guard (defensive-mode pre/post-edit checks, v3.0)
 
@@ -423,6 +450,32 @@ Both support `--json` and `--dry-run` (preview exact commands without executing)
 ### iterate invariant (defensive-mode delivery gate, v3.0)
 
 `iterate invariant` checks the project-level `invariants` declared in config (`invariants.ensure` file-existence assertions + `invariants.commands` exact per-module command lists). `ensure` entries must be **relative paths inside the project root** — absolute paths and `../` ancestors escaping the root are rejected outright. When no `invariants` section is configured it **degrades to `validation.commands`**, so old configs keep working unchanged. Exit 0 = invariants hold, 1 = violations found. Supports `--json` / `--dry-run`.
+
+### iterate help (help & typo suggestions)
+
+`iterate help` prints the command overview and `iterate help <command>` prints one command's detailed help — no need to remember where the `--help` flag goes:
+
+```bash
+iterate help          # same as `iterate --help`
+iterate help doctor   # the `doctor` help text
+```
+
+A mistyped command is answered with the closest real one instead of a bare usage wall:
+
+```text
+$ iterate statu
+iterate: error: argument command: invalid choice: 'statu' (choose from onboard, …, help)
+did you mean 'status'? Run `iterate help` to list every command.
+```
+
+This also applies to subcommand actions (`iterate fingerprint verfy` → `did you mean 'verify'?`). Usage errors stay exit `2`, and with `--json` stdout still holds exactly one JSON document — the suggestion is carried in its `did_you_mean` field:
+
+```bash
+iterate statu --json
+# {"error": "invalid usage", "hint": "run `iterate --help`", "did_you_mean": "status"}
+```
+
+When nothing is close enough, no guess is made (a wrong suggestion is worse than none) and the original diagnosis is left intact.
 
 ---
 
