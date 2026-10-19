@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -125,6 +126,11 @@ DEFAULT_ATOMIC_MAX_LINES = 20
 DEFAULT_ATOMIC_MAX_ADJACENT_METHODS = 3
 DEFAULT_GOAL = "Improve code quality and maintainability"
 DEFAULT_LANGUAGE = "en"
+# Top-level execution mode (mirrors config.schema.json's ``mode`` enum):
+# ``iterate`` is the classic review-fix-converge loop, ``defensive`` opts into
+# defensive-programming mode. Kept in sync by tests.
+DEFAULT_MODE = "iterate"
+MODE_VALUES: frozenset[str] = frozenset({"iterate", "defensive"})
 DEFAULT_TARGET_BRANCH = "main"
 DEFAULT_REVIEW_SCOPE = "full"
 # Default chunk size for splitting the review scope into per-round batches.
@@ -198,6 +204,16 @@ class OnboardingData:
     #: flipped back to true by any wizard-driven regeneration, because the
     #: loader never read it and generate_config_yaml hardcoded ``True``.
     drift_check: bool = True
+    #: Top-level execution mode. Preserved across re-onboarding — the wizard
+    #: used to rebuild the config from a fixed key set with no ``mode`` key at
+    #: all, so ``iterate onboard``/``reonboard`` silently reverted a project
+    #: switched to ``defensive`` back to the ``iterate`` default.
+    mode: str = DEFAULT_MODE
+    #: Project-level defensive-programming invariants (``ensure`` file
+    #: assertions + per-module ``commands``), or ``None`` when the project has
+    #: no invariants section. Preserved across re-onboarding for the same
+    #: reason as ``mode``.
+    invariants: dict[str, Any] | None = None
     personalization: PersonalizationData | None = None
 
     def completed_at(self) -> str:
@@ -215,6 +231,94 @@ def normalize_reasoning_effort(value: object) -> str | None:
     if isinstance(value, str) and value in REASONING_EFFORT_VALUES:
         return value
     return None
+
+
+def normalize_mode(value: object) -> str:
+    """Coerce an arbitrary value to an accepted top-level ``mode``.
+
+    A hand-edited ``mode: turbo`` (or a scalar/null) must not flow back into
+    the regenerated config, where it would violate the schema enum and leave
+    doctor flagging a value the wizard just reported as "loaded". Falls back
+    to :data:`DEFAULT_MODE` (``iterate``), matching the schema default.
+    """
+    if isinstance(value, str) and value in MODE_VALUES:
+        return value
+    return DEFAULT_MODE
+
+
+#: Module ids accepted in ``invariants.commands`` (mirrors the schema's
+#: ``propertyNames`` pattern; no shell metacharacters allowed).
+_INVARIANT_MODULE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def normalize_invariants(
+    raw: object,
+    on_drop: Callable[[str], None] | None = None,
+) -> dict[str, Any] | None:
+    """Normalize an arbitrary ``invariants`` value to a schema-valid mapping.
+
+    A hand-edited/partially-broken ``invariants`` section must not be
+    re-persisted verbatim: the wizard re-serializes the config on save, so a
+    non-mapping value, a whitespace-only command, or a duplicate ``ensure``
+    entry would produce a config that ``iterate doctor`` keeps flagging even
+    though the wizard just reported it as "loaded" (same class of defect as
+    ``dimensions`` / ``validation.commands``).
+
+    Args:
+        raw: The raw ``invariants`` value from a config.
+        on_drop: Optional callback invoked with each dropped module name (or
+            ``"ensure"``). Callers that WRITE the normalized result back to
+            disk MUST pass this (e.g. ``tui.warning``) so silently deleting a
+            hand-written entry on the next save is announced rather than
+            being invisible data loss.
+
+    Returns:
+        A normalized ``{"ensure": [...], "commands": {...}}`` mapping, or
+        ``None`` when nothing usable survives — the caller then omits the key
+        entirely, matching a config that never declared invariants.
+    """
+    if not isinstance(raw, dict):
+        return None
+    result: dict[str, Any] = {}
+
+    raw_ensure = raw.get("ensure")
+    if isinstance(raw_ensure, list):
+        ensure: list[str] = []
+        for entry in raw_ensure:
+            if not isinstance(entry, str):
+                continue
+            text = entry.strip()
+            if not text or text in ensure:
+                continue
+            ensure.append(text)
+        if ensure:
+            result["ensure"] = ensure
+
+    raw_commands = raw.get("commands")
+    if isinstance(raw_commands, dict):
+        commands: dict[str, list[str]] = {}
+        for module, cmds in raw_commands.items():
+            if not isinstance(module, str) or not _INVARIANT_MODULE_RE.match(module):
+                if on_drop is not None:
+                    on_drop(str(module))
+                continue
+            if not isinstance(cmds, list):
+                if on_drop is not None:
+                    on_drop(module)
+                continue
+            # Keep command text verbatim (guards match configured entries
+            # exactly) but drop empty/whitespace-only entries, mirroring
+            # guard._invariant_commands.
+            cleaned = [c for c in cmds if isinstance(c, str) and c.strip()]
+            if not cleaned:
+                if on_drop is not None:
+                    on_drop(module)
+                continue
+            commands[module] = cleaned
+        if commands:
+            result["commands"] = commands
+
+    return result or None
 
 
 def generate_iterate_md(data: OnboardingData, completed_at: str | None = None) -> str:
@@ -303,6 +407,7 @@ def generate_config_yaml(data: OnboardingData) -> str:
         "max_rounds": data.max_rounds,
         "reasoning_effort": data.reasoning_effort,
         "language": data.language,
+        "mode": data.mode,
         "dimensions": data.dimensions,
         "dimension_sets": data.dimension_sets if data.dimension_sets else {},
         "review": {"scope": data.review_scope},
@@ -334,6 +439,13 @@ def generate_config_yaml(data: OnboardingData) -> str:
     # matching refresh.py / personalize.py.
     if data.command_whitelist:
         config["validation"]["command_whitelist"] = list(data.command_whitelist)
+
+    # Preserve the project-level invariants section across regeneration. It is
+    # omitted entirely when the project has none (``None``), matching a config
+    # that never declared invariants — ``iterate invariant`` then degrades to
+    # ``validation.commands``.
+    if data.invariants is not None:
+        config["invariants"] = data.invariants
 
     # Merge personalization structured fields into config.
     if data.personalization is not None:

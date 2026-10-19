@@ -45,6 +45,7 @@ from iterate_cli.generator import (
     DEFAULT_GOAL,
     DEFAULT_LANGUAGE,
     DEFAULT_MAX_ROUNDS,
+    DEFAULT_MODE,
     DEFAULT_REVIEW_SCOPE,
     DEFAULT_TARGET_BRANCH,
     USER_END_MARKER,
@@ -55,6 +56,8 @@ from iterate_cli.generator import (
     generate_config_yaml,
     generate_iterate_md,
     generate_refreshed_md,
+    normalize_invariants,
+    normalize_mode,
     normalize_reasoning_effort,
     write_onboarding_outputs,
 )
@@ -653,6 +656,124 @@ class TestNormalizeReasoningEffort:
 
     def test_none_stays_none(self) -> None:
         assert normalize_reasoning_effort(None) is None
+
+
+class TestNormalizeMode:
+    def test_accepts_both_supported_values(self) -> None:
+        for mode in ("iterate", "defensive"):
+            assert normalize_mode(mode) == mode
+
+    def test_invalid_value_falls_back_to_default(self) -> None:
+        # A hand-edited `mode: speedrun` must never re-enter the regenerated
+        # config where it would violate the schema enum.
+        for bad in ("speedrun", None, 42, "", "ITERATE"):
+            assert normalize_mode(bad) == DEFAULT_MODE
+
+    def test_default_is_iterate(self) -> None:
+        assert DEFAULT_MODE == "iterate"
+
+
+class TestNormalizeInvariants:
+    def test_preserves_valid_section(self) -> None:
+        raw = {
+            "ensure": ["src/app.py", "tests/test_app.py"],
+            "commands": {"core": ["pytest -q"], "lint": ["ruff check ."]},
+        }
+        assert normalize_invariants(raw) == raw
+
+    def test_absent_and_non_mapping_return_none(self) -> None:
+        assert normalize_invariants(None) is None
+        assert normalize_invariants("oops") is None
+        assert normalize_invariants(["list"]) is None
+        assert normalize_invariants({}) is None
+
+    def test_drops_empty_and_duplicate_ensure_entries(self) -> None:
+        assert normalize_invariants(
+            {"ensure": ["src/a", "", "   ", "src/a"]}
+        ) == {"ensure": ["src/a"]}
+
+    def test_drops_malformed_commands_and_announces_drops(self) -> None:
+        dropped: list[str] = []
+        raw = {
+            "commands": {
+                "ok": ["pytest -q"],
+                "": ["sh -c 'x'"],  # empty module id
+                "../../escape": ["evil"],  # module id with metacharacters
+                "scalar": "pytest",  # commands must be a list
+                "blank": ["   "],  # whitespace-only command
+            }
+        }
+        result = normalize_invariants(raw, on_drop=dropped.append)
+        assert result == {"commands": {"ok": ["pytest -q"]}}
+        assert dropped == ["", "../../escape", "scalar", "blank"]
+
+    def test_none_when_everything_is_dropped(self) -> None:
+        assert normalize_invariants({"commands": {"bad..": []}}) is None
+
+
+class TestGenerateConfigYamlPreservesModeAndInvariants:
+    def test_emits_mode_and_invariants(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.mode = "defensive"
+        data.invariants = {
+            "ensure": ["src/app.py"],
+            "commands": {"core": ["pytest -q"]},
+        }
+        config = yaml.safe_load(generate_config_yaml(data))
+        assert config["mode"] == "defensive"
+        assert config["invariants"] == data.invariants
+
+    def test_default_iterate_omits_invariants(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        config = yaml.safe_load(generate_config_yaml(data))
+        assert config["mode"] == DEFAULT_MODE
+        assert "invariants" not in config
+
+    def test_mode_and_invariants_pass_schema(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        data.mode = "defensive"
+        data.invariants = {
+            "ensure": ["src/app.py"],
+            "commands": {"core": ["pytest -q"]},
+        }
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(generate_config_yaml(data), encoding="utf-8")
+
+        schema_path = REPO_ROOT / "config" / "config.schema.json"
+        import validate
+
+        errors = validate.validate_config(config_path, schema_path)
+        assert errors == [], f"Schema validation errors: {errors}"
+
+
+class TestLoadExistingOnboardingDataPreservesModeAndInvariants:
+    def test_roundtrip_preserves_both(self, fake_project: Path) -> None:
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "goal: test\nmode: defensive\n"
+            "invariants:\n  ensure:\n    - src/app.py\n"
+            "  commands:\n    core:\n      - pytest -q\n"
+            "onboarding:\n  channel: cli\n",
+            encoding="utf-8",
+        )
+        data = _load_existing_onboarding_data(fake_project)
+        assert data is not None
+        assert data.mode == "defensive"
+        assert data.invariants == {
+            "ensure": ["src/app.py"],
+            "commands": {"core": ["pytest -q"]},
+        }
+        # And it survives regeneration (the actual regression).
+        regenerated = yaml.safe_load(generate_config_yaml(data))
+        assert regenerated["mode"] == "defensive"
+        assert regenerated["invariants"] == data.invariants
+
+    def test_invalid_mode_coerces_to_default(self, fake_project: Path) -> None:
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text("goal: test\nmode: turbo\n", encoding="utf-8")
+        data = _load_existing_onboarding_data(fake_project)
+        assert data is not None
+        assert data.mode == DEFAULT_MODE
 
 
 class TestWriteOutputs:

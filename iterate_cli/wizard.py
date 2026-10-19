@@ -31,11 +31,14 @@ from iterate_cli.generator import (
     DEFAULT_GOAL,
     DEFAULT_LANGUAGE,
     DEFAULT_MAX_ROUNDS,
+    DEFAULT_MODE,
     DEFAULT_REASONING_EFFORT,
     DEFAULT_REVIEW_SCOPE,
     DEFAULT_SCOPE_CHUNK_SIZE,
     DEFAULT_TARGET_BRANCH,
     OnboardingData,
+    normalize_invariants,
+    normalize_mode,
     normalize_reasoning_effort,
 )
 from iterate_cli.scan import (
@@ -616,6 +619,23 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         if existing_language not in ("zh", "en"):
             existing_language = DEFAULT_LANGUAGE
 
+        # Preserve the top-level execution mode: ``generate_config_yaml`` used
+        # to rebuild the config from a fixed key set that omitted ``mode``
+        # entirely, so a project switched to ``defensive`` was silently
+        # reverted to the ``iterate`` default by any wizard-driven
+        # regeneration (basic-config update / reonboard).
+        existing_mode = normalize_mode(config.get("mode", DEFAULT_MODE))
+
+        # Preserve project-level invariants for the same reason. Normalized so
+        # a malformed hand edit is not re-persisted, and dropping an entry is
+        # announced (we WRITE the result back to disk).
+        existing_invariants = normalize_invariants(
+            config.get("invariants"),
+            on_drop=lambda name: tui.warning(
+                f"invariants entry {name!r} was dropped and will not be saved."
+            ),
+        )
+
         return OnboardingData(
             project_root=project_root,
             channel=channel,
@@ -694,6 +714,8 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
             ),
             drift_ignore=drift_ignore,
             drift_check=drift_check,
+            mode=existing_mode,
+            invariants=existing_invariants,
         )
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         tui.error(f"Failed to load existing config: {exc}")
