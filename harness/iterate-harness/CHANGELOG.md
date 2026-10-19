@@ -6,6 +6,18 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Changed
 
+- **内核 `iterate-kernel@0.1.9`：`zod` 从范围改成精确版本，因为发布出去的 `.d.ts` 是按那一个版本发光的。**
+  0.1.8 及之前声明 `"zod": ">=3.25.76 <5"`，而 lock 实际解析到 3.25.76、`.d.ts` 也是 zod 3 形状
+  （`ZodObject<Shape, "strict", z.ZodTypeAny, Out, In>`）。消费者一侧的解析器只要挑了 zod 4，拿到的不是
+  类型错误而是**类型消失**：`z.infer` 静默退化成 `any`，TypeScript 反而去抱怨消费者自己的回调
+  （`TS7006: Parameter 'ref' implicitly has an 'any' type`）——编译过、类型没了，两侧都绿。这不是推测：
+  GlassPane 的 `mcp-shell` 改吃发布包时当场撞上，它在下游用 npm `overrides` 把整棵树钉住才绕开。
+  上游的修法是把声明收成事实：`"zod": "3.25.76"`，并加 `kernel/test/zod-contract.test.mjs` 三条判据
+  让"声明与发光版本不一致"变不可发布（精确性、装机==声明、`.d.ts` 仍是 zod 3 形状）。反向变异三发
+  各打中具名用例，收尾 sha256 核回。将来真要换 zod major 是一次契约事件：release note 里点名、
+  与这条 canary 同批改，而不是让消费者自己撞见 `any`。
+
+
 - **场景③写侧翻转：`.iterate/decision-log.jsonl` 现在装的是内核的规范条目，不是本壳的私有形状。**
   `decision_log.append_entry` 不再 `json.dumps({timestamp, round, type, data})`：它把这条记录经
   `kernel_decision_record.decision_log_draft_from_record` 转录，再用 `kernel_decision_log` 追加成带哈希链的

@@ -14,6 +14,16 @@ each inventing its own.
 npm install iterate-kernel
 ```
 
+## The `zod` in these declarations is exact on purpose
+
+`package.json` pins `zod` to one version rather than a range, because the shipped `.d.ts` are
+emitted *by* a zod: with a range, a consumer whose resolver picked a different major got no type
+error where one was owed — `z.infer` on these schemas silently degraded to `any`, and TypeScript
+complained about the consumer's own code instead. `test/zod-contract.test.mjs` holds that line
+(declared spec exact, installed equals declared, emitted declarations still zod-3 shaped). Moving
+zod majors is a contract event for every consumer that type-checks against these declarations:
+say it in the release note and change that test in the same commit.
+
 ## Import per module, not through the barrel
 
 ```ts
