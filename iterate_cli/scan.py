@@ -6,8 +6,10 @@ to populate onboarding suggestions and the ITERATE.md knowledge base.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from iterate_cli.tui import tui
 
@@ -340,3 +342,141 @@ def suggest_command_whitelist(scan: ScanResult) -> list[str]:
             seen.add(item)
             result.append(item)
     return result
+
+
+# ---------------------------------------------------------------------------
+# ``iterate scan`` — read-only export of the scanner's view
+# ---------------------------------------------------------------------------
+
+#: Feature flags rendered on the one-line summary, in display order. Keys mirror
+#: the ``ScanResult`` attribute names exactly so the JSON report and the TUI
+#: line can never disagree about which flag is which.
+_SCAN_FEATURE_KEYS: tuple[tuple[str, str], ...] = (
+    ("has_tests", "tests"),
+    ("has_ci", "ci"),
+    ("has_specs", "specs"),
+    ("has_frontend", "frontend"),
+)
+
+
+def collect_scan_data(project_root: Path) -> dict[str, Any]:
+    """Collect the report behind ``iterate scan``.
+
+    This is the read-only export of :func:`scan_project` plus the suggestions
+    derived from it. Before this existed the scan result was reachable only by
+    walking the interactive wizard, so a user (or CI job) could make the tool
+    scan a project but had no way to read the result back out.
+
+    Args:
+        project_root: Project root directory (must exist; the CLI validates it).
+
+    Returns:
+        A JSON-serialisable dict. The four ``has_*`` keys keep the
+        ``ScanResult`` field names verbatim, and the suggestion keys mirror the
+        corresponding ``suggest_*`` function names.
+    """
+    result = scan_project(project_root)
+    return {
+        "project": str(project_root),
+        "manifests": list(result.manifests),
+        "top_level_dirs": list(result.top_level_dirs),
+        "detected_languages": list(result.detected_languages),
+        "detected_package_managers": list(result.detected_package_managers),
+        "has_specs": result.has_specs,
+        "has_tests": result.has_tests,
+        "has_ci": result.has_ci,
+        "has_frontend": result.has_frontend,
+        "suggested_dimensions": suggest_dimensions(result),
+        "suggested_validation_commands": {
+            module: list(commands)
+            for module, commands in suggest_validation_commands(result).items()
+        },
+        "suggested_command_whitelist": suggest_command_whitelist(result),
+    }
+
+
+def _join_or_none(values: list[str]) -> str:
+    """Render a list for a key/value row, or an explicit empty marker.
+
+    ``", ".join([])`` produced a blank right-hand side that reads like a
+    rendering bug rather than "nothing was found", so the empty case gets its
+    own string instead of an empty one.
+    """
+    return ", ".join(values) if values else "— (none detected)"
+
+
+def render_scan(data: dict[str, Any], json_output: bool = False) -> int:
+    """Render an ``iterate scan`` report.
+
+    Read-only and non-gating: the scan only asserts what files exist, so a
+    project that matches nothing recognisable is a normal outcome, not a
+    failure. This always returns 0 so a CI caller can use the command purely
+    for its ``--json`` payload without special-casing the exit code.
+
+    Args:
+        data: Structured dict from :func:`collect_scan_data`.
+        json_output: When True, emit exactly one JSON document instead of TUI
+            output.
+
+    Returns:
+        Always 0.
+    """
+    if json_output:
+        print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    tui.intro("Iterate Skill — Scan")
+
+    manifests = [str(m) for m in data.get("manifests", [])]
+    languages = [str(lang) for lang in data.get("detected_languages", [])]
+    managers = [str(pm) for pm in data.get("detected_package_managers", [])]
+    dirs = [str(d) for d in data.get("top_level_dirs", [])]
+
+    tui.key_value("Project", str(data.get("project", "")))
+    tui.key_value("Manifests", _join_or_none(manifests))
+    tui.key_value("Languages", _join_or_none(languages))
+    tui.key_value("Package managers", _join_or_none(managers))
+    tui.key_value("Top-level dirs", _join_or_none(dirs))
+
+    features = "  ".join(
+        f"{label} {'✓' if data.get(key) else '✗'}"
+        for key, label in _SCAN_FEATURE_KEYS
+    )
+    tui.key_value("Features", features)
+
+    dimensions = [str(d) for d in data.get("suggested_dimensions", [])]
+    tui.section("Suggested dimensions / 建议维度")
+    if dimensions:
+        for name in dimensions:
+            tui.bullet(name)
+    else:
+        tui.hint("(none — no language was detected)", indent=4)
+
+    commands = data.get("suggested_validation_commands") or {}
+    tui.section("Suggested validation commands / 建议校验命令")
+    if commands:
+        for module in sorted(commands):
+            for command in commands[module]:
+                tui.bullet(f"{module}: {command}")
+    else:
+        tui.hint("(none — no language was detected)", indent=4)
+
+    tui.empty_line()
+    if not manifests and not languages:
+        # The only genuinely surprising outcome: nothing recognisable at all.
+        # Say so and point at the escape hatch instead of leaving the user to
+        # wonder whether the scan silently failed. Split across two lines
+        # because a single line would exceed 80 columns and, once the terminal
+        # wrapped it, the continuation would lose its left margin.
+        tui.warning("No recognised tech-stack manifest found.")
+        tui.hint(
+            "`iterate onboard` will ask for the stack instead of suggesting one.",
+            indent=4,
+        )
+    # Kept short on purpose: `tui.hint` indents only the first line, so a
+    # message that overflows the terminal width continues at column 0 and
+    # reads as if it belonged to the block above.
+    tui.hint("Read-only: nothing was written.")
+    tui.hint("Apply with `iterate onboard` or `iterate config set <key> <value>`.")
+    tui.hint("Machine-readable: `iterate scan --json`")
+    return 0

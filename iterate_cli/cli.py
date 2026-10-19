@@ -6,11 +6,13 @@ Provides subcommands for onboarding and personalization management:
     iterate refresh     — Incremental refresh of ITERATE.md (preserve user sections)
     iterate reonboard   — Full re-onboarding (backup old files, run wizard)
     iterate status      — Show onboarding status and drift detection
+    iterate scan        — Read-only export of the project tech-stack scan
     iterate show        — Read-only resolved config + personalization detail
     iterate doctor      — Project health diagnostics (--json / --json-out / --fix)
     iterate guard       — Defensive-programming pre/post-edit checks (v3.0)
     iterate invariant   — Project-level invariant check (v3.0, defensive mode)
     iterate update      — Self-update the CLI + installed assistant skill dirs
+    iterate help        — Print help for iterate or for one command
     iterate --version   — Print version
 
 All user-facing output is routed through the unified TUI layer
@@ -21,8 +23,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import difflib
 import json
 import os
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -68,6 +72,7 @@ try:
         is_onboarding_complete,
         load_onboarding_config,
     )
+    from iterate_cli.scan import collect_scan_data, render_scan
     from iterate_cli.tui import tui
     from iterate_cli.wizard import NO_CHANGES_NEEDED, run_wizard
 except ModuleNotFoundError as _import_error:
@@ -125,6 +130,89 @@ def _force_utf8_stdio() -> None:
             pass
 
 
+# ---------------------------------------------------------------------------
+# Typo tolerance — "invalid choice" becomes "did you mean …?"
+# ---------------------------------------------------------------------------
+
+#: argparse's message for a rejected choice. Python ≤3.12 quotes the choices
+#: (``choose from 'a', 'b'``) and 3.13 dropped the quotes, so the choices are
+#: split on commas and de-quoted rather than matched against a fixed layout.
+_INVALID_CHOICE_RE = re.compile(
+    r"^argument (?P<argument>[^:]+): invalid choice: '(?P<value>[^']*)' "
+    r"\(choose from (?P<choices>.*)\)$"
+)
+
+#: Set by :meth:`_IterateArgumentParser.error` for the *most recent* rejected
+#: choice and read back by ``main()`` so the ``--json`` failure document can
+#: carry the same suggestion the human message shows.
+#:
+#: A module-level slot rather than a parser attribute because the error can be
+#: raised by a *sub*parser (``iterate fingerprint verfy``), whose instance is
+#: not reachable from the top-level parser ``main()`` holds. ``argparse`` exits
+#: immediately after ``error()`` returns, so a single slot can never hold two
+#: competing values.
+_PENDING_USAGE_SUGGESTION: str | None = None
+
+
+def _did_you_mean(token: str, choices: list[str] | tuple[str, ...]) -> str | None:
+    """Return the closest known choice for ``token``, or None when nothing is close.
+
+    ``cutoff=0.6`` keeps the two failure modes acceptable: below it a
+    resemblance as weak as ``status`` → ``stat`` is not worth guessing, and a
+    wrong guess is worse than none because the user follows it.
+    """
+    matches = difflib.get_close_matches(token, list(choices), n=1, cutoff=0.6)
+    return matches[0] if matches else None
+
+
+def _suggestion_from_usage_error(message: str) -> str | None:
+    """Extract a "did you mean" suggestion from an argparse error message.
+
+    Only ``invalid choice`` carries an enumerable set to match against; every
+    other argparse error (missing value, unrecognised flag) has no useful
+    candidate list, so they pass through unchanged.
+    """
+    match = _INVALID_CHOICE_RE.match(message.strip())
+    if match is None:
+        return None
+    choices = [choice.strip().strip("'\"") for choice in match.group("choices").split(",")]
+    choices = [choice for choice in choices if choice]
+    return _did_you_mean(match.group("value"), choices)
+
+
+class _IterateArgumentParser(argparse.ArgumentParser):
+    """``ArgumentParser`` that answers "then what should I type?".
+
+    Stock argparse answers a typo with a usage wall and
+    ``invalid choice: 'statu' (choose from …)`` — it states the problem but
+    never the fix, and on a narrow terminal the fix is scrolled off. This
+    subclass appends the one line the user actually needs and records the
+    suggestion so ``iterate --json <typo>`` can report it too.
+
+    ``add_subparsers`` hands ``parser_class`` down to each subparser, so a typo
+    in a nested choice (``iterate guard precheck``) gets the same treatment.
+    """
+
+    def error(self, message: str) -> None:
+        global _PENDING_USAGE_SUGGESTION
+        suggestion = _suggestion_from_usage_error(message)
+        if suggestion is not None:
+            _PENDING_USAGE_SUGGESTION = suggestion
+            message = (
+                f"{message}\n"
+                f"did you mean '{suggestion}'? Run `iterate help` to list every command."
+            )
+        super().error(message)
+
+
+def _subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
+    """Return the parser's subcommand map (name → parser), or an empty dict."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return dict(action.choices)
+    return {}
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point.
 
@@ -154,12 +242,15 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         if json_requested and exc.code not in (0, None):
-            print(
-                json.dumps(
-                    {"error": "invalid usage", "hint": "run `iterate --help`"},
-                    ensure_ascii=False,
-                )
-            )
+            # Carry the same "did you mean" the human message got, so a script
+            # can act on the suggestion instead of re-parsing stderr.
+            payload: dict[str, Any] = {
+                "error": "invalid usage",
+                "hint": "run `iterate --help`",
+            }
+            if _PENDING_USAGE_SUGGESTION is not None:
+                payload["did_you_mean"] = _PENDING_USAGE_SUGGESTION
+            print(json.dumps(payload, ensure_ascii=False))
         raise
 
     if args.version:
@@ -186,6 +277,16 @@ def main(argv: list[str] | None = None) -> int:
         # Advisory update hint (24h-cached): must never break --version.
         _maybe_print_update_hint()
         return 0
+
+    if args.command == "help":
+        # Handled before the project-root check on purpose: `iterate help` asks
+        # a question about the CLI, so it must work from a directory where no
+        # project exists (and with `-p` pointing anywhere).
+        return _cmd_help(
+            parser,
+            getattr(args, "topic", None),
+            json_output=getattr(args, "json", False),
+        )
 
     # Interactive commands never produce structured output; a caller passing
     # --json to them has a misunderstanding, not a silent success.
@@ -302,6 +403,10 @@ def _dispatch_command(
         if show_banner:
             tui.banner()
         return _cmd_status(project_root, json_output=getattr(args, "json", False))
+    if args.command == "scan":
+        if show_banner:
+            tui.banner()
+        return _cmd_scan(project_root, json_output=getattr(args, "json", False))
     if args.command == "show":
         if show_banner:
             tui.banner()
@@ -382,7 +487,11 @@ def _dispatch_command(
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser."""
-    parser = argparse.ArgumentParser(
+    global _PENDING_USAGE_SUGGESTION
+    # A fresh parse must not inherit a suggestion from a previous one; tests
+    # build the parser repeatedly in the same process.
+    _PENDING_USAGE_SUGGESTION = None
+    parser = _IterateArgumentParser(
         prog="iterate",
         description="Iterate skill onboarding and project knowledge management.",
         epilog=(
@@ -412,7 +521,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         default=False,
-        help="Emit structured JSON instead of TUI output for status, show, "
+        help="Emit structured JSON instead of TUI output for status, scan, show, "
         "doctor, refresh, config, guard, invariant, fingerprint and update "
         "(and for --version). Interactive commands (onboard/personalize/"
         "reonboard) reject it; on every other path stdout holds exactly one "
@@ -531,6 +640,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "tech stack has drifted since the last onboarding.",
     )
     status_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON report instead of TUI output.",
+    )
+    scan_parser = subparsers.add_parser(
+        "scan",
+        parents=[parent],
+        help="Show what the project scanner detected (read-only).",
+        description="Read-only export of the tech-stack scan that onboarding runs "
+        "internally: detected manifests, languages, package managers, top-level "
+        "directories, feature flags, and the review dimensions / validation "
+        "commands / command whitelist the scanner would suggest. Writes nothing "
+        "and always exits 0, so `iterate scan --json` is safe to call from CI.",
+    )
+    scan_parser.add_argument(
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -747,6 +872,21 @@ def _build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Emit a structured JSON outcome instead of TUI output (implies "
         "a write operation, so it requires --yes).",
+    )
+
+    help_parser = subparsers.add_parser(
+        "help",
+        parents=[parent],
+        help="Show help for iterate or for one command.",
+        description="Print the top-level usage overview, or the detailed help "
+        "for one command (`iterate help doctor`). Equivalent to `iterate "
+        "--help` and `iterate doctor --help`, spelled the way most CLIs spell it.",
+    )
+    help_parser.add_argument(
+        "topic",
+        nargs="?",
+        default=None,
+        help="Command to describe (omit for the top-level overview).",
     )
 
     return parser
@@ -1250,6 +1390,71 @@ def _count_personalization_rules(personalization: dict[str, Any]) -> int:
             # extra_validation_commands: {module: [cmd, ...]}
             total += sum(len(cmds) for cmds in value.values() if isinstance(cmds, list))
     return total
+
+
+def _cmd_scan(project_root: Path, json_output: bool = False) -> int:
+    """Handle the 'scan' subcommand.
+
+    Thin wrapper: the scanner and its renderer live in ``iterate_cli.scan`` so
+    the same pure functions the wizard and refresh use are the ones this
+    command reports. Read-only and non-gating — it returns 0 for any project
+    that exists, including one where nothing was recognised.
+    """
+    return render_scan(collect_scan_data(project_root), json_output=json_output)
+
+
+def _cmd_help(
+    parser: argparse.ArgumentParser,
+    topic: str | None,
+    json_output: bool = False,
+) -> int:
+    """Handle ``iterate help [command]``.
+
+    ``iterate --help`` already existed; what was missing is the *command*
+    spelling every other CLI answers to, and per-command help without having to
+    remember the ``--help`` flag position. An unknown topic is a usage error
+    (exit 2) that names the closest command, matching how a mistyped top-level
+    command is now reported.
+
+    Args:
+        parser: The top-level parser (source of the subcommand help texts).
+        topic: Command name to describe, or None for the overview.
+        json_output: True when ``--json`` was requested. Help is prose, so this
+            is refused rather than silently emitting a JSON document that
+            carries no help text.
+
+    Returns:
+        Exit code: 0 when help was printed; 2 for a ``--json`` misuse or an
+        unknown topic.
+    """
+    if json_output:
+        message = (
+            "--json is not supported for 'help' (it prints human-readable help). "
+            "Run `iterate help` for the text, or `iterate status/scan/doctor --json` "
+            "for structured output."
+        )
+        print(json.dumps({"error": message}, ensure_ascii=False))
+        tui.error(message)
+        return 2
+
+    if topic is None:
+        parser.print_help()
+        return 0
+
+    subcommands = _subcommands(parser)
+    sub = subcommands.get(topic)
+    if sub is not None:
+        sub.print_help()
+        return 0
+
+    suggestion = _did_you_mean(topic, list(subcommands))
+    message = f"unknown command: '{topic}'"
+    if suggestion is not None:
+        message += f" — did you mean '{suggestion}'?"
+    else:
+        message += ". Run `iterate help` to list every command."
+    tui.error(message)
+    return 2
 
 
 def _cmd_status(project_root: Path, json_output: bool = False) -> int:
