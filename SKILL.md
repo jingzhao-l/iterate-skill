@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.5.3
+version: 3.6.0
 permissions:
   file_read: true
   file_write: true
@@ -314,6 +314,8 @@ iterate refresh      # 增量刷新（保留用户手写区；支持 --json / --
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
 iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查；--strict 将 warning 一并判失败；--fix 安全修复；--json / --json-out 结构化输出）
 iterate status       # 查看 onboarding 状态和漂移检测（--json 含 onboarded、config_exists/config_ok、drift_detected 与明细列表）
+iterate scan         # 只读导出项目扫描结果（识别到的 manifest/语言/包管理器/顶层目录/特性开关 + 建议维度/校验命令/命令白名单；不写文件，恒退出 0；--json）
+iterate scan --json  # 同上，结构化输出，供脚本/CI 消费
 iterate guard pre-check [targets...]   # 编辑前静态校验（目标存在/工作区干净/manifest 就绪；只读，从不执行命令；--json）
 iterate guard post-check [targets...]  # 编辑后执行 validation.commands 并核对结果（--dry-run 只预览命令不执行；--json）
 iterate invariant      # 项目级不变量校验（--dry-run 预览；--json）
@@ -324,9 +326,13 @@ iterate config get <key>   # 读取单个配置项的解析值（支持 --json�
 iterate config set <key> <value>  # 校验并写回单个配置项（自动备份；--json 输出确认对象）
 iterate config unset <key> # 删除该配置项并逐级剪掉空祖先节点（自动备份；key 不存在则不报错；--json）
 iterate update       # 自更新：SHA-256 校验后刷新助手技能目录 + 重装 CLI（--check 只对比版本；--yes 跳过确认；--assistants 限定刷新范围，未知助手名报错而非静默跳过）
+iterate help         # 打印总览帮助（等价 `iterate --help`）
+iterate help doctor  # 打印单个命令的详细帮助
 ```
 
 CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适合希望手动控制 onboarding 过程的用户；AI 通道则完全由 AI 自动扫描生成。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。
+
+**命令发现与容错 / Discoverability**：`iterate help [command]` 打印总览或单命令帮助（无需记住 `--help` 的位置）；命令拼错时会给出最近的可用命令（如 `iterate statu` → `did you mean 'status'?`），子命令动作同样适用（如 `iterate fingerprint verfy` → `did you mean 'verify'?`）。所有用法错误退出码为 2；带 `--json` 时 stdout 仍是恰好一个 JSON 文档（其中 `did_you_mean` 给出同样的建议）。
 
 **多路引导 / Multi-Path Flow**：
 - **首次 onboarding**（无 ITERATE.md）：确认手动配置 → 基础 onboarding → 询问是否需要个性化配置。

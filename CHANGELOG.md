@@ -5,6 +5,128 @@
 
 ---
 
+## [3.6.0] — 2026-10-20
+
+本轮为无人值守每日例行的「功能与体验增长」版本：新增两个用户可直接感知的能力
+（`iterate scan` 只读导出、`iterate help` + 命令拼写容错），并配备完整测试与文档，
+故升 minor。测试套件 **1563 → 1638**（新增 `tests/test_scan_command.py`、
+`tests/test_cli_help.py`、`tests/test_gpg_signing_audit.py`，扩充 `tests/test_tui.py`
+的 JSON 能力清单与 `tests/test_config.py`/`tests/test_onboarding.py`/`tests/test_doctor.py`）。
+评审与发布范围仅限 skill 本体（`iterate_cli/`、`npm-installer/`、`scripts/`、
+`templates/`、`tests/`、`config/`、`tools/`、`SKILL.md`、`pyproject.toml`、
+`CHANGELOG.md`）；`harness/` 与 `kernel/` 未改、未发、未纳入任何发布包。
+
+### 新增 / Features
+
+- **`iterate scan` —— 只读导出项目扫描结果**。此前扫描结果只存在于 `onboard`
+  交互向导内部：工具能扫，用户却无法回读（CI 更拿不到）。新命令把同一套
+  `scan_project()` 的纯函数结果导出为 TUI 报告或单个 JSON 文档，包含识别到的
+  `manifests` / `detected_languages` / `detected_package_managers` /
+  `top_level_dirs`、四个特性开关（`has_specs` / `has_tests` / `has_ci` /
+  `has_frontend`），以及由它们推导出的 `suggested_dimensions`、
+  `suggested_validation_commands`（可直接作为 `validation.commands` 的形状）与
+  `suggested_command_whitelist`（用于 `validation.whitelist`）。
+  **只读**：只判断文件/目录是否存在，不读内容、不写任何文件（测试用 mtime 快照
+  断言）；**恒退出 0**：完全没识别出技术栈是正常结果而非失败，CI 可无脑消费
+  `--json`；空结果在 TUI 下显式渲染 `— (none detected)` 并在无任何 manifest 时
+  给出警告与出路（`iterate onboard` 会改为询问技术栈），避免"空白右值"被误读为
+  渲染故障。
+- **`iterate help [command]` + 命令拼写容错**。此前没有 `help` 命令——`iterate help`
+  被当成**非法命令**报错并退出 2，用户不记得 `--help` 就无从发现命令；命令拼错时
+  只抛一堵 argparse usage 墙（`invalid choice: 'statu' (choose from …)`），说清了
+  "错在哪"却从不说"该打什么"，窄终端下正解还会被滚出屏幕。现：
+  - `iterate help` 打印总览、`iterate help doctor` 打印单命令帮助，二者均退出 0，
+    且**不要求项目目录存在**（`-p` 指向不存在的路径也能用）；
+  - 拼错命令时追加最近的真实命令（`iterate statu` → `did you mean 'status'?`）；
+    子命令动作同样适用（`iterate fingerprint verfy` → `did you mean 'verify'?`）；
+  - 候选都不够接近时**不猜**（错误的建议比没有更糟），原始诊断保持不变；
+  - `--json` 契约不变：用法错误仍是退出 2 且 stdout 恰好一个 JSON 文档，
+    建议放在 `did_you_mean` 字段；`--json help` 显式拒绝并返回结构化错误，
+    以免"要求结构化输出的命令却只吐散文帮助"。
+
+### 修复 / Fixes（同轮全量复审 findings）
+
+本轮对 skill 本体的全量复审共 6 项 findings，全部修复并附可复现回归测试：
+
+- **[High] `iterate onboard` / `reonboard` 静默删除 `mode` 与 `invariants`**。
+  `generate_config_yaml` 从固定键集重建配置，不含顶层 `mode` 与 `invariants`，
+  而 `refresh._build_refreshed_config`（从现有配置拷贝）保留了它们——因此重新
+  on-board 一次就把切成 `defensive` 的项目的模式悄悄改回 `iterate`，并清空已声明的
+  invariants。修复：`OnboardingData` 新增 `mode` / `invariants` 字段并由
+  `generate_config_yaml` 写回；`_load_existing_onboarding_data` 读取并按 schema
+  归一化（`mode` 限 `iterate`/`defensive`，非法值回退默认；invariants 丢弃空/重复
+  `ensure` 与非法 `commands` 模块并逐条警告，绝不再持久化损坏结构）。新增
+  `normalize_mode` / `normalize_invariants`，测试覆盖正常/缺失/损坏三态。
+- **[Medium] `tools/gpg-signing.sh audit [repo…]` 忽略目标参数**。`cmd_audit` 校验了
+  参数却仍审计全部五个仓库——`audit GlassPane` 会悄悄把其他仓库也扫一遍。
+  修复：`targets_filtered "$@"`。新增 `tests/test_gpg_signing_audit.py`：用假 `gh`
+  记录被查询的仓库，断言单目标只审计该仓库、多目标生效、无参数退化为全量、
+  且建议目标自身违规仍能命中（修复前该测试 3 项失败）。
+- **[Low] README/zh-CN 宣称 `config set` 支持 `validation.commands` / `invariants.*`**。
+  `SETTABLE_KEYS`/`_resolve_key` 根本没有这两类键，文档比实现多承诺。修复：两版 README
+  改为逐一列出实际可设的扁平键与点分键，并明确二者不在此处设置。新增
+  `tests/test_config.py::TestSettableKeysDocumentedInReadmes` 双向锁定中英文文档与
+  `SETTABLE_KEYS` 完全一致。
+- **[Low] `scripts/install.py` 旧式直接调用漏掉 `--ai=<value>` 拼写**。`parse_legacy_args`
+  只判 `"--ai" not in args`，`--ai=trae` 会掉进子命令解析器以退出 2 收场。修复：同时
+  识别 `--ai` 与 `--ai=` 前缀。新增 `test_legacy_invocation_accepts_equals_syntax` /
+  `test_legacy_invocation_equals_syntax_installs`。
+- **[Low] `doctor` 的 Next action(s) 提示硬编码中文，无视 `language`**。其余 doctor
+  输出全为英文，唯这组提示恒为中文，英文项目的报告夹生。修复：`_render_next_actions`
+  接受 `language`，`render_report` 默认从项目配置读取（缺失/损坏回退英文）；提示文案
+  提供 zh/en 双语。新增英文默认、zh 跟随配置、显式 `language` 参数优先三态测试。
+- **[Nit] `tui.key_value` 用转义后的 label 度量列宽**。`escape()` 把 `[` 变 `\[`，
+  含方括号的键每括号多算一列，值列被推右。修复：按可见文本度量并填充，转义仅发生在
+  嵌入 markup 时。新增列宽不变式测试。
+
+### 版本号说明 / Version numbering note
+
+本次对外发布的包（GitHub tag、npm、ClawHub、ModelScope、SkillHub）版本均为
+**3.6.0**。需要记录一个生态结构性问题：本工作副本的 git tag 命名空间被
+`iterate-skill` 与 `iterate-plugin` 两条**独立版本线**共用，而 plugin 线已用到
+`v3.5.4`–`v3.7.1`（远端 `plugin-origin` 上实际到 `v3.9.2`）。因此
+`v3.5.4` 与 `v3.6.0` 在本地都已被 plugin 的同名 tag 占用。
+
+- 按本仓库自带不变量（`tests/test_release_meta.py::test_changelog_version_chain_has_no_gaps`
+  要求 CHANGELOG 的 3.x 序号连续）与「新功能 = minor」，skill 的正确下一个版本是
+  `3.6.0`——`3.6.1` / `3.9.3` 会要求不存在的历史条目，`3.5.4` 会把功能发布标成 patch。
+- 处理方式：把本地 `v3.6.0` 从 plugin 镜像指向 skill 发布提交（annotated + GPG 签名），
+  推送至 `origin`。被移走的 plugin 镜像 tag（tag 对象 `b62d8e981e5a2ec1246190f3019cc2657d56c2fb`
+  → 提交 `2e0890c3`）**未丢失**：`plugin-origin` 上仍持有同名 tag，需要时用
+  `git tag -f v3.6.0 2e0890c3` 即可还原。
+- **影响面**：普通 `git fetch`（不带 `--tags`，即每日任务的用法）**不受影响**，实测
+  退出 0 且不会改写已有本地 tag；只有 `git fetch --tags` 会对同名 tag 报
+  `would clobber existing tag`。两个方向都是如此，属命名空间冲突的固有代价。
+- **建议（留给 harness/plugin lane）**：plugin 线已推进到 `3.9.x`，不会再回到
+  `3.6.0`；后续若需消除冲突，应让 plugin 的 tag 与 skill 的 tag 分属不同命名空间
+  （例如 plugin 改用 `plugin-v*`），而不是靠两条线互相让号。
+
+### 测试 / Tests
+
+- 新增 `tests/test_scan_command.py`（28 项）：`collect_scan_data` 的字段与 JSON
+  可序列化性、四个 `has_*` 键必须逐字对应 `ScanResult` 字段名、空目录全空、
+  前端目录翻转语义、重复调用稳定且零写入；`render_scan` 的 JSON/ TUI 两种模式、
+  空状态标记、无 manifest 时的警告（且非空项目不误报）、非 TTY 下无 ANSI 转义、
+  缺键时不抛 KeyError；CLI 层 `--json` 契约、空项目退出 0、路径不存在仍退出 1、
+  只读性（mtime 快照）、`-p` 位置无关、help 中可见。
+- 新增 `tests/test_cli_help.py`（24 项）：`help`/`help <cmd>`/`help <未知>` 三条路径
+  的退出码与输出、`help` 对**每个**已注册子命令都可用、项目目录不存在时仍可用、
+  `--json help` 拒绝但 stdout 恰好一个 JSON；拼写容错覆盖大小写各异的多组错拼、
+  子命令动作错拼、无近似候选时不猜、原始用法错误信息不被破坏、JSON 文档携带
+  `did_you_mean` 且无建议时**不含该键**、有效命令不会被误报；`_did_you_mean` /
+  `_suggestion_from_usage_error` 的引用式（≤3.12）与非引用式（3.13）两种消息格式、
+  非 choice 类错误透传、模块级建议槽不跨次泄漏。
+- 新增 `tests/test_gpg_signing_audit.py`（4 项）：以假 `gh` 记录被查询的仓库，
+  从正反两侧锁定 `audit` 的目标过滤——单目标只审计该仓库（修复前因扫到别的仓库
+  的违规而误报失败）、单目标自身违规仍退出 1、多目标同时生效、无参数退化为全量。
+- 复审修复回归（分散在既有文件）：`tests/test_onboarding.py` 新增 `normalize_mode` /
+  `normalize_invariants` / 生成与载入往返共 13 项（含 schema 校验）；`tests/test_doctor.py`
+  新增 Next action(s) 三态语言测试；`tests/test_config.py` 新增中英文 README 与
+  `SETTABLE_KEYS` 双向一致测试；`tests/test_validate.py` 新增 `--ai=<value>` 两种
+  equals 拼写测试；`tests/test_tui.py` 新增方括号键的列宽不变式测试。
+
+---
+
 ## [3.5.3] — 2026-10-17
 
 本轮为无人值守的全量复审 + 修复：对 skill 本体做一轮完整审计并把全部 findings
