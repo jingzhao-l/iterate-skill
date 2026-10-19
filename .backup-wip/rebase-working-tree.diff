@@ -1,0 +1,1367 @@
+diff --git a/harness/iterate-harness/CHANGELOG.md b/harness/iterate-harness/CHANGELOG.md
+index f6d3843c..4936d458 100644
+--- a/harness/iterate-harness/CHANGELOG.md
++++ b/harness/iterate-harness/CHANGELOG.md
+@@ -4,6 +4,7 @@ All notable changes to iterate-harness should be recorded in this file.
+ 
+ ## [Unreleased]
+ 
++<<<<<<< HEAD
+ ### Changed
+ 
+ - **场景④翻转：收敛判定权从审核报告交给内核（owner 2026-10-13 的裁决落地）。**
+@@ -71,6 +72,9 @@ All notable changes to iterate-harness should be recorded in this file.
+   仍可能在那条线上继续动，发出去就只能越过、不能替换；pin 追平属内核发布线的动作。补救命令：
+   `cd kernel && npm ci && npm run build && npm publish`，之后把 `tests/kernel_fixtures` 的语料与
+   manifest 按**已发布包**逐文件重记。
++=======
++## [2.8.0] - 2026-10-18
++>>>>>>> cf9e64e0 (release(harness): iterate-harness v2.8.0 — 投递基线改在写入前采样；git_remote 正则真正可用；本地规则抽取容错；npm 包装器无人值守不再自动确认下载)
+ 
+ ### Added
+ 
+@@ -139,6 +143,76 @@ All notable changes to iterate-harness should be recorded in this file.
+ 
+ ### Fixed
+ 
++- **`tasks/manager.py`：投递监视器不再把已经干完的活儿重跑一遍。** 监视器判断"payload 有没有被读"
++  的唯一信号是写入之后输出文件是否增长，所以基线必须在写入**之前**采样。旧实现先 `sleep` 100ms
++  再采基线——一次快得可怜的 worker（`python -u -c "import sys; print(sys.stdin.readline())"`）
++  在这 100ms 里已经把回显写进文件，于是回复被算进"写入前的旧输出"，监视器判定"没有新输出＝
++  payload 被吞了"，把一条已 `completed` 的任务拉回 `running`、重新投递、把输出重复一份、
++  `SUBAGENT_STOP` 触发两次。实测 6/6 复现（`restart_count=1`，输出里多出一份 restart 告示）。
++  现在基线在写入前采，并加一个有上限的"安静轮询"（`_OUTPUT_BASELINE_SETTLE` 50ms /
++  `_OUTPUT_BASELINE_POLL` 10ms）等异步 copier 把最后一块刷完，避免把**写入前**但还没落盘的
++  输出误判成回复；两种失败方向都被压到亚毫秒量级，而不是原来的 100ms 窗口。
++  反向也钉住：真正被吞的 payload 仍然会被重启补投
++  （`test_delivery_monitor_still_redelivers_a_swallowed_payload`）。
++  两条新用例都经过反向变异验证——把源码改回旧实现时
++  `does_not_restart_a_completed_one_shot_agent` 当场红在 `assert 'running' == 'completed'`，
++  与最初的失败现场一致。
++
++- **`personalization/extractor.py`：`git_remote` 终于能抽出远程地址了。** 旧正则
++  `(?:github|gitlab)\.com[:/](\S+?)(?:\.git)?` 里 `\S+?` 是懒惰的、后面又跟一个可选的
++  `(?:\.git)?`，于是永远只匹配一个字符——`github.com:jingzhao-l/iterate-harness.git` 抽出
++  `'j'`，然后被 `len(value) < 3` 的守卫静默丢弃。结果是这一类事实**从来没被记过**，
++  而 `_FACT_PATTERNS` 里其余九条都正常。改为 `((?:[\w-]+(?:\.[\w-]+)*/)+[\w-]+)`：
++  最后一段刻意不允许点号，这样贪心匹配吞不进 `.git` 后缀；带点号的 owner
++  （`owner.name/repo`）仍能匹配。实测：`.git` 后缀 → `jingzhao-l/iterate-harness`，
++  无后缀 → `foo/bar`，`gitlab.com/team/api.git` → `team/api`。5 条新用例，
++  反向变异（把正则换回旧写法）5 条同时变红。
++
++- **`personalization/extractor.py` / `session_hook.py`：抽出本地规则不再因坏历史崩掉，
++  也不再是一份没人调的副本。** `extract_local_rules()` 直接对 `msg.get("content")` 取值，
++  历史上任何一条不是 dict 的条目（截断的记录、手工改过的存档、`[]`、`None`、裸字符串）都会
++  抛 `AttributeError` 把整个会话收尾钩子打断；content 是 list 时也没有校验 block 里的
++  `text` 是不是字符串，`[{"text": None}]` 会在 `"\n".join()` 上炸 `TypeError`。
++  另外它一直挂在 `__all__` 里作为公共 API，但**没有任何调用方**——真在跑的是
++  `session_hook.update_rules_from_session()`，它自己写了一份几乎相同的收集循环。
++  现在把收集逻辑提成 `_collect_message_text()`，两种形态（线上 dict 形状 / 内存里的
++  `ConversationMessage` 对象，block 的 `text` 或 `content` 字段）走同一份实现，
++  非 dict 条目与类型不对的字段一律跳过而不是抛异常；`extract_local_rules` 与
++  `session_hook` 都改用它，死代码清零、行为收敛到一处。7 条新用例覆盖 dict 形态、
++  对象形态、各类畸形条目与非法入参。
++
++- **`iterate/loop_gates.py`：类型标注引用的类并不存在，mypy 一直在报错。** 该模块从
++  `.types` 导入 `Finding`，而 `types.py` 里只有 `ReviewFinding`——`mypy src` 因此恒定报
++  `Module "iterate_harness.iterate.types" has no attribute "Finding"`。改为导入真实类型，
++  并把 `metadata` 参数从 `dict[str, Any]` 收紧到 `dict[str, object]`（与
++  `read_set_from_metadata` 的签名一致），顺带删掉不再使用的 `Any` 导入。
++  `mypy src` 从 1 error 变干净；`ruff check` 同时清掉
++  `tests/test_services/test_compact.py` 里一个未使用的 `TextBlock` 导入。
++
++- **npm 包装器：无人值守的首次运行不再自动确认下载；stamp 现在记得运行时是"怎么装出来的"。**
++  四条各不相关的缺陷一起修掉：
++  ① `askYesNo(question, defaultNo=true)` 的超时/EOF/空输入回落到 `defaultNo`，也就是
++  **true＝继续**——而提示打印的是 `[y/N]`。无人值守（`< /dev/null` 或 120s 无回应）的
++  首次运行会**自动确认几百兆的下载**，用户从来没同意过。现在回落值统一取 `!defaultNo`，
++  与显示出来的默认一致，提示也写明回落到了哪一个默认值；原先把错误语义钉成正确的那条
++  测试已经反转并扩充为 7 条。
++  ② stamp 以前只记版本字符串，所以换掉 `ITERATE_HARNESS_PYTHON` 或 `ITERATE_HARNESS_INSTALL_URL`
++  后 stamp 仍然"匹配"，包装器会静默复用一份不是用户当前配置装出来的运行时。
++  现在 stamp 是 JSON（`version` + `pythonEnv` + `source`），三者任一变化都触发重装；
++  老的裸版本 stamp 标记为 `legacy`，版本匹配时重装一次并重写成新格式——升级本身就会因
++  版本变化而重装，所以这条路径不额外付出成本。
++  ③ `packageVersion()` 在 `package.json` 读不出时返回 `"0.0.0-unknown"`，而
++  `needsBootstrap` 永远判定"过期"，于是一次注定失败的
++  `pip install iterate-harness==0.0.0-unknown` 在**每一次**调用上都跑一遍。现在版本号不可读时：
++  有现成运行时就复用并提示，没有则以可执行的报错退出，而不是尝试一个不存在的版本。
++  ④ `DOWNLOAD_TIMEOUT_MS`（120s）大于 `DOWNLOAD_TOTAL_TIMEOUT_MS`（60s），按请求的超时分支
++  永远不会触发（总时限一定先到）。下调到 30s，让那条分支重新可达。
++  顺手修掉两处：包装器参数只应在 `--` **之前**属于包装器，`ih sub -- --no-verify` 以前会把
++  转发给子进程的标志吞掉（抽成 `splitHarnessArgs()` 便于单测）；以及 `reportBootstrapFailure`
++  与 `child.on("error")` 里的 `process.stderr.write` 在错误处理器内部可能再次抛错，
++  把已处理的失败变成未处理的异常——包上 `safeWriteTo()`。
++  npm 测试从 76 条扩到 89 条全绿。
++
+ - **`scripts/install.py::_installed_version()` 在 Python 3.10 上不再报假版本。** 包里
+   `requires-python >= 3.10`，而 `tomllib` 是 3.11+ 才有——缺模块的 `ImportError` 被
+   `except Exception` 与"清单坏了"同一路径吞掉，于是在一个受支持的解释器上
+diff --git a/harness/iterate-harness/npm/lib/bootstrap.js b/harness/iterate-harness/npm/lib/bootstrap.js
+index 3c51779d..fb76d616 100644
+--- a/harness/iterate-harness/npm/lib/bootstrap.js
++++ b/harness/iterate-harness/npm/lib/bootstrap.js
+@@ -50,7 +50,11 @@ const STAMP_FILE_NAME = "version.stamp";
+ const TARBALL_CACHE_DIR_NAME = "cache";
+ 
+ const MAX_DOWNLOAD_REDIRECTS = 5;
+-const DOWNLOAD_TIMEOUT_MS = 120000;
++// Per-request *inactivity* timeout: no bytes on the socket for this long means
++// the connection has died. It must stay below DOWNLOAD_TOTAL_TIMEOUT_MS or the
++// wall-clock cap always wins and the `request.on("timeout")` branch below can
++// never fire.
++const DOWNLOAD_TIMEOUT_MS = 30000;
+ // Hard wall-clock cap per single self-download (a stale-but-connected registry
+ // that never dribbles more bytes must not be able to hang the bootstrap).
+ const DOWNLOAD_TOTAL_TIMEOUT_MS = 60000;
+@@ -277,8 +281,67 @@ function venvExecutablePaths(venvDir, platform) {
+   };
+ }
+ 
+-function needsBootstrap(stampContent, expectedVersion) {
+-  return String(stampContent || "").trim() !== String(expectedVersion || "").trim();
++// The inputs that determine what a runtime *is*. Recording them in the stamp
++// lets the wrapper rebuild when the user flips the lever that built the venv,
++// instead of silently reusing a runtime they did not ask for.
++function runtimeInputs(version, environment) {
++  const env = environment || process.env;
++  return {
++    version: String(version || ""),
++    pythonEnv: String(env[PYTHON_ENV_VAR] || ""),
++    source: String((installCandidates(version, env) || [])[0] || ""),
++  };
++}
++
++function formatStamp(inputs) {
++  return JSON.stringify(inputs);
++}
++
++function parseStamp(stampContent) {
++  // Stamps written by this wrapper are a JSON object (version + the inputs
++  // they were built from). Stamps written by an older wrapper are a bare
++  // version string, and are marked `legacy`: they cannot prove which
++  // interpreter or install source built the runtime they describe.
++  const text = String(stampContent || "").trim();
++  if (!text) return null;
++  if (text[0] === "{") {
++    try {
++      const parsed = JSON.parse(text);
++      if (parsed && typeof parsed.version === "string") {
++        return {
++          version: parsed.version,
++          pythonEnv: String(parsed.pythonEnv || ""),
++          source: String(parsed.source || ""),
++          legacy: false,
++        };
++      }
++    } catch {
++      /* fall through to the legacy single-string shape */
++    }
++  }
++  return { version: text, pythonEnv: "", source: "", legacy: true };
++}
++
++// Bootstrap is needed when the stamp's version differs from THIS wrapper's, or
++// when the interpreter override / install source changed since the stamp was
++// written. Reusing a runtime built with a different Python — or installed from
++// a different URL — is worse than one extra reinstall: the user sees an
++// `ih --version` that disagrees with the wrapper that launched it, and nothing
++// explains why.
++//
++// A legacy bare-version stamp proves nothing about inputs, so it rebuilds once
++// and is rewritten with inputs. That costs nothing in practice: any upgrade
++// already changes the version and forces a reinstall, so the only extra
++// reinstall is for a stamp whose version already matches this wrapper.
++function needsBootstrap(stampContent, expectedVersion, expectedInputs) {
++  const stamp = parseStamp(stampContent);
++  if (!stamp || stamp.version !== String(expectedVersion || "").trim()) return true;
++  if (stamp.legacy) return true;
++  if (!expectedInputs) return false;
++  return (
++    String(stamp.pythonEnv || "") !== String(expectedInputs.pythonEnv || "") ||
++    String(stamp.source || "") !== String(expectedInputs.source || "")
++  );
+ }
+ 
+ function isRemoteHttpUrl(target) {
+@@ -476,6 +539,8 @@ function pipInstallArgs(target) {
+ // Runtime resolution
+ // ---------------------------------------------------------------------------
+ 
++const UNKNOWN_VERSION = "0.0.0-unknown";
++
+ function packageVersion() {
+   const manifestPath = path.resolve(__dirname, "..", "package.json");
+   try {
+@@ -485,13 +550,18 @@ function packageVersion() {
+     }
+   } catch (error) {
+     // A corrupted/missing manifest must not crash every `ih` invocation with an
+-    // unhandled exception; fall back to an unknown version so the wrapper can
+-    // still run the Python harness and surface the real error later if any.
++    // unhandled exception. Return UNKNOWN_VERSION and let the caller decide:
++    // an existing runtime is reused, and a fresh install is refused rather
++    // than attempted against a version that cannot exist.
+     process.stderr.write(
+       `[iterate-harness] warning: cannot read ${manifestPath}: ${error.message}\n`
+     );
+   }
+-  return "0.0.0-unknown";
++  return UNKNOWN_VERSION;
++}
++
++function isUnknownVersion(version) {
++  return version === UNKNOWN_VERSION;
+ }
+ 
+ function runtimeHomeDir(env) {
+@@ -1096,7 +1166,15 @@ async function bootstrap(homeDir, version, env, options) {
+   }
+ 
+   const stampPath = path.join(homeDir, STAMP_FILE_NAME);
+-  fs.writeFileSync(stampPath, `${version}\n`, "utf8");
++  // The stamp records what the runtime was built FROM, not just which version:
++  // a venv created with `ITERATE_HARNESS_PYTHON` set, or from an
++  // `ITERATE_HARNESS_INSTALL_URL` override, must not be silently reused once
++  // that override disappears or changes.
++  fs.writeFileSync(
++    stampPath,
++    `${formatStamp(runtimeInputs(version, env))}\n`,
++    "utf8"
++  );
+   ui.success(`iterate-harness ${version} installed`);
+ }
+ 
+@@ -1116,11 +1194,34 @@ async function ensureRuntime(env, options) {
+     ? fs.readFileSync(stampPath, "utf8")
+     : "";
+ 
++  // A version we cannot read cannot be installed: `iterate-harness==0.0.0-unknown`
++  // does not exist, so attempting a bootstrap here would fail every run and
++  // re-download nothing. Reuse the runtime that is already there, or refuse
++  // with an actionable error instead of a doomed install.
++  if (isUnknownVersion(version)) {
++    if (fs.existsSync(executable.ih)) {
++      ui.warning(
++        `wrapper version is unreadable; reusing the existing runtime at ${homeDir}`
++      );
++      return executable.ih;
++    }
++    throw new BootstrapError(
++      [
++        "cannot determine the wrapper version (npm/package.json is missing or unreadable),",
++        "and no runtime is installed yet — nothing to run.",
++        "Reinstall the package (`npm i -g iterate-harness`) or restore its package.json.",
++      ].join(" ")
++    );
++  }
++
+   // Bootstrap is needed when the stamp does not match THIS wrapper's version
+   // OR when the venv's ih entry point is gone even though the stamp survived
+   // (user deleted/corrupted the venv) — self-heal instead of demanding
+-  // `rm -rf` on every run.
+-  const stampOutdated = needsBootstrap(stampContent, version);
++  // `rm -rf` on every run. The stamp also carries the interpreter/install
++  // source it was built with, so flipping ITERATE_HARNESS_PYTHON or
++  // ITERATE_HARNESS_INSTALL_URL triggers a rebuild instead of a silent reuse.
++  const inputs = runtimeInputs(version, environment);
++  const stampOutdated = needsBootstrap(stampContent, version, inputs);
+   const ihMissing = !fs.existsSync(executable.ih);
+ 
+   if (!skipInstall && (stampOutdated || ihMissing)) {
+@@ -1146,7 +1247,7 @@ async function ensureRuntime(env, options) {
+       const currentStamp = fs.existsSync(stampPath)
+         ? fs.readFileSync(stampPath, "utf8")
+         : "";
+-      if (!needsBootstrap(currentStamp, version) && fs.existsSync(executable.ih)) {
++      if (!needsBootstrap(currentStamp, version, inputs) && fs.existsSync(executable.ih)) {
+         ui.info(`iterate-harness ${version} was installed by another process; reusing it.`);
+       } else {
+         if (opts.interactive) {
+@@ -1187,16 +1288,53 @@ async function ensureRuntime(env, options) {
+ // Delegation to the real ih executable
+ // ---------------------------------------------------------------------------
+ 
++// Every error path funnels through here, including the top-level promise
++// rejection handler in the bin scripts. A stderr write can itself fail
++// (closed/redirected console — the classic Windows EPIPE/EBADF case, or a
++// destroyed stream), and throwing from inside the error handler would turn a
++// handled failure into an unhandled rejection with a raw stack trace. Never
++// let the reporting path blow up.
++function safeWriteTo(stream, text) {
++  try {
++    stream.write(text);
++  } catch {
++    /* best-effort: nothing else can report this failure */
++  }
++}
++
+ function reportBootstrapFailure(error) {
+   const message = error instanceof BootstrapError ? error.message : (error && error.stack) || error;
+-  process.stderr.write(`[iterate-harness] ${message}\n`);
++  safeWriteTo(process.stderr, `[iterate-harness] ${message}\n`);
+ }
+ 
+ // The install wizard only makes sense when a human can actually answer: both
+ // stdin and stderr must be TTYs. Piped/CI/`< /dev/null` runs bootstrap
+ // non-interactively so they never block on a prompt that nobody can see.
+-function interactiveSession() {
+-  return Boolean(process.stdin.isTTY && process.stderr.isTTY);
++// `streams` is injectable for tests, since `process.stdin`/`process.stderr` are
++// getter-only and cannot be reassigned.
++function interactiveSession(streams) {
++  const s = streams || {};
++  const stdin = s.stdin === undefined ? process.stdin : s.stdin;
++  const stderr = s.stderr === undefined ? process.stderr : s.stderr;
++  return Boolean(stdin.isTTY && stderr.isTTY);
++}
++
++// Split the CLI argv into what the wrapper consumes and what it forwards to
++// the delegated `ih` child. The wrapper flags belong to the wrapper ONLY when
++// they appear before a `--` separator: anything after `--` is the child's, so
++// `ih sub -- --no-verify` must forward that flag instead of swallowing it.
++function splitHarnessArgs(args) {
++  const cliArgs = Array.isArray(args) ? args : [];
++  const separator = cliArgs.indexOf("--");
++  const wrapperSlice = separator === -1 ? cliArgs : cliArgs.slice(0, separator);
++  return {
++    forwardedArgs: [
++      ...wrapperSlice.filter((arg) => arg !== NO_VERIFY_FLAG && arg !== ALLOW_HTTP_FLAG),
++      ...(separator === -1 ? [] : cliArgs.slice(separator)),
++    ],
++    noVerify: wrapperSlice.includes(NO_VERIFY_FLAG),
++    allowHttp: wrapperSlice.includes(ALLOW_HTTP_FLAG),
++  };
+ }
+ 
+ async function runHarness(args, env) {
+@@ -1204,14 +1342,8 @@ async function runHarness(args, env) {
+   // when stderr is not a TTY (e.g. piped output), so `ih --version | jq` stays clean.
+   ui.printBanner();
+ 
+-  const cliArgs = Array.isArray(args) ? args : [];
+-  const forwardedArgs = cliArgs.filter(
+-    (arg) => arg !== NO_VERIFY_FLAG && arg !== ALLOW_HTTP_FLAG
+-  );
+-  const options = {
+-    noVerify: cliArgs.includes(NO_VERIFY_FLAG),
+-    allowHttp: cliArgs.includes(ALLOW_HTTP_FLAG),
+-  };
++  const { forwardedArgs, noVerify, allowHttp } = splitHarnessArgs(args);
++  const options = { noVerify, allowHttp };
+ 
+   // Signal handling spans the whole run: during bootstrap a Ctrl-C/SIGTERM
+   // must clean up in-flight downloads and not orphan a pip/python child; after
+@@ -1258,7 +1390,12 @@ async function runHarness(args, env) {
+   });
+ 
+   child.on("error", (error) => {
+-    process.stderr.write(`[iterate-harness] failed to launch ih: ${error.message}\n`);
++    // Same guard as reportBootstrapFailure: a failing stderr write here would
++    // turn a launch failure into an uncaught exception instead of a clean exit.
++    safeWriteTo(
++      process.stderr,
++      `[iterate-harness] failed to launch ih: ${error.message}\n`
++    );
+     process.exit(1);
+   });
+   child.on("close", (code, signal) => {
+@@ -1311,15 +1448,21 @@ module.exports = {
+   interactiveSession,
+   isRemoteHttpUrl,
+   isSupportedPython,
++  isUnknownVersion,
+   needsBootstrap,
+   packageVersion,
+   parsePythonVersion,
++  parseStamp,
+   pipInstallArgs,
+   pypiInstallSpec,
+   pythonCandidates,
+   releaseTarballUrl,
+   reportBootstrapFailure,
+   runHarness,
++  runtimeInputs,
++  splitHarnessArgs,
++  formatStamp,
++  UNKNOWN_VERSION,
+   venvExecutablePaths,
+   wheelAssetName,
+   wheelAssetUrl,
+diff --git a/harness/iterate-harness/npm/lib/ui.js b/harness/iterate-harness/npm/lib/ui.js
+index 034a37d6..1f6a1590 100644
+--- a/harness/iterate-harness/npm/lib/ui.js
++++ b/harness/iterate-harness/npm/lib/ui.js
+@@ -81,8 +81,8 @@ function frameSection(title, lines) {
+ }
+ 
+ // Safety net for unattended runs: if stdin is closed (EOF) or the user never
+-// answers, fall back to the default instead of hanging forever. Override per
+-// call with `options.timeoutMs` (0 disables the timeout entirely).
++// answers, fall back to the *stated* default instead of hanging forever.
++// Override per call with `options.timeoutMs` (0 disables the timeout entirely).
+ const DEFAULT_PROMPT_TIMEOUT_MS = 120000;
+ 
+ function askYesNo(question, defaultNo = false, options = {}) {
+@@ -94,6 +94,13 @@ function askYesNo(question, defaultNo = false, options = {}) {
+     let settled = false;
+     let timer = null;
+     const rl = readline.createInterface({ input, output });
++    // The default the prompt DISPLAYS is the answer that must be taken when
++    // nobody answers: `defaultNo=true` renders "[y/N]", so Enter, an EOF'd
++    // stdin, an unrecognised reply, and a timeout all mean "No". Resolving
++    // `defaultNo` verbatim here inverted that — it rendered "[y/N]" while
++    // auto-answering "yes", so an unattended first run confirmed a download
++    // of hundreds of megabytes that the user never agreed to.
++    const fallback = !defaultNo;
+     const finish = (value) => {
+       if (settled) return;
+       settled = true;
+@@ -102,13 +109,20 @@ function askYesNo(question, defaultNo = false, options = {}) {
+       resolve(value);
+     };
+     // readline emits "close" on EOF (piped/`< /dev/null` stdin) — never hang.
+-    rl.on("close", () => finish(defaultNo));
++    rl.on("close", () => finish(fallback));
+     if (timeoutMs > 0) {
+       timer = setTimeout(() => {
+-        process.stderr.write(
+-          `\x1b[2m   no response after ${Math.round(timeoutMs / 1000)}s; using default\x1b[0m\n`
+-        );
+-        finish(defaultNo);
++        // A failing stderr write inside this timer would surface as an uncaught
++        // exception rather than settling the prompt, so swallow it.
++        try {
++          output.write(
++            `\x1b[2m   no response after ${Math.round(timeoutMs / 1000)}s; ` +
++              `using default ${defaultNo ? "(no)" : "(yes)"}\x1b[0m\n`
++          );
++        } catch {
++          /* best-effort: the prompt still settles on the default */
++        }
++        finish(fallback);
+       }, timeoutMs);
+       // Only unref the timer when the real terminal is in play. A TTY or
+       // piped stdin keeps the event loop alive through its OS file descriptor,
+@@ -131,7 +145,7 @@ function askYesNo(question, defaultNo = false, options = {}) {
+       const a = String(answer).trim().toLowerCase();
+       if (a === "y" || a === "yes") finish(true);
+       else if (a === "n" || a === "no") finish(false);
+-      else finish(defaultNo);
++      else finish(fallback);
+     });
+   });
+ }
+diff --git a/harness/iterate-harness/npm/package.json b/harness/iterate-harness/npm/package.json
+index 027e7afb..f1085fa3 100644
+--- a/harness/iterate-harness/npm/package.json
++++ b/harness/iterate-harness/npm/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "iterate-harness",
+-  "version": "2.7.0",
++  "version": "2.8.0",
+   "description": "npm distribution wrapper for iterate-harness — installs the Python harness (ih CLI) into a managed venv on install and exposes it as a global command",
+   "license": "MIT",
+   "type": "commonjs",
+diff --git a/harness/iterate-harness/npm/test/bootstrap.test.js b/harness/iterate-harness/npm/test/bootstrap.test.js
+index 404db374..ac49d42a 100644
+--- a/harness/iterate-harness/npm/test/bootstrap.test.js
++++ b/harness/iterate-harness/npm/test/bootstrap.test.js
+@@ -29,11 +29,15 @@ const {
+   installCandidates,
+   installHarness,
+   installRemoteArtifact,
++  interactiveSession,
+   isRemoteHttpUrl,
+   isSupportedPython,
++  isUnknownVersion,
+   needsBootstrap,
++  packageVersion,
+   parseChecksum,
+   parsePythonVersion,
++  parseStamp,
+   pipInstallArgs,
+   pypiInstallSpec,
+   pythonCandidates,
+@@ -41,6 +45,10 @@ const {
+   resolveRedirectUrl,
+   runStep,
+   sha256File,
++  runtimeInputs,
++  formatStamp,
++  splitHarnessArgs,
++  UNKNOWN_VERSION,
+   venvExecutablePaths,
+   verifyDownloadedArtifact,
+   wheelAssetName,
+@@ -191,14 +199,126 @@ test("artifactExtensionFor maps whl and tar.gz, defaulting otherwise", () => {
+   assert.equal(artifactExtensionFor(""), DEFAULT_ARTIFACT_EXT);
+ });
+ 
+-test("needsBootstrap ignores surrounding whitespace and requires exact match", () => {
+-  assert.equal(needsBootstrap("1.6.0\n", "1.6.0"), false);
+-  assert.equal(needsBootstrap(" 1.6.0 ", "1.6.0"), false);
+-  assert.equal(needsBootstrap("1.5.0\n", "1.6.0"), true);
++test("needsBootstrap compares versions with surrounding whitespace trimmed", () => {
++  // The trim matters for the JSON stamps this wrapper writes; both sides must
++  // be normalised or a newline in the file would demand a reinstall every run.
++  assert.equal(needsBootstrap(formatStamp({ version: "1.6.0", pythonEnv: "", source: "" }) + "\n", "1.6.0"), false);
++  assert.equal(needsBootstrap(formatStamp({ version: "1.6.0", pythonEnv: "", source: "" }), " 1.6.0 "), false);
++  assert.equal(needsBootstrap(formatStamp({ version: "1.5.0", pythonEnv: "", source: "" }), "1.6.0"), true);
+   assert.equal(needsBootstrap("", "1.6.0"), true);
+   assert.equal(needsBootstrap(undefined, "1.6.0"), true);
+ });
+ 
++test("needsBootstrap rebuilds once for a legacy bare-version stamp", () => {
++  // Older wrappers wrote a bare version, which cannot prove which interpreter
++  // or install source built the runtime. Rebuild once so the stamp is
++  // rewritten with inputs; a version bump already reinstalled this runtime,
++  // so this costs nothing extra.
++  assert.equal(needsBootstrap("2.7.0", "2.7.0"), true);
++  assert.equal(needsBootstrap("2.7.0\n", "2.7.0"), true);
++  assert.equal(parseStamp("2.7.0").legacy, true);
++  assert.equal(parseStamp(formatStamp(runtimeInputs("2.7.0", {}))).legacy, false);
++});
++
++test("needsBootstrap reuses a stamp whose inputs still match", () => {
++  const env = {};
++  const inputs = runtimeInputs("2.7.0", env);
++  const stamp = formatStamp(inputs);
++  assert.equal(needsBootstrap(stamp, "2.7.0", inputs), false, "same inputs must reuse");
++  assert.equal(needsBootstrap(stamp, "2.7.0"), false, "no inputs given means version-only check");
++});
++
++test("needsBootstrap rebuilds when the interpreter override changes", () => {
++  const stamp = formatStamp(runtimeInputs("2.7.0", {}));
++  const other = {
++    version: "2.7.0",
++    pythonEnv: "/opt/other/bin/python3.12",
++    source: "iterate-harness==2.7.0",
++  };
++  assert.equal(needsBootstrap(stamp, "2.7.0", other), true, "changed override must rebuild");
++});
++
++test("needsBootstrap rebuilds when the install source changes", () => {
++  const stamp = formatStamp(runtimeInputs("2.7.0", {}));
++  const mirror = {
++    version: "2.7.0",
++    pythonEnv: "",
++    source: "https://mirror.example/iterate-harness-2.7.0.tar.gz",
++  };
++  assert.equal(needsBootstrap(stamp, "2.7.0", mirror), true);
++});
++
++test("runtimeInputs pins the env-derived build inputs", () => {
++  const inputs = runtimeInputs("2.7.0", {
++    [PYTHON_ENV_VAR]: "/opt/x/bin/python3",
++    [INSTALL_URL_ENV_VAR]: "https://mirror.example/pkg.tar.gz",
++  });
++  assert.equal(inputs.version, "2.7.0");
++  assert.equal(inputs.pythonEnv, "/opt/x/bin/python3");
++  assert.equal(inputs.source, "https://mirror.example/pkg.tar.gz");
++  // No override: the PyPI pin is the recorded source.
++  assert.equal(runtimeInputs("2.7.0", {}).source, pypiInstallSpec("2.7.0"));
++});
++
++test("parseStamp round-trips formatStamp and tolerates garbage", () => {
++  const inputs = runtimeInputs("2.7.0", {});
++  assert.deepEqual(parseStamp(formatStamp(inputs)), {
++    version: "2.7.0",
++    pythonEnv: "",
++    source: inputs.source,
++    legacy: false,
++  });
++  assert.equal(parseStamp(""), null);
++  assert.equal(parseStamp(undefined), null);
++  assert.equal(parseStamp("not json at all").version, "not json at all");
++  assert.equal(parseStamp("{ broken json").legacy, true);
++  // Non-string input fields are coerced so a hand-edited stamp cannot break
++  // the comparison.
++  assert.deepEqual(parseStamp('{"version":"2.7.0","pythonEnv":1,"source":null}'), {
++    version: "2.7.0",
++    pythonEnv: "1",
++    source: "",
++    legacy: false,
++  });
++});
++
++test("splitHarnessArgs only treats wrapper flags as the wrapper's before `--`", () => {
++  // A `--` separator hands the rest of the argv to the child untouched.
++  assert.deepEqual(splitHarnessArgs(["sub", "--", "--no-verify"]), {
++    forwardedArgs: ["sub", "--", "--no-verify"],
++    noVerify: false,
++    allowHttp: false,
++  });
++  assert.deepEqual(splitHarnessArgs(["--no-verify", "sub"]), {
++    forwardedArgs: ["sub"],
++    noVerify: true,
++    allowHttp: false,
++  });
++  assert.deepEqual(splitHarnessArgs(["--allow-http", "--no-verify", "--", "cmd"]), {
++    forwardedArgs: ["--", "cmd"],
++    noVerify: true,
++    allowHttp: true,
++  });
++  assert.deepEqual(splitHarnessArgs(), {
++    forwardedArgs: [],
++    noVerify: false,
++    allowHttp: false,
++  });
++  assert.deepEqual(splitHarnessArgs(undefined), {
++    forwardedArgs: [],
++    noVerify: false,
++    allowHttp: false,
++  });
++});
++
++test("isUnknownVersion and UNKNOWN_VERSION are exported for the guard", () => {
++  assert.equal(UNKNOWN_VERSION, "0.0.0-unknown");
++  assert.equal(isUnknownVersion(UNKNOWN_VERSION), true);
++  assert.equal(isUnknownVersion("2.7.0"), false);
++  assert.equal(isUnknownVersion(""), false);
++});
++
++
+ test("HOME_ENV_VAR name is stable (documented in README)", () => {
+   assert.equal(HOME_ENV_VAR, "ITERATE_HARNESS_NPM_HOME");
+ });
+diff --git a/harness/iterate-harness/npm/test/ui.test.js b/harness/iterate-harness/npm/test/ui.test.js
+index adb82c7e..5200a5b9 100644
+--- a/harness/iterate-harness/npm/test/ui.test.js
++++ b/harness/iterate-harness/npm/test/ui.test.js
+@@ -58,37 +58,88 @@ test("CancelledError is exported and is an Error", () => {
+   assert.equal(err.message, "skipped");
+ });
+ 
+-test("interactiveSession reports a boolean", () => {
+-  assert.equal(typeof interactiveSession(), "boolean");
++test("interactiveSession reports true only when both stdin and stderr are TTYs", () => {
++  // Not a tautology: the function is `Boolean(stdin.isTTY && stderr.isTTY)`,
++  // so the interesting claim is the AND — one side being a TTY is not enough.
++  assert.equal(interactiveSession({ stdin: { isTTY: true }, stderr: { isTTY: false } }), false,
++    "stdin TTY alone must not count");
++  assert.equal(interactiveSession({ stdin: { isTTY: true }, stderr: { isTTY: true } }), true,
++    "both TTYs means interactive");
++  assert.equal(interactiveSession({ stdin: { isTTY: false }, stderr: { isTTY: true } }), false,
++    "one side gone stops being interactive");
++  assert.equal(interactiveSession({ stdin: {}, stderr: {} }), false,
++    "undefined isTTY counts as not a TTY");
+ });
+ 
+-test("askYesNo resolves the default on EOF (unattended stdin)", async () => {
++test("askYesNo resolves NO on EOF when the prompt states No as default", async () => {
++  // The prompt renders "[y/N]" for defaultNo=true, so an EOF'd stdin must
++  // answer No. Resolving `defaultNo` verbatim inverted this: it displayed
++  // "[y/N]" while auto-confirming an unattended download.
+   const input = new PassThrough();
+   const output = new PassThrough();
+   const promise = ui.askYesNo("Install?", true, { input, output, timeoutMs: 0 });
+   input.end();
++  assert.equal(await promise, false);
++});
++
++test("askYesNo resolves YES on EOF when the prompt states Yes as default", async () => {
++  const input = new PassThrough();
++  const output = new PassThrough();
++  const promise = ui.askYesNo("Continue?", false, { input, output, timeoutMs: 0 });
++  input.end();
+   assert.equal(await promise, true);
+ });
+ 
+-test("askYesNo resolves the default on timeout", async () => {
++test("askYesNo resolves the stated default on timeout", async () => {
+   const input = new PassThrough();
+   const output = new PassThrough();
+-  const value = await ui.askYesNo("Install?", false, {
++  const value = await ui.askYesNo("Install?", true, {
+     input,
+     output,
+     timeoutMs: 20,
+   });
+   assert.equal(value, false);
++  input.destroy();
++});
++
++test("askYesNo reports which default it fell back to", async () => {
++  const input = new PassThrough();
++  const chunks = [];
++  const output = new PassThrough({
++    write(chunk, _enc, cb) {
++      chunks.push(String(chunk));
++      cb();
++    },
++  });
++  await ui.askYesNo("Install?", true, { input, output, timeoutMs: 20 });
++  input.destroy();
++  assert.match(chunks.join(""), /no response after \ds; using default \(no\)/);
++});
++
++test("askYesNo resolves the stated default on an unrecognised reply", async () => {
++  const input = new PassThrough();
++  const output = new PassThrough();
++  const promise = ui.askYesNo("Install?", true, { input, output, timeoutMs: 1000 });
++  input.write("maybe\n");
++  assert.equal(await promise, false);
+ });
+ 
+ test("askYesNo parses an explicit yes", async () => {
+   const input = new PassThrough();
+   const output = new PassThrough();
+-  const promise = ui.askYesNo("Install?", false, { input, output, timeoutMs: 1000 });
++  const promise = ui.askYesNo("Install?", true, { input, output, timeoutMs: 1000 });
+   input.write("y\n");
+   assert.equal(await promise, true);
+ });
+ 
++test("askYesNo parses an explicit no", async () => {
++  const input = new PassThrough();
++  const output = new PassThrough();
++  const promise = ui.askYesNo("Install?", false, { input, output, timeoutMs: 1000 });
++  input.write("n\n");
++  assert.equal(await promise, false);
++});
++
+ test("DEFAULT_PROMPT_TIMEOUT_MS is a positive number", () => {
+   assert.equal(typeof ui.DEFAULT_PROMPT_TIMEOUT_MS, "number");
+   assert.ok(ui.DEFAULT_PROMPT_TIMEOUT_MS > 0);
+diff --git a/harness/iterate-harness/src/iterate_harness/__init__.py b/harness/iterate-harness/src/iterate_harness/__init__.py
+index 5dd03e44..f3f989e0 100644
+--- a/harness/iterate-harness/src/iterate_harness/__init__.py
++++ b/harness/iterate-harness/src/iterate_harness/__init__.py
+@@ -8,6 +8,6 @@ This package is the single source of truth for the project version. The
+ 
+ from __future__ import annotations
+ 
+-__version__ = "2.7.0"
++__version__ = "2.8.0"
+ 
+ __all__ = ["__version__"]
+diff --git a/harness/iterate-harness/src/iterate_harness/iterate/loop_gates.py b/harness/iterate-harness/src/iterate_harness/iterate/loop_gates.py
+index 11c7c6ba..6b99affe 100644
+--- a/harness/iterate-harness/src/iterate_harness/iterate/loop_gates.py
++++ b/harness/iterate-harness/src/iterate_harness/iterate/loop_gates.py
+@@ -14,12 +14,12 @@ assignment: the part with no end-to-end test is the wiring, not the decision.
+ from __future__ import annotations
+ 
+ from pathlib import Path
+-from typing import TYPE_CHECKING, Any
++from typing import TYPE_CHECKING
+ 
+ from .invariant_state import read_invariant_state
+ 
+ if TYPE_CHECKING:  # pragma: no cover
+-    from .types import Finding
++    from .types import ReviewFinding
+ 
+ GATE_KEYS = ("invariant_state", "evidence_complete")
+ 
+@@ -27,9 +27,9 @@ GATE_KEYS = ("invariant_state", "evidence_complete")
+ def measured_gates(
+     *,
+     evidence_validation: bool,
+-    findings: "list[Finding] | None",
++    findings: "list[ReviewFinding] | None",
+     cwd: Path | str,
+-    metadata: dict[str, Any] | None,
++    metadata: dict[str, object] | None,
+ ) -> dict[str, object]:
+     """Report the gates this round actually measured.
+ 
+diff --git a/harness/iterate-harness/src/iterate_harness/iterate/loop_policy.py b/harness/iterate-harness/src/iterate_harness/iterate/loop_policy.py
+index 6a46ac61..25efbb8e 100644
+--- a/harness/iterate-harness/src/iterate_harness/iterate/loop_policy.py
++++ b/harness/iterate-harness/src/iterate_harness/iterate/loop_policy.py
+@@ -30,6 +30,7 @@ from __future__ import annotations
+ 
+ import time
+ from dataclasses import dataclass, field
++from typing import cast
+ 
+ from ..api.usage import UsageSnapshot
+ from . import prompts
+@@ -37,6 +38,7 @@ from .convergence_policy import (
+     BREAKER_TRIPPED_LEVEL,
+     ConvergenceDecision,
+     ConvergencePolicyError,
++    InvariantState,
+     MIN_ROUND,
+     RoundState,
+     convergence_decision,
+@@ -93,7 +95,11 @@ class AggregateSnapshot:
+     # The convergence contract's invariant verdict, or None when nothing measured
+     # it. Never defaulted: see iterate/invariant_state.py for why absent beats
+     # "unmeasured" beats "pass" here.
+-    invariant_state: str | None = None
++    #
++    # Typed as the contract's literal union, not `str`: `_read_invariant_state`
++    # is the only producer and it rejects anything outside those four values, so
++    # a plain `str` here would promise more than the snapshot can actually hold.
++    invariant_state: InvariantState | None = None
+     # The convergence contract's evidence attestation, or None when the project declares no
+     # evidence gate. Absent means the kernel cannot be consulted at all: the contract has no
+     # "unknown" slot for this field, so inventing either bool would be a verdict nobody
+@@ -164,7 +170,7 @@ def _read_state_unsafe(tool_metadata: dict[str, object] | None) -> AggregateSnap
+     )
+ 
+ 
+-def _read_invariant_state(raw: object) -> str | None:
++def _read_invariant_state(raw: object) -> InvariantState | None:
+     """Accept only the four contract verdicts; anything else stays absent.
+ 
+     A producer that misspells the value must not silently upgrade "nobody looked"
+@@ -172,7 +178,12 @@ def _read_invariant_state(raw: object) -> str | None:
+     """
+     from .invariant_state import INVARIANT_STATE_VALUES
+ 
+-    return raw if isinstance(raw, str) and raw in INVARIANT_STATE_VALUES else None
++    if not isinstance(raw, str) or raw not in INVARIANT_STATE_VALUES:
++        return None
++    # The membership test above is the guard; the cast only says what that guard
++    # already proves at runtime. mypy cannot narrow `str` through `in` against a
++    # tuple of literals, so the type must be stated for it explicitly.
++    return cast(InvariantState, raw)
+ 
+ 
+ def _read_evidence_complete(raw: object) -> bool | None:
+@@ -469,6 +480,35 @@ class IterateLoopPolicy:
+             blockers.append("no evidence attestation was made")
+         return blockers
+ 
++    def _validated_snapshot(self, snapshot: AggregateSnapshot) -> tuple[InvariantState, bool] | None:
++        """``(invariant_state, evidence_complete)`` when both gates were measured.
++
++        The exact opposite of :meth:`kernel_blockers`: that method returns the
++        reasons for declining, this one returns the narrowed values that make
++        asking the kernel safe. The two answers must agree for the same snapshot,
++        and :meth:`kernel_blockers` is what the operator sees when they do not.
++
++        The round-cap check is part of the condition here too, so "the cap was
++        reached" and "every gate was measured" stay a single test -- the values
++        are only useful once a full round has been counted.
++
++        Each field is read into its own local before the ``None`` check. Mypy
++        narrows locals from that; narrowing a dataclass attribute across a
++        ``return None`` branch is what the two ``arg-type`` errors were about.
++        The tuple is therefore annotated without ``None``, which is how the
++        kernel arguments get their exact contract types with no cast and no
++        assert standing in for a guard that was already present.
++        """
++        if snapshot.rounds_seen < MIN_ROUND:
++            return None
++        invariant_state = snapshot.invariant_state
++        if invariant_state is None:
++            return None
++        evidence_complete = snapshot.evidence_complete
++        if evidence_complete is None:
++            return None
++        return invariant_state, evidence_complete
++
+     def _kernel_decision(self, snapshot: AggregateSnapshot) -> ConvergenceDecision | None:
+         """Ask the kernel what this round decides, or decline when a gate was never measured.
+ 
+@@ -476,18 +516,19 @@ class IterateLoopPolicy:
+         refuses a `None` at construction, so declining here is not what keeps a fabricated verdict
+         out; it is what keeps the *reason* the loop kept running honest and nameable.
+         """
+-        blockers = self.kernel_blockers(snapshot)
+-        if blockers:
++        validated = self._validated_snapshot(snapshot)
++        if validated is None:
+             return None
++        invariant_state, evidence_complete = validated
+         last_new = snapshot.findings_by_round[-1] if snapshot.findings_by_round else 0
+         try:
+             return convergence_decision(
+                 RoundState(
+                     round=snapshot.rounds_seen,
+                     max_rounds=self.max_review_rounds,
+-                    invariant_state=snapshot.invariant_state,
++                    invariant_state=invariant_state,
+                     open_findings=last_new,
+-                    evidence_complete=snapshot.evidence_complete,
++                    evidence_complete=evidence_complete,
+                     breaker_level=self._breaker_level,
+                 )
+             )
+diff --git a/harness/iterate-harness/src/iterate_harness/personalization/extractor.py b/harness/iterate-harness/src/iterate_harness/personalization/extractor.py
+index b213d92b..b17df2aa 100644
+--- a/harness/iterate-harness/src/iterate_harness/personalization/extractor.py
++++ b/harness/iterate-harness/src/iterate_harness/personalization/extractor.py
+@@ -30,8 +30,11 @@ _FACT_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
+     ("env_var", "Environment variable", re.compile(
+         r"export\s+([A-Z][A-Z0-9_]+)(?:=\S+)?"
+     )),
++    # Repository path after the host. The trailing segment deliberately allows
++    # no dots: otherwise a greedy match swallows the ``.git`` suffix and the
++    # captured value becomes ``owner/repo.git``.
+     ("git_remote", "Git remote", re.compile(
+-        r"(?:github|gitlab)\.com[:/](\S+?)(?:\.git)?"
++        r"(?:github|gitlab)\.com[:/]((?:[\w-]+(?:\.[\w-]+)*/)+[\w-]+)"
+     )),
+     ("ray_cluster", "Ray cluster", re.compile(
+         r"ray\s+(?:start|init|submit)\b.*?(--address\s+\S+|\d+\.\d+\.\d+\.\d+:\d+)",
+@@ -79,23 +82,51 @@ def extract_local_rules(session_messages: list[dict[str, object]]) -> list[dict[
+     """Extract environment facts from a list of session messages.
+ 
+     Args:
+-        session_messages: List of message dicts with 'role' and 'content' keys.
++        session_messages: Message history. Either dicts with a ``content`` key
++            (the on-the-wire shape) or objects exposing ``.content`` as a list
++            of blocks (``ConversationMessage``). ``content`` may itself be a
++            plain string or a list of block dicts carrying a ``text`` key.
+ 
+     Returns:
+         List of fact dicts with key, type, label, value, confidence.
+     """
++    return extract_facts_from_text(_collect_message_text(session_messages))
++
++
++def _collect_message_text(session_messages: object) -> str:
++    """Flatten a conversation into one text blob, tolerating malformed entries.
++
++    A persisted history is read back from disk, so a truncated or hand-edited
++    record must not take down the extractor: non-dict entries, non-block items,
++    and blocks whose text field is not a string are skipped instead of raising.
++
++    Accepts both the wire shape (``{"content": ...}`` dicts) and in-memory
++    ``ConversationMessage`` objects, and reads either a block's ``text`` or
++    ``content`` field, so the session hook and the public helper share one
++    collector instead of drifting apart.
++    """
++    if not isinstance(session_messages, list):
++        return ""
++
+     all_text: list[str] = []
+     for msg in session_messages:
+-        content = msg.get("content", "")
++        if isinstance(msg, dict):
++            content = msg.get("content", "")
++        else:
++            content = getattr(msg, "content", None)
++
+         if isinstance(content, str):
+             all_text.append(content)
+         elif isinstance(content, list):
+             for block in content:
+-                if isinstance(block, dict) and "text" in block:
+-                    all_text.append(block["text"])
+-
+-    combined = "\n".join(all_text)
+-    return extract_facts_from_text(combined)
++                if isinstance(block, dict):
++                    text = block.get("text") or block.get("content")
++                else:
++                    text = getattr(block, "text", None) or getattr(block, "content", None)
++                if isinstance(text, str) and text:
++                    all_text.append(text)
++
++    return "\n".join(all_text)
+ 
+ 
+ def facts_to_rules_markdown(facts: list[dict[str, object]]) -> str:
+diff --git a/harness/iterate-harness/src/iterate_harness/personalization/session_hook.py b/harness/iterate-harness/src/iterate_harness/personalization/session_hook.py
+index e34e49c4..15817ed9 100644
+--- a/harness/iterate-harness/src/iterate_harness/personalization/session_hook.py
++++ b/harness/iterate-harness/src/iterate_harness/personalization/session_hook.py
+@@ -6,6 +6,7 @@ import logging
+ 
+ from iterate_harness.engine.messages import ConversationMessage
+ from iterate_harness.personalization.extractor import (
++    _collect_message_text,
+     extract_facts_from_text,
+     facts_to_rules_markdown,
+ )
+@@ -30,18 +31,10 @@ def update_rules_from_session(messages: list[ConversationMessage]) -> int:
+     Returns:
+         Number of new facts found and persisted.
+     """
+-    # Collect all text from messages
+-    all_text = []
+-    for msg in messages:
+-        for block in msg.content:
+-            text = getattr(block, "text", None) or getattr(block, "content", None) or ""
+-            if isinstance(text, str) and text:
+-                all_text.append(text)
+-
+-    if not all_text:
++    combined = _collect_message_text(messages)
++    if not combined:
+         return 0
+ 
+-    combined = "\n".join(all_text)
+     new_facts = extract_facts_from_text(combined)
+     if not new_facts:
+         return 0
+diff --git a/harness/iterate-harness/src/iterate_harness/tasks/manager.py b/harness/iterate-harness/src/iterate_harness/tasks/manager.py
+index 43711f98..51af8774 100644
+--- a/harness/iterate-harness/src/iterate_harness/tasks/manager.py
++++ b/harness/iterate-harness/src/iterate_harness/tasks/manager.py
+@@ -44,10 +44,17 @@ _MAX_TERMINAL_RECORDS = 200
+ #: seconds after the real agent has finished on slow volumes / under load.
+ _DELIVERY_MONITOR_SECONDS = 15.0
+ 
+-#: Grace before snapshotting the output baseline, so output that merely lagged
+-#: the write through the async copier (``_copy_output``) is not mistaken for a
+-#: reply to the payload.
+-_DELIVERY_BASELINE_SETTLE = 0.1
++#: How long ``_output_baseline`` polls for the async copier (``_copy_output``)
++#: to drain the pipe before a delivery baseline is snapshotted. A child that
++#: printed right before the write may still have a chunk in flight; sampling
++#: instantly would let that pre-write output look like a reply to the payload,
++#: suppressing a restart that was actually needed.
++_OUTPUT_BASELINE_SETTLE = 0.05
++
++#: Poll interval for ``_output_baseline``. A child that printed one chunk and
++#: went quiet is observed as stable after a single interval, so the write path
++#: only pays the full settle when output is genuinely continuous.
++_OUTPUT_BASELINE_POLL = 0.005
+ 
+ 
+ def _terminate_signal() -> signal.Signals:
+@@ -419,10 +426,26 @@ class BackgroundTaskManager:
+            process exits without producing *any new output* — which is the
+            signal that it never read the payload. If new output appeared, the
+            payload was consumed and nothing is re-sent.
++
++        Both layers key off an output-size baseline captured **before** the
++        write. Measuring it afterwards (behind a settle delay) folds a fast
++        worker's reply into "pre-existing output", so a healthy one-shot agent
++        looked like a swallowed delivery and was restarted mid-flight —
++        duplicating finished work and flipping a terminal record back to
++        "running".
+         """
+         stdin = process.stdin
+         if stdin is None:
+             raise ValueError(f"Task {task.id} does not accept input") from None
++        # Baseline BEFORE the write: the monitor's only signal that the child
++        # consumed the payload is output that appeared *after* it. Sampling the
++        # baseline afterwards (behind a settle delay) folds a fast worker's
++        # reply into "pre-existing output", so a healthy one-shot agent looked
++        # like a swallowed delivery and was restarted mid-flight — duplicating
++        # already-finished work and flipping the record back to "running".
++        # The idle wait keeps the snapshot honest about output that merely
++        # lagged the async copier (``_copy_output``).
++        baseline = await self._output_baseline(task)
+         stdin.write(payload)
+         try:
+             await stdin.drain()
+@@ -450,13 +473,34 @@ class BackgroundTaskManager:
+             await self._redeliver_after_restart(task, payload)
+             return
+         # Layer 2: background monitor for the slower exit.
+-        await self._arm_delivery_monitor(task, process, payload)
++        await self._arm_delivery_monitor(task, process, payload, baseline)
++
++    async def _output_baseline(self, task: TaskRecord) -> int:
++        """Snapshot the output size while the async copier has gone quiet.
++
++        ``_copy_output`` copies in 4 KiB chunks, so a child that flushed right
++        before the write may still have bytes in flight. Waiting for one quiet
++        poll interval makes the snapshot reflect what the child had already
++        emitted, instead of crediting that lagging output as a reply to the
++        payload. Bounded, so a chatty child can never wedge the write path.
++        """
++        deadline = asyncio.get_running_loop().time() + _OUTPUT_BASELINE_SETTLE
++        previous = -1
++        while True:
++            size = _safe_output_size(task.output_file)
++            if size == previous:
++                return size
++            previous = size
++            if asyncio.get_running_loop().time() >= deadline:
++                return size
++            await asyncio.sleep(_OUTPUT_BASELINE_POLL)
+ 
+     async def _arm_delivery_monitor(
+         self,
+         task: TaskRecord,
+         process: asyncio.subprocess.Process,
+         payload: bytes,
++        baseline: int,
+     ) -> None:
+         """Replace any prior delivery monitor for ``task`` with a fresh one.
+ 
+@@ -467,7 +511,7 @@ class BackgroundTaskManager:
+         if monitor is not None and not monitor.done():
+             monitor.cancel()
+         new_monitor = asyncio.create_task(
+-            self._delivery_monitor(task, process, payload),
++            self._delivery_monitor(task, process, payload, baseline),
+             name=f"delivery-monitor-{task.id}",
+         )
+         self._delivery_monitors[task.id] = new_monitor
+@@ -482,6 +526,7 @@ class BackgroundTaskManager:
+         task: TaskRecord,
+         process: asyncio.subprocess.Process,
+         payload: bytes,
++        baseline: int,
+     ) -> None:
+         """Resume an agent task whose exit swallowed a just-written payload.
+ 
+@@ -492,12 +537,12 @@ class BackgroundTaskManager:
+         re-delivered — a follow-up message can never evaporate. New output
+         means the payload WAS read (e.g. a one-shot worker that acts and
+         exits), and nothing is re-sent.
++
++        ``baseline`` is the output size captured before the write, so a fast
++        worker's reply counts as new output instead of being folded into
++        "pre-existing output" and misread as a swallowed delivery.
+         """
+         try:
+-            # Let the async output copier settle so output that merely lagged
+-            # the write does not count as a "reply" to the payload.
+-            await asyncio.sleep(_DELIVERY_BASELINE_SETTLE)
+-            base_size = _safe_output_size(task.output_file)
+             try:
+                 await asyncio.wait_for(
+                     asyncio.shield(process.wait()), timeout=_DELIVERY_MONITOR_SECONDS
+@@ -506,12 +551,12 @@ class BackgroundTaskManager:
+                 # Still genuinely running: the payload is in the pipe and the
+                 # agent will read it on its next turn.
+                 return
+-            if _safe_output_size(task.output_file) > base_size:
++            if _safe_output_size(task.output_file) > baseline:
+                 # The process produced output after the write — it consumed
+                 # the payload and then exited on its own. Nothing to resume.
+                 return
+-            if base_size == 0:
+-                # No output existed at write time, so this is NOT the
++            if baseline == 0:
++                # No output existed before the write, so this is NOT the
+                 # dying-agent case (which has already printed its last line).
+                 # A silent worker that runs and then exits must never be
+                 # resurrected: that would restart completed work forever.
+diff --git a/harness/iterate-harness/tests/test_personalization/test_extractor.py b/harness/iterate-harness/tests/test_personalization/test_extractor.py
+index 8cfbdc47..f1f0eda4 100644
+--- a/harness/iterate-harness/tests/test_personalization/test_extractor.py
++++ b/harness/iterate-harness/tests/test_personalization/test_extractor.py
+@@ -1,6 +1,10 @@
+ """Tests for personalization fact extraction."""
+ 
+-from iterate_harness.personalization.extractor import extract_facts_from_text, facts_to_rules_markdown
++from iterate_harness.personalization.extractor import (
++    extract_facts_from_text,
++    extract_local_rules,
++    facts_to_rules_markdown,
++)
+ from iterate_harness.personalization.rules import merge_facts
+ 
+ 
+@@ -56,6 +60,97 @@ class TestExtractFacts:
+         ssh_facts = [f for f in facts if f["type"] == "ssh_host"]
+         assert len(ssh_facts) == 1
+ 
++    def test_extracts_git_remote_with_git_suffix(self):
++        text = "push to github.com:jingzhao-l/iterate-harness.git"
++        facts = extract_facts_from_text(text)
++        remote_facts = [f for f in facts if f["type"] == "git_remote"]
++        assert [f["value"] for f in remote_facts] == ["jingzhao-l/iterate-harness"]
++
++    def test_extracts_git_remote_without_git_suffix(self):
++        text = "the repo is github.com/foo/bar"
++        facts = extract_facts_from_text(text)
++        remote_facts = [f for f in facts if f["type"] == "git_remote"]
++        assert [f["value"] for f in remote_facts] == ["foo/bar"]
++
++    def test_extracts_gitlab_remote(self):
++        text = "clone gitlab.com/team/api.git please"
++        facts = extract_facts_from_text(text)
++        remote_facts = [f for f in facts if f["type"] == "git_remote"]
++        assert [f["value"] for f in remote_facts] == ["team/api"]
++
++    def test_git_remote_keeps_dots_in_owner_not_in_name(self):
++        # The trailing segment allows no dots, so ``.git`` is never swallowed;
++        # dotted owner names still match.
++        text = "github.com:owner.name/repo.git"
++        facts = extract_facts_from_text(text)
++        remote_facts = [f for f in facts if f["type"] == "git_remote"]
++        assert [f["value"] for f in remote_facts] == ["owner.name/repo"]
++
++    def test_git_remote_never_returns_a_single_character(self):
++        """Regression test: the old lazy ``(\\S+?)(?:\\.git)?`` captured exactly one
++        character (``'j'``), which the ``len < 3`` filter then discarded — so git
++        remotes were never recorded at all.
++        """
++        for text in (
++            "github.com:jingzhao-l/iterate-harness.git",
++            "gitlab.com/team/api.git",
++            "github.com/foo/bar",
++        ):
++            facts = extract_facts_from_text(text)
++            remote_facts = [f for f in facts if f["type"] == "git_remote"]
++            assert remote_facts, f"no git_remote extracted from {text!r}"
++            for fact in remote_facts:
++                assert len(str(fact["value"])) >= 3
++                assert "." not in str(fact["value"]).rsplit("/", 1)[-1]
++
++
++class TestExtractLocalRules:
++    """``extract_local_rules`` is public API; malformed history must not raise."""
++
++    def test_extracts_from_dict_messages(self):
++        messages = [
++            {"role": "user", "content": "ssh user@10.1.2.3"},
++            {
++                "role": "assistant",
++                "content": [
++                    {"type": "text", "text": "conda activate base"},
++                    {"type": "tool_use", "name": "bash"},
++                ],
++            },
++        ]
++        facts = extract_local_rules(messages)
++        types = {f["type"] for f in facts}
++        assert "ssh_host" in types
++        assert "conda_env" in types
++
++    def test_tolerates_malformed_entries(self):
++        # A truncated or hand-edited history must not take down the extractor:
++        # non-dict entries are skipped, and the last well-formed message still
++        # yields its facts.
++        messages = [
++            [],
++            "not a dict",
++            None,
++            {"role": "user", "content": 12345},
++            {"role": "user", "content": [{"type": "text", "text": None}]},
++            {"role": "user"},
++            {"role": "user", "content": "conda activate dev312"},
++        ]
++        facts = extract_local_rules(messages)
++        assert [f["value"] for f in facts if f["type"] == "conda_env"] == ["dev312"]
++
++    def test_accepts_message_objects(self):
++        # The session hook passes ConversationMessage objects, not dicts.
++        from iterate_harness.engine.messages import ConversationMessage
++
++        messages = [ConversationMessage.from_user_text("conda activate prod-v2")]
++        facts = extract_local_rules(messages)  # type: ignore[arg-type]
++        assert [f["value"] for f in facts if f["type"] == "conda_env"] == ["prod-v2"]
++
++    def test_non_list_input_returns_no_facts(self):
++        assert extract_local_rules(None) == []  # type: ignore[arg-type]
++        assert extract_local_rules("") == []  # type: ignore[arg-type]
++
+ 
+ class TestMergeFacts:
+     def test_merge_new_facts(self):
+diff --git a/harness/iterate-harness/tests/test_tasks/test_manager.py b/harness/iterate-harness/tests/test_tasks/test_manager.py
+index 040e4e9d..5a738c96 100644
+--- a/harness/iterate-harness/tests/test_tasks/test_manager.py
++++ b/harness/iterate-harness/tests/test_tasks/test_manager.py
+@@ -96,6 +96,114 @@ async def test_write_to_stopped_agent_task_restarts_process(tmp_path: Path, monk
+     assert updated.metadata["status_note"] == "Task restarted; prior interactive context was not preserved."
+ 
+ 
++async def _await_monitor_settled(manager: BackgroundTaskManager, task_id: str, timeout: float = 10.0) -> None:
++    """Wait until the task's delivery monitor has finished (or is gone).
++
++    The monitor pops itself out of ``_delivery_monitors`` on completion, so the
++    dict is the authoritative "still watching" signal. Polling it keeps these
++    race tests honest about *behaviour* rather than about a guessed sleep.
++    """
++    deadline = asyncio.get_running_loop().time() + timeout
++    while asyncio.get_running_loop().time() < deadline:
++        monitor = manager._delivery_monitors.get(task_id)  # type: ignore[attr-defined]
++        if monitor is None or monitor.done():
++            return
++        await asyncio.sleep(0.02)
++    pytest.fail(f"delivery monitor for {task_id} did not settle within {timeout}s")
++
++
++async def _await_restarted_and_terminal(
++    manager: BackgroundTaskManager, task_id: str, timeout: float = 15.0
++) -> TaskRecord:
++    """Wait until a task has been restarted at least once and gone terminal."""
++    deadline = asyncio.get_running_loop().time() + timeout
++    while asyncio.get_running_loop().time() < deadline:
++        record = manager.get_task(task_id)
++        if record is not None and int(record.metadata.get("restart_count", "0")) >= 1:
++            if record.status in {"completed", "failed", "killed"}:
++                return record
++        await asyncio.sleep(0.02)
++    record = manager.get_task(task_id)
++    assert record is not None
++    pytest.fail(f"task {task_id} was not restarted to a terminal state; status={record.status}")
++
++
++@pytest.mark.asyncio
++async def test_delivery_monitor_does_not_restart_a_completed_one_shot_agent(
++    tmp_path: Path, monkeypatch
++):
++    """Regression test for the delivery baseline race.
++
++    A worker that reads its prompt, echoes it, and exits is a *healthy*
++    one-shot run. The monitor's only evidence that the payload was consumed is
++    output appearing after the write, so the baseline must be snapshotted
++    **before** the write: sampling it behind a settle delay folded the reply
++    into "pre-existing output", made the run look like a swallowed delivery,
++    and restarted already-finished work (flipping a terminal record back to
++    "running" and doubling the output).
++    """
++    monkeypatch.setenv("ITERATE_DATA_DIR", str(tmp_path / "data"))
++    manager = BackgroundTaskManager()
++
++    task = await manager.create_agent_task(
++        prompt="ready",
++        description="quick worker run",
++        cwd=tmp_path,
++        command='python -u -c "import sys; print(sys.stdin.readline().strip())"',
++    )
++
++    await asyncio.wait_for(manager._waiters[task.id], timeout=30)  # type: ignore[attr-defined]
++    await _await_monitor_settled(manager, task.id)
++
++    updated = manager.get_task(task.id)
++    assert updated is not None
++    assert updated.status == "completed"
++    assert updated.return_code == 0
++    # No restart: the work ran exactly once.
++    assert int(updated.metadata.get("restart_count", "0")) == 0
++    output = manager.read_task_output(task.id)
++    assert output.count("ready") == 1
++    assert "restarted" not in output
++    await manager.aclose()
++
++
++@pytest.mark.asyncio
++async def test_delivery_monitor_still_redelivers_a_swallowed_payload(
++    tmp_path: Path, monkeypatch
++):
++    """Guard the other direction of the delivery contract.
++
++    A worker that has already printed its last turn and then exits *without*
++    reading a follow-up has genuinely swallowed the payload. The baseline
++    change must not disable the restart: the record is brought back and the
++    message re-delivered, so a follow-up can never silently evaporate.
++    """
++    monkeypatch.setenv("ITERATE_DATA_DIR", str(tmp_path / "data"))
++    manager = BackgroundTaskManager()
++
++    task = await manager.create_agent_task(
++        prompt="first turn",
++        description="dying worker",
++        cwd=tmp_path,
++        # Prints its last turn, then exits without ever reading stdin.
++        command='python -u -c "import time; print(\'turn1\'); time.sleep(1.5)"',
++    )
++    # Let the first turn flush so the write below has a non-empty baseline.
++    await asyncio.sleep(0.4)
++
++    # Lands in the pipe while the worker is still alive, then discarded when
++    # the worker exits without reading it: a genuine swallowed delivery.
++    await manager.write_to_task(task.id, "follow-up")
++    updated = await _await_restarted_and_terminal(manager, task.id)
++
++    assert updated.status == "completed"
++    assert int(updated.metadata.get("restart_count", "0")) == 1
++    output = manager.read_task_output(task.id)
++    assert output.count("turn1") >= 2
++    assert "restarted" in output
++    await manager.aclose()
++
++
+ @pytest.mark.asyncio
+ async def test_create_shell_task_stores_env_on_record(tmp_path: Path, monkeypatch):
+     """``env=`` passed to ``create_shell_task`` must land on the
