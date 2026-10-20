@@ -395,6 +395,27 @@ iterate scan --json  # stdout 输出单个 JSON 文档
 
 用 `iterate onboard`（交互式）或 `iterate config set <key> <value>` 落地这些建议。
 
+### iterate export / import（可移植的项目状态）
+
+`iterate export` 把项目的 iterate 状态——`iterate.config.yaml` 与 `ITERATE.md`——快照为一个带格式版本的 JSON bundle。项目本身不会被修改，只写出 bundle 文件。适合备份、把调好的配置迁移到另一台机器、随 review 附带精确状态，或在另一个仓库复用同一套 profile。
+
+```bash
+iterate export                       # 在项目根目录写出 iterate-bundle-<UTC>.json
+iterate export --out state.json      # 指定路径（默认拒绝覆盖，需 --force）
+iterate export --json > state.json   # 把 bundle 打到 stdout，不写文件
+```
+
+`iterate import` 会**先**校验 bundle（配置还要通过 JSON schema），再生成带时间戳的备份（`.import-<UTC>-<salt>`），最后才写回 `iterate.config.yaml` / `ITERATE.md`：
+
+```bash
+iterate import state.json --dry-run   # 预览新增 / 变更 / 删除的键
+iterate import state.json --yes       # 直接应用（stdin 非终端时必需）
+cat state.json | iterate import - --yes
+iterate import state.json --yes --reset-fingerprints  # bundle 来自另一个仓库
+```
+
+`--reset-fingerprints` 会丢弃导出项目记录的 manifest 指纹，避免导入后立刻把原项目的 manifest 报成漂移；`iterate refresh` 会为当前仓库重新采集。非法或外来 bundle 退出码为 `1`，项目保持原样；带 `--json` 时 stdout 仍是恰好一个 JSON 文档。用法错误（例如同时给 `--json` 与 `--out`）退出码为 `2`。
+
 ### iterate fingerprint（校验 manifest 指纹 / 漂移）
 
 `iterate fingerprint`（默认动作 `verify`）将 onboarding / refresh 时记录的 manifest SHA-256 指纹与当前项目根目录比对，检测技术栈清单的新增 / 移除 / 变更——属于**非阻塞**的信息化健康检查。无漂移（或漂移检查不可用）时退出码 0，检测到漂移时退出码 1，适合接入 CI：

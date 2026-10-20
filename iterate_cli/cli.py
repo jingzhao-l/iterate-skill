@@ -7,6 +7,8 @@ Provides subcommands for onboarding and personalization management:
     iterate reonboard   — Full re-onboarding (backup old files, run wizard)
     iterate status      — Show onboarding status and drift detection
     iterate scan        — Read-only export of the project tech-stack scan
+    iterate export      — Snapshot config + ITERATE.md as a portable JSON bundle
+    iterate import      — Restore a bundle (backups written first)
     iterate show        — Read-only resolved config + personalization detail
     iterate doctor      — Project health diagnostics (--json / --json-out / --fix)
     iterate guard       — Defensive-programming pre/post-edit checks (v3.0)
@@ -52,6 +54,7 @@ try:
     from iterate_cli import __version__
     from iterate_cli.fingerprint import drift_summary
     from iterate_cli.generator import (
+        atomic_write,
         has_valid_user_owned_markers,
         write_onboarding_outputs,
     )
@@ -407,6 +410,26 @@ def _dispatch_command(
         if show_banner:
             tui.banner()
         return _cmd_scan(project_root, json_output=getattr(args, "json", False))
+    if args.command == "export":
+        if show_banner:
+            tui.banner()
+        return _cmd_export(
+            project_root,
+            out=getattr(args, "out", None),
+            force=getattr(args, "force", False),
+            json_output=getattr(args, "json", False),
+        )
+    if args.command == "import":
+        if show_banner:
+            tui.banner()
+        return _cmd_import(
+            project_root,
+            bundle_path=getattr(args, "bundle", ""),
+            dry_run=getattr(args, "dry_run", False),
+            yes=getattr(args, "yes", False),
+            reset_fingerprints=getattr(args, "reset_fingerprints", False),
+            json_output=getattr(args, "json", False),
+        )
     if args.command == "show":
         if show_banner:
             tui.banner()
@@ -521,8 +544,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         default=False,
-        help="Emit structured JSON instead of TUI output for status, scan, show, "
-        "doctor, refresh, config, guard, invariant, fingerprint and update "
+        help="Emit structured JSON instead of TUI output for status, scan, "
+        "export, import, show, doctor, refresh, config, guard, invariant, "
+        "fingerprint and update "
         "(and for --version). Interactive commands (onboard/personalize/"
         "reonboard) reject it; on every other path stdout holds exactly one "
         "JSON document, including on failure.",
@@ -656,6 +680,81 @@ def _build_parser() -> argparse.ArgumentParser:
         "and always exits 0, so `iterate scan --json` is safe to call from CI.",
     )
     scan_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON report instead of TUI output.",
+    )
+    export_parser = subparsers.add_parser(
+        "export",
+        parents=[parent],
+        help="Snapshot config + ITERATE.md as a portable JSON bundle.",
+        description="Write the project's iterate state (iterate.config.yaml plus "
+        "ITERATE.md) as one portable JSON bundle. Use it to back the state up, "
+        "move it to another machine, attach it to a review, or seed the same "
+        "profile in another repository. Read-only with respect to the project: "
+        "only the bundle file is written. `--json` prints the bundle on stdout "
+        "instead of writing a file, so `iterate export --json > state.json` "
+        "works.",
+    )
+    export_parser.add_argument(
+        "--out",
+        metavar="PATH",
+        default=argparse.SUPPRESS,
+        help="Write the bundle to PATH (default: iterate-bundle-<UTC>.json in "
+        "the project root). '-' writes it to stdout, like --json.",
+    )
+    export_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Overwrite PATH if it already exists (refused by default).",
+    )
+    export_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Print the bundle to stdout and write nothing.",
+    )
+    import_parser = subparsers.add_parser(
+        "import",
+        parents=[parent],
+        help="Restore config + ITERATE.md from a bundle (backups first).",
+        description="Validate a bundle written by `iterate export` and apply it: "
+        "iterate.config.yaml and (when the bundle carries one) ITERATE.md are "
+        "written after timestamped backups are taken. The bundle's config is "
+        "checked against the schema before anything is touched, so an invalid "
+        "or foreign file leaves the project unchanged. Use --dry-run to preview, "
+        "--yes for non-interactive/CI use, and --reset-fingerprints when the "
+        "bundle comes from a different repository.",
+    )
+    import_parser.add_argument(
+        "bundle",
+        metavar="FILE",
+        help="Bundle JSON file to import ('-' reads it from stdin).",
+    )
+    import_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Show what would change without writing anything.",
+    )
+    import_parser.add_argument(
+        "--yes",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Apply without the confirmation prompt (required when stdin is "
+        "not a terminal).",
+    )
+    import_parser.add_argument(
+        "--reset-fingerprints",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Drop the bundle's recorded manifest fingerprints before writing, "
+        "so a profile exported from another repository does not report that "
+        "project's manifests as drift. `iterate refresh` re-records them.",
+    )
+    import_parser.add_argument(
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -1403,6 +1502,290 @@ def _cmd_scan(project_root: Path, json_output: bool = False) -> int:
     return render_scan(collect_scan_data(project_root), json_output=json_output)
 
 
+def _bundle_failure(message: str, json_output: bool, code: int = 1) -> int:
+    """Report an export/import failure honouring the ``--json`` contract.
+
+    Under ``--json`` stdout must hold exactly one JSON document, so the error
+    goes there and the human line goes to stderr (``tui.error`` is stderr-only).
+    """
+    if json_output:
+        print(json.dumps({"error": message}, ensure_ascii=False))
+    tui.error(message)
+    return code
+
+
+def _cmd_export(
+    project_root: Path,
+    *,
+    out: str | None = None,
+    force: bool = False,
+    json_output: bool = False,
+) -> int:
+    """Handle ``iterate export`` — snapshot the project state as a bundle.
+
+    ``--json`` (or ``--out -``) prints the bundle and writes nothing; otherwise
+    the bundle is written to ``--out`` or to a timestamped file in the project
+    root. The project itself is never modified, so this is safe on a dirty
+    worktree and safe to run in CI.
+    """
+    from iterate_cli.portable import (
+        BundleError,
+        build_bundle,
+        bundle_to_json,
+        default_bundle_name,
+        summarize_bundle,
+    )
+
+    if json_output and out not in (None, "-"):
+        return _bundle_failure(
+            "--json already prints the bundle on stdout; drop --out (or use "
+            "--out alone to write a file).",
+            json_output,
+            code=2,
+        )
+
+    try:
+        bundle = build_bundle(project_root)
+    except BundleError as exc:
+        return _bundle_failure(str(exc), json_output)
+
+    text = bundle_to_json(bundle)
+    if json_output or out == "-":
+        # The bundle *is* the output here: write it raw so the caller can
+        # redirect/pipeline it. json.dumps output is ASCII-safe JSON (UTF-8 by
+        # contract), so no TUI/markup layer is wanted or applied.
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        return 0
+
+    target = Path(out) if out else project_root / default_bundle_name()
+    if target.exists() and not force:
+        return _bundle_failure(
+            f"{target} already exists; pass --force to overwrite it or choose "
+            "another --out path.",
+            json_output,
+        )
+    if not target.parent.is_dir():
+        return _bundle_failure(
+            f"parent directory does not exist: {target.parent}",
+            json_output,
+        )
+    try:
+        atomic_write(target, text)
+    except OSError as exc:
+        return _bundle_failure(f"cannot write {target}: {exc}", json_output)
+
+    summary = summarize_bundle(bundle)
+    if json_output:  # pragma: no cover - excluded by the usage check above
+        print(json.dumps({"written": str(target)}, ensure_ascii=False))
+        return 0
+
+    tui.empty_line()
+    tui.success(f"Bundle written: {target}")
+    tui.key_value("Project", str(summary["project"] or ""))
+    tui.key_value(
+        "Config",
+        f"{len(summary['config_keys'])} key(s) in "
+        f"{len(summary['config_sections'])} section(s)",
+    )
+    tui.key_value(
+        "ITERATE.md",
+        f"included ({summary['iterate_md_lines']} line(s))"
+        if summary["has_iterate_md"]
+        else "not present — bundle carries config only",
+    )
+    tui.hint(f"Restore with `iterate import {target.name}`", indent=2)
+    tui.hint(
+        "Importing into a different repository? add --reset-fingerprints so the "
+        "exporting project's manifests are not reported as drift.",
+        indent=2,
+    )
+    return 0
+
+
+def _render_import_changes(changes: dict[str, Any], limit: int = 30) -> None:
+    """Render the config delta as aligned key/value rows.
+
+    ``tui.key_value`` wraps long values with the continuation aligned to the
+    value column; a hand-rolled comma list wrapped at the console edge instead
+    and dumped its continuation at column 0, which read as a different row.
+    """
+    config = changes.get("config") or {}
+    rows = (
+        ("Changed", config.get("changed") or []),
+        ("Added", config.get("added") or []),
+        ("Removed", config.get("removed") or []),
+    )
+    printed = False
+    for label, keys in rows:
+        keys = [str(key) for key in keys]
+        if not keys:
+            continue
+        printed = True
+        shown = keys[:limit]
+        suffix = f", … (+{len(keys) - limit} more)" if len(keys) > limit else ""
+        tui.key_value(f"{label} ({len(keys)})", ", ".join(shown) + suffix)
+    if not printed:
+        tui.key_value("Config", "unchanged")
+
+
+def _cmd_import(
+    project_root: Path,
+    *,
+    bundle_path: str,
+    dry_run: bool = False,
+    yes: bool = False,
+    reset_fingerprints: bool = False,
+    json_output: bool = False,
+) -> int:
+    """Handle ``iterate import`` — validate a bundle, then apply it.
+
+    Nothing is written until the bundle has passed structural and schema
+    validation, and (unless ``--yes``) the user has confirmed the delta. Every
+    existing file is backed up before it is replaced.
+    """
+    from iterate_cli.portable import (
+        BundleError,
+        apply_bundle,
+        diff_against_project,
+        parse_bundle_text,
+        summarize_bundle,
+        validate_bundle,
+    )
+
+    if not bundle_path:
+        return _bundle_failure(
+            "no bundle file given; usage: iterate import FILE", json_output, code=2
+        )
+
+    if bundle_path == "-":
+        source = "<stdin>"
+        try:
+            text = sys.stdin.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            return _bundle_failure(f"cannot read {source}: {exc}", json_output)
+    else:
+        source = bundle_path
+        path = Path(bundle_path)
+        if not path.is_file():
+            return _bundle_failure(
+                f"bundle not found: {path} (pass '-' to read from stdin)",
+                json_output,
+            )
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return _bundle_failure(f"cannot read {path}: {exc}", json_output)
+
+    try:
+        bundle = parse_bundle_text(text, source=source)
+    except BundleError as exc:
+        return _bundle_failure(str(exc), json_output)
+
+    # parse_bundle_text() returns the document; warnings (unknown keys, schema
+    # unavailable) are advisory and recomputed here so they can be reported.
+    warnings = validate_bundle(bundle).warnings
+    summary = summarize_bundle(bundle)
+    changes = diff_against_project(
+        project_root, bundle, reset_fingerprints=reset_fingerprints
+    )
+
+    if dry_run:
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "dry_run": True,
+                        "project": str(project_root),
+                        "source": source,
+                        "bundle": summary,
+                        "changes": changes,
+                        "would_write": changes["would_write"],
+                        "fingerprints_reset": bool(reset_fingerprints),
+                        "warnings": warnings,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        tui.intro("Iterate Skill — Import preview")
+        tui.key_value("Bundle", source)
+        tui.key_value("Exported by", f"iterate {summary['skill_version']} ({summary['exported_at']})")
+        tui.key_value("Project in bundle", str(summary["project"] or "—"))
+        tui.key_value("Will write", ", ".join(changes["would_write"]))
+        tui.section("Config changes / 配置变更")
+        _render_import_changes(changes)
+        tui.key_value("ITERATE.md", str(changes["iterate_md"]))
+        if reset_fingerprints:
+            tui.hint("Recorded fingerprints will be dropped (--reset-fingerprints).")
+        for warning in warnings:
+            tui.warning(warning)
+        tui.hint("Dry run: nothing was written. Re-run without --dry-run to apply.")
+        return 0
+
+    if not yes:
+        if not _stdin_is_interactive():
+            return _bundle_failure(
+                "Non-interactive stdin detected; pass --yes to apply this "
+                "import (or --dry-run to preview it).",
+                json_output,
+            )
+        if json_output:
+            return _bundle_failure(
+                "--json implies a write, so it requires --yes (like `iterate "
+                "update --json`).",
+                json_output,
+                code=2,
+            )
+        if not _confirm(
+            f"Apply this bundle to {project_root}? Existing files are backed up.",
+            default=False,
+        ):
+            if json_output:  # pragma: no cover - json needs --yes above
+                print(json.dumps({"ok": False, "error": "cancelled"}, ensure_ascii=False))
+            tui.info("已取消 / Cancelled; nothing was written.")
+            return 1
+
+    try:
+        report = apply_bundle(
+            project_root, bundle, reset_fingerprints=reset_fingerprints
+        )
+    except BundleError as exc:
+        return _bundle_failure(str(exc), json_output)
+
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "dry_run": False,
+                    "project": str(project_root),
+                    "source": source,
+                    "written": report["written"],
+                    "backups": report["backups"],
+                    "fingerprints_reset": report["fingerprints_reset"],
+                    "changes": changes,
+                    "warnings": warnings,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    tui.empty_line()
+    tui.success("Bundle imported.")
+    tui.key_value("Written", ", ".join(report["written"]))
+    if report["backups"]:
+        tui.key_value("Backups", ", ".join(report["backups"]))
+    if report["fingerprints_reset"]:
+        tui.hint("Fingerprints were reset; `iterate refresh` re-records them.")
+    for warning in warnings:
+        tui.warning(warning)
+    tui.hint("Verify the result with `iterate doctor` (add --fix to repair).")
+    return 0
+
+
 def _cmd_help(
     parser: argparse.ArgumentParser,
     topic: str | None,
@@ -1568,7 +1951,12 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     if json_output:
         import json
 
-        print(json.dumps(data, ensure_ascii=False, indent=2))
+        # ``default=str``: a hand-edited config can carry non-JSON YAML scalars
+        # (an unquoted ``completed_at`` loads as a ``datetime.date``/datetime).
+        # Without this, `status --json` raised TypeError and printed NO document
+        # at all — breaking the "stdout holds exactly one JSON document"
+        # contract on the one path CI relies on.
+        print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
         # A config that exists but could not be parsed is a failure, matching
         # the TUI renderer's exit code for the same condition so CI scripts
         # cannot silently treat a broken config as success.
@@ -1617,9 +2005,9 @@ def _render_status_tui(
         tui.hint("(iterate.config.yaml not found — only ITERATE.md exists)", indent=2)
         return 0
 
-    tui.key_value("Completed", data["completed_at"])
-    tui.key_value("Channel", data["channel"])
-    tui.key_value("Skill version", data["skill_version"])
+    tui.key_value("Completed", str(data["completed_at"]))
+    tui.key_value("Channel", str(data["channel"]))
+    tui.key_value("Skill version", str(data["skill_version"]))
 
     # Drift configuration summary.
     drift_enabled = data["drift_check"]

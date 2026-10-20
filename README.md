@@ -391,6 +391,27 @@ The report contains the detected `manifests`, `detected_languages`, `detected_pa
 
 Apply a suggestion with `iterate onboard` (interactive) or `iterate config set <key> <value>`.
 
+### iterate export / import (portable project state)
+
+`iterate export` snapshots the project's iterate state — `iterate.config.yaml` plus `ITERATE.md` — into one versioned JSON bundle. The project itself is never modified; only the bundle file is written. This is useful for backups, moving a tuned profile to another machine, attaching the exact state to a review, or seeding the same profile in another repository.
+
+```bash
+iterate export                       # writes iterate-bundle-<UTC>.json in the project root
+iterate export --out state.json      # choose the path (refuses to overwrite without --force)
+iterate export --json > state.json   # print the bundle on stdout and write nothing
+```
+
+`iterate import` validates the bundle (including the config against the JSON schema) **before touching anything**, takes timestamped backups (`.import-<UTC>-<salt>`), and only then writes `iterate.config.yaml` / `ITERATE.md`:
+
+```bash
+iterate import state.json --dry-run   # preview added / changed / removed keys
+iterate import state.json --yes       # apply (required when stdin is not a terminal)
+cat state.json | iterate import - --yes
+iterate import state.json --yes --reset-fingerprints  # bundle from a different repo
+```
+
+`--reset-fingerprints` drops the exporting project's recorded manifest fingerprints so they are not immediately reported as drift; `iterate refresh` re-records them for the current repository. An invalid or foreign bundle exits `1`, leaves the project unchanged, and — with `--json` — still prints exactly one JSON document. Usage errors (for example `--json` together with `--out`) exit `2`.
+
 ### iterate fingerprint (verify manifest drift)
 
 `iterate fingerprint` (default action `verify`) compares the SHA-256 manifest fingerprints recorded at onboarding/refresh time against the current project root, detecting added / removed / changed tech-stack manifests — a non-blocking informational health check. It exits `0` when there is no drift (or drift checking is unavailable), and `1` when drift is detected, making it CI-friendly:
