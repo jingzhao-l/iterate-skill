@@ -151,11 +151,13 @@ cmd_seed() {
 
 # ── install ──────────────────────────────────────────────────────────────────
 cmd_install() {
-  need gh; need security
-  # Validate in THIS shell: the target loop below runs
+  # Validate in THIS shell first: the target loop below runs
   # `targets_filtered` inside `< <(...)`, where its `exit 2` only kills the
-  # subshell — `install typo` would print nothing and exit 0.
+  # subshell — `install typo` would print nothing and exit 0. Do it before the
+  # `need` checks so a typo is reported identically on every platform (CI has
+  # no macOS `security`).
   require_known_targets "$@"
+  need gh; need security
   local key pass
   key="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a private-key -w 2>/dev/null || true)"
   pass="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a passphrase  -w 2>/dev/null || true)"
