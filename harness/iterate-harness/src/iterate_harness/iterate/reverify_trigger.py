@@ -39,7 +39,13 @@ site where they can actually be broken):
    module it lives in refuses an awaitable with ``GP_E_ASYNC_HOST`` rather than filing a
    coroutine as an answer. So the host must hand over a *synchronous* read-only transport under
    :data:`GLASSPANE_TRANSPORT_KEY`; when it has not, the send is recorded as not-attempted —
-   which is a stated state, not a silence.
+   which is a stated state, not a silence. The transport's reply shape is the engine's own
+   boundary: prefer ``McpClientManager.call_tool_parts``, whose ``list[str]`` keeps one entry
+   per content item (the shipped ``gp_diagnose`` answers with the daemon frame *plus* an
+   ``update state:`` block *plus* a ``provider:`` line, and relaying that as a joined string
+   measured ``unparseable``); a transport that hands back a plain ``str`` still works, it just
+   keeps only the single-item and already-parsed shapes. :func:`relay_answer` classifies per
+   item and keeps the side items verbatim as annotations.
 """
 
 from __future__ import annotations
@@ -70,8 +76,10 @@ INVARIANT_GATE_KEY = GATE_KEYS[0]
 REVERIFICATION_STATE_KEY = "reverification"
 
 #: Metadata key a host uses to hand this loop a **synchronous** GlassPane transport, called as
-#: ``call_tool(tool_name, arguments) -> the engine's reply``. Absent (or not callable) is not an
-#: error: it is recorded as a send that was never attempted.
+#: ``call_tool(tool_name, arguments) -> the engine's reply`` — either the boundary-preserving
+#: ``list[str]`` of content items (``McpClientManager.call_tool_parts``, what the shipped shell
+#: actually sends) or a plain ``str`` for a host that has only the joined view. Absent (or not
+#: callable) is not an error: it is recorded as a send that was never attempted.
 GLASSPANE_TRANSPORT_KEY = "glasspane_reverify_transport"
 
 #: The ledger kind this decision is filed under. Shape-checked by the kernel, not by a list.
@@ -85,7 +93,15 @@ MAX_REQUESTED_OPERATIONS = 4
 
 
 def _sync_transport(metadata: Mapping[str, Any] | None) -> Callable[[str, dict[str, Any]], object] | None:
-    """The host's synchronous transport, or ``None`` when the host has not provided one."""
+    """The host's synchronous transport, or ``None`` when the host has not provided one.
+
+    A transport may answer with ``list[str]`` (one entry per MCP content item, the
+    shape ``McpClientManager.call_tool_parts`` preserves) or with a plain ``str``;
+    :func:`.glasspane_reverification.relay_answer` classifies both, per item where
+    there are items. The missing-verdict rule is the caller's and is unchanged: when
+    the round measured no invariant verdict this trigger says nothing and publishes
+    nothing.
+    """
     candidate = (metadata or {}).get(GLASSPANE_TRANSPORT_KEY)
     return candidate if callable(candidate) else None
 
@@ -146,6 +162,10 @@ def _relay_answer(answer: RelayedAnswer, *, full: bool) -> dict[str, Any]:
         # Provenance, not a verdict: which registered AE method licensed this reading.
         "method": answer.method,
     }
+    # Side items are cited verbatim where they exist; an empty tuple adds nothing, so the
+    # payload of a single-item answer keeps the byte length it had before multi-item relay.
+    if answer.annotations:
+        relayed["annotations"] = list(answer.annotations)
     if full:
         relayed["arguments"] = dict(answer.arguments)
         relayed["outcome"] = answer.outcome

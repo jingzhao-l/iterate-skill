@@ -483,3 +483,92 @@ def test_the_new_names_resolve_through_the_lazy_export_map() -> None:
     ):
         assert getattr(iterate_pkg, name) is getattr(reverify_trigger, name)
         assert name in iterate_pkg.__all__
+
+
+# ---------------------------------------------------------------- the parts-returning transport
+
+#: The two side items the shipped shell sends beside the answer — the shapes pinned in
+#: ``test_call_tool_parts.py`` / ``test_glasspane_reverification.py``: the ``update state:``
+#: block (update-state.test.mjs) and the 2026-10-20 ``provider:`` attribution line.
+UPDATE_BLOCK = (
+    "update state: status=needs-consent current=1.3.1 latest=1.4.0"
+    " updatedAt=2026-09-29T04:00:00.000Z autoUpdate=on\n"
+    "ca trust bundle: this install has never recorded an export."
+    " NOT the same as \"the bundle is fine\"."
+)
+PROVIDER_LINE = (
+    "provider: glasspane-engine-ae version 0.1.9 method diagnose"
+    " | declared prerequisites: evidencePack with at least one non-empty signal field"
+)
+
+
+async def test_a_parts_transport_reaches_the_round_with_its_annotations(tmp_path: Path) -> None:
+    """The host contract this trigger now documents: a transport may answer with ``list[str]``.
+
+    ``gp_last_evidence`` gets the pack frame plus the attribution; ``gp_diagnose`` gets the
+    coded refusal plus the update block. Both answers must classify (this is what the joined
+    transport used to die on) and both side items must surface in the round's lines exactly
+    once, verbatim.
+    """
+    pack = _real_pack()
+    kernel = await _project(tmp_path, ["README.md", "not-a-real-file.md"])
+    _record_an_operation(tmp_path, pack["operationId"])
+    gates = _gates(tmp_path, kernel)
+
+    def call_tool_parts(tool: str, _arguments: dict[str, Any]) -> list[str]:
+        if tool == "gp_last_evidence":
+            return [json.dumps({"evidencePack": pack}), PROVIDER_LINE]
+        return [ENGINE_REFUSAL, UPDATE_BLOCK]
+
+    payload = trigger_reverification(
+        project_root=tmp_path,
+        metadata={DEFENSIVE_KERNEL_KEY: kernel, GLASSPANE_TRANSPORT_KEY: call_tool_parts},
+        gates=gates,
+        round_number=1,
+        planned_dimensions=["security"],
+    )
+    assert payload is not None and payload["attempted"] is True
+    states = {answer["tool"]: answer["state"] for answer in payload["answers"]}
+    assert states == {"gp_last_evidence": "answered", "gp_diagnose": "refused"}, (
+        "the parts reply must classify per item, never over a join"
+    )
+    by_tool = {answer["tool"]: answer for answer in payload["answers"]}
+    assert by_tool["gp_last_evidence"]["annotations"] == [PROVIDER_LINE]
+    assert by_tool["gp_diagnose"]["annotations"] == [UPDATE_BLOCK]
+    assert by_tool["gp_diagnose"]["remedy"] == "call attach first"
+    text = "\n".join(payload["lines"])
+    assert text.count(PROVIDER_LINE) == 1 and text.count(UPDATE_BLOCK) == 1
+    assert payload["verified"] is True and payload["clean"] is False
+
+    # The ledger cites the annotations too — a side item that never reaches the record is a
+    # fact about the call that the audit trail lost.
+    entry = read_entries(tmp_path)[-1]
+    recorded = {answer["tool"]: answer for answer in entry.data["answers"]}
+    assert recorded["gp_last_evidence"]["annotations"] == [PROVIDER_LINE]
+    assert recorded["gp_diagnose"]["annotations"] == [UPDATE_BLOCK]
+
+
+async def test_a_str_transport_still_works_unchanged(tmp_path: Path) -> None:
+    """Backwards surface: a host that only has the joined view keeps the old behaviour.
+
+    One item per call, nothing annotated; a single frame or refusal classifies exactly as
+    before this fix, and a joined multi-item blob is still honestly `unparseable`.
+    """
+    pack = _real_pack()
+    kernel = await _project(tmp_path, ["README.md", "not-a-real-file.md"])
+    _record_an_operation(tmp_path, pack["operationId"])
+    gates = _gates(tmp_path, kernel)
+    transport, asked = _evidence_transport(pack)
+
+    payload = trigger_reverification(
+        project_root=tmp_path,
+        metadata={DEFENSIVE_KERNEL_KEY: kernel, GLASSPANE_TRANSPORT_KEY: transport},
+        gates=gates,
+        round_number=1,
+        planned_dimensions=["security"],
+    )
+    assert payload is not None and asked
+    assert all("annotations" not in answer for answer in payload["answers"])
+    by_tool = {answer["tool"]: answer for answer in payload["answers"]}
+    assert by_tool["gp_last_evidence"]["state"] == "answered"
+    assert by_tool["gp_diagnose"]["state"] == "refused"

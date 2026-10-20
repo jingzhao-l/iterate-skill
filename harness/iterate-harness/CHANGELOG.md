@@ -4,6 +4,32 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **#20 多 item 边界：MCP 客户端不再销毁 shell 的 content-item 边界，回验 relay 改逐 item 分类。**
+  实测（2026-10-21，对当时那份代码直调）：`mcp/client.py` 把 `result.content` 用
+  `"\n".join(parts)` 拼成一个字符串，`glasspane_reverification.relay_answer` 拿到"daemon 帧 +
+  任何第二项"一律判 `unparseable`——而 shipped `glasspane-mcp` 的 `gp_diagnose` **今天就回多项**
+  （帧 + `update state:` 块，见 GlassPane `mcp-shell/test/update-state.test.mjs`；2026-10-20 批次
+  又加了 `provider: … | declared prerequisites: …` 归属行）。这不是新发生的，是早已成立，只是没有
+  真形状测试。修法在消费端：`McpClientManager.call_tool_parts()` 返回逐 item 的 `list[str]`
+  （非 text 项、`structured_content`、`(no output)` 兜底逐项保留，不发明新政策），`call_tool`
+  改为它的 `"\n".join(...).strip()`——LLM 看到的东西一字不变，具名测试钉住字节相等；错误面
+  （`McpServerNotConnectedError`/超时）不动。`relay_answer` 接受 `str` / `Mapping` / `Sequence[str]`：
+  多 item 时选"第一项能 parse 成 JSON 对象或匹配 shell 编码拒绝形状"的那项做判决，**其余每项
+  原样存进 `RelayedAnswer.annotations`** 并由 `to_model_lines()` 逐条逐字展示（update 块和归属行
+  是关于这次调用的用户可见事实，丢掉与读不到帧同错）。`_refusal_from_text` 从此只作用于单项
+  （docstring 补了多 item 的实测句）。joined `str` 输入**保持** `unparseable` 语义、绝不按换行
+  重切——合法帧的文本自己就带换行，重切是猜边界，负控制测试钉住这条。`reverify_trigger` 的宿主
+  传输契约改述为 parts 形状（返回 `list[str]` 或纯 `str` 都合法），无判决则依旧一言不发。
+  综述 §8.5 场景③"无 CLI 文本解析"由此真正成立：判定路径上没有任何文本拼接再解析。
+  具名测试：`tests/test_mcp/test_call_tool_parts.py`（1/2/3/padded item 的 join==parts、非 text 项、
+  兜底、错误面）；`test_glasspane_reverification.py`（帧+归属 answered、归属在前的乱序、
+  evidencePack+第二项仍可转录、拒绝+注记、全 unparseable 不造判决、多行帧仍解析、model lines
+  每条注记恰好一次、joined 负控制）；`test_reverify_wiring.py`（parts 传输到 round 与账本、
+  str 传输零行为变化）。
+
+
 ### Changed
 
 - **内核 `iterate-kernel@0.1.9`：`zod` 从范围改成精确版本，因为发布出去的 `.d.ts` 是按那一个版本发光的。**
