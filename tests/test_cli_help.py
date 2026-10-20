@@ -20,8 +20,15 @@ documented promises (``SKILL.md`` / ``iterate --help``): usage errors are exit
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 import pytest
+
+# Run the repository's package, not any installed copy: CI runs bare `pytest`
+# (not `python -m pytest`), which does not put the repo root on sys.path.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 from iterate_cli import cli
 from iterate_cli.cli import main as cli_main

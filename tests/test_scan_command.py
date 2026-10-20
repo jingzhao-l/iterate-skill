@@ -19,9 +19,12 @@ Three properties matter enough to assert explicitly:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from iterate_cli.cli import main as cli_main
 from iterate_cli.scan import collect_scan_data, render_scan

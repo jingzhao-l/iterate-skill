@@ -18,11 +18,15 @@ review comment. The properties that matter:
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 import yaml
+
+# Bare `pytest` (CI) does not add the repo root to sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from iterate_cli.cli import main as cli_main
 from iterate_cli.portable import (
