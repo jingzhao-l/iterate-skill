@@ -94,6 +94,33 @@ class DefensiveKernel:
         return self._last_report
 
     @property
+    def last_invariant_report(self) -> InvariantReport | None:
+        """The same run, under the name the loop's sanctioned reader asks for.
+
+        ``iterate/invariant_state.read_invariant_state`` reads exactly this attribute out of the
+        kernel it finds in tool metadata; without it the invariant gate could never be measured
+        on a real kernel instance (only on a stub), and a verdict the loop cannot read is a
+        verdict that cannot trigger anything downstream.
+        """
+        return self._last_report
+
+    @property
+    def invariant_ensure(self) -> list[str]:
+        """The file assertions this kernel runs, in configured order.
+
+        Published because a re-verification request cites its report by digest, and the digest
+        is a claim about *every* configured check: only the runner that executed them can say
+        which ones those were. Guessing them from the config at the call site would re-resolve
+        the fallback rule and digest a report that is not the one that ran.
+        """
+        return list(self._ensure)
+
+    @property
+    def invariant_commands(self) -> dict[str, list[str]]:
+        """The per-module invariant commands this kernel runs (same reason as above)."""
+        return {module: list(commands) for module, commands in self._commands.items()}
+
+    @property
     def invariants_configured(self) -> bool:
         """Return whether any invariant commands/assertions are configured."""
         return self._configured_invariants

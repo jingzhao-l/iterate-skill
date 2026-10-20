@@ -116,6 +116,29 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **场景①接线：不变量判失败的那一轮，真的去问一次引擎。** `iterate/glasspane_reverification.py`
+  能发 `iterate.reverification/0.1` 也能原样转发引擎的回答，但**循环里从来没有人把请求交给它**——
+  本批补的就是这一只手。落点选在轮次发布处（`iterate_review` 的 aggregate），因为只有那里同时握着
+  四样输入：`loop_gates.measured_gates` 刚**量过**的 invariant 判决、该判决背后的那份 invariant 报告
+  （请求的 `trigger.reportDigest` 要引它）、本轮即将发布的 `iterate_state`、以及台账的根。
+  `loop_policy` 只能在轮边界看到已经转发过的判决字符串、看不到报告，在那里建请求等于替它造一份
+  报告；`engine/query.py` 则刻意不把 defensive kernel 带回 tool_metadata（`DEFENSIVE_KERNEL_KEY`
+  在合并时被跳过），所以它也拿不到报告。绑定规则全部是既有规则，写在新模块的 docstring 里：
+  **没有判决就一个字都不说**（返回 `None`，调用方什么都不发布——"不需要"与"不知道"必须可读出来）；
+  **判定不是我们的**（只经 `any_verified`/`all_clean` 转发，不比计数、不改判）；
+  **重验绝不把闸变成已测**（不写任何 gate key，引擎不可达/拒绝时闸与 `loop_gates` 产出的一字不差）；
+  **拒绝原样转发**；**传输由宿主给**——本仓自己的 `McpClientManager.call_tool` 是 async，而
+  `run_reverification` 是同步发送方、遇到 awaitable 回 `GP_E_ASYNC_HOST` 而不是把协程当回答归档，
+  所以宿主没在 `glasspane_reverify_transport` 交出同步只读传输时，这一轮**记下"没发送"**（这是状态，
+  不是沉默）。`defensive/kernel.py` 为此补了三个只读属性（`last_invariant_report`/`invariant_ensure`/
+  `invariant_commands`）：没有它们，真内核下这道闸根本读不到、摘要也建不出来。
+  新增 `tests/test_iterate/test_reverify_wiring.py` 12 条（真 `DefensiveKernel` 跑出来的报告 +
+  语料证据包 + 钉死的 `iterate.reverification/0.1` 词表）。
+  主代理独立验因果：把"没有判决"那条 `return None` 改成返回一个空 payload，
+  `test_no_verdict_sends_nothing_and_claims_nothing` **当场具名变红**，按 sha256 `cdac151f…` 核回后 12/12。
+  **仍未通的一半**：宿主侧的同步传输没人提供，所以这条通路今天在生产里是"记为未发送"；而
+  `mcp/client.py` 把多 item 回包 `"\n"` 拼接的做法会把一份真 `gp_diagnose` 帧读成 `unparseable`
+  （本轮实测，见 CHANGELOG 顶部那条缺陷记录）。这两件不通，场景① 只能算接好了一半。
 - **场景⑤接线：两个判定生产者真的注册，消费它们的是拒绝分支而不是装饰。** `iterate/provider_registry.py`
   此前只有尺子读它（`scripts/diff_kernel_implementations.py` 与自身测试）。新增
   `iterate/provider_producers.py` 以夹具 `registry.iterate` 那两条原样的 id/kind/method/requires 注册

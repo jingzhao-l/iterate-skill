@@ -115,6 +115,13 @@ _EXPORTS: dict[str, str] = {
     "reviewer_task_prompt": ".review",
     "ReviewAttachment": ".review",
     "sort_findings": ".review",
+    # reverify_trigger -- scenario ①'s trigger: a measured invariant failure asks the engine again
+    "GLASSPANE_TRANSPORT_KEY": ".reverify_trigger",
+    "REVERIFICATION_STATE_KEY": ".reverify_trigger",
+    "record_reverification_run": ".reverify_trigger",
+    "recorded_operation_ids": ".reverify_trigger",
+    "reverification_targets": ".reverify_trigger",
+    "trigger_reverification": ".reverify_trigger",
     # run_plan
     "plan_path": ".run_plan",
     # settings
@@ -150,6 +157,8 @@ __all__ = [
     "TEMPLATE_PRESETS",
     "META_REVIEW_CHECKS",
     "PR_COMMENT_MARKER",
+    "GLASSPANE_TRANSPORT_KEY",
+    "REVERIFICATION_STATE_KEY",
     "SEVERITY_RANK",
     "AggregateSnapshot",
     "CostMeter",
@@ -216,7 +225,9 @@ __all__ = [
     "project_config",
     "project_root_guard",
     "read_entries",
+    "record_reverification_run",
     "record_run",
+    "recorded_operation_ids",
     "render_doctor_report",
     "render_diff",
     "render_markdown",
@@ -224,6 +235,7 @@ __all__ = [
     "render_trend_summary",
     "report_from_dict",
     "report_to_dict",
+    "reverification_targets",
     "reviewer_task_prompt",
     "run_command",
     "run_dimension_doctor",
@@ -234,6 +246,7 @@ __all__ = [
     "sort_findings",
     "summarize",
     "summarize_changes",
+    "trigger_reverification",
     "validate_config",
 ]
 

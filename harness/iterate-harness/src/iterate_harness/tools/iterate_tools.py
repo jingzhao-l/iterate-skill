@@ -38,6 +38,7 @@ from ..iterate.dimension_context import (
 )
 from ..iterate.loop_policy import ITERATE_STATE_KEY
 from ..iterate.loop_gates import measured_gates
+from ..iterate.reverify_trigger import REVERIFICATION_STATE_KEY, trigger_reverification
 from .base import BaseTool, ToolExecutionContext, ToolResult
 
 log = logging.getLogger(__name__)
@@ -436,17 +437,32 @@ class IterateReviewTool(BaseTool[BaseModel]):
             state["dimension_coverage"] = coverage
         # Only the gates this round really measured stay in the state; see
         # iterate/loop_gates.py for why an absent gate beats a default.
-        state.update(
-            measured_gates(
-                evidence_validation=config_loader.load_effective_config(
-                    context.cwd
-                ).config.reviewer.evidence_validation,
-                findings=report.findings,
-                cwd=context.cwd,
-                metadata=context.metadata,
-            )
+        gates = measured_gates(
+            evidence_validation=config_loader.load_effective_config(
+                context.cwd
+            ).config.reviewer.evidence_validation,
+            findings=report.findings,
+            cwd=context.cwd,
+            metadata=context.metadata,
         )
+        state.update(gates)
         payload: dict[str, Any] = {"report": review.report_to_dict(report)}
+        # Scenario ①'s trigger half: an invariant verdict the kernel *measured* as failed earns a
+        # re-verification through the engine channel, and the answer is relayed, not judged here.
+        # This is the one site that holds all four inputs — the measured gate, the invariant report
+        # behind its digest, the run's ledger root, and the state object about to be published — so
+        # the wiring lives in one call. See iterate/reverify_trigger.py for the rules it is bound
+        # by, including the one that keeps a missing verdict silent instead of satisfied.
+        reverification = trigger_reverification(
+            project_root=context.cwd,
+            metadata=context.metadata,
+            gates=gates,
+            round_number=report.convergence.total_rounds,
+            planned_dimensions=list(report.dimensions),
+        )
+        if reverification is not None:
+            state[REVERIFICATION_STATE_KEY] = reverification
+            payload[REVERIFICATION_STATE_KEY] = reverification
         if usage_totals:
             # Engine-level per-dimension usage passthrough (v1.2-c): the
             # loop policy bills these reported totals into its CostMeter.
