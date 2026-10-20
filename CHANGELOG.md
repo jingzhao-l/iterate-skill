@@ -7,14 +7,18 @@
 
 ## [3.6.0] — 2026-10-20
 
-本轮为无人值守每日例行的「功能与体验增长」版本：新增两个用户可直接感知的能力
-（`iterate scan` 只读导出、`iterate help` + 命令拼写容错），并配备完整测试与文档，
-故升 minor。测试套件 **1563 → 1638**（新增 `tests/test_scan_command.py`、
-`tests/test_cli_help.py`、`tests/test_gpg_signing_audit.py`，扩充 `tests/test_tui.py`
-的 JSON 能力清单与 `tests/test_config.py`/`tests/test_onboarding.py`/`tests/test_doctor.py`）。
-评审与发布范围仅限 skill 本体（`iterate_cli/`、`npm-installer/`、`scripts/`、
-`templates/`、`tests/`、`config/`、`tools/`、`SKILL.md`、`pyproject.toml`、
-`CHANGELOG.md`）；`harness/` 与 `kernel/` 未改、未发、未纳入任何发布包。
+本轮为无人值守每日例行的「功能与体验增长」版本：新增三个用户可直接感知的能力
+（`iterate scan` 只读导出、`iterate help` + 命令拼写容错、`iterate export` /
+`iterate import` 可移植状态包），并配备完整测试与文档，故升 minor。测试套件
+**1563 → 1738**（新增 `tests/test_scan_command.py`、`tests/test_cli_help.py`、
+`tests/test_portable.py`、`tests/test_status.py`、`tests/test_gpg_signing_audit.py`
+与 `npm-installer/test/security.test.js`，扩充 `tests/test_tui.py` 的 JSON 能力
+清单及 `tests/test_config.py`/`tests/test_onboarding.py`/`tests/test_doctor.py`/
+`tests/test_updater.py`/`tests/test_validate.py`/`tests/test_install_script.py`/
+`tests/test_publish_qoder.py`）。评审与发布范围仅限 skill 本体（`iterate_cli/`、
+`npm-installer/`、`scripts/`、`templates/`、`tests/`、`config/`、`tools/`、
+`SKILL.md`、`pyproject.toml`、`CHANGELOG.md`）；`harness/` 与 `kernel/` 未改、
+未发、未纳入任何发布包。
 
 ### 新增 / Features
 
@@ -43,10 +47,27 @@
   - `--json` 契约不变：用法错误仍是退出 2 且 stdout 恰好一个 JSON 文档，
     建议放在 `did_you_mean` 字段；`--json help` 显式拒绝并返回结构化错误，
     以免"要求结构化输出的命令却只吐散文帮助"。
+- **`iterate export` / `iterate import` —— 可移植的项目状态包**。此前配置与
+  `ITERATE.md` 只能整目录拷贝，跨机器/跨仓库迁移没有受支持的路径：手工复制容易
+  把另一仓库的 manifest 指纹一起带过去，导入后立刻报假漂移。新命令把
+  `iterate.config.yaml` + `ITERATE.md` 快照成 **bundle format v1**（`format` /
+  `bundle_version` / `skill_version` / `exported_at` / `project` / `config` /
+  `iterate_md`）：
+  - `iterate export` 默认在项目根写 `iterate-bundle-<UTC>.json`，`--out PATH`
+    指定路径（默认拒绝覆盖，`--force` 才覆盖），`--json`（或 `--out -`）把
+    bundle 打到 stdout 且不写文件；导出过程对项目只读。
+  - `iterate import FILE|-` 先做结构 + schema 校验，再生成
+    `.import-<UTC>-<salt>` 时间戳备份，最后原子写回；非法/外来 bundle 在任何
+    写入前退出 1。`--dry-run` 预览新增/变更/删除键，`--yes` 供非交互/CI，
+    `--reset-fingerprints` 丢弃导出项目的指纹（`iterate refresh` 重新采集）。
+  - 两种模式都遵守既有契约：`--json` 时 stdout 恰好一个 JSON 文档；用法错误
+    （如 `--json` 与 `--out` 同给）退出 2。新增 `tests/test_portable.py` 68 项
+    覆盖正常/异常/边界（空配置、超大文档、伪造 format、schema 违规、备份唯一性、
+    stdin、往返一致性、doctor 复检）。
 
 ### 修复 / Fixes（同轮全量复审 findings）
 
-本轮对 skill 本体的全量复审共 6 项 findings，全部修复并附可复现回归测试：
+本轮对 skill 本体的全量复审 findings（含前次记录的 6 项）全部修复并附可复现回归测试：
 
 - **[High] `iterate onboard` / `reonboard` 静默删除 `mode` 与 `invariants`**。
   `generate_config_yaml` 从固定键集重建配置，不含顶层 `mode` 与 `invariants`，
@@ -78,6 +99,69 @@
 - **[Nit] `tui.key_value` 用转义后的 label 度量列宽**。`escape()` 把 `[` 变 `\[`，
   含方括号的键每括号多算一列，值列被推右。修复：按可见文本度量并填充，转义仅发生在
   嵌入 markup 时。新增列宽不变式测试。
+- **[High] 基础向导重建 `OnboardingData` 时丢失 `drift_check` / `mode` / `invariants`**。
+  `_run_basic_wizard` 只从既有数据继承了 advanced 调参字段，这三个"基本向导不问"的
+  键回到默认值：`onboarding.drift_check: false` 被改回 true、`mode: defensive` 被改回
+  `iterate`、整个 `invariants:` 段被删。修复：从 `existing` 继承三者，`invariants`
+  用 `copy.deepcopy` 避免新旧对象共享可变结构。新增
+  `TestBasicWizardPreservesAdvancedSettings` 断言值保留且深拷贝独立。
+- **[Medium] `_load_existing_onboarding_data` 保留空 `validation.commands` 模块**。
+  `{node: []}` 或只含非字符串的模块会被重新写回，而 schema 要求 `minItems: 1`，
+  `refresh` 又会丢弃它们——向导写出的配置立刻被 doctor/schema 判错。修复：过滤后为空
+  的模块不再载入。新增 `test_validation_module_with_no_string_commands_is_dropped`。
+- **[Medium] `status` 在 YAML 非字符串标量上崩溃**。手写/ AI 写入的
+  `completed_at: 2026-10-20` 解析为 `datetime.date`，`skill_version: 1.0` 为 float：
+  TUI 的显示宽度折行对非字符串抛 `TypeError`，`--json` 则因 `json.dumps` 无法序列化
+  date 而**一个文档都不输出**。修复：TUI 三个字段先 `str()`，JSON 使用 `default=str`。
+  新增 `tests/test_status.py` 同时锁定 TUI 与 JSON 两条路径。
+- **[Medium] `doctor --fix` 对空配置只打印"重建"却什么都不写**。空文件被转成
+  `config = {}`，`apply_safe_fixes({})` 无修复项，命中 `if not fixes: return True, []`
+  提前返回——用户看到"rebuilding with safe defaults"，文件仍是空的。修复：空配置
+  种入 `{"dimensions": CANONICAL_DIMENSIONS}` 并插入显式重建说明，保证写入发生。
+  新增 `test_empty_config_is_rebuilt_not_silently_skipped`（含二次 doctor 复检）。
+- **[Medium] `update --assistants a,b` 部分命中时静默忽略未安装的助手**。
+  `assistants_not_installed` 只在**全部**未命中时填充，`claude,cursor` 仅装 claude
+  时输出与"两个都更新了"无法区分。修复：只要请求了 `--assistants` 就按名称与安装
+  路径（覆盖 `claude`/`claude-code` 别名）计算差集。原有"混合即静默"的测试改为
+  正向断言，并新增别名路径测试。
+- **[High] `scripts/install.py` 的凭据与路径边界**（4 处）：① 祖先 symlink 检查以
+  `destination` 自身为锚，而 `realpath(dst.parent) == realpath(destination)` 对顶层
+  文件恒成立，symlink 指向的安装目录可把写入带出用户选择的 root。修复：新增
+  `root=` 参数，调用方传 `effective_target`，按 `realpath(root)` 锚定。②
+  `_is_github_api_url` 只比主机名，`http://api.github.com` 也会收到 PAT。修复：强制
+  `https`。③ 重定向只比 hostname，`https→http` 或换端口仍携带 Authorization。
+  新增 `_origin()`（scheme+host+port）比较。④ token 只 `strip()` 后校验却继续使用
+  原始值：纯空白 token 通过校验后仍拼出 `Bearer    `，内嵌换行让 `putheader()` 抛错
+  并把 PAT 打进日志。修复：校验前统一 `token.strip() or None`，并拒绝内嵌空白/
+  控制字符（错误信息不回显 token）。新增 `TestCredentialBoundaries` 12 项与
+  root-anchor 两项测试。
+- **[Medium] npm 安装器的 GPG / token / 参数 / 体积边界**：① gpg 的 `spawnSync`
+  没有超时，卡住的 gpg-agent 会让安装器永久挂起；现加 30s + SIGKILL，超时归类
+  `unavailable`。② 公钥导入失败被标成 `invalid`（暗示签名伪造），实际只是"无法建立
+  真实性"；改为 `unavailable`。③ `normalizeToken` 只 trim 两端，内嵌 CR/LF 会做
+  header 注入；现拒绝空白/控制字符。④ `parseArgs` 不认 `--ai=trae` 等
+  `--flag=value`；现统一支持，布尔旗标带值则明确报错。⑤ `sumDeclaredSizes` 只累加
+  能解析的条目，本地化 tar 列表会让解压炸弹预算看起来很小；现要求全部条目可解析，
+  否则拒绝解压。新增 `npm-installer/test/security.test.js` 覆盖上述五项。
+- **[Low] `scripts/validate.py` 忽略调用方 `schema_path`**：`validate_dimension_sets`
+  总从仓库默认 schema 取 enum，自定义 schema 里的维度被误报 unknown；现透传同一
+  schema。另：显式传入但不存在的 dimensions 目录此前被静默跳过（拼错路径得到绿色
+  通过），现报错；未显式传入时保持原有"跳过 + note"行为。新增 3 项测试。
+- **[Low] `scripts/check.sh` 的健壮性**：不在 git 仓库内时只抛 git 的
+  `fatal: not a git repository`，现在给出可操作的一句话并以 2 退出；`RUFF` 由字符串
+  改为数组，解释器路径含空格时不再被 word-splitting 破坏。
+- **[Low] `scripts/publish_qoder.py --frontmatter minimal` 在源 frontmatter 已"干净"时
+  什么都不改**：恰好只有 `name/description/version` 时跳过重写，作者的通用
+  description 被保留，与"重写为 Qoder 第三人称/触发词描述"的承诺相反。修复：minimal
+  始终重写（可用 `--description` 覆盖），`keep` 仍原样保留。新增 3 项测试。
+- **[Medium] `tools/gpg-signing.sh` 的三处失效**：① `install typo` 的目标校验在
+  `< <(...)` 子 shell 里 `exit 2`，父进程带空目标列表继续并退出 0；现调用
+  `require_known_targets "$@"`。② `audit` 把 `gh` 的 404、网络错误、认证失败统统
+  `2>/dev/null || true` 成空字符串并 `continue`，零工作流被检查也打印
+  `audit: passed`；现区分 404（正常跳过）与其他失败（FAILED），统计检查数量，
+  为 0 时拒绝报通过。③ `seed` 把口令放在 `gpg --passphrase "$pass"` 的 argv 里
+  （`ps` 可见），现改为 `--passphrase-fd 0` 从 stdin 读取。新增 4 项测试
+  （含假 gpg/security 驱动的 argv 断言）。
 
 ### 版本号说明 / Version numbering note
 
@@ -116,14 +200,28 @@
   `did_you_mean` 且无建议时**不含该键**、有效命令不会被误报；`_did_you_mean` /
   `_suggestion_from_usage_error` 的引用式（≤3.12）与非引用式（3.13）两种消息格式、
   非 choice 类错误透传、模块级建议槽不跨次泄漏。
-- 新增 `tests/test_gpg_signing_audit.py`（4 项）：以假 `gh` 记录被查询的仓库，
+- 新增 `tests/test_gpg_signing_audit.py`（9 项）：以假 `gh` 记录被查询的仓库，
   从正反两侧锁定 `audit` 的目标过滤——单目标只审计该仓库（修复前因扫到别的仓库
-  的违规而误报失败）、单目标自身违规仍退出 1、多目标同时生效、无参数退化为全量。
+  的违规而误报失败）、单目标自身违规仍退出 1、多目标同时生效、无参数退化为全量；
+  另覆盖非 404 读取失败与"零工作流被检查"必须失败、干净读取报告检查数量、
+  `install` 拒绝未知目标、`seed` 不再把口令放进 gpg argv。
+- 新增 `tests/test_portable.py`（68 项）：bundle 构建/校验/解析/差异/写入的
+  正常、异常与边界（空配置、超大 JSON、未知 format/bundle_version、schema 违规、
+  路径不同步、备份同秒唯一、写入失败回滚、stdin、`--json` 单文档契约、
+  导出→导入往返与 doctor 复检）。
+- 新增 `tests/test_status.py`（2 项）：YAML date/int/float 标量经 TUI 与 `--json`
+  均不崩溃，JSON 恰好一个文档。
+- 新增 `npm-installer/test/security.test.js`（4 组）：token 内嵌空白/控制字符、
+  `--flag=value` 解析边界、gpg 超时与导入失败分类、声明体积部分不可解析即拒绝。
 - 复审修复回归（分散在既有文件）：`tests/test_onboarding.py` 新增 `normalize_mode` /
-  `normalize_invariants` / 生成与载入往返共 13 项（含 schema 校验）；`tests/test_doctor.py`
-  新增 Next action(s) 三态语言测试；`tests/test_config.py` 新增中英文 README 与
-  `SETTABLE_KEYS` 双向一致测试；`tests/test_validate.py` 新增 `--ai=<value>` 两种
-  equals 拼写测试；`tests/test_tui.py` 新增方括号键的列宽不变式测试。
+  `normalize_invariants` / 生成与载入往返 13 项（含 schema 校验）及基础向导保留
+  高级设置、空 validation 模块过滤；`tests/test_doctor.py` 新增 Next action(s)
+  三态语言与空配置重建测试；`tests/test_updater.py` 新增混合 `--assistants` 与
+  路径别名测试；`tests/test_config.py` 新增中英文 README 与 `SETTABLE_KEYS` 双向
+  一致测试；`tests/test_install_script.py` 新增凭据/重定向/root-anchor 14 项；
+  `tests/test_validate.py` 新增自定义 schema 与显式缺失目录 3 项；
+  `tests/test_publish_qoder.py` 新增 minimal/keep description 3 项；
+  `tests/test_tui.py` 新增方括号键的列宽不变式测试。
 
 ---
 
