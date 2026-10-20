@@ -88,6 +88,7 @@
     "test:validate": "tsx --test test/validate.test.ts"
   },
   "dependencies": {
+    "iterate-kernel": "0.1.9",
     "js-yaml": "4.3.2"
   },
   "peerDependencies": {
