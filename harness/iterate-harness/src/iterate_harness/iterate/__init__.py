@@ -16,6 +16,10 @@ Pure, deterministic modules ported from ``harness/iterate-plugin/src``:
 - :mod:`.personalize_cmd` — skill-parity 9-category personalize wizard
 - :mod:`.personalize_tui` — directional-key personalize wizard for the TUI
 - :mod:`.dimension_check` — skill↔harness dimension-system consistency doctor
+- :mod:`.provider_registry` — the kernel provider-registration contract (second
+  implementation, coded from the vendored corpus)
+- :mod:`.provider_producers` — this harness's own producers registered through
+  that contract, and the resolution the consumers ask through
 - :mod:`.prompts` — canonical workflow prompt templates
 - :mod:`.trend_store` — finding fingerprint trend library (new/fixed/stubborn)
 - :mod:`.worktree_flow` — fix-round git isolation orchestration
@@ -98,6 +102,14 @@ _EXPORTS: dict[str, str] = {
     "normalize_summary": ".review",
     "parse_attachments": ".review",
     "plan_to_dict": ".review",
+    # provider_producers -- this harness's producers, registered through the kernel contract
+    "ae_method_for": ".provider_producers",
+    "build_registry": ".provider_producers",
+    "ids_in_common_with": ".provider_producers",
+    "iterate_providers": ".provider_producers",
+    "producer_payloads": ".provider_producers",
+    "render_method_for": ".provider_producers",
+    "signals_carried": ".provider_producers",
     "report_from_dict": ".review",
     "report_to_dict": ".review",
     "reviewer_task_prompt": ".review",
@@ -158,9 +170,11 @@ __all__ = [
     "TrendRecord",
     "ValidationResult",
     "ReviewAttachment",
+    "ae_method_for",
     "aggregate_rounds",
     "append_entry",
     "build_final_review_report",
+    "build_registry",
     "build_review_plan",
     "build_review_report",
     "clear_checkpoint",
@@ -176,7 +190,9 @@ __all__ = [
     "finding_key",
     "findings_schema",
     "flatten_commands",
+    "ids_in_common_with",
     "is_command_allowed",
+    "iterate_providers",
     "load_canonical_dimensions",
     "load_config",
     "load_effective_config",
@@ -196,6 +212,7 @@ __all__ = [
     "plan_to_dict",
     "post_pr_comment",
     "price_for",
+    "producer_payloads",
     "project_config",
     "project_root_guard",
     "read_entries",
@@ -203,6 +220,7 @@ __all__ = [
     "render_doctor_report",
     "render_diff",
     "render_markdown",
+    "render_method_for",
     "render_trend_summary",
     "report_from_dict",
     "report_to_dict",
@@ -212,6 +230,7 @@ __all__ = [
     "run_tui_personalize",
     "run_validation",
     "save_checkpoint",
+    "signals_carried",
     "sort_findings",
     "summarize",
     "summarize_changes",

@@ -76,7 +76,9 @@
       "bytes": 10989,
       "consumedBy": [
         "src/iterate_harness/iterate/provider_registry.py",
+        "src/iterate_harness/iterate/provider_producers.py",
         "tests/test_iterate/test_provider_registry.py",
+        "tests/test_iterate/test_provider_producers.py",
         "scripts/diff_kernel_implementations.py"
       ]
     },

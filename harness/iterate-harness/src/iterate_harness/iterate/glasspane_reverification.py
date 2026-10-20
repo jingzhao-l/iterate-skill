@@ -23,6 +23,12 @@ WHAT IT REFUSES TO DO, and why each refusal is the point:
   accident this whole path exists to prevent is a loop reporting a verdict it never got.
 - **It never re-decodes a refusal.** When the engine answers with a coded refusal, the
   code/message/remedy are relayed verbatim; the remedy is written for an agent to execute.
+- **It never reads a verdict out of a pack the registered provider will not price.** Whether a
+  pack may be diagnosed at all is answered through the kernel's provider contract
+  (:func:`.provider_producers.ae_method_for` asks ``iterate-engine-ae`` which method this pack
+  carries), and that refusal is relayed in the same verbatim shape as an engine one. A pack
+  whose signal fields are all present and all empty would otherwise reach the transcription,
+  which answers `inconclusive` for nothing measured.
 """
 
 from __future__ import annotations
@@ -32,6 +38,9 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from .provider_producers import ae_method_for
+from .provider_registry import ProviderRegistryError
 
 #: Read-only tools by name. The set is small on purpose: anything that moves the app,
 #: captures a screenshot into a caller's model, or re-attaches is a decision, not a
@@ -58,6 +67,9 @@ class RelayedAnswer:
     code: str | None = None
     message: str | None = None
     remedy: str | None = None
+    #: Which registered AE method this answer was read under, when the relay had to ask one.
+    #: Provenance, not a verdict: it says which registration licensed the reading.
+    method: str | None = None
 
 
 @dataclass(frozen=True)
@@ -103,8 +115,9 @@ class ReverificationRun:
         for answer in self.answers:
             arguments = ", ".join(f"{key}={value}" for key, value in sorted(answer.arguments.items())) or "-"
             if answer.state == "answered":
+                asked = f" via {answer.method}" if answer.method else ""
                 lines.append(
-                    f"  {answer.tool}({arguments}): engine outcome={answer.outcome} "
+                    f"  {answer.tool}({arguments}): engine outcome={answer.outcome}{asked} "
                     f"operationId={answer.operation_id or 'none'} — {answer.summary or ''}".rstrip()
                 )
             elif answer.state == "refused":
@@ -249,6 +262,23 @@ def _relay_pack(tool: str, arguments: Mapping[str, Any], pack: Mapping[str, Any]
             message=f"the pack carries none of {', '.join(absent)}",
             remedy="re-verification needs a pack the engine actually recorded; the transcription answers 'inconclusive' for absent fields, and that is not a verdict on the app",
         )
+    # Whether this pack may be read for a verdict is the provider contract's question, not
+    # this module's: `iterate-engine-ae` registers `diagnose` as requiring an evidence pack,
+    # and a mapping whose signal fields are present but all empty carries none. The refusal is
+    # relayed in the engine-refusal shape -- code, message, remedy verbatim -- because "this
+    # pack records nothing" must not arrive at the model as "the engine looked and could not
+    # tell", which is the accident the check above exists to prevent.
+    try:
+        method = ae_method_for(pack)
+    except ProviderRegistryError as error:
+        return RelayedAnswer(
+            tool=tool,
+            arguments=dict(arguments),
+            state="refused",
+            code=error.code,
+            message=error.message,
+            remedy=error.remedy,
+        )
     try:
         outcome = decision_outcome_from_evidence(pack)
         summary = decision_summary_from_evidence(pack)
@@ -266,6 +296,7 @@ def _relay_pack(tool: str, arguments: Mapping[str, Any], pack: Mapping[str, Any]
         operation_id=str(pack["operationId"]) if pack.get("operationId") else None,
         outcome=str(outcome),
         summary=str(summary),
+        method=method,
     )
 
 

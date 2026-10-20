@@ -116,6 +116,22 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **场景⑤接线：两个判定生产者真的注册，消费它们的是拒绝分支而不是装饰。** `iterate/provider_registry.py`
+  此前只有尺子读它（`scripts/diff_kernel_implementations.py` 与自身测试）。新增
+  `iterate/provider_producers.py` 以夹具 `registry.iterate` 那两条原样的 id/kind/method/requires 注册
+  `iterate-engine-ae`（`diagnose` requires `evidence-pack`）与 `iterate-report-render`
+  （`render-markdown` requires `decision-log`），**version 取 `iterate_harness.__version__` 现读**、
+  不抄夹具的 `0.1.4`（夹具注释自己说那是"写作当时的包/引擎版本"，抄它等于替产品认证一条产品没测过的主张），
+  `requires` 的词表由引擎包自己的 camelCase 字段名派生（`circuitBreaker`→`circuit-breaker`），不重打字面量。
+  两处消费都是**能改输出的**：① `glasspane_reverification._relay_pack` 先问契约"这份包可以读判定吗"——
+  信号字段全在而全空的包不再进转录（那会回一个把"没测"读成"引擎看不出来"的 `inconclusive`），
+  改由提供方的 `PROVIDER_E_METHOD` 拒绝并按引擎拒绝的原样转发 code/message/remedy，答上的那些在
+  `RelayedAnswer.method` 里带出它是按哪个方法读的（出处，不是判决）；② `iterate report --pr` 在空台账上
+  原先印 "No findings recorded."（没测的运行读起来像干净的一次），现在由注册的
+  `report-render` 拒绝，因为它声明 `requires: ["decision-log"]`。
+  具名用例 25 条（含版本变异对照、重复注册拒绝且注册表不变、`[]` 与缺 `requires` 是两个主张、
+  `ids_in_common_with` 对出厂两份回 `[]`、对夹具 `collision` 段回那两个 id），语料清单里点名这两个新消费者。
+
 - **场景②接线：运行计划真的发布，压缩账里带上内核的维度判决。** `iterate/run_plan.py` 与
   `iterate/dimension_context.py` 此前在 `src/` 里零消费者（只有各自的测试与
   `scripts/check_run_plan_channel.py` 用它们——2.7.x 那条更正至今成立），本批把它们放进循环：`_plan`
