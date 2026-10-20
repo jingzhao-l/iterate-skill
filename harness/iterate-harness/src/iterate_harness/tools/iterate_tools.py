@@ -26,9 +26,16 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
-from ..iterate import config_loader, decision_log, evidence, meta_review, personalization, review, review_scope, trend_store
+from ..iterate import config_loader, decision_log, evidence, meta_review, personalization, review, review_scope, run_plan, trend_store
 from ..iterate import types as itypes
 from ..iterate import validate as validate_mod
+from ..iterate.dimension_context import (
+    DIMENSION_ID_MAX_LENGTH,
+    DIMENSION_ID_PATTERN,
+    DimensionContextError,
+    dimension_context,
+    format_dimension_context,
+)
 from ..iterate.loop_policy import ITERATE_STATE_KEY
 from ..iterate.loop_gates import measured_gates
 from .base import BaseTool, ToolExecutionContext, ToolResult
@@ -304,7 +311,75 @@ class IterateReviewTool(BaseTool[BaseModel]):
             scope_files=scope_files,
             raw_attachments=args.attachments,
         )
-        return _json_output({"plan": review.plan_to_dict(plan)})
+        # Scenario ②'s producing half: the same call that hands the reviewer its plan
+        # publishes the kernel run plan the GlassPane side reads through
+        # GLASSPANE_RUN_PLAN. A failure there is REPORTED in the payload next to a
+        # perfectly usable review plan — a silent omission would leave the other
+        # harness compacting against a stale contract with nobody noticing.
+        return _json_output({
+            "plan": review.plan_to_dict(plan),
+            "runPlan": self._publish_run_plan(context),
+        })
+
+    def _publish_run_plan(self, context: ToolExecutionContext) -> dict[str, Any]:
+        """Build + write the kernel run plan, and cite where and what digest.
+
+        Built from the project's RAW config mapping (``load_config``), never from the
+        effective config: the published contract must be the dimensions a human wrote,
+        not the built-in defaults this harness would otherwise invent for a project
+        that declared none. ``load_config`` returns ``None`` for a missing or
+        non-mapping file; that is refused as an error rather than passed into
+        ``build_run_plan``.
+        """
+        raw = config_loader.load_config(context.cwd)
+        if raw is None:
+            return {
+                "error": (
+                    "RUN_PLAN_E_NO_CONFIG: the project carries no readable "
+                    "iterate.config.yaml mapping to plan from"
+                ),
+                "remedy": (
+                    f"create {config_loader.CONFIG_FILENAME} with a dimensions list at the "
+                    "project root; the run plan is published from the config a human wrote, "
+                    "never from the built-in defaults"
+                ),
+            }
+        try:
+            plan = run_plan.build_run_plan(raw, source_name=config_loader.CONFIG_FILENAME)
+            written = run_plan.write_run_plan(plan, run_plan.plan_path(context.cwd))
+        except run_plan.RunPlanError as error:
+            return {"error": str(error), "remedy": error.remedy}
+        except OSError as error:
+            return {
+                "error": f"RUN_PLAN_E_WRITE: cannot write the run plan ({error})",
+                "remedy": "make .iterate/run-plan.json writable, then plan again",
+            }
+        payload: dict[str, Any] = {
+            "path": str(written.path),
+            "digest": written.digest,
+            "dimensions": [str(item["id"]) for item in plan["dimensions"]],
+        }
+        # The digest must be checkable from the audit chain, not only from the tool
+        # output an agent may compact away. A ledger refusal never cancels the
+        # publication — the file is written and the other side will read it — but the
+        # failure is named in the payload (same reporting rule as above).
+        try:
+            decision_log.append_entry(
+                context.cwd,
+                decision_log.make_entry(
+                    entry_type="decision",
+                    round_number=1,
+                    data={
+                        "kind": "run-plan",
+                        "runPlanDigest": written.digest,
+                        "dimensions": payload["dimensions"],
+                    },
+                ),
+            )
+        except (OSError, *decision_log.DECISION_LOG_REFUSALS) as error:
+            log.warning("iterate run-plan decision could not be logged: %s", error, exc_info=True)
+            payload["ledgerError"] = f"{getattr(error, 'code', type(error).__name__)}: {error}"
+        return payload
 
     def _aggregate(self, args: IterateReviewInput, context: ToolExecutionContext) -> ToolResult:
         if not args.rounds:
@@ -353,6 +428,12 @@ class IterateReviewTool(BaseTool[BaseModel]):
             "converged": report.convergence.converged,
             "by_dimension": dict(report.summary.by_dimension),
         }
+        # Scenario ②'s consuming half: the kernel's dimensionContext verdict rides the
+        # same state channel the compaction attachment already reads, so a compacted
+        # session still carries "which planned dimensions were never verified".
+        coverage = self._dimension_coverage(context, effective)
+        if coverage is not None:
+            state["dimension_coverage"] = coverage
         # Only the gates this round really measured stay in the state; see
         # iterate/loop_gates.py for why an absent gate beats a default.
         state.update(
@@ -380,6 +461,77 @@ class IterateReviewTool(BaseTool[BaseModel]):
             payload["budgetAudit"] = budget_audit.to_dict()
         context.metadata[ITERATE_STATE_KEY] = state
         return _json_output(payload)
+
+    @staticmethod
+    def _planned_ids_from_plan_file(path: Path) -> list[str] | None:
+        """The ids in the published plan file, or ``None`` when there is none to read.
+
+        ``None`` (fall back to the config) and ``[]`` are different facts: a file that
+        exists but lists nothing is a plan, and pretending it was absent would let the
+        config silently overwrite what was actually published.
+        """
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        dimensions = parsed.get("dimensions")
+        if not isinstance(dimensions, list):
+            return None
+        return [
+            str(item["id"])
+            for item in dimensions
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+
+    def _dimension_coverage(
+        self, context: ToolExecutionContext, effective: config_loader.EffectiveConfig
+    ) -> str | None:
+        """The kernel's dimensionContext verdict as one line, or ``None`` when unmeasurable.
+
+        PLANNED ids come from the published run-plan file when one exists — that file is
+        the contract the GlassPane side actually reads — and from the EFFECTIVE config's
+        ``dimensions`` list otherwise. The two can differ (the config was edited after
+        ``plan`` published, or no plan was ever written), and the difference is the point:
+        the verdict must be computed against what this harness hands over, not against
+        what somebody last typed into a YAML file.
+
+        RECORDED counts come from the ledger. An entry whose data carries no valid
+        ``dimension`` belongs to no dimension and is not guessed at — the same rule
+        ``dimension_context_from_evidence`` applies to evidence packs without the key.
+        Returning ``None`` (no line, no invented 0/0) when either half cannot be built
+        keeps the compaction attachment honest.
+        """
+        # Read-only path: composed from the two constants that own the home (mirrors
+        # how ``decision_log.read_entries`` locates the ledger without creating it).
+        plan_file = Path(context.cwd) / decision_log.LOG_DIR / run_plan.RUN_PLAN_FILENAME
+        planned = self._planned_ids_from_plan_file(plan_file)
+        if planned is None:
+            planned = [str(d) for d in effective.config.dimensions]
+        if not planned:
+            return None
+        counts: dict[str, int] = {}
+        for entry in decision_log.read_entries(context.cwd):
+            data = entry.data if isinstance(entry.data, dict) else {}
+            dimension = data.get("dimension")
+            if (
+                not isinstance(dimension, str)
+                or not dimension
+                or len(dimension) > DIMENSION_ID_MAX_LENGTH
+                or not DIMENSION_ID_PATTERN.match(dimension)
+            ):
+                continue
+            counts[dimension] = counts.get(dimension, 0) + 1
+        recorded: dict[str, dict[str, int]] = {key: {"decisions": n} for key, n in counts.items()}
+        try:
+            built = dimension_context(planned, recorded)
+        except DimensionContextError as error:
+            # A malformed id on either side is a producer bug; the run keeps working,
+            # but this verdict is not printed rather than printed wrong.
+            log.warning("iterate dimension coverage could not be computed: %s", error)
+            return None
+        return format_dimension_context(built)
 
     @staticmethod
     def _audit_budgets(usage_totals: dict[str, int], context: ToolExecutionContext) -> review.BudgetAudit | None:

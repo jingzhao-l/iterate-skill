@@ -116,6 +116,22 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **场景②接线：运行计划真的发布，压缩账里带上内核的维度判决。** `iterate/run_plan.py` 与
+  `iterate/dimension_context.py` 此前在 `src/` 里零消费者（只有各自的测试与
+  `scripts/check_run_plan_channel.py` 用它们——2.7.x 那条更正至今成立），本批把它们放进循环：`_plan`
+  用**原始 config 映射**（`load_config`，不是 effective config——发布的必须是人写下的维度表，不是本壳
+  替没声明的项目发明的缺省值）建并写 `.iterate/run-plan.json`，回 `{path, digest, dimensions}`，并追加
+  一条 `decision` 台账把 digest 落进哈希链；`_aggregate` 把
+  `format_dimension_context(dimension_context(planned, recorded))` 压进 `iterate_state`，经
+  `AggregateSnapshot` 透传，由压缩附件打印成 `- dimensionCoverage: …`，**与私有 `byDimension` 并存不取代**
+  （后者说发现出自哪一维，前者说计划里哪几维一条决策都没有），缺席则整行不印——印一个发明的 0/0 等于
+  对压缩后的模型声称一条本壳没有的事实。recorded 只认台账 `data` 里合法的 `dimension`，没有该键的条目
+  不属于任何一维、不猜。取号留给发布线：新 payload 字段与新打印行都是用户可见形状。
+  两半未做，照实记：microcompact 的"优先压缩无关维度历史"没动（`ToolResultBlock` 只有
+  `tool_use_id/content/is_error`，与台账的 `op_<ULID>` 之间没有 join 键；可行路子是从内容里捞 `op_` 号，
+  本轮不做假样子）；`iterate_decision_log` 的 `data` 仍是自由形状，所以账里有没有维度取决于写的人是否
+  声明，把它做成显式参数是一次取号决定。
+
 - **场景④那两把闸的对照补到能红（只动测试，未动生产代码）。** 上一批的
   `test_breaker_level_is_never_invented` 断的是 `"breaker_level" not in GATE_KEYS`，而
   `GATE_KEYS` 这个常量在生产代码里**没有任何读者**（grep 实测只命中声明与这条测试）——于是它测的是

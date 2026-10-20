@@ -689,3 +689,48 @@ def test_iterate_attachment_shows_the_gates_the_kernel_would_have_read() -> None
     stats = attachment.body.splitlines()[1]
     assert "invariant_state=pass" in stats
     assert "evidence_complete=True" in stats
+
+
+def test_iterate_attachment_prints_the_kernel_coverage_line_verbatim() -> None:
+    """Scenario ②: the carried-over line must be byte-identical to format_dimension_context.
+
+    Both harnesses compute this sentence from the same kernel rules; a rewording on the
+    way through the attachment would break exactly the cross-check that makes the line
+    worth carrying.
+    """
+    from iterate_harness.iterate.dimension_context import dimension_context, format_dimension_context
+
+    verdict = format_dimension_context(
+        dimension_context(["security", "correctness"], {"security": {"decisions": 2}})
+    )
+    attachment = create_iterate_review_attachment_if_needed(
+        {
+            "mode": "code",
+            "rounds_seen": 2,
+            "total_findings": 3,
+            "converged": False,
+            "by_dimension": {"security": 3},
+            "dimension_coverage": verdict,
+        }
+    )
+    assert attachment is not None
+    body_lines = attachment.body.splitlines()
+    assert f"- dimensionCoverage: {verdict}" in body_lines
+    # Next to — not replacing — the reviewer's private per-dimension counts.
+    assert any(line.startswith("- byDimension: security=3") for line in body_lines)
+
+
+def test_iterate_attachment_prints_no_coverage_line_when_nothing_measured() -> None:
+    """No coverage value means nobody measured; printing an invented 0/0 would be a verdict."""
+    attachment = create_iterate_review_attachment_if_needed(
+        {
+            "mode": "code",
+            "rounds_seen": 1,
+            "total_findings": 0,
+            "converged": False,
+            "by_dimension": {"security": 1},
+        }
+    )
+    assert attachment is not None
+    assert "dimensions verified" not in attachment.body
+    assert "0/0" not in attachment.body

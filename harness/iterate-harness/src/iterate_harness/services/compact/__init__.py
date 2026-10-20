@@ -743,6 +743,13 @@ def create_iterate_review_attachment_if_needed(
     if isinstance(by_dim, dict) and by_dim:
         dim_summary = ", ".join(f"{k}={v}" for k, v in sorted(by_dim.items()))
         lines.append(f"- byDimension: {dim_summary}")
+    # The kernel's verdict, alongside — not replacing — the reviewer's private counts:
+    # byDimension says what findings came out of, this says which PLANNED dimensions were
+    # never verified at all. Absent means nobody measured; printing an invented "0/0"
+    # would tell the compacted model a fact the harness does not have.
+    coverage = iterate_state.get("dimension_coverage")
+    if isinstance(coverage, str) and coverage.strip():
+        lines.append(f"- dimensionCoverage: {coverage}")
     return _create_attachment(
         "iterate_review",
         "Iterate review state",

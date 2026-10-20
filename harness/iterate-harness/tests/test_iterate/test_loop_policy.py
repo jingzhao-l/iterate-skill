@@ -223,6 +223,29 @@ class TestLoopPolicy:
         snapshot = read_state({ITERATE_STATE_KEY: {"evidence_complete": False}})
         assert snapshot.evidence_complete is False
 
+    def test_the_state_reader_survives_a_state_without_the_coverage_key(self):
+        """(e) A producer from before scenario ② must not crash the reader: absent is None."""
+        snapshot = read_state({ITERATE_STATE_KEY: {"rounds_seen": 1, "total_findings": 0}})
+        assert snapshot is not None
+        assert snapshot.dimension_coverage is None
+
+    def test_the_state_reader_keeps_only_a_real_coverage_line(self):
+        snapshot = read_state(
+            {
+                ITERATE_STATE_KEY: {
+                    "rounds_seen": 1,
+                    "dimension_coverage": "1/2 dimensions verified, 1 unverified (security), 1 decision",
+                }
+            }
+        )
+        assert snapshot is not None
+        assert snapshot.dimension_coverage.startswith("1/2 dimensions verified")
+        # A blank or non-string value is the same fact as absence, never a verdict.
+        for raw in ("   ", 7, None, {"decisions": 1}):
+            snapshot = read_state({ITERATE_STATE_KEY: {"rounds_seen": 1, "dimension_coverage": raw}})
+            assert snapshot is not None
+            assert snapshot.dimension_coverage is None, raw
+
     def test_round_cap_stops_even_when_not_converged(self):
         policy = IterateLoopPolicy(max_review_rounds=2)
         snapshot = state(rounds_seen=2, total_findings=5, findings_by_round=[3, 2])

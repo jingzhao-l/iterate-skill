@@ -103,6 +103,8 @@ _EXPORTS: dict[str, str] = {
     "reviewer_task_prompt": ".review",
     "ReviewAttachment": ".review",
     "sort_findings": ".review",
+    # run_plan
+    "plan_path": ".run_plan",
     # settings
     "IterateSettings": ".settings",
     "effective_review_rounds": ".settings",
@@ -190,6 +192,7 @@ __all__ = [
     "normalize_summary",
     "personalization_constraints",
     "parse_attachments",
+    "plan_path",
     "plan_to_dict",
     "post_pr_comment",
     "price_for",

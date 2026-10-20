@@ -463,6 +463,170 @@ class TestIterateReviewTool:
         payload = json.loads(result.output)
         assert "thresholdGate" not in payload["finalReport"]
 
+    async def test_plan_publishes_the_run_plan_and_cites_its_digest(self, tmp_path):
+        """Scenario ② (producing half): the digest in the payload is the disk file's digest.
+
+        That equality is the only one the GlassPane side can re-check without trusting
+        this process — so it is the one asserted here.
+        """
+        from iterate_harness.iterate import run_plan as run_plan_mod
+        from iterate_harness.tools.iterate_tools import IterateReviewInput
+
+        write_config(tmp_path, "dimensions:\n  - security\n  - correctness\n")
+        result = await run_tool(
+            IterateReviewTool(),
+            IterateReviewInput(operation="plan", mode="dry-run", max_review_rounds=2),
+            make_context(tmp_path),
+        )
+        assert result.is_error is False
+        run_plan_info = json.loads(result.output)["runPlan"]
+        assert "error" not in run_plan_info
+        assert Path(run_plan_info["path"]) == tmp_path / ".iterate" / "run-plan.json"
+        assert run_plan_info["dimensions"] == ["security", "correctness"]
+        on_disk = json.loads(Path(run_plan_info["path"]).read_text(encoding="utf-8"))
+        assert run_plan_info["digest"] == run_plan_mod.run_plan_digest(on_disk)
+
+    async def test_plan_records_the_published_digest_in_the_ledger(self, tmp_path):
+        """The digest must stay checkable after a compaction drops the tool output."""
+        from iterate_harness.iterate import decision_log
+        from iterate_harness.tools.iterate_tools import IterateReviewInput
+
+        write_config(tmp_path, "dimensions:\n  - security\n")
+        result = await run_tool(
+            IterateReviewTool(),
+            IterateReviewInput(operation="plan", mode="dry-run", max_review_rounds=2),
+            make_context(tmp_path),
+        )
+        run_plan_info = json.loads(result.output)["runPlan"]
+        assert "ledgerError" not in run_plan_info
+        entries = decision_log.read_entries(tmp_path)
+        matched = [
+            entry
+            for entry in entries
+            if isinstance(entry.data, dict) and entry.data.get("kind") == "run-plan"
+        ]
+        assert matched, "no run-plan decision reached the audit chain"
+        assert matched[-1].type == "decision"
+        assert matched[-1].data["runPlanDigest"] == run_plan_info["digest"]
+        assert matched[-1].data["dimensions"] == ["security"]
+
+    async def test_plan_without_a_config_refuses_the_run_plan_loudly_and_keeps_the_review_plan(
+        self, tmp_path
+    ):
+        """A guard that cannot report is not delivered: None config → named refusal, plan intact."""
+        from iterate_harness.tools.iterate_tools import IterateReviewInput
+
+        result = await run_tool(
+            IterateReviewTool(),
+            IterateReviewInput(operation="plan", mode="dry-run", max_review_rounds=2),
+            make_context(tmp_path),
+        )
+        assert result.is_error is False
+        payload = json.loads(result.output)
+        assert "plan" in payload  # the review plan is still returned
+        assert "runPlan" in payload  # and the failure is stated, never omitted
+        assert payload["runPlan"]["error"].startswith("RUN_PLAN_E_NO_CONFIG:")
+        assert "remedy" in payload["runPlan"]
+
+    async def test_plan_with_a_dimensionless_config_reports_the_run_plan_error_not_an_omission(
+        self, tmp_path
+    ):
+        """(d) RunPlanError on a readable-but-unplannable config: still a review plan + a code."""
+        from iterate_harness.tools.iterate_tools import IterateReviewInput
+
+        write_config(tmp_path, "goal: g\n")  # a mapping, but no dimensions to plan from
+        result = await run_tool(
+            IterateReviewTool(),
+            IterateReviewInput(operation="plan", mode="dry-run", max_review_rounds=2),
+            make_context(tmp_path),
+        )
+        assert result.is_error is False
+        payload = json.loads(result.output)
+        assert payload["plan"]["dimensions"]
+        assert payload["runPlan"]["error"].startswith("RUN_PLAN_E_NO_DIMENSIONS:")
+        assert payload["runPlan"]["remedy"]
+
+    async def _aggregate_once(self, tmp_path, context=None):
+        from iterate_harness.iterate.loop_policy import ITERATE_STATE_KEY
+        from iterate_harness.tools.iterate_tools import IterateReviewInput
+
+        ctx = context or make_context(tmp_path)
+        result = await run_tool(
+            IterateReviewTool(),
+            IterateReviewInput(
+                operation="aggregate",
+                rounds=[{"round": 1, "findings": [FINDING]}],
+                max_review_rounds=2,
+            ),
+            ctx,
+        )
+        assert result.is_error is False
+        return ctx.metadata[ITERATE_STATE_KEY]
+
+    async def test_aggregate_coverage_with_a_dimensionless_ledger_verifies_nothing(self, tmp_path):
+        """(b) Decisions that name no dimension belong to no dimension: 0/N, never a guess."""
+        from iterate_harness.iterate import decision_log
+        from iterate_harness.iterate.dimension_context import dimension_context, format_dimension_context
+
+        write_config(tmp_path, "dimensions:\n  - security\n  - correctness\n")
+        for kind in ("intervention", "assumption-check"):
+            decision_log.append_entry(
+                tmp_path,
+                decision_log.make_entry(
+                    entry_type="decision",
+                    round_number=1,
+                    data={"kind": kind, "detail": "the run recorded this, but never a dimension"},
+                ),
+            )
+        state = await self._aggregate_once(tmp_path)
+        expected = format_dimension_context(
+            dimension_context(["security", "correctness"], {})
+        )
+        assert state["dimension_coverage"] == expected
+        assert expected.startswith("0/2 dimensions verified")
+        assert "2 unverified (security, correctness)" in expected
+
+    async def test_aggregate_coverage_counts_only_valid_dimensioned_entries(self, tmp_path):
+        """One dimensioned ledger decision flips exactly one plan dimension to verified."""
+        from iterate_harness.iterate import decision_log
+        from iterate_harness.iterate.dimension_context import dimension_context, format_dimension_context
+
+        write_config(tmp_path, "dimensions:\n  - security\n  - correctness\n")
+        decision_log.append_entry(
+            tmp_path,
+            decision_log.make_entry(
+                entry_type="decision",
+                round_number=1,
+                data={"dimension": "security", "kind": "review-note"},
+            ),
+        )
+        decision_log.append_entry(
+            tmp_path,
+            decision_log.make_entry(
+                entry_type="decision", round_number=1, data={"dimension": "Not-A-Kebab-Id"}
+            ),
+        )
+        state = await self._aggregate_once(tmp_path)
+        assert state["dimension_coverage"] == format_dimension_context(
+            dimension_context(["security", "correctness"], {"security": {"decisions": 1}})
+        )
+
+    async def test_aggregate_coverage_reads_the_published_plan_before_the_config(self, tmp_path):
+        """The plan file wins over the config: the two CAN differ, and the difference is the point."""
+        from iterate_harness.tools.iterate_tools import IterateReviewInput
+
+        write_config(tmp_path, "dimensions:\n  - security\n  - correctness\n")
+        await run_tool(
+            IterateReviewTool(),
+            IterateReviewInput(operation="plan", mode="dry-run", max_review_rounds=2),
+            make_context(tmp_path),
+        )
+        # Config edited after publication: the published contract stays the contract.
+        write_config(tmp_path, "dimensions:\n  - ui-ux\n")
+        state = await self._aggregate_once(tmp_path)
+        assert "ui-ux" not in state["dimension_coverage"]
+        assert "unverified (security, correctness)" in state["dimension_coverage"]
+
 
 class TestIterateDecisionLogTool:
     async def test_append_and_read_roundtrip(self, tmp_path):

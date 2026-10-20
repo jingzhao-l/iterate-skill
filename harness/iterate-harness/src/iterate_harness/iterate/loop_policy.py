@@ -106,6 +106,11 @@ class AggregateSnapshot:
     # Optional per-dimension input/output split (v1.26): billed at exact
     # prices instead of the blended average.
     dimension_usage_io: dict[str, dict[str, int]] = field(default_factory=dict)
+    # The kernel dimensionContext verdict line (scenario ②): published by the aggregate
+    # tool when both halves measured something — the published plan's dimensions and the
+    # ledger's per-dimension decision counts. ``None`` means nobody could produce the
+    # verdict, and the compaction attachment prints nothing rather than an invented 0/0.
+    dimension_coverage: str | None = None
 
 
 def read_state(tool_metadata: dict[str, object] | None) -> AggregateSnapshot | None:
@@ -148,6 +153,7 @@ def _read_state_unsafe(tool_metadata: dict[str, object] | None) -> AggregateSnap
     )
     usage_io_raw = state.get("dimension_usage_io")
     usage_io = _clean_usage_io(usage_io_raw)
+    coverage_raw = state.get("dimension_coverage")
     return AggregateSnapshot(
         rounds_seen=int(state.get("rounds_seen", 0) or 0),
         total_findings=int(state.get("total_findings", 0) or 0),
@@ -161,6 +167,9 @@ def _read_state_unsafe(tool_metadata: dict[str, object] | None) -> AggregateSnap
         all_dimensions_exhausted=bool(state.get("all_dimensions_exhausted", False)),
         dimension_usage=usage,
         dimension_usage_io=usage_io,
+        # Non-string or blank values are treated as absent: the attachment must not
+        # render a verdict a producer did not actually measure.
+        dimension_coverage=coverage_raw if isinstance(coverage_raw, str) and coverage_raw.strip() else None,
     )
 
 
