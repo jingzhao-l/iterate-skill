@@ -136,7 +136,93 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
-      > 本版 **3/3 达成**：ClawHub / ModelScope / SkillHub 的 `tags.latest` 均为 `3.5.3`。
+      > 本版 **3/3 达成**：ClawHub / ModelScope / SkillHub 的 `tags.latest` 均为 `3.6.0`。
+      >
+      > **3.6.0 状态（2026-10-20）**：minor（三个新能力 + 同轮全量复审修复）。测试套件
+      > **1563 → 1738**（实测 `pytest tests/ -q` → 1738 passed, 2 warnings；
+      > 新增 `tests/test_scan_command.py`、`tests/test_cli_help.py`、
+      > `tests/test_gpg_signing_audit.py`、`tests/test_portable.py`、
+      > `tests/test_status.py`、`npm-installer/test/security.test.js`）。
+      > 三个新能力：`iterate scan`（只读技术栈导出，恒退出 0）、
+      > `iterate help` + 命令拼写容错（`did_you_mean`）、`iterate export` /
+      > `iterate import`（可移植状态包）。全量复审 findings 全部修复，其中：
+      > **[High]** `onboard`/`reonboard` 静默删除顶层 `mode` 与 `invariants`（新增
+      > `normalize_mode`/`normalize_invariants`，`OnboardingData` 增两字段并由
+      > `generate_config_yaml` 写回）；**[Medium]** `tools/gpg-signing.sh audit [repo…]`
+      > 忽略目标参数（改 `targets_filtered "$@"`，用假 `gh` 记录被查询仓库做回归，
+      > 修复前 3 项失败）；**[Low]** 两版 README 宣称 `config set` 支持
+      > `validation.commands`/`invariants.*`（实际不可设，改为逐一列出可设键并以
+      > `TestSettableKeysDocumentedInReadmes` 双向锁定文档与 `SETTABLE_KEYS`）；
+      > **[Low]** `scripts/install.py` 旧式直接调用漏掉 `--ai=<value>`；
+      > **[Low]** `doctor` 的 Next action(s) 硬编码中文、无视 `language`（现按配置
+      > 渲染 zh/en，缺失/损坏回退英文）；**[Nit]** `tui.key_value` 用转义后 label
+      > 度量列宽（含 `[` 的键每括号多算一列）。
+      > 本轮工作树与另一个并发 lane **共用同一 worktree**：8 个逻辑提交先落地，
+      > 该 lane 在其上续作并推送（故这些提交在 `origin/main` 上表现为祖先）。
+      > 提交链**纯线性**、全部 GPG 签名。
+      > 主仓库 `main` 现推进到 `e33d1a35`（**tag 之后**的 badge / harness 提交）；
+      > signed annotated tag `v3.6.0` = `a9d24713` → 提交 `d8c62bae`，
+      > `git verify-tag v3.6.0` → 完好的签名，签发指纹
+      > `0929EA31DF4F7429F63FC53189D88B1D043A1298`（与钉死值一致）。
+      > ✅ **GitHub Release v3.6.0 已创建**（published 2026-10-20T02:49:00Z；
+      > `release.yml` workflow_dispatch success run 39360952729，其后 39361684633 /
+      > 39361931761 两次重跑亦 success）：6 资产齐备；`shasum -a 256 -c
+      > SHA256SUMS.txt` OK；`iterate-skill.tar.gz` 654,732 字节 / **93 条目**、
+      > `harness/|kernel/` **0 条**；`iterate-qoder.zip` 696,946 字节 / **78 文件**、
+      > `harness/|kernel/` **0 条**；两份包内 `SKILL.md version: 3.6.0`、
+      > `pyproject.toml 3.6.0`、`npm-installer/package.json 3.6.0` 三处一致。
+      > ✅ **npm CI 发布链路实测**（`npm-publish.yml` success run 39360952717）：
+      > `npm view iterate-skill-installer version` → **3.6.0**。
+      > ✅ **ClawHub**（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）：
+      > `GET /api/v1/skills/iterate-skill` → `tags.latest = 3.6.0`。
+      > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：`last_modified` 前进到
+      > `2026-10-20T03:16:19Z`（晚于 Release 02:49:00Z）；**消费端实测**
+      > `api.download_skill()` 落地 **72 文件**、`harness/|kernel/` 0 条，
+      > `SKILL.md version: 3.6.0`、`pyproject.toml 3.6.0`、
+      > `npm-installer/package.json 3.6.0` 三处一致，`__version__ = "3.6.0"`，
+      > 三个新能力均在包内（`cli.py` 含 `help` 子命令、`tui.py` 含 `_wrap_display`、
+      > `generator.py` 含 `normalize_invariants`）。
+      > ✅ **SkillHub**（skillId `104490`）：`skillhub search iterate-skill` →
+      > **version: 3.6.0**（`@user_ce056149/iterate-skill`）。
+      >
+      > ⚠️ **本地 tag 命名空间撞名（已处理，需长期记住）**：本地 `refs/tags/v3.6.0`
+      > 原指向 **iterate-plugin 镜像 tag**（tag 对象 `b62d8e98` → 提交 `2e0890c3`，
+      > `plugin-origin` 上仍持有）。本次已把它重指到 skill 发布 tag
+      > `a9d24713` → `d8c62bae`。要找回 plugin 镜像 tag：
+      > `git tag -f v3.6.0 2e0890c3`（或直接 `git fetch plugin-origin v3.6.0` 前
+      > 先删本地 tag）。影响面：普通 `git fetch` **不受影响**；但
+      > `git fetch --tags` 会报 `would clobber existing tag`。两条版本线共用一个
+      > 本地 tag 命名空间是这个工作副本的固有代价，后续每次 skill 发版都会撞上；
+      > 长期解法是把 skill tag 与 plugin tag 分命名空间（例如 plugin 改 `plugin-v*`），
+      > 建议由 plugin lane 处理。
+      >
+      > **CI 抖动记录**：本轮早段有三次红（39360588983 `CI` failure、39360597600
+      > `Dependency Graph` failure、39361621326 `CI` failure），分别由 `feb02d81`
+      > （`test`：显式加入仓库根 `sys.path`，修复 CI bare pytest 收集失败）与
+      > `d8c62bae`（`fix(tools)`：install 命令先校验目标再检查依赖，修复 Linux CI
+      > 失败）修掉；后续 39361901542 / 39401597724 / 39411162998 三次 `CI` 均
+      > success。
+      >
+      > **✅ 清洁门禁**：`git status` 干净、`origin/main == main == e33d1a35`；
+      > Dependabot 0 open 告警 × 3 仓（`iterate-skill` / `-harness` / `-plugin`，
+      > `GET /repos/…/dependabot/alerts` 均空）；0 open issue × 3 仓、0 open PR × 3 仓；
+      > `./scripts/check.sh --lint-only` 全绿（ruff 0.16.8）；`iterate --version` 与
+      > `import iterate_cli` 均 3.6.0。
+      > 分支清理：删除本地 `backup/2026-10-19-harness-v2.8.0-wip`（`59342433`）与
+      > `backup/2026-10-20-harness-wip-staged`（`49d0521a`）——两者与 `origin` 同名
+      > 分支**逐位相同**，本地删了内容仍在远端；后者内容（harness 并发 WIP）其后已被
+      > 该 lane 自己的提交收进 `main`。**保留** `backup/docs-glasspane-cross-link`
+      > （2 个独有提交）、`backup/pre-rebase-20260930`（38 个）、
+      > `kernel/decision-log-chain`（7 个）——均含未被 `origin/main` 收录的提交，
+      > 删除即丢历史。
+      > worktree **一个未删**（共 14 个）：除本 worktree 外，
+      > `/Volumes/Eng-Dev/.worktrees/it-*` 与 `/private/var/tmp/gp310-base` 全部挂在
+      > harness/kernel/plugin/scenario 分支上，属并发 lane 的活，删了就是删别人的。
+      >
+      > **⚠️ 遗留问题**：本轮与另一个 lane 共用同一 worktree，期间远端 `main` 多次
+      > 前移、`git push` 被拒（需 `git rebase origin/main` 再推）。共用 worktree 的
+      > 每日例行动作是竞态的——建议下一轮把并发 lane 移到各自 `.worktrees/` 实例。
+      >
       > **3.5.3 状态（2026-10-18 发版 / CHANGELOG 条目落笔 2026-10-17）**：patch（无人值守
       > 全量复审 + 修复）。测试套件 **1451 → 1563**（新增 `tests/test_prepush_hook.py`，
       > 并大幅扩充 `test_signing` / `test_updater` / `test_release_meta` /
