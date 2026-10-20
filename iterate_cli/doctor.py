@@ -1310,6 +1310,7 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
         return False, []
 
     config = load_onboarding_config(project_root)
+    empty_config_rebuilt = False
     if config is None:
         # An EMPTY config file is a repairable state, not a parse failure —
         # load_onboarding_config reports it as None, and reporting "could not be
@@ -1323,7 +1324,15 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
             tui.warning(
                 "Doctor --fix: iterate.config.yaml is empty; rebuilding it with safe defaults."
             )
-            config = {}
+            # Seeding is what makes the rebuild real: `apply_safe_fixes({})`
+            # finds nothing to repair, so the old `config = {}` fell through the
+            # `if not fixes: return True, []` early return and NOTHING was
+            # written — while the caller printed "rebuilding it with safe
+            # defaults" and doctor kept reporting the file as empty. A minimal
+            # schema-valid config (canonical dimensions) plus an explicit fix
+            # entry guarantees the write happens.
+            config = {"dimensions": list(CANONICAL_DIMENSIONS)}
+            empty_config_rebuilt = True
         else:
             tui.error(
                 "Doctor --fix: iterate.config.yaml exists but could not be parsed; "
@@ -1332,6 +1341,14 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
             return False, []
 
     new_config, fixes = apply_safe_fixes(config)
+    if empty_config_rebuilt:
+        # Report the rebuild itself; without this entry a seeded config that
+        # needed no further repair would again look like "nothing to fix".
+        fixes.insert(
+            0,
+            "iterate.config.yaml: empty, rebuilt with canonical dimensions "
+            "(add goal/validation.commands next).",
+        )
 
     # Capture missing fingerprints for an onboarded project so drift detection
     # is reactivated. The most common silent drift-disable is an onboarding

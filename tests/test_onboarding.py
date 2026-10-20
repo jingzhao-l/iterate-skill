@@ -112,6 +112,7 @@ from iterate_cli.wizard import (
     _read_optional_int,
     _read_optional_text,
     _read_reasoning_effort,
+    _run_basic_wizard,
     run_wizard,
 )
 
@@ -1099,6 +1100,58 @@ class TestRunWizard:
 # Refresh tests
 # ---------------------------------------------------------------------------
 
+class TestBasicWizardPreservesAdvancedSettings:
+    """``_run_basic_wizard`` rebuilds OnboardingData from scratch.
+
+    It used to seed only the "advanced tuning" fields, so the three keys the
+    basic wizard never asks about — ``onboarding.drift_check``, top-level
+    ``mode``, and ``invariants`` — were silently reset by any re-onboarding.
+    """
+
+    @staticmethod
+    def _basic_responses() -> list[str]:
+        return [
+            "y",             # tech stack correct
+            "y",             # use suggested validation commands
+            "",              # default dimensions
+            "",              # dimension sets: enable all suggested
+            "",              # default branch
+            "",              # default scope
+            "y",             # push per round
+            "Desc",          # project description
+            "",              # conventions: empty
+            "n",             # advanced config: no
+            "y",             # confirm and generate
+        ]
+
+    def test_preserves_drift_check_mode_and_invariants(self, fake_project: Path) -> None:
+        existing = OnboardingData(
+            project_root=fake_project,
+            channel="cli",
+            scan=scan_project(fake_project),
+            drift_check=False,
+            mode="defensive",
+            invariants={
+                "ensure": [
+                    {"file": "src/app.py", "contains": "def main"},
+                ],
+                "commands": {"python": ["pytest -q"]},
+            },
+        )
+        responses = iter(self._basic_responses())
+
+        data = _run_basic_wizard(fake_project, lambda _: next(responses), existing)
+
+        assert data is not None
+        assert data.drift_check is False
+        assert data.mode == "defensive"
+        assert data.invariants == existing.invariants
+        # Deep-copied: editing the rebuilt config must not mutate the loaded one.
+        assert data.invariants is not existing.invariants
+        data.invariants["commands"]["python"].append("ruff check .")
+        assert existing.invariants["commands"]["python"] == ["pytest -q"]
+
+
 class TestIsOnboardingComplete:
     def test_not_complete(self, empty_project: Path) -> None:
         assert is_onboarding_complete(empty_project) is False
@@ -1994,6 +2047,31 @@ class TestLoadExistingOnboardingDataNormalizesBooleans:
         result = _load_existing_onboarding_data(fake_project)
         assert result is not None
         assert result.dimensions == list(CANONICAL_DIMENSIONS)
+
+    def test_validation_module_with_no_string_commands_is_dropped(
+        self, fake_project: Path
+    ) -> None:
+        """An empty module must not be loaded and re-persisted.
+
+        The schema requires ``minItems: 1`` and refresh drops empty modules, so
+        loading one here made the wizard write a config that doctor and the
+        schema immediately flagged.
+        """
+        config_path = fake_project / "iterate.config.yaml"
+        config_path.write_text(
+            "goal: test\n"
+            "validation:\n"
+            "  commands:\n"
+            "    python:\n"
+            "      - pytest -q\n"
+            "    node: []\n"
+            "    ruby:\n"
+            "      - 42\n",
+            encoding="utf-8",
+        )
+        result = _load_existing_onboarding_data(fake_project)
+        assert result is not None
+        assert result.validation_commands == {"python": ["pytest -q"]}
 
 
 class TestLoadedValueNormalizers:

@@ -1270,12 +1270,23 @@ def run_update(
             )
         ]
         # Every requested name was VALID (unknown ones were refused above) yet
-        # matched no installed skill dir: exit 0 with an empty
-        # `assistants_updated` used to look like "everything updated". Surface
-        # the mismatch so the operator learns those assistants simply are not
-        # installed here, rather than assuming success.
-        if assistants and not targeted:
-            outcome.assistants_not_installed = sorted(set(assistants))
+        # some may match no installed skill dir: exit 0 with a partial
+        # `assistants_updated` used to look like "everything updated". Report
+        # the missing names for BOTH the all-missing and the mixed case
+        # (`--assistants claude,cursor` with only claude installed previously
+        # stayed silent about cursor) so the operator learns which assistants
+        # simply are not installed here.
+        if assistants:
+            detected_paths = {
+                ASSISTANT_SKILL_DIRS.get(name) for name, _ in detected
+            }
+            detected_names = {name for name, _ in detected}
+            outcome.assistants_not_installed = sorted(
+                name
+                for name in set(assistants)
+                if name not in detected_names
+                and ASSISTANT_SKILL_DIRS.get(name) not in detected_paths
+            )
 
     extracted, dl_error = download_verified_release(release, fetch=fetch)
     if extracted is None:

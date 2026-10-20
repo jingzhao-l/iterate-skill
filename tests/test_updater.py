@@ -1580,9 +1580,16 @@ def test_run_update_reports_valid_but_not_installed_assistants(
     assert payload["assistants_not_installed"] == ["cursor", "gemini"]
 
 
-def test_run_update_not_installed_empty_when_something_matched(
+def test_run_update_reports_missing_assistants_even_when_others_matched(
     tmp_path, monkeypatch
 ) -> None:
+    """A mixed --assistants request must name the ones that are not installed.
+
+    Regression: ``assistants_not_installed`` was only populated when NOTHING
+    matched, so ``--assistants claude,cursor`` with only claude present exited
+    0 with ``assistants_updated == ["claude"]`` and never mentioned cursor —
+    indistinguishable from "both updated".
+    """
     fetch = make_ok_fetch(tmp_path)
     home, proj = _fake_home(tmp_path)
     monkeypatch.setattr(updater, "detect_install_method", lambda: INSTALL_METHOD_PIP)
@@ -1595,10 +1602,27 @@ def test_run_update_not_installed_empty_when_something_matched(
         fetch=fetch,
         runner=_ok_runner,
     )
-    # claude matched → the run was not "nothing happened", so the
-    # not-installed list stays empty (cursor's absence is implied by
-    # assistants_updated == ["claude"]).
-    assert outcome.assistants_not_installed == []
+    assert outcome.assistants_updated == ["claude"]
+    assert outcome.assistants_not_installed == ["cursor"]
+    payload = outcome.to_dict()
+    assert payload["assistants_not_installed"] == ["cursor"]
+
+
+def test_run_update_shared_path_alias_counts_as_installed(tmp_path, monkeypatch) -> None:
+    """``claude-code`` shares claude's directory and must not be called missing."""
+    fetch = make_ok_fetch(tmp_path)
+    home, proj = _fake_home(tmp_path)
+    monkeypatch.setattr(updater, "detect_install_method", lambda: INSTALL_METHOD_PIP)
+
+    outcome = run_update(
+        project_root=proj,
+        home=home,
+        confirmed=True,
+        assistants=["claude-code", "cursor"],
+        fetch=fetch,
+        runner=_ok_runner,
+    )
+    assert outcome.assistants_not_installed == ["cursor"]
 
 
 # ---------------------------------------------------------------------------

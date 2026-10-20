@@ -572,6 +572,30 @@ class TestRunDoctorFix:
         assert not ok
         assert fixes == []
 
+    def test_empty_config_is_rebuilt_not_silently_skipped(self, tmp_path) -> None:
+        """An empty config must be rewritten, not merely announced.
+
+        Regression: the fix path printed "rebuilding it with safe defaults" but
+        seeded ``config = {}``, which produced no fixes and hit the
+        ``if not fixes: return True, []`` early return — nothing was written and
+        doctor kept reporting the same empty file.
+        """
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("", encoding="utf-8")
+
+        ok, fixes = run_doctor_fix(project)
+
+        assert ok
+        assert any("empty, rebuilt" in f for f in fixes), fixes
+        rebuilt = load_onboarding_config(project)
+        assert rebuilt is not None
+        assert rebuilt["dimensions"] == list(CANONICAL_DIMENSIONS)
+        # The write is on disk, so a second doctor run no longer sees it empty.
+        report = run_doctor(project)
+        assert not any(
+            "empty" in finding.detail.lower() for finding in report.findings
+        ), [f.detail for f in report.findings]
+
     def test_cli_fix_flag_applies(self, tmp_path) -> None:
         project = _make_project(tmp_path)
         config = _base_config()

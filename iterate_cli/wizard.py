@@ -14,6 +14,7 @@ for consistent skills.sh / Claude Code style styling.
 
 from __future__ import annotations
 
+import copy
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -386,6 +387,15 @@ def _run_basic_wizard(
             existing.scope_chunk_size if existing else DEFAULT_SCOPE_CHUNK_SIZE
         ),
         drift_ignore=list(existing.drift_ignore) if existing else [],
+        # These three are never re-asked by the basic wizard, but they ARE
+        # written back by generate_config_yaml(). Dropping them here reset
+        # `onboarding.drift_check: false` to true, reverted a project switched
+        # to `mode: defensive`, and deleted the whole `invariants:` section —
+        # the same silent-loss class the loader/generator were fixed for, on
+        # the one path that rebuilt OnboardingData from scratch.
+        drift_check=existing.drift_check if existing else True,
+        mode=existing.mode if existing else DEFAULT_MODE,
+        invariants=copy.deepcopy(existing.invariants) if existing else None,
     )
 
     # Optional advanced tuning step (edit-in-place on ``data`` when the
@@ -579,10 +589,15 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         # dict-typed field) and be re-serialized as a broken structure.
         raw_commands = validation.get("commands")
         raw_commands = raw_commands if isinstance(raw_commands, dict) else {}
+        # Drop modules whose command list is empty after filtering: the schema
+        # requires minItems: 1, and doctor reports an empty module as an error.
+        # refresh._resolve_validation_config drops them too, so persisting them
+        # here would leave the wizard writing a config it immediately flags.
         validation_commands = {
             str(module): [str(c) for c in cmds if isinstance(c, str)]
             for module, cmds in raw_commands.items()
             if isinstance(cmds, list)
+            and any(isinstance(c, str) for c in cmds)
         }
         # Normalize validation.command_whitelist: a hand-edited scalar string
         # (`command_whitelist: pytest`) would otherwise be iterated per
