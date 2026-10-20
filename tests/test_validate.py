@@ -835,6 +835,76 @@ class TestValidateDimensionSets:
         errors = validate.validate_dimension_sets(config)
         assert any("focus must be a mapping" in e for e in errors)
 
+    def test_custom_schema_path_supplies_the_enum(self, tmp_path: Path) -> None:
+        """A caller-supplied schema must drive the known-dimension check.
+
+        The enum used to come from the repo default schema regardless of the
+        ``schema_path`` passed to ``validate_config``, so a dimension that only
+        exists in a project's custom schema was reported as unknown.
+        """
+        custom_schema = tmp_path / "custom.schema.json"
+        custom_schema.write_text(
+            json.dumps(
+                {
+                    "type": "object",
+                    "properties": {
+                        "dimensions": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["custom_dim"]},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = {"dimension_sets": {"mine": {"dimensions": ["custom_dim"]}}}
+        assert validate.validate_dimension_sets(config, custom_schema) == []
+        # The default schema does not know it, so the same config fails there.
+        assert any(
+            "unknown dimension" in e for e in validate.validate_dimension_sets(config)
+        )
+
+
+class TestExplicitDimensionsDirectory:
+    def test_explicit_missing_directory_is_an_error(
+        self, tmp_path: Path, schema_path: Path
+    ) -> None:
+        """A typo'd 4th argument must fail, not silently validate nothing."""
+        config = tmp_path / "iterate.config.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "dimensions": ["correctness"],
+                    "validation": {"commands": {"python": ["ruff check ."]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        missing = tmp_path / "no-such-dimensions"
+        errors = validate.validate_config(config, schema_path, missing)
+        assert any("Dimension directory not found" in e for e in errors), errors
+
+    def test_implicit_missing_directory_keeps_the_old_behaviour(
+        self, tmp_path: Path, schema_path: Path
+    ) -> None:
+        """No explicit dir and no sibling ``dimensions/`` → checks skipped, no error.
+
+        ``validate_config(path, schema)`` is the historical two-argument form;
+        it must keep working for configs that live outside a skill checkout.
+        """
+        config = tmp_path / "iterate.config.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "dimensions": ["correctness"],
+                    "validation": {"commands": {"python": ["ruff check ."]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        errors = validate.validate_config(config, schema_path)
+        assert not any("Dimension directory not found" in e for e in errors), errors
+
 
 class TestDimensionConsistency:
     def test_consistency_passes(self, tmp_path: Path) -> None:

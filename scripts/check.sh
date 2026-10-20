@@ -8,7 +8,14 @@
 # was never run before pushing. The gate here is only worth having if it cannot
 # disagree with CI, so the ruff version is read from the workflow itself.
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
+
+# Fail with a sentence, not git's "fatal: not a git repository" (which reads
+# like the tool is broken when the real problem is the working directory).
+if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "check: not inside a git checkout; run this from the iterate-skill repository." >&2
+  exit 2
+fi
+cd "$repo_root"
 
 PYTHON="${PYTHON:-}"
 if [ -z "$PYTHON" ]; then
@@ -29,13 +36,13 @@ fi
 # `pipx/brew install` or an activated venv), then the interpreter resolved
 # above. Anything else risks the local gate disagreeing with CI, which is how
 # main caught fire twice already.
-RUFF=""
+RUFF=()
 if [ "$(ruff --version 2>/dev/null | awk '{print $2}')" = "$PIN" ]; then
-  RUFF="ruff"
+  RUFF=(ruff)
 elif [ "$("$PYTHON" -m ruff --version 2>/dev/null | awk '{print $2}')" = "$PIN" ]; then
-  RUFF="$PYTHON -m ruff"
+  RUFF=("$PYTHON" -m ruff)
 fi
-if [ -z "$RUFF" ]; then
+if [ ${#RUFF[@]} -eq 0 ]; then
   # Exit 3, not 1: the gate could not run, which is not the same claim as
   # "your code fails lint". Callers must not report a lint verdict here.
   echo "check: needs ruff==$PIN (found $(ruff --version 2>/dev/null | awk '{print $2}' || true) on PATH, $("$PYTHON" -m ruff --version 2>/dev/null | awk '{print $2}' || true) in $PYTHON)." >&2
@@ -43,9 +50,10 @@ if [ -z "$RUFF" ]; then
   exit 3
 fi
 
-echo "check: ruff $PIN via '$RUFF'"
-# shellcheck disable=SC2086  # RUFF is a literal command, possibly "python -m ruff"
-$RUFF check scripts/ tests/ iterate_cli/
+echo "check: ruff $PIN via '${RUFF[*]}'"
+# Array, not a string: "$RUFF" word-splits `python -m ruff` and breaks on any
+# interpreter path containing a space.
+"${RUFF[@]}" check scripts/ tests/ iterate_cli/
 
 if [ "${1:-}" = "--lint-only" ]; then
   exit 0

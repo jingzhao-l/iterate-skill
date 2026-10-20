@@ -25,6 +25,7 @@ import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -215,7 +216,7 @@ class TestCopySkillFiles:
 
     def test_rejects_copy_through_symlinked_ancestor(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    ) -> None:
         """A file entry whose PARENT path contains a symlinked intermediate
         directory must be refused (fix: leaf-only unlink missed ancestors)."""
         source = tmp_path / "src"
@@ -233,6 +234,55 @@ class TestCopySkillFiles:
 
         with pytest.raises(ValueError):
             install.copy_skill_files(source, dst, dry_run=True, force=False)
+
+    def test_root_anchor_rejects_symlinked_destination(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A symlinked install destination must be refused when the root is known.
+
+        With the old destination-as-anchor check, ``realpath(dst.parent)`` and
+        ``realpath(destination)`` are the same directory for a top-level file,
+        so the check passed for exactly this attack. Anchoring on the
+        user-selected install root makes the escape visible.
+        """
+        source = tmp_path / "src"
+        source.mkdir()
+        (source / "SKILL.md").write_text("skill", encoding="utf-8")
+        monkeypatch.setattr(install, "REQUIRED_FILES", ["SKILL.md"])
+        monkeypatch.setattr(install, "OPTIONAL_FILES", [])
+
+        target = tmp_path / "home"
+        target.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        destination = target / ".claude" / "skills" / "iterate"
+        destination.parent.mkdir(parents=True)
+        destination.symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="outside the install root"):
+            install.copy_skill_files(
+                source, destination, dry_run=True, force=False, root=target
+            )
+
+    def test_without_root_the_legacy_anchor_cannot_see_a_symlinked_destination(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Documents why callers must pass ``root`` (the fallback is sightless)."""
+        source = tmp_path / "src"
+        source.mkdir()
+        (source / "SKILL.md").write_text("skill", encoding="utf-8")
+        monkeypatch.setattr(install, "REQUIRED_FILES", ["SKILL.md"])
+        monkeypatch.setattr(install, "OPTIONAL_FILES", [])
+
+        target = tmp_path / "home"
+        target.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        destination = target / ".claude" / "skills" / "iterate"
+        destination.parent.mkdir(parents=True)
+        destination.symlink_to(outside, target_is_directory=True)
+
+        assert install.copy_skill_files(source, destination, dry_run=True, force=False)
 
     def test_force_fixes_dir_over_file_collision(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """A stale regular file where a directory is needed must be replaced
@@ -810,6 +860,98 @@ class TestDownloadBytes:
         data, error = install._download_bytes("https://example.com/x", None)
         assert data is None
         assert error and "connection error" in error
+
+
+# --------------------------------------------------------------------------- #
+# Credential boundaries (token shape, HTTPS-only auth, redirect origin)
+# --------------------------------------------------------------------------- #
+
+class TestCredentialBoundaries:
+    def test_token_with_embedded_newline_is_rejected_without_echo(self) -> None:
+        token = f"ghp_{'a' * 18}\n{'b' * 18}"
+        message = install._validate_github_token(token)
+        assert message is not None
+        assert "control characters" in message
+        # The refusal must not copy the secret into CI logs.
+        assert "ghp_" not in message
+        assert "aaaa" not in message
+
+    def test_token_with_interior_space_is_rejected(self) -> None:
+        message = install._validate_github_token(f"ghp_{'a' * 18} {'b' * 18}")
+        assert message is not None
+        assert "whitespace" in message
+
+    def test_surrounding_whitespace_is_trimmed_not_rejected(self) -> None:
+        token = f"ghp_{'a' * 36}"
+        assert install._validate_github_token(f"  {token}\n") is None
+        # Whitespace-only means "no token", not "malformed token".
+        assert install._validate_github_token("   \n") is None
+
+    def test_token_length_boundaries(self) -> None:
+        assert install._validate_github_token("ghp_" + "a" * 15) is not None  # 19
+        assert install._validate_github_token("ghp_" + "a" * 16) is None  # 20
+        assert install._validate_github_token("ghp_" + "a" * 252) is None  # 256
+        assert install._validate_github_token("ghp_" + "a" * 253) is not None  # 257
+
+    def test_http_api_url_is_not_authenticated(self) -> None:
+        # A hostile redirect or hand-crafted asset URL over cleartext must not
+        # receive the PAT.
+        assert install._is_github_api_url("https://api.github.com/repos/x") is True
+        assert install._is_github_api_url("http://api.github.com/repos/x") is False
+
+    def test_lookalike_hosts_are_not_the_github_api(self) -> None:
+        assert install._is_github_api_url("https://api.github.com.evil/x") is False
+        assert install._is_github_api_url("https://evil/api.github.com/x") is False
+        assert install._is_github_api_url("https://uploads.api.github.com/x") is True
+
+    def test_origin_treats_default_ports_as_equal(self) -> None:
+        assert install._origin("https://api.github.com/x") == (
+            "https",
+            "api.github.com",
+            443,
+        )
+        assert install._origin("https://api.github.com:443/x") == install._origin(
+            "https://api.github.com/x"
+        )
+        assert install._origin("http://api.github.com/x") == (
+            "http",
+            "api.github.com",
+            80,
+        )
+
+    def test_origin_separates_scheme_and_non_default_port(self) -> None:
+        base = install._origin("https://api.github.com/x")
+        assert install._origin("http://api.github.com/x") != base
+        assert install._origin("https://api.github.com:8443/x") != base
+        assert install._origin("https://other.example/x") != base
+
+    def _redirect(self, target: str):
+        handler = install._SafeRedirectHandler()
+        request = urllib.request.Request(
+            "https://api.github.com/repos/x",
+            headers={"Authorization": "Bearer secret"},
+        )
+        return handler.redirect_request(request, None, 302, "Found", {}, target)
+
+    def test_redirect_keeps_auth_on_same_origin(self) -> None:
+        new_request = self._redirect("https://api.github.com/repos/y")
+        assert new_request is not None
+        assert new_request.get_header("Authorization") == "Bearer secret"
+
+    def test_redirect_drops_auth_on_scheme_downgrade(self) -> None:
+        new_request = self._redirect("http://api.github.com/repos/y")
+        assert new_request is not None
+        assert new_request.get_header("Authorization") is None
+
+    def test_redirect_drops_auth_on_port_change(self) -> None:
+        new_request = self._redirect("https://api.github.com:8443/repos/y")
+        assert new_request is not None
+        assert new_request.get_header("Authorization") is None
+
+    def test_redirect_drops_auth_on_host_change(self) -> None:
+        new_request = self._redirect("https://evil.example/repos/y")
+        assert new_request is not None
+        assert new_request.get_header("Authorization") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1558,10 +1700,11 @@ class TestInstallCommand:
         calls = {"n": 0}
         real_copy = install.copy_skill_files
 
-        def _flaky_copy(src, dst, dry_run, overwrite):
+        def _flaky_copy(src, dst, dry_run, overwrite, root=None):
+            assert root is not None, "install_command must pass the user-selected root"
             calls["n"] += 1
             if calls["n"] == 1:
-                return real_copy(src, dst, dry_run, overwrite)
+                return real_copy(src, dst, dry_run, overwrite, root=root)
             raise FileNotFoundError(f"Required skill file missing: {dst}")
 
         monkeypatch.setattr(install, "copy_skill_files", _flaky_copy)
@@ -2003,13 +2146,44 @@ class TestUpdateCommand:
         assert called["fetch"] is False
 
     def test_empty_token_treated_as_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        """Whitespace-only tokens are absent (no validation error)."""
+        """Whitespace-only tokens are absent (no validation error, no header)."""
         source = _make_fake_source(tmp_path, monkeypatch)
         target = tmp_path / "proj"
         target.mkdir()
-        monkeypatch.setattr(install, "_fetch_latest_release_info", lambda token: (None, "mock network error"))
+        seen: dict[str, str | None] = {}
+
+        def _fetch(token):
+            seen["token"] = token
+            return None, "mock network error"
+
+        monkeypatch.setattr(install, "_fetch_latest_release_info", _fetch)
         assert install.update_command("trae", target, source, "   ", global_install=False, yes=True) == 0
+        # The raw whitespace string used to survive validation and reach the
+        # Authorization header as "Bearer    ".
+        assert seen["token"] is None
         assert (target / ".trae" / "skills" / "iterate" / "SKILL.md").exists()
+
+    def test_surrounding_whitespace_token_is_trimmed_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        token = f"ghp_{'a' * 36}"
+        seen: dict[str, str | None] = {}
+
+        def _fetch(value):
+            seen["token"] = value
+            return None, "mock network error"
+
+        monkeypatch.setattr(install, "_fetch_latest_release_info", _fetch)
+        assert (
+            install.update_command(
+                "trae", target, source, f"  {token}\n", global_install=False, yes=True
+            )
+            == 0
+        )
+        assert seen["token"] == token
 
     def test_falls_back_to_local_on_network_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """A release whose tarball cannot be DOWNLOADED (pure network failure)

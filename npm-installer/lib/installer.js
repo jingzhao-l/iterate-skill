@@ -298,7 +298,19 @@ function isGithubApiUrl(url) {
 function normalizeToken(raw) {
   if (raw == null) return null;
   const trimmed = String(raw).trim();
-  return trimmed === '' ? null : trimmed;
+  if (trimmed === '') return null;
+  // Trim only removes the ends. A PAT never contains interior whitespace or
+  // control characters; one that does (a CR/LF smuggled in from a file, a
+  // tab-pasted secret) would either split the Authorization header
+  // (CRLF/header injection) or fail as a baffling 401 that looks like an
+  // expired token. Reject it here, at the single boundary both the CLI and
+  // buildAuthFlags normalize through.
+  if (/[\s\x00-\x1f\x7f]/.test(trimmed)) {
+    throw new InstallerError(
+      'GitHub token contains whitespace or control characters; re-copy it (check GITHUB_TOKEN / --token).',
+    );
+  }
+  return trimmed;
 }
 
 // GitHub PAT prefixes accepted by scripts/install.py (kept in sync so the two
@@ -554,7 +566,14 @@ function constantTimeHashEqual(actualHash, expectedHash) {
 //                    defense-in-depth layer, not the only gate.
 // Runs inside an isolated temporary GNUPGHOME so the end user's own keyring and
 // gpg-agent are never touched or modified.
-function verifyGpgDetachedSignature(artifactPath, signaturePath, publicKeyArmor, tmpDir) {
+// gpg calls are local and short. Without a timeout a wedged gpg-agent (or a
+// pinentry dialog nobody can see) hangs the installer forever; SHA256 already
+// gates integrity, so treating a stuck authenticity check as 'unavailable' is
+// both honest and non-blocking.
+const GPG_TIMEOUT_MS = 30 * 1000;
+
+function verifyGpgDetachedSignature(artifactPath, signaturePath, publicKeyArmor, tmpDir, options = {}) {
+  const timeout = options.timeoutMs ?? GPG_TIMEOUT_MS;
   // NOTE: gpg derives its agent socket from the homedir
   // (<homedir>/S.gpg-agent) and unix sockets cap out around 104 characters, so
   // keep this path SHORT — a deep tmpdir made gpg fail with "File name too
@@ -567,22 +586,37 @@ function verifyGpgDetachedSignature(artifactPath, signaturePath, publicKeyArmor,
   const importResult = spawnSync(
     'gpg',
     ['--homedir', gpgHome, '--batch', '--yes', '--quiet', '--no-autostart', '--import', keyPath],
-    { encoding: 'utf8' }
+    { encoding: 'utf8', timeout, killSignal: 'SIGKILL' }
   );
   if (importResult.error) {
-    const detail = importResult.error.code === 'ENOENT' ? 'gpg binary not found' : importResult.error.message;
-    return { status: 'unavailable', detail };
+    if (importResult.error.code === 'ENOENT') {
+      return { status: 'unavailable', detail: 'gpg binary not found' };
+    }
+    if (importResult.error.code === 'ETIMEDOUT' || importResult.signal === 'SIGKILL') {
+      return { status: 'unavailable', detail: `gpg import timed out after ${timeout} ms` };
+    }
+    return { status: 'unavailable', detail: importResult.error.message };
   }
   if (importResult.status !== 0) {
-    return { status: 'invalid', detail: (importResult.stderr || '').trim() || 'failed to import the signing key' };
+    // Failure to import the release key means we cannot establish authenticity
+    // — not that the artifact is forged. Classifying it 'invalid' claimed
+    // evidence of tampering that this run never had, and only 'unavailable'
+    // matches the documented non-blocking policy.
+    return {
+      status: 'unavailable',
+      detail: (importResult.stderr || '').trim() || 'failed to import the signing key',
+    };
   }
 
   const verifyResult = spawnSync(
     'gpg',
     ['--homedir', gpgHome, '--batch', '--quiet', '--no-autostart', '--verify', signaturePath, artifactPath],
-    { encoding: 'utf8' }
+    { encoding: 'utf8', timeout, killSignal: 'SIGKILL' }
   );
   if (verifyResult.error) {
+    if (verifyResult.error.code === 'ETIMEDOUT' || verifyResult.signal === 'SIGKILL') {
+      return { status: 'unavailable', detail: `gpg verify timed out after ${timeout} ms` };
+    }
     return { status: 'unavailable', detail: `gpg launch failed: ${verifyResult.error.message}` };
   }
   // gpg exit 0 = good signature; 1 = bad signature; 2 = fatal (bad key usage).
@@ -884,6 +918,23 @@ function sumDeclaredSizes(verboseListing) {
 }
 
 /**
+ * Refuse a listing whose sizes could not all be read.
+ *
+ * A partially parsed listing used to sum only the entries it understood, so a
+ * localized tar (e.g. `oct.` instead of `Oct`, or a numeric date format) made
+ * the bomb guard compare a bogus small total and let the archive through. All
+ * entries must be understood before the total may be trusted.
+ */
+function assertDeclaredSizesKnown(declared) {
+  if (declared.parsed === declared.entries) return;
+  const unknown = declared.entries - declared.parsed;
+  throw new InstallerError(
+    `Refusing to extract tarball: could not read the declared size of ${unknown} of ` +
+      `${declared.entries} entries. This is commonly a localized tar listing; rerun with LC_ALL=C.`,
+  );
+}
+
+/**
  * Validate every archive member NAME before extraction.
  *
  * Rejects, in order:
@@ -1014,6 +1065,7 @@ async function extractTarball(
   //     the listing we already parsed. This fails before a single byte is
   //     written, complementing the post-extraction re-measure in step 5.
   const declared = sumDeclaredSizes(verbose);
+  assertDeclaredSizesKnown(declared);
   if (declared.total > declaredSizeCap) {
     throw new InstallerError(
       `Refusing to extract tarball: declared uncompressed size ${declared.total} bytes ` +
@@ -1345,38 +1397,61 @@ function parseArgs(argv) {
     const arg = argv[i];
     const next = argv[i + 1];
 
+    // Accept `--flag=value` as well as `--flag value`: `--ai=trae` is the
+    // spelling users copy from other CLIs, and it used to die as an unknown
+    // option. Split it here so every value-taking switch shares one path.
+    let name = arg;
+    let inlineValue = null;
+    if (arg.startsWith('--')) {
+      const eq = arg.indexOf('=');
+      if (eq !== -1) {
+        name = arg.slice(0, eq);
+        inlineValue = arg.slice(eq + 1);
+      }
+    }
+
     // -h/--help and -v/--version short-circuit parsing: later arguments (even
     // malformed or value-consuming flags) must not turn `--help`/`--version`
     // into an error exit. bin/cli.js exits 0 on these modes before installing.
-    if (arg === '--help' || arg === '-h') {
+    if (name === '--help' || name === '-h') {
       options.mode = 'help';
       break;
     }
-    if (arg === '--version' || arg === '-v') {
+    if (name === '--version' || name === '-v') {
       options.mode = 'version';
       break;
     }
 
-    switch (arg) {
-      case '--ai':
-        if (!next || next.startsWith('-')) {
+    // Boolean flags never take a value; `--force=1` is a typo worth naming
+    // rather than silently treating as --force.
+    if (inlineValue !== null && ['--global', '--force', '--no-cli'].includes(name)) {
+      throw new InstallerError(`${name} does not take a value`);
+    }
+
+    switch (name) {
+      case '--ai': {
+        const value = inlineValue !== null ? inlineValue : next;
+        if (!value || value.startsWith('-')) {
           throw new InstallerError('--ai requires a value (a flag was found instead)');
         }
-        options.ai = next;
-        i++;
+        options.ai = value;
+        if (inlineValue === null) i++;
         break;
-      case '--target':
-        if (!next || next.startsWith('-')) {
+      }
+      case '--target': {
+        const value = inlineValue !== null ? inlineValue : next;
+        if (!value || value.startsWith('-')) {
           throw new InstallerError('--target requires a value (a flag was found instead)');
         }
         if (options.globalExplicit) {
           warning('--target overrides --global: installing into the project directory instead.');
         }
-        options.target = next;
+        options.target = value;
         options.global = false;
         options.targetExplicit = true;
-        i++;
+        if (inlineValue === null) i++;
         break;
+      }
       case '--global':
         if (options.targetExplicit) {
           warning('--global overrides --target: installing into the user home directory instead.');
@@ -1393,16 +1468,18 @@ function parseArgs(argv) {
         // user who only wants the skill is not surprised by a global install.
         options.noCli = true;
         break;
-      case '--token':
-        if (!next || next.startsWith('-')) {
+      case '--token': {
+        const value = inlineValue !== null ? inlineValue : next;
+        if (!value || value.startsWith('-')) {
           throw new InstallerError('--token requires a value (a flag was found instead)');
         }
-        options.token = normalizeToken(next);
-        i++;
+        options.token = normalizeToken(value);
+        if (inlineValue === null) i++;
         break;
+      }
       default:
         if (arg.startsWith('-')) {
-          throw new InstallerError(`unknown option ${arg}`);
+          throw new InstallerError(`unknown option ${name}`);
         }
         // A bare positional argument is not a valid installer flag; warn so a
         // typo like "npx iterate-skill-installer trae" is not silently ignored.
@@ -1708,6 +1785,7 @@ module.exports = {
   extractTarball,
   rejectLinkEntries,
   sumDeclaredSizes,
+  assertDeclaredSizesKnown,
   declaredEntrySize,
   validateEntryNames,
   isGithubApiUrl,
@@ -1726,6 +1804,8 @@ module.exports = {
   FullBuffer,
   measureTree,
   enforceExtractedSize,
+  verifyGpgDetachedSignature,
+  GPG_TIMEOUT_MS,
   MAX_LISTING_CHARS,
   MAX_EXTRACTED_BYTES,
   MAX_EXTRACTED_MEMBER_BYTES,

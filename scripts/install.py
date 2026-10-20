@@ -613,6 +613,14 @@ def _validate_github_token(token: str | None) -> str | None:
     stripped = token.strip()
     if not stripped:
         return None
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in stripped):
+        # An embedded newline/space reached ``putheader()`` in the old code and
+        # raised ``ValueError: Invalid header value`` — whose message echoed the
+        # PAT into CLI/CI output. Refuse it before any request is built.
+        return (
+            "GitHub token contains whitespace or control characters; re-export "
+            "it without line breaks (the value is not echoed here on purpose)."
+        )
     if len(stripped) < 20 or len(stripped) > 256:
         return (
             "GitHub token looks malformed: expected a PAT (starts with "
@@ -767,9 +775,25 @@ class ReleaseStructureError(Exception):
 
 
 def copy_skill_files(
-    source: Path, destination: Path, dry_run: bool, force: bool
+    source: Path,
+    destination: Path,
+    dry_run: bool,
+    force: bool,
+    *,
+    root: Path | None = None,
 ) -> list[str]:
-    """Copy skill files from source to destination."""
+    """Copy skill files from source to destination.
+
+    Args:
+        root: The user-selected install root (project dir or home). When given,
+            every destination directory is required to resolve *inside* it, so
+            a symlink committed at or above ``destination`` (``.claude ->
+            /home/victim/.config``) cannot route writes outside the tree the
+            user asked to install into. Without it the leaf-symlink checks
+            still apply, but the ancestor anchor necessarily degenerates to the
+            destination itself (see the comment below), so callers that know
+            the root should always pass it.
+    """
     copied: list[str] = []
     all_files = REQUIRED_FILES + OPTIONAL_FILES
 
@@ -780,6 +804,24 @@ def copy_skill_files(
     # a pre-existing symlink at the target must be replaced (see below), not
     # treated as a reason to reject the copy.
     destination_base = Path(os.path.abspath(os.path.normpath(destination)))
+
+    # Symlinked *ancestor* guard: a committed symlink at an intermediate
+    # directory (e.g. ``.claude -> /home/victim/.config``) would otherwise have
+    # every write routed through it and placed outside the user-selected
+    # destination — the leaf-symlink replacement below does not cover that.
+    #
+    # The anchor MUST be the user-selected root, not the destination: resolving
+    # the destination follows the very symlink we are trying to detect, so
+    # ``realpath(dst.parent) == realpath(destination)`` and the check passed for
+    # exactly the attack it documents. With ``root`` known, an escaping
+    # ``.claude`` resolves to ``/tmp/outside/skills/iterate``, which is not
+    # relative to ``realpath(root)``, and the copy is refused.
+    anchor = (
+        Path(os.path.abspath(os.path.normpath(root)))
+        if root is not None
+        else destination_base
+    )
+    anchor_real = Path(os.path.realpath(anchor))
 
     for relative in all_files:
         src = source / relative
@@ -795,18 +837,11 @@ def copy_skill_files(
                 f"Refusing to copy outside destination: {relative!r} resolves to {normalized_dst}"
             )
 
-        # Symlinked *ancestor* guard: a committed symlink at an intermediate
-        # directory (e.g. ``.claude -> /home/victim/.config``) would otherwise
-        # have every write routed through it and placed outside the
-        # user-selected destination — the leaf-symlink replacement below does
-        # not cover that. Compare the REAL paths (symlinks resolved), raising
-        # only when an existing ancestor component escapes the base.
         parent_real = Path(os.path.realpath(dst.parent))
-        base_real = Path(os.path.realpath(destination_base))
-        if not (parent_real == base_real or parent_real.is_relative_to(base_real)):
+        if not (parent_real == anchor_real or parent_real.is_relative_to(anchor_real)):
             raise ValueError(
                 f"Refusing to copy through symlinked directory: {relative!r} "
-                f"resolves to {parent_real}"
+                f"resolves to {parent_real}, outside the install root {anchor_real}"
             )
 
         if dry_run:
@@ -1464,7 +1499,9 @@ def install_command(
                 auto_skipped += 1
 
         try:
-            copied = copy_skill_files(source, destination, dry_run, overwrite)
+            copied = copy_skill_files(
+                source, destination, dry_run, overwrite, root=effective_target
+            )
         except (OSError, ValueError, FileNotFoundError) as exc:
             # A copy failure for one assistant must not abort the whole run:
             # record it and keep installing the remaining assistants, then
@@ -1921,16 +1958,34 @@ def _download_bytes(
 
 
 def _is_github_api_url(url: str) -> bool:
-    """True when ``url`` targets the GitHub API host.
+    """True when ``url`` targets the GitHub API host over HTTPS.
 
     Uses a netloc prefix check (hostname.lower() starts with ``api.github.com``)
-    so a rogue ``https://api.github.com.evil`` cannot match.
+    so a rogue ``https://api.github.com.evil`` cannot match, and requires the
+    ``https`` scheme: a ``http://api.github.com/...`` URL (a hostile redirect or
+    a hand-crafted asset URL) would otherwise receive the PAT in cleartext.
     """
     try:
-        host = urllib.parse.urlsplit(url).hostname or ""
+        parts = urllib.parse.urlsplit(url)
     except ValueError:
         return False
-    return host.lower() == "api.github.com" or host.lower().endswith(".api.github.com")
+    if parts.scheme.lower() != "https":
+        return False
+    host = (parts.hostname or "").lower()
+    return host == "api.github.com" or host.endswith(".api.github.com")
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    """Return ``(scheme, hostname, port)`` for a URL, normalised for comparison.
+
+    Used by the redirect handler: comparing hostnames alone let a same-host
+    ``https -> http`` (or ``:443 -> :8443``) downgrade keep the Authorization
+    header, i.e. the PAT was carried to a different origin in cleartext.
+    """
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    default_port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return (scheme, (parts.hostname or "").lower(), parts.port or default_port)
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -1949,9 +2004,12 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new_req is None:
             return None
-        old_host = (urllib.parse.urlsplit(req.full_url).hostname or "").lower()
-        new_host = (urllib.parse.urlsplit(newurl).hostname or "").lower()
-        if old_host != new_host:
+        try:
+            same_origin = _origin(req.full_url) == _origin(newurl)
+        except ValueError:
+            # Unparseable/invalid port: treat it as a different origin.
+            same_origin = False
+        if not same_origin:
             new_req.remove_header("Authorization")
         return new_req
 
@@ -2220,6 +2278,12 @@ def update_command(
     # Fail fast on a malformed --token: GitHub would otherwise reject the
     # request with a 401 and we would silently fall back to local source,
     # hiding the typo from the user.
+    # Normalise ONCE, then validate and USE the same value. The old code
+    # validated ``token.strip()`` but kept the raw string, so a whitespace-only
+    # token passed validation as "absent" while ``if token:`` still attached
+    # ``Authorization: Bearer    `` (401 + rate-limit burn), and an embedded
+    # newline made ``putheader()`` raise with the PAT in the message.
+    token = (token.strip() or None) if isinstance(token, str) else token
     token_error = _validate_github_token(token)
     if token_error:
         _error(token_error)

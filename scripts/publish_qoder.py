@@ -116,7 +116,7 @@ def rewrite_frontmatter(
     for key in fields:
         if key not in QODER_FRONTMATTER_KEYS:
             changes.append(f"dropped frontmatter key {key!r} (Qoder ignores it)")
-    if description is not None:
+    if description is not None and description != fields.get("description", ""):
         changes.append("replaced description with Qoder third-person/trigger version")
     if not any(key in fields for key in ("name",)):
         raise ValueError("SKILL.md frontmatter must keep at least a 'name'")
@@ -330,12 +330,15 @@ def build_package(
 
         if frontmatter == "minimal":
             qoder_description = description if description is not None else QODER_DESCRIPTION
-            if any(
-                key not in QODER_FRONTMATTER_KEYS for key in detect_frontmatter_keys(skill_text)
-            ) or description is not None:
-                rewritten, changes = rewrite_frontmatter(
-                    skill_text, description=qoder_description
-                )
+            # Always rewrite, even when the source already has only
+            # name/description/version. The old condition skipped exactly that
+            # case, so `--frontmatter minimal` kept the author's generic
+            # description instead of the documented Qoder third-person/trigger
+            # one — a silent no-op in the common (already-clean) case.
+            rewritten, changes = rewrite_frontmatter(
+                skill_text, description=qoder_description
+            )
+            if rewritten != skill_text:
                 with open(skill_path, "w", encoding="utf-8") as handle:
                     handle.write(rewritten)
                 warnings.extend(changes)

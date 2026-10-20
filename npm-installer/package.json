@@ -14,7 +14,7 @@
     "iterate-skill-installer": "bin/cli.js"
   },
   "scripts": {
-    "test": "node --check bin/cli.js && node --check lib/installer.js && node test/mode.test.js && node test/tarball.test.js"
+    "test": "node --check bin/cli.js && node --check lib/installer.js && node test/mode.test.js && node test/tarball.test.js && node test/security.test.js"
   },
   "keywords": [
     "iterate-skill",

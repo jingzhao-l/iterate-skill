@@ -261,6 +261,49 @@ class TestBuildPackageDefaultOut:
             )
 
 
+class TestMinimalFrontmatterDescription:
+    """`--frontmatter minimal` must always install the Qoder description.
+
+    Regression: when SKILL.md already had only name/description/version, the
+    rewrite branch was skipped and the author's generic description survived —
+    the exact case the flag exists to normalise.
+    """
+
+    @staticmethod
+    def _skill_from(zip_path: str) -> str:
+        with zipfile.ZipFile(zip_path) as archive:
+            return archive.read("iterate/SKILL.md").decode("utf-8")
+
+    def test_already_clean_frontmatter_is_still_rewritten(self, tmp_path: Path) -> None:
+        source = _minimal_source(tmp_path)
+        zip_path, _warnings, _meta = publish_qoder.build_package(
+            "9.9.9", source=str(source), out=str(tmp_path / "q.zip"), frontmatter="minimal"
+        )
+        skill = self._skill_from(zip_path)
+        assert f"description: {publish_qoder.QODER_DESCRIPTION}" in skill
+        assert "description: d\n" not in skill
+
+    def test_explicit_description_override_wins(self, tmp_path: Path) -> None:
+        source = _minimal_source(tmp_path)
+        zip_path, _warnings, _meta = publish_qoder.build_package(
+            "9.9.9",
+            source=str(source),
+            out=str(tmp_path / "q.zip"),
+            frontmatter="minimal",
+            description="Custom trigger text.",
+        )
+        skill = self._skill_from(zip_path)
+        assert "description: Custom trigger text.\n" in skill
+
+    def test_keep_preserves_the_author_description(self, tmp_path: Path) -> None:
+        source = _minimal_source(tmp_path)
+        zip_path, _warnings, _meta = publish_qoder.build_package(
+            "9.9.9", source=str(source), out=str(tmp_path / "q.zip"), frontmatter="keep"
+        )
+        skill = self._skill_from(zip_path)
+        assert "description: d\n" in skill
+
+
 class TestCopyTreeDotfiles:
     def test_copy_tree_keeps_dotfiles_drops_only_git_and_excludes(
         self, tmp_path: Path
