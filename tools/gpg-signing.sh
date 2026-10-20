@@ -128,7 +128,10 @@ cmd_seed() {
 
   say "exporting the secret key…"
   local armored
-  armored="$(gpg --batch --yes --pinentry-mode loopback --passphrase "$pass" \
+  # Feed the passphrase on stdin instead of argv: `--passphrase "$pass"` puts
+  # the secret in the process table, where every other local user can read it
+  # with `ps` for the lifetime of the gpg process.
+  armored="$(printf '%s' "$pass" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
                    --armor --export-secret-keys "$KEY_GRIP_HINT" 2>/dev/null || true)"
   # A failed unlock can still exit 0, so the only honest test is a non-empty
   # export that actually contains a private-key block.
@@ -137,6 +140,9 @@ cmd_seed() {
     exit 1
   fi
   security add-generic-password -U -s "$KEYCHAIN_SERVICE" -a private-key -w "$armored" >/dev/null
+  # `security` has no stdin form for -w, so this one value necessarily appears
+  # in argv. It is a single short-lived invocation; the gpg call above, which
+  # runs much longer, no longer leaks the passphrase that way.
   security add-generic-password -U -s "$KEYCHAIN_SERVICE" -a passphrase  -w "$pass"     >/dev/null
   unset pass armored
   ok "private key + passphrase stored in keychain as service '$KEYCHAIN_SERVICE'"
@@ -146,6 +152,10 @@ cmd_seed() {
 # ── install ──────────────────────────────────────────────────────────────────
 cmd_install() {
   need gh; need security
+  # Validate in THIS shell: the target loop below runs
+  # `targets_filtered` inside `< <(...)`, where its `exit 2` only kills the
+  # subshell — `install typo` would print nothing and exit 0.
+  require_known_targets "$@"
   local key pass
   key="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a private-key -w 2>/dev/null || true)"
   pass="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a passphrase  -w 2>/dev/null || true)"
@@ -276,12 +286,37 @@ cmd_audit() {
   need gh
   require_known_targets "$@"
   printf '\n== silent-skip signing in release workflows ==\n'
-  local repo dir env any=0 wf
+  local repo dir env any=0 inspected=0 fails=0 wf
   while IFS='|' read -r repo dir env; do
     for wf in release.yml publish.yml; do
+      # Capture gh's exit status *and* stderr. The old `gh ... 2>/dev/null |
+      # base64 -d || true` collapsed "file absent" (a normal skip) and "network
+      # down / auth expired / rate limited" (the audit is blind) into the same
+      # empty string, then `[ -n "$body" ] || continue` skipped both and printed
+      # "audit: passed" without having inspected a single workflow.
+      local out rc=0
+      out="$(gh api "repos/jingzhao-l/$repo/contents/.github/workflows/$wf" --jq '.content' 2>&1)" || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        if printf '%s' "$out" | grep -qE 'HTTP 404|Not Found'; then
+          continue
+        fi
+        bad "$repo/$wf: could not read workflow (gh exit $rc)"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        fails=1
+        continue
+      fi
       local body
-      body="$(gh api "repos/jingzhao-l/$repo/contents/.github/workflows/$wf" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true)"
-      [ -n "$body" ] || continue
+      if ! body="$(printf '%s' "$out" | base64 -d 2>/dev/null)"; then
+        bad "$repo/$wf: workflow content is not valid base64"
+        fails=1
+        continue
+      fi
+      if [ -z "$body" ]; then
+        bad "$repo/$wf: workflow content is empty"
+        fails=1
+        continue
+      fi
+      inspected=$((inspected + 1))
       # Strip comment lines first. A workflow that documents *why* it removed
       # the silent-skip still contains the string, and reporting that as a live
       # skip trains people to ignore this command — the same mistake a linter
@@ -295,6 +330,13 @@ cmd_audit() {
       fi
     done
   done < <(targets_filtered "$@")
+  # Zero inspected workflows is never a pass: it means every read failed, or
+  # every repo legitimately has no release workflow. Both deserve a look, and
+  # the second is a target-list bug rather than a green result.
+  if [ "$inspected" -eq 0 ] && [ "$fails" -eq 0 ]; then
+    bad "no release workflows were inspected — refusing to report a pass"
+    fails=1
+  fi
   [ "$any" -eq 1 ] || ok "no silent-skip signing found"
   cat <<'NOTE'
 
@@ -310,7 +352,11 @@ NOTE
     printf '\naudit: FAILED (silent-skip signing found)\n' >&2
     return 1
   fi
-  printf '\naudit: passed\n'
+  if [ "$fails" -ne 0 ]; then
+    printf '\naudit: FAILED (could not inspect every target)\n' >&2
+    return 1
+  fi
+  printf '\naudit: passed (%d workflow(s) inspected)\n' "$inspected"
   return 0
 }
 
