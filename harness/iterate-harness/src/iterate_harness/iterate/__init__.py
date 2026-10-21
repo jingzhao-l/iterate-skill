@@ -8,6 +8,9 @@ Pure, deterministic modules ported from ``harness/iterate-plugin/src``:
 - :mod:`.meta_review` — deterministic audit of a review report
 - :mod:`.validate` — exact-match validation command runner
 - :mod:`.decision_log` — append-only JSONL decision log
+- :mod:`.dimension_ledger` — which dimension a recorded decision served, and the kernel's
+  ``dimensionContext`` verdict over the ledger (the shared accounting both tool and
+  compaction read; neither one keeps its own copy)
 - :mod:`.settings` — kernel Settings bridge (IterateSettings)
 - :mod:`.loop_policy` — engine-level convergence enforcement
 - :mod:`.cost` — USD money layer over token usage
@@ -57,6 +60,11 @@ _EXPORTS: dict[str, str] = {
     "log_path": ".decision_log",
     "make_entry": ".decision_log",
     "read_entries": ".decision_log",
+    # dimension_ledger — the ledger's dimension attribution and the kernel's verdict on it
+    "operation_dimension_map": ".dimension_ledger",
+    "planned_dimension_ids": ".dimension_ledger",
+    "project_dimension_context": ".dimension_ledger",
+    "recorded_dimension_counts": ".dimension_ledger",
     # personalize_tui
     "project_root_guard": ".personalize_tui",
     "run_tui_personalize": ".personalize_tui",
@@ -215,18 +223,22 @@ __all__ = [
     "next_round_instruction",
     "normal_kickoff",
     "normalize_summary",
+    "operation_dimension_map",
     "personalization_constraints",
     "parse_attachments",
+    "planned_dimension_ids",
     "plan_path",
     "plan_to_dict",
     "post_pr_comment",
     "price_for",
     "producer_payloads",
     "project_config",
+    "project_dimension_context",
     "project_root_guard",
     "read_entries",
     "record_reverification_run",
     "record_run",
+    "recorded_dimension_counts",
     "recorded_operation_ids",
     "render_doctor_report",
     "render_diff",

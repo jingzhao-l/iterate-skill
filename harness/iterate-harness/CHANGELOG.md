@@ -142,6 +142,35 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **场景②的下半场：维度归属进了台账，压缩钩子按内核的判决排队。** 内核的 `decision-log-entry`
+  schema 一直允许可选的 `dimension`/`operationId`，`kernel_decision_record` 也只在它们**合法**时抄进
+  draft、不合法就静默丢掉——但生产侧从来没有人把这两个键写进 `data`：`iterate_decision_log` 的 append
+  只收一段自由 JSON。于是 `dimensionCoverage` 那行统计的是"代理恰好打了什么字"。
+  **生产者半边**：`IterateDecisionLogInput` 多收 `dimension`/`operation_id`，校验用的就是仓库其余部分
+  import 的那两件内核物件（`DIMENSION_ID_PATTERN`/`DIMENSION_ID_MAX_LENGTH` 与 `OPERATION_ID_PATTERN`），
+  这里一个字面的正则或数字都没有；不合法就按工具既有的拒绝形状给出 code＋remedy，且拒绝路径上台账
+  **一个字节都不多**（逐条前后 `read_bytes` 对比）——拼错的维度被转录悄悄丢掉，覆盖率会少报还看起来像量过。
+  合法值合并进 `data` 后由转录自己 lift；append 成功即刷新已发布的 `iterate_state["dimension_coverage"]`，
+  复用 aggregate 那一份算法。**只在快照已存在时刷新**：本工具不拥有 `iterate_state`，造一份半空的等于替
+  loop_policy 编一个没人量过的轮次数与 mode。
+  **消费者半边**：`_collect_compactable_tool_ids` 现在收 `project_root`，把每条 tool_result 的文本扫出
+  opId（搜索形式是 import 进来的 `OPERATION_ID_PATTERN` 去锚点加词界，不重述语法），经台账映射到维度，
+  顺序由 `dimension_context(planned, recorded)` 的 **status** 决定——**不比计数**，与收敛判定同一条规矩。
+  verified 维度的历史排到队首先清，非 verified 的排到队尾后清，**没有归属的块保持今天的位置一动不动**
+  （缺席只能读成缺席）；`keep_recent` 的含义没变，清的条数与今天逐条相等，变的只有"是哪几条"。
+  规则 1 在这里有一个必须写出来的后果：**已计划且被归属的维度必然是 verified**，所以能被推到队尾的
+  归属只剩"计划里没有的那个 id"，测试就是按这个形状写的。
+  两份账不再各写各的：新模块 `iterate/dimension_ledger.py` 是 run-plan 文件与台账的唯一读者，工具那行
+  与压缩那个顺序都从它出发（四个新公共名字已登记进 `_EXPORTS`/`__all__`）。
+  **测试**：`tests/test_iterate/test_decision_attribution.py` 与
+  `tests/test_services/test_compact_dimension_order.py` 共 21 例；变异七发各打中具名用例——去掉校验(3 红)、
+  大小写折叠(4 红，含既有 `test_aggregate_coverage_counts_only_valid_dimensioned_entries`)、改成首次归属取胜(2 红)、
+  连未归属的块一起重排(3 红)、拿计数比代替内核 status(3 红)、多清一块(预算不变性那例红)、从
+  `compact_conversation` 那里漏传 `project_root`(接线那例红，证明它不是空跑)——三个改动文件
+  每发之后都 `cp` 副本核回，sha256 逐字相等。`engine/query.py` 与 `/compact` 命令各加一个
+  `project_root` 传参把台账的根送到压缩钩子手上；不动 `mcp/client.py`、`glasspane_reverification.py`、
+  `reverify_trigger.py`，版本号一位没取。
+
 - **场景①接线：不变量判失败的那一轮，真的去问一次引擎。** `iterate/glasspane_reverification.py`
   能发 `iterate.reverification/0.1` 也能原样转发引擎的回答，但**循环里从来没有人把请求交给它**——
   本批补的就是这一只手。落点选在轮次发布处（`iterate_review` 的 aggregate），因为只有那里同时握着
