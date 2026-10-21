@@ -6,6 +6,25 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **#21 场景①的宿主半：harness 自己绑定同步只读 GlassPane transport，失败判决真的送达引擎。**
+  `reverify_trigger` 的规则 5 一直如实记录 "not attempted"，因为这个仓库里没有人绑过 transport——
+  `McpClientManager` 是 async，`run_reverification` 是 sync sender。新增
+  `iterate/glasspane_host_transport.py`：`bind_host_transport(metadata)` 从 run 已有的
+  `mcp_manager` 造出 transport 并绑到 `GLASSPANE_TRANSPORT_KEY`，`_aggregate` 只在合并副本上绑，
+  callable 绝不进入跨轮折叠的 durable `tool_metadata`。四条构造性约束：(1) 只读——工具集合
+  `from glasspane_reverification import READ_ONLY_TOOLS`，不复述名字，且写工具在协程创建之前就被
+  拒（stub 记录零帧），拒绝走 shell 自己的 `CODE: msg | remedy: R` 形状 `GP_E_HOST_WRITE_TOOL`；
+  (2) 边界——消费 `call_tool_parts()` 交给 `relay_answer` 的是 `list[str]` 而非 join（具名测试拿
+  join 后的同样字节反证 `unparseable`）；(3) 再入——发布点在引擎 loop 内，故分两种可观测行为：
+  本线程无 running loop 就 `asyncio.run(wait_for(...))` 有界驱动（窗口 150s 大于客户端自己的
+  120s，让客户端错误形状先赢），本线程已有 running loop 就**不发**、返回 `GP_E_HOST_LOOP_BUSY`
+  并把 remedy 写成宿主可执行的两条出路（为回验单独配 stdio session，或由拥有 client 的 loop
+  await `run_reverification_async`），绝不 `asyncio.run` 撞 RuntimeError 再吞成假答案；(4) 传输错误
+  与超时保持 `McpServerNotConnectedError`/`McpServerTimeoutError` → relay 成 `GP_E_CHANNEL` 带 remedy。
+  可观测性补齐：`GLASSPANE_TRANSPORT_ABSENT_KEY` 让"没绑上"读成 not attempted, because X（无 mcp
+  plane / 没有 server 广告只读工具 / server 状态是 failed），而不是沉默也不是空成功。ledger 与
+  gate 规则一字未动：无判决仍不发布任何键，回验永不使 gate 变 measured——具名测试断言 published
+  state 的 gate 键集合恰等于 `loop_gates` 测出的那个，且拒绝路径写零字节、真实发送恰一条归属条目。
 - **#20 多 item 边界：MCP 客户端不再销毁 shell 的 content-item 边界，回验 relay 改逐 item 分类。**
   实测（2026-10-21，对当时那份代码直调）：`mcp/client.py` 把 `result.content` 用
   `"\n".join(parts)` 拼成一个字符串，`glasspane_reverification.relay_answer` 拿到"daemon 帧 +

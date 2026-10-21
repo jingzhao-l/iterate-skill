@@ -39,7 +39,12 @@ site where they can actually be broken):
    module it lives in refuses an awaitable with ``GP_E_ASYNC_HOST`` rather than filing a
    coroutine as an answer. So the host must hand over a *synchronous* read-only transport under
    :data:`GLASSPANE_TRANSPORT_KEY`; when it has not, the send is recorded as not-attempted —
-   which is a stated state, not a silence. The transport's reply shape is the engine's own
+   which is a stated state, not a silence (and
+   :attr:`GLASSPANE_TRANSPORT_ABSENT_KEY` is where a host says *why* it has not, instead of
+   letting the sender guess a generic reason). The harness now is such a host:
+   ``iterate/glasspane_host_transport.py`` builds the synchronous read-only transport from the
+   run's own ``McpClientManager`` and binds it at the publish site, and it answers with
+   ``call_tool_parts``' ``list[str]`` for exactly the reason below. The transport's reply shape is the engine's own
    boundary: prefer ``McpClientManager.call_tool_parts``, whose ``list[str]`` keeps one entry
    per content item (the shipped ``gp_diagnose`` answers with the daemon frame *plus* an
    ``update state:`` block *plus* a ``provider:`` line, and relaying that as a joined string
@@ -82,6 +87,13 @@ REVERIFICATION_STATE_KEY = "reverification"
 #: callable) is not an error: it is recorded as a send that was never attempted.
 GLASSPANE_TRANSPORT_KEY = "glasspane_reverify_transport"
 
+#: Metadata key a host uses to say *why* it handed over no transport. Rule 5 is unchanged — an
+#: absent transport is still a send that was never attempted — this only replaces the sender's
+#: generic reason with the one the host actually measured (no MCP plane, no GlassPane server,
+#: a server that never connected). Absent or blank keeps :func:`.glasspane_reverification.run_reverification`'s
+#: default text, so a host that binds nothing says nothing beyond "no channel".
+GLASSPANE_TRANSPORT_ABSENT_KEY = "glasspane_reverify_transport_absent"
+
 #: The ledger kind this decision is filed under. Shape-checked by the kernel, not by a list.
 LEDGER_DECISION_TYPE = "decision"
 LEDGER_DATA_KIND = "reverification"
@@ -104,6 +116,18 @@ def _sync_transport(metadata: Mapping[str, Any] | None) -> Callable[[str, dict[s
     """
     candidate = (metadata or {}).get(GLASSPANE_TRANSPORT_KEY)
     return candidate if callable(candidate) else None
+
+
+def _not_attempted_reason(metadata: Mapping[str, Any] | None) -> str | None:
+    """The host's stated reason for having no transport, or ``None`` to keep the default.
+
+    Read-only plumbing for rule 5: this never turns a not-attempted send into an attempted
+    one, and it carries no verdict — only the sentence naming what the host could not bind.
+    """
+    value = (metadata or {}).get(GLASSPANE_TRANSPORT_ABSENT_KEY)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _copied_mapping(value: object) -> dict[str, Any]:
@@ -290,7 +314,11 @@ def trigger_reverification(
             "reason": "the invariant report passed; the kernel builds no re-verification request",
         }
 
-    run = run_reverification(request, _sync_transport(metadata))
+    run = run_reverification(
+        request,
+        _sync_transport(metadata),
+        not_attempted_reason=_not_attempted_reason(metadata),
+    )
     payload: dict[str, Any] = {
         "spawned": True,
         "invariantState": verdict,
@@ -319,6 +347,7 @@ def trigger_reverification(
 
 
 __all__ = [
+    "GLASSPANE_TRANSPORT_ABSENT_KEY",
     "GLASSPANE_TRANSPORT_KEY",
     "INVARIANT_GATE_KEY",
     "MAX_REQUESTED_OPERATIONS",

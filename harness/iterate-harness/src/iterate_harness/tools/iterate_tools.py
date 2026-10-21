@@ -32,6 +32,7 @@ from ..iterate import validate as validate_mod
 from ..iterate.dimension_context import format_dimension_context
 from ..iterate.loop_policy import ITERATE_STATE_KEY
 from ..iterate.loop_gates import measured_gates
+from ..iterate.glasspane_host_transport import bind_host_transport
 from ..iterate.reverify_trigger import REVERIFICATION_STATE_KEY, trigger_reverification
 from .base import BaseTool, ToolExecutionContext, ToolResult
 
@@ -484,9 +485,16 @@ class IterateReviewTool(BaseTool[BaseModel]):
         # behind its digest, the run's ledger root, and the state object about to be published — so
         # the wiring lives in one call. See iterate/reverify_trigger.py for the rules it is bound
         # by, including the one that keeps a missing verdict silent instead of satisfied.
+        # Scenario ①'s host half: the transport this trigger needs is the run's own MCP client,
+        # driven synchronously and read-only. bind_host_transport either hands one over or says
+        # why the run cannot (no mcp plane / no GlassPane server / a server that never
+        # connected), so an absent channel reads as "not attempted, because …" rather than as
+        # silence. The additions go on a merged copy — a callable must never land in the
+        # durable tool_metadata the engine folds across turns.
+        transport_metadata = {**context.metadata, **bind_host_transport(context.metadata)}
         reverification = trigger_reverification(
             project_root=context.cwd,
-            metadata=context.metadata,
+            metadata=transport_metadata,
             gates=gates,
             round_number=report.convergence.total_rounds,
             planned_dimensions=list(report.dimensions),
