@@ -20,6 +20,7 @@ from iterate_cli.refresh import (
     _reconcile_validation_suggestions,
     incremental_refresh,
     load_onboarding_config,
+    preview_refresh,
 )
 from iterate_cli.scan import ScanResult
 
@@ -290,6 +291,38 @@ class TestBuildRefreshedConfigEmptyWhitelist:
         second = _build_refresh_data(tmp_path, scan, config2)
         assert first.command_whitelist == second.command_whitelist
 
+    def test_non_string_whitelist_entries_are_filtered_not_fatal(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """`[["pytest"]]` used to crash refresh with TypeError."""
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {
+                "commands": {"python": ["pytest -q"]},
+                "command_whitelist": [["pytest"], 123, "ruff", "  "],
+            },
+        }
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+
+        # The surviving string entry is kept (and the freshly-suggested
+        # prefixes for the detected stack are appended); nothing non-string
+        # reaches the schema or crashes `set(...)`.
+        assert "ruff" in data.command_whitelist
+        assert all(isinstance(entry, str) and entry for entry in data.command_whitelist)
+        assert "non-string or empty entries" in capsys.readouterr().err
+
+    def test_on_is_coerced_to_true(self, tmp_path: Path) -> None:
+        """Wizard accepts `on`; refresh must not rewrite it to False."""
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": ["python"]},
+            "git": {"push_per_round": "on"},
+        }
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.push_per_round is True
+
     def test_non_empty_whitelist_kept(self, tmp_path: Path) -> None:
         config = {
             "dimensions": ["correctness"],
@@ -404,6 +437,95 @@ class TestBuildRefreshDataNormalizesHandEditedScalars:
         config = self._config(dimensions=[None, "", "  "])
         data = _build_refresh_data(tmp_path, _python_scan(), config)
         assert data.dimensions  # suggestions, not an empty/invalid list
+
+
+class TestRefreshPreservesHandWrittenConfig:
+    """A no-op refresh must not rewrite (and thereby de-comment) the config.
+
+    ``yaml.safe_dump`` cannot round-trip comments, so the old byte comparison
+    always saw a difference and rewrote the file on every refresh — silently
+    deleting every guidance comment the operator had added.
+    """
+
+    def _onboarded_config(self) -> dict:
+        return {
+            "dimensions": ["correctness"],
+            "onboarding": {
+                "channel": "cli",
+                "drift_check": False,
+                "completed_at": "2026-08-01T00:00:00Z",
+            },
+        }
+
+    def _normalized_project(self, tmp_path: Path) -> Path:
+        project = _write_project(tmp_path, self._onboarded_config())
+        # First refresh normalizes the config (adds validation, fingerprints…).
+        assert incremental_refresh(project) is True
+        # That normalization legitimately rewrote the file; drop its backup so
+        # the tests below observe only what the second refresh does.
+        for stale in project.glob(f"{CONFIG_YAML}.refresh-*"):
+            stale.unlink()
+        return project
+
+    def test_noop_refresh_keeps_comments(self, tmp_path: Path) -> None:
+        project = self._normalized_project(tmp_path)
+        config_path = project / CONFIG_YAML
+        annotated = (
+            "# Operator note: keep this line for the on-call runbook.\n"
+            + config_path.read_text(encoding="utf-8")
+        )
+        config_path.write_text(annotated, encoding="utf-8")
+
+        assert incremental_refresh(project) is True
+
+        after = config_path.read_text(encoding="utf-8")
+        assert "# Operator note: keep this line for the on-call runbook." in after
+
+    def test_noop_refresh_does_not_create_backup(self, tmp_path: Path) -> None:
+        project = self._normalized_project(tmp_path)
+        config_path = project / CONFIG_YAML
+        config_path.write_text(
+            "# note\n" + config_path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
+        assert incremental_refresh(project) is True
+
+        backups = list(project.glob(f"{CONFIG_YAML}.refresh-*"))
+        assert backups == []
+
+    def test_preview_reports_no_config_change_for_comment_only_diff(
+        self, tmp_path: Path
+    ) -> None:
+        project = self._normalized_project(tmp_path)
+        config_path = project / CONFIG_YAML
+        config_path.write_text(
+            "# note\n" + config_path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
+        preview = preview_refresh(project)
+        assert preview["ok"] is True
+        assert preview["config_changed"] is False
+
+    def test_real_value_change_still_creates_backup(self, tmp_path: Path) -> None:
+        project = self._normalized_project(tmp_path)
+        config_path = project / CONFIG_YAML
+        config = load_onboarding_config(project)
+        assert config is not None
+        # An invalid language is corrected to the default by refresh, which is
+        # a real value change (and therefore a rewrite).
+        config["language"] = "fr"
+        config_path.write_text(
+            "# note\n" + yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        assert incremental_refresh(project) is True
+
+        assert load_onboarding_config(project)["language"] == "en"
+        backups = list(project.glob(f"{CONFIG_YAML}.refresh-*"))
+        assert len(backups) == 1
+        # The backup preserves the pre-refresh document, comments included.
+        assert "# note" in backups[0].read_text(encoding="utf-8")
 
 
 class TestDimensionSetsOnDropIsVisible:

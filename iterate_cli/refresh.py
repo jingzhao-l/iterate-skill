@@ -370,7 +370,7 @@ def preview_refresh(project_root: Path) -> dict[str, Any]:
         return empty
 
     md_changed = refreshed_md != current_md
-    config_changed = config_yaml != current_config
+    config_changed = not _config_semantically_equal(current_config, config_yaml)
     stats = _diff_stats(current_md, refreshed_md)
     return {
         "ok": True,
@@ -426,6 +426,40 @@ def _build_refresh_outputs(project_root: Path) -> tuple[bool, str, str, str]:
     return True, refreshed_md, config_yaml, ""
 
 
+def _config_semantically_equal(existing_text: str, new_yaml: str) -> bool:
+    """Compare two config documents by value, not by bytes.
+
+    ``yaml.safe_dump`` drops comments, so a byte comparison against a config
+    authored from the shipped template always reported a change — refresh then
+    rewrote the file (erasing all guidance comments) even though no value had
+    moved. Unparseable input falls back to "different" so a corrupt file is
+    never mistaken for a no-op.
+    """
+    try:
+        return yaml.safe_load(existing_text) == yaml.safe_load(new_yaml)
+    except yaml.YAMLError:
+        return False
+
+
+def _backup_refresh_config(config_path: Path) -> Path | None:
+    """Copy the current config before a value-changing rewrite.
+
+    Comments cannot survive ``safe_dump``; keeping a timestamped copy makes a
+    refresh recoverable (same ``.refresh-<utc>`` convention as the other
+    writers' ``.configset-*`` / ``.doctorfix-*`` backups).
+    """
+    if not config_path.is_file():
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = config_path.with_name(f"{config_path.name}.refresh-{stamp}")
+    try:
+        shutil.copy2(config_path, backup)
+    except OSError as exc:
+        tui.warning(f"could not back up {config_path.name} before refresh: {exc}")
+        return None
+    return backup
+
+
 def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: str) -> bool:
     """Atomically write refreshed ITERATE.md and config, rolling back on failure.
 
@@ -475,13 +509,18 @@ def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: s
         # rewrite each file when its content actually differs. A failed backup
         # read (None) counts as "differs" and still triggers a write.
         needs_md = backup_md != refreshed_md
-        needs_config = backup_config != config_yaml
+        needs_config = (
+            backup_config is None
+            or not _config_semantically_equal(backup_config, config_yaml)
+        )
         wrote_md = False
         wrote_config = False
         if needs_md:
             atomic_write(iterate_md_path, refreshed_md)
             wrote_md = True
         if needs_config:
+            if backup_config is not None:
+                _backup_refresh_config(config_path)
             atomic_write(config_path, config_yaml)
             wrote_config = True
     except OSError as exc:
@@ -889,7 +928,24 @@ def _resolve_validation_config(
     validation_commands = normalized_commands
     has_whitelist_key = "command_whitelist" in validation_existing
     command_whitelist = validation_existing.get("command_whitelist")
-    if not isinstance(command_whitelist, list) or not command_whitelist:
+    if isinstance(command_whitelist, list):
+        # Schema requires items to be non-empty strings. A hand-edited
+        # `[["pytest"]]` used to reach `set(...)` and crash refresh with
+        # `TypeError: unhashable type: 'list'`; `[123]` was written back as an
+        # invalid config. Filter (and say so) instead of aborting the run.
+        valid_entries = [
+            entry.strip()
+            for entry in command_whitelist
+            if isinstance(entry, str) and entry.strip()
+        ]
+        if len(valid_entries) != len(command_whitelist):
+            tui.warning(
+                "validation.command_whitelist contained non-string or empty "
+                "entries; they were dropped (the schema requires non-empty "
+                "strings)."
+            )
+        command_whitelist = valid_entries
+    if not command_whitelist:
         # Key present but empty (`[]`) or a hand-edited scalar/absent: all
         # three are schema-invalid-or-absent states, so resolve them the same
         # way and TELL the operator when a present-but-invalid value was
@@ -1004,7 +1060,11 @@ def _build_refresh_data(
     # an invalid value; treat only real bools as authoritative.
     push_per_round = git_cfg.get("push_per_round", False)
     if not isinstance(push_per_round, bool):
-        push_per_round = str(push_per_round).strip().lower() in ("1", "true", "yes")
+        # Keep parity with the wizard's _TRUE_STRINGS: `on` loaded as True
+        # there but was rewritten to False here.
+        push_per_round = str(push_per_round).strip().lower() in (
+            "1", "true", "yes", "on"
+        )
     validation_commands, effective_whitelist = _resolve_validation_config(
         existing_config, scan
     )
@@ -1021,7 +1081,13 @@ def _build_refresh_data(
 
     # Capture fresh fingerprints, honouring drift-ignore patterns.
     ignore_patterns = get_drift_ignore(existing_config)
-    fingerprints = capture_fingerprints(project_root, ignore_patterns)
+    # Reuse the stored digest when a manifest exists but is transiently
+    # unreadable, so refresh does not permanently erase its baseline.
+    fingerprints = capture_fingerprints(
+        project_root,
+        ignore_patterns,
+        fallback_fingerprints=get_stored_fingerprints(existing_config),
+    )
 
     channel, project_description, code_conventions = _preserve_onboarding_meta(
         existing_config
