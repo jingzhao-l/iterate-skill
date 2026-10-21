@@ -2,6 +2,7 @@
 
 Provides subcommands for onboarding and personalization management:
     iterate onboard     — Run interactive CLI onboarding wizard (multi-path)
+    iterate init        — Non-interactive onboarding from scan defaults (CI/agents)
     iterate personalize — Direct personalization configuration (mid-project)
     iterate refresh     — Incremental refresh of ITERATE.md (preserve user sections)
     iterate reonboard   — Full re-onboarding (backup old files, run wizard)
@@ -382,6 +383,18 @@ def _dispatch_command(
         if show_banner:
             tui.banner()
         return _cmd_onboard(project_root)
+    if args.command == "init":
+        if show_banner:
+            tui.banner()
+        return _cmd_init(
+            project_root,
+            yes=getattr(args, "yes", False),
+            dry_run=getattr(args, "dry_run", False),
+            json_output=getattr(args, "json", False),
+            language=getattr(args, "language", None),
+            target_branch=getattr(args, "target_branch", None),
+            goal=getattr(args, "goal", None),
+        )
     if args.command == "personalize":
         if show_banner:
             tui.banner()
@@ -545,7 +558,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Emit structured JSON instead of TUI output for status, scan, "
-        "export, import, show, doctor, refresh, config, guard, invariant, "
+        "init, export, import, show, doctor, refresh, config, guard, invariant, "
         "fingerprint and update "
         "(and for --version). Interactive commands (onboard/personalize/"
         "reonboard) reject it; on every other path stdout holds exactly one "
@@ -593,6 +606,53 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help=argparse.SUPPRESS,
+    )
+    init_parser = subparsers.add_parser(
+        "init",
+        parents=[parent],
+        help="Non-interactive bootstrap: write ITERATE.md + config from the scan.",
+        description="Initialize a project without any prompts. The tech stack, "
+        "review dimensions, validation commands and command whitelist are "
+        "derived from `iterate scan`; the result is byte-for-byte the same "
+        "shape `iterate onboard` writes. Safe to re-run: an initialized "
+        "project is reported and left untouched. Non-interactive stdin "
+        "requires --yes; add --dry-run to preview without writing.",
+    )
+    init_parser.add_argument(
+        "--yes",
+        action="store_true",
+        default=False,
+        help="Write without a confirmation prompt (required when stdin is not "
+        "a terminal).",
+    )
+    init_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Show what would be detected and written without touching any file.",
+    )
+    init_parser.add_argument(
+        "--language",
+        choices=("zh", "en"),
+        default=None,
+        help="Output language for generated files (default: en, matching the "
+        "wizard).",
+    )
+    init_parser.add_argument(
+        "--target-branch",
+        default=None,
+        help="Git target branch recorded in the config (default: main).",
+    )
+    init_parser.add_argument(
+        "--goal",
+        default=None,
+        help="Override the default review goal recorded in the config.",
+    )
+    init_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON report instead of TUI output.",
     )
     personalize_parser = subparsers.add_parser(
         "personalize",
@@ -989,6 +1049,291 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _init_failure(message: str, json_output: bool, code: int = 1) -> int:
+    """Report an ``iterate init`` failure honouring the ``--json`` contract.
+
+    Mirrors ``_bundle_failure``: under ``--json`` stdout carries exactly one
+    JSON document (with ``ok: false`` so a caller can branch on it), while the
+    human-readable line goes to stderr.
+    """
+    if json_output:
+        print(
+            json.dumps(
+                {"ok": False, "command": "init", "error": message},
+                ensure_ascii=False,
+            )
+        )
+    tui.error(message)
+    return code
+
+
+def _prune_dimension_sets(
+    suggested: dict[str, dict[str, Any]], dimensions: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Restrict suggested dimension sets to globally enabled dimensions.
+
+    The wizard guarantees a blueprint never references a dimension the user
+    disabled; ``init`` derives both lists from the same scan, so the same
+    invariant must hold. Sets whose dimensions are all filtered out are
+    dropped rather than persisted as empty (schema requires ``minItems: 1``).
+    """
+    enabled = set(dimensions)
+    pruned: dict[str, dict[str, Any]] = {}
+    for name, spec in suggested.items():
+        dims = [d for d in spec.get("dimensions", []) if d in enabled]
+        if dims:
+            pruned[name] = {"dimensions": dims}
+    return pruned
+
+
+def _cmd_init(
+    project_root: Path,
+    *,
+    yes: bool = False,
+    dry_run: bool = False,
+    json_output: bool = False,
+    language: str | None = None,
+    target_branch: str | None = None,
+    goal: str | None = None,
+) -> int:
+    """Handle ``iterate init`` — non-interactive onboarding from scan defaults.
+
+    Interactive ``onboard`` cannot be driven from CI, a script, or another
+    skill (it blocks on prompts). ``init`` runs the same scanner and writes the
+    same two artifacts with the same generator, but takes every value from the
+    scan and the documented defaults. It is deliberately *fresh-project only*:
+    an existing config is reported and left untouched (use ``onboard`` /
+    ``refresh`` to change it), so a re-run in CI can never clobber a tuned
+    project. An existing ITERATE.md is only rewritten when it carries the
+    USER-OWNED markers, whose section is preserved.
+    """
+    from iterate_cli.dimension_sets import suggest_dimension_sets
+    from iterate_cli.fingerprint import capture_fingerprints
+    from iterate_cli.generator import (
+        DEFAULT_GOAL,
+        DEFAULT_LANGUAGE,
+        DEFAULT_TARGET_BRANCH,
+        OnboardingData,
+    )
+    from iterate_cli.scan import (
+        scan_project,
+        suggest_command_whitelist,
+        suggest_dimensions,
+        suggest_validation_commands,
+    )
+
+    config_path = project_root / CONFIG_YAML
+    md_path = project_root / "ITERATE.md"
+
+    if config_path.is_file():
+        if load_onboarding_config(project_root) is None:
+            return _init_failure(
+                f"{config_path.name} exists but could not be parsed; refusing "
+                "to overwrite it. Run `iterate doctor` to diagnose and fix the "
+                "config first.",
+                json_output,
+            )
+        message = (
+            f"{config_path.name} already exists — this project is already "
+            "initialized; nothing was changed. Use `iterate refresh` to update "
+            "AI-maintained sections, `iterate onboard` to change settings, or "
+            "`iterate doctor` to check health."
+        )
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "command": "init",
+                        "initialized": False,
+                        "already_initialized": True,
+                        "project": str(project_root),
+                        "message": message,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            tui.info(message)
+        return 0
+
+    existing_md: str | None = None
+    if md_path.is_file():
+        try:
+            existing_md = md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return _init_failure(
+                f"cannot read existing {md_path.name}: {exc}. Fix the file "
+                "permissions/encoding and retry.",
+                json_output,
+            )
+        if not has_valid_user_owned_markers(existing_md):
+            return _init_failure(
+                f"existing {md_path.name} is missing the USER-OWNED section "
+                "markers; refusing to overwrite possibly hand-edited content. "
+                "Restore <!-- ITERATE:USER-OWNED:START --> / ...END -->, or run "
+                "`iterate reonboard` which backs the file up first.",
+                json_output,
+            )
+
+    if language is not None and language not in ("zh", "en"):
+        return _init_failure(
+            f"unsupported language {language!r}; choose 'zh' or 'en'.",
+            json_output,
+            code=2,
+        )
+    if target_branch is not None and not target_branch.strip():
+        return _init_failure(
+            "--target-branch must not be empty.", json_output, code=2
+        )
+    if goal is not None and not goal.strip():
+        return _init_failure("--goal must not be empty.", json_output, code=2)
+
+    with tui.status("正在扫描项目 / Scanning project..."):
+        scan = scan_project(project_root)
+    dimensions = suggest_dimensions(scan)
+    validation_commands = suggest_validation_commands(scan)
+    command_whitelist = suggest_command_whitelist(scan)
+    dimension_sets = _prune_dimension_sets(
+        suggest_dimension_sets(scan), dimensions
+    )
+    fingerprints = capture_fingerprints(project_root)
+
+    data = OnboardingData(
+        project_root=project_root,
+        channel="cli",
+        scan=scan,
+        dimensions=dimensions,
+        dimension_sets=dimension_sets,
+        target_branch=target_branch or DEFAULT_TARGET_BRANCH,
+        validation_commands=validation_commands,
+        command_whitelist=command_whitelist,
+        fingerprints=fingerprints,
+        language=language or DEFAULT_LANGUAGE,
+        goal=goal or DEFAULT_GOAL,
+    )
+
+    plan: dict[str, Any] = {
+        "project": str(project_root),
+        "would_write": [md_path.name, config_path.name],
+        "detected_languages": list(scan.detected_languages),
+        "manifests": list(scan.manifests),
+        "dimensions": list(dimensions),
+        "dimension_sets": dimension_sets,
+        "validation_commands": validation_commands,
+        "command_whitelist": list(command_whitelist),
+        "target_branch": data.target_branch,
+        "language": data.language,
+    }
+
+    if dry_run:
+        if json_output:
+            print(
+                json.dumps(
+                    {"ok": True, "command": "init", "dry_run": True, **plan},
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        tui.intro("Iterate Skill — Init preview")
+        _render_init_plan(plan)
+        tui.hint("Dry run: nothing was written. Re-run without --dry-run to apply.")
+        return 0
+
+    if not yes:
+        # Order matters: a --json caller in CI gets the usage error (2) rather
+        # than the generic non-TTY error, matching `update --json`.
+        if json_output:
+            return _init_failure(
+                "--json implies a write, so it requires --yes (or use --dry-run "
+                "to preview).",
+                json_output,
+                code=2,
+            )
+        if not _stdin_is_interactive():
+            return _init_failure(
+                "Non-interactive stdin detected; pass --yes to initialize this "
+                "project (or --dry-run to preview).",
+                json_output,
+                code=2,
+            )
+        if not _confirm(
+            f"Initialize {project_root}? This writes ITERATE.md and "
+            "iterate.config.yaml.",
+            default=True,
+        ):
+            tui.info("已取消 / Cancelled; nothing was written.")
+            return 1
+
+    try:
+        iterate_md_path, written_config = write_onboarding_outputs(
+            data, project_root, existing_md
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return _init_failure(
+            f"failed to write onboarding files: {exc}. Nothing was left "
+            "half-written (the generator rolls back on failure); check "
+            "directory permissions and retry.",
+            json_output,
+        )
+
+    written = [iterate_md_path.name, written_config.name]
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "command": "init",
+                    "initialized": True,
+                    "dry_run": False,
+                    "written": written,
+                    **{k: v for k, v in plan.items() if k != "would_write"},
+                    "next_actions": [
+                        "iterate doctor",
+                        "iterate show",
+                        "iterate scan --json",
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    tui.empty_line()
+    tui.success("Project initialized (no prompts).")
+    _render_init_plan(plan, show_targets=False)
+    tui.key_value("Written", ", ".join(written))
+    tui.empty_line()
+    tui.hint("Next: `iterate doctor` to verify, `iterate show` to inspect.")
+    return 0
+
+
+def _render_init_plan(plan: dict[str, Any], *, show_targets: bool = True) -> None:
+    """Render the detected stack / generated config summary for ``init``."""
+    langs = ", ".join(plan.get("detected_languages") or []) or "— (none detected)"
+    tui.key_value("Project", str(plan.get("project", "")))
+    tui.key_value("Tech stack", langs)
+    tui.key_value(
+        "Dimensions", ", ".join(plan.get("dimensions") or []) or "—"
+    )
+    sets = plan.get("dimension_sets") or {}
+    tui.key_value(
+        "Dimension sets", ", ".join(sorted(sets)) if sets else "— (none)"
+    )
+    modules = plan.get("validation_commands") or {}
+    if modules:
+        tui.key_value(
+            "Validation",
+            "; ".join(f"{name}: {len(cmds)} command(s)" for name, cmds in modules.items()),
+        )
+    else:
+        tui.key_value("Validation", "— (no commands detected)")
+    tui.key_value("Target branch", str(plan.get("target_branch", "")))
+    tui.key_value("Language", str(plan.get("language", "")))
+    if show_targets and plan.get("would_write"):
+        tui.key_value("Will write", ", ".join(plan["would_write"]))
 
 
 def _cmd_onboard(project_root: Path) -> int:

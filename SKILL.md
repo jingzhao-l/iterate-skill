@@ -307,6 +307,7 @@ Summary
 
 ```bash
 iterate onboard      # 交互式向导（多路引导：首次/非首次自动分支）
+iterate init --yes   # 非交互式初始化：按扫描结果写入 ITERATE.md + config，供 CI/脚本/其它 skill 调用（--dry-run 预览；已初始化则不改动；--json）
 iterate personalize  # 个性化配置（项目中途追加约束，9 步向导）
 iterate personalize --clear [--yes]  # 清空所有个性化配置（结构化规则 + ITERATE.md 相关段落）
 iterate show         # 只读查看合并后的配置与个性化详情（支持 --json）

@@ -389,7 +389,26 @@ The report contains the detected `manifests`, `detected_languages`, `detected_pa
 }
 ```
 
-Apply a suggestion with `iterate onboard` (interactive) or `iterate config set <key> <value>`.
+Apply a suggestion with `iterate init` (one command, no prompts), `iterate onboard` (interactive) or `iterate config set <key> <value>`.
+
+### iterate init (prompt-free onboarding)
+
+`iterate onboard` is interactive by design, which means CI jobs, shell scripts and other skills cannot drive it (they would block on the first prompt). `iterate init` runs the same scanner and the same generator with **no questions**, so initializing a repository is one command:
+
+```bash
+iterate init --yes                  # write ITERATE.md + iterate.config.yaml
+iterate init --dry-run --json       # preview the detected stack + would-be config, write nothing
+iterate init --yes --json           # one JSON document for scripts/agents
+iterate init --yes --language zh --target-branch develop --goal "Harden the API"
+```
+
+The generated config uses the scanner's suggested dimensions, dimension sets (pruned to those dimensions), validation commands and command whitelist. It is the same shape the wizard writes, so `iterate doctor` accepts it and `iterate show` / `iterate refresh` work immediately.
+
+Safety properties:
+
+- **Idempotent** — if `iterate.config.yaml` already exists, `init` reports "already initialized" and changes nothing (exit `0`). Use `onboard`/`refresh` to modify a tuned project.
+- **Never clobbers hand edits** — an existing `ITERATE.md` is only rewritten when it carries the USER-OWNED markers, and that section is preserved; otherwise `init` refuses and points at `reonboard`.
+- **Non-interactive contract** — piped stdin requires `--yes` (exit `2` otherwise), and `--json` always leaves exactly one JSON document on stdout.
 
 ### iterate export / import (portable project state)
 

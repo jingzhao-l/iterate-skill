@@ -393,7 +393,26 @@ iterate scan --json  # stdout 输出单个 JSON 文档
 }
 ```
 
-用 `iterate onboard`（交互式）或 `iterate config set <key> <value>` 落地这些建议。
+用 `iterate init`（一条命令、无提问）、`iterate onboard`（交互式）或 `iterate config set <key> <value>` 落地这些建议。
+
+### iterate init（无提问初始化）
+
+`iterate onboard` 是交互式的：CI、脚本和其它 skill 无法驱动它（会卡在第一个提问上）。`iterate init` 复用同一套扫描器与生成器，**全程不提问**，一条命令完成初始化：
+
+```bash
+iterate init --yes                  # 写入 ITERATE.md + iterate.config.yaml
+iterate init --dry-run --json       # 只预览识别到的技术栈与将写入的配置，不落盘
+iterate init --yes --json           # 输出单个 JSON 文档，供脚本/agent 消费
+iterate init --yes --language zh --target-branch develop --goal "加固 API"
+```
+
+生成的配置使用扫描器建议的维度、维度集（裁剪到已启用维度）、校验命令与命令白名单，与向导产物同构：`iterate doctor` 直接通过，`iterate show` / `iterate refresh` 立即可用。
+
+安全语义：
+
+- **幂等**：`iterate.config.yaml` 已存在时不改动任何文件，报告「已初始化」并退出 `0`；要调整已配置项目请用 `onboard` / `refresh`。
+- **不覆盖手写内容**：已有 `ITERATE.md` 只有在带 USER-OWNED 标记时才重写，且保留该区内容；否则拒绝并提示改用 `reonboard`（先备份）。
+- **非交互契约**：stdin 非终端时必须加 `--yes`（否则退出 `2`）；`--json` 时 stdout 恰好一个 JSON 文档。
 
 ### iterate export / import（可移植的项目状态）
 
