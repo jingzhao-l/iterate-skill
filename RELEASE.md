@@ -169,9 +169,9 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > `npx -y iterate-skill-installer@latest --version` → **3.7.0**。
       > ✅ **ClawHub**：`clawhub_publish.py --concurrency 16` 发布 70 文件
       > （1,994,899 字节，`ok:true`，versionId `k97d08zfc7xp1j17px6s48xcd98gq85a`）；
-      > 平台 `publicationStatus=pending` 为异步审核。发布后 `tags.latest` 仍显示
-      > `3.6.0`、`/versions/3.7.0` 暂为 404，属待审核态；下一轮发布前需复核
-      > `tags.latest` 是否已推进到 3.7.0，若仍停在 3.6.0 需重试上传。
+      > 平台异步审核（`publicationStatus=pending`）约 **7 分钟**后完成：
+      > `GET /api/v1/skills/iterate-skill` → `tags.latest = 3.7.0`，
+      > `GET /api/v1/skills/iterate-skill/versions/3.7.0` → **200**。
       > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：`upload_file_to_openapi` →
       > `update_skill_settings` 成功（file_id `36c02d72-49b9-4ff4-b923-259bb171949b`）；
       > **消费端实测** `api.download_skill()` 落地 **72 文件**、`harness/|kernel/`
@@ -188,15 +188,15 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 故推送为 `[new tag]`，未覆盖任何远端 tag。找回 plugin tag：
       > `git tag -f v3.7.0 1d4d957e`（或 `git fetch plugin-origin v3.7.0`）。
       >
-      > **✅ 清洁门禁（2026-10-21T01:41Z）**：`git status` 干净、
-      > `origin/main == main == dd32cf2a`（RELEASE.md 本记录提交后会再前进一个提交）；
-      > Dependabot 0 open × 3 仓（`iterate-skill` / `-harness` / `-plugin`）；
-      > 0 open issue × 3 仓、0 open PR × 3 仓。`git fetch --prune` 后无新的
-      > merged 远端分支可删；本地 ahead=0 的分支（`kernel-zod-pin`、
+      > **✅ 清洁门禁（2026-10-21T01:55Z）**：`git status` 干净、
+      > `origin/main == main == 766f4ab5`（本记录提交前；tag `v3.7.0` 指向
+      > `dd32cf2a`）；Dependabot 0 open × 3 仓（`iterate-skill` / `-harness` /
+      > `-plugin`）；0 open issue × 3 仓、0 open PR × 3 仓。`git fetch --prune`
+      > 后无新的 merged 远端分支可删；本地 ahead=0 的分支（`kernel-zod-pin`、
       > `plugin-kernel-flip`、`sc3-writeside`）**均被其它 lane 的 worktree 占用**，
       > 不删。`git worktree prune --dry-run` 为空（17 个 worktree 全部有效）。
       > 保留含独有提交的 `backup/*`、`kernel/decision-log-chain` 等分支。
-      > **⚠️ 未决**：ClawHub 3.7.0 审核态尚未反映到 `tags.latest`（见上）。
+      > **⚠️ 唯一未决项**：无（三平台 + npm 均已确认 3.7.0）。
       >
       > **3.6.0 状态（2026-10-20）**：minor（三个新能力 + 同轮全量复审修复）。测试套件
       > **1563 → 1738**（实测 `pytest tests/ -q` → 1738 passed, 2 warnings；
