@@ -136,7 +136,67 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > **无法同版本重传**：SkillHub 对已发布版本上锁，重传必须升版本（本手册 2.3.17
       > 即因清理 harness 后同版本被锁而统一升版覆盖）。
 - [x] **9. 三平台版本一致性确认**：ClawHub / ModelScope / SkillHub 均指向 `<X.Y.Z>`。
-      > 本版 **3/3 达成**：ClawHub / ModelScope / SkillHub 的 `tags.latest` 均为 `3.6.0`。
+      > **3.6.0 版本一致性**：ClawHub / ModelScope / SkillHub 的 `tags.latest` 均为 `3.6.0`。
+      >
+      > **3.7.0 状态（2026-10-21）**：minor（两个新能力 + 同轮全量复审修复，测试
+      > **1738 → 1788**，实测 `pytest tests/ -q` → 1788 passed, 2 warnings；
+      > `ruff check .` 通过；新增 `tests/test_init_command.py`（16 项）与
+      > `tests/test_reonboard_preservation.py`（5 项），并扩充 refresh/personalize/
+      > doctor/config/onboarding/scan/portable/updater/signing 回归用例）。
+      > 两个新能力：`iterate init`（无提问初始化，`--yes` / `--dry-run` / `--json` /
+      > `--language` / `--target-branch` / `--goal`）与 `scan` 的 `has_api`
+      > （含 `src/api`、`app/routes` 等嵌套布局）+ `suggested_dimension_sets`。
+      > 主要修复：re-onboard 丢 dimension_sets/自定义校验命令/whitelist/git 默认值；
+      > updater 的 rmtree→replace 非原子窗口；portable 导出不校验/schema 不可回导、
+      > `--force` 覆盖 iterate 自身状态、import 半写回；refresh 按字节比较导致每次
+      > 重写并擦除注释、非字符串 whitelist 崩溃、`"on"` 布尔不一致、暂时不可读
+      > manifest 清空指纹；personalize 把 `null` 写成 `"None"`；doctor 无法修复
+      > 自己报的重复项；show/config 对缺失与损坏配置给出死路建议；gpg 超时被归为
+      > `unavailable`（可被 `ITERATE_ALLOW_UNSIGNED` 绕过）；status 在已算出漂移时
+      > 仍输出 `drift_reason: "unknown"`。
+      > 提交链 **6 个逻辑提交**（`7505d437`…`dd32cf2a`）+ 前一轮已推送的 `d6c83b67`
+      > （`iterate init`），全部 GPG 签名。signed annotated tag `v3.7.0` =
+      > `0e560dcb` → 提交 `dd32cf2a`，`git verify-tag v3.7.0` 完好，签发指纹
+      > `0929EA31DF4F7429F63FC53189D88B1D043A1298`（与钉死值一致）。
+      > ✅ **GitHub Release v3.7.0 已创建**（`release.yml` success run 39527574824）：
+      > 6 资产齐备；`shasum -a 256 -c SHA256SUMS.txt` OK；三份 `.asc` 均对本机校验
+      > 通过；`iterate-skill.tar.gz` 669,879 字节 / **93 条目**、`harness/|kernel/`
+      > **0 条**；`iterate-qoder.zip` 712,439 字节 / **78 文件**、`harness/|kernel/`
+      > **0 条**；两份包内 `SKILL.md version: 3.7.0`、`pyproject.toml 3.7.0`、
+      > `npm-installer/package.json 3.7.0` 三处一致。
+      > ✅ **npm CI 发布链路**（`npm-publish.yml` success run 39527574959）：
+      > `npm view iterate-skill-installer version` → **3.7.0**（`latest` 同步），
+      > `npx -y iterate-skill-installer@latest --version` → **3.7.0**。
+      > ✅ **ClawHub**：`clawhub_publish.py --concurrency 16` 发布 70 文件
+      > （1,994,899 字节，`ok:true`，versionId `k97d08zfc7xp1j17px6s48xcd98gq85a`）；
+      > 平台 `publicationStatus=pending` 为异步审核。发布后 `tags.latest` 仍显示
+      > `3.6.0`、`/versions/3.7.0` 暂为 404，属待审核态；下一轮发布前需复核
+      > `tags.latest` 是否已推进到 3.7.0，若仍停在 3.6.0 需重试上传。
+      > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：`upload_file_to_openapi` →
+      > `update_skill_settings` 成功（file_id `36c02d72-49b9-4ff4-b923-259bb171949b`）；
+      > **消费端实测** `api.download_skill()` 落地 **72 文件**、`harness/|kernel/`
+      > 0 条，`SKILL.md version: 3.7.0`、`pyproject.toml 3.7.0`、
+      > `npm-installer/package.json 3.7.0` 三处一致，包内 `cli.py` 含 `_cmd_init`
+      > 且 `scan.py` 含 `suggested_dimension_sets`。
+      > ✅ **SkillHub**（skillId `104490`）：发布 68 文件（683.2 KB，`ok:true`，
+      > versionId `450093`，`tags.latest = 3.7.0`；`reviewStatus/securityScanStatus/
+      > contentAuditStatus=pending` 为平台异步审核）。
+      > ⚠️ **本地 tag 命名空间撞名（再次处理）**：本地 `refs/tags/v3.7.0` 原指向
+      > iterate-plugin 镜像 tag（`6379ee4d` → `1d4d957e`，`plugin-origin` 上仍持有
+      > `6379ee4d`；`v3.7.1` 亦为 plugin tag，未动）。本轮用
+      > `git tag -f -s v3.7.0` 重指到 skill 发布 tag；origin 此前**没有** `v3.7.0`，
+      > 故推送为 `[new tag]`，未覆盖任何远端 tag。找回 plugin tag：
+      > `git tag -f v3.7.0 1d4d957e`（或 `git fetch plugin-origin v3.7.0`）。
+      >
+      > **✅ 清洁门禁（2026-10-21T01:41Z）**：`git status` 干净、
+      > `origin/main == main == dd32cf2a`（RELEASE.md 本记录提交后会再前进一个提交）；
+      > Dependabot 0 open × 3 仓（`iterate-skill` / `-harness` / `-plugin`）；
+      > 0 open issue × 3 仓、0 open PR × 3 仓。`git fetch --prune` 后无新的
+      > merged 远端分支可删；本地 ahead=0 的分支（`kernel-zod-pin`、
+      > `plugin-kernel-flip`、`sc3-writeside`）**均被其它 lane 的 worktree 占用**，
+      > 不删。`git worktree prune --dry-run` 为空（17 个 worktree 全部有效）。
+      > 保留含独有提交的 `backup/*`、`kernel/decision-log-chain` 等分支。
+      > **⚠️ 未决**：ClawHub 3.7.0 审核态尚未反映到 `tags.latest`（见上）。
       >
       > **3.6.0 状态（2026-10-20）**：minor（三个新能力 + 同轮全量复审修复）。测试套件
       > **1563 → 1738**（实测 `pytest tests/ -q` → 1738 passed, 2 warnings；
