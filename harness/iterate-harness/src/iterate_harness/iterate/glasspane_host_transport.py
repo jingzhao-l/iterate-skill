@@ -19,24 +19,24 @@ WHAT IT GUARANTEES, in the order the guarantees matter:
    join would put this harness back to the measured defect: the shipped ``gp_diagnose``
    answers with the daemon frame *plus* an ``update state:`` block *plus* a ``provider:``
    line, and a frame joined with anything else classifies ``unparseable``.
-3. **Re-entrancy is decided per case, not hoped away.** ``run_reverification`` is called
-   from a synchronous publish site (``iterate_review``'s aggregate) that normally runs
-   *inside* the engine's event loop:
+3. **Re-entrancy is decided per case, and each case has a working send.** ``run_reverification``
+   is called from the round's publish site (``iterate_review``'s aggregate), and that site's
+   shape is not a guess: ``engine/query.py`` runs tools with ``await tool.execute(...)`` and
+   ``ui/runtime.py`` builds the run's ``McpClientManager`` with ``await connect_all()`` on the
+   engine loop, then puts it in the tool metadata. So the publish site is **always** inside the
+   loop that owns the session, and a synchronous caller there would block the very loop its own
+   MCP reply needs. That is why this module binds two transports and the publish site awaits one:
 
-   - **no loop running on this thread** — the publish site owns the thread, so this module
-     drives the coroutine to completion with a bounded timeout
-     (:data:`HOST_TRANSPORT_TIMEOUT_SECONDS`, deliberately longer than the client's own
-     ``MCP_CALL_TIMEOUT_SECONDS`` so the client's error shape wins and this window is only
-     the backstop for a client that never returns at all).
-   - **a loop running on this thread** — blocking here would deadlock the very loop the MCP
-     session is bound to, and ``asyncio.run`` raises
-     ``RuntimeError: asyncio.run() cannot be called from a running event loop``. So this
-     module sends nothing and answers with the shell's own coded-refusal line
-     (``GP_E_HOST_LOOP_BUSY``) whose remedy names the two things the host can actually do:
-     configure a dedicated stdio session for the re-verification channel, or await
-     :func:`.glasspane_reverification.run_reverification_async` from the loop that owns the
-     client before publishing. Refusing is the *only* honest option: a fake answer, a
-     swallowed error, or an "empty" reply would all read as a measured round.
+   - :func:`make_host_acall` — awaited on the loop that owns the client, which is the only loop
+     that *can* drive those sessions. This is the production path.
+   - :func:`make_host_transport` — a synchronous transport for a host that owns no loop
+     (:data:`HOST_TRANSPORT_TIMEOUT_SECONDS` is its backstop window). Awaiting a client bound to
+     *another* loop would be unsound rather than merely blocked, so this one keeps
+     :data:`LOOP_BUSY_CODE` when a loop is running and names the awaitable transport as the
+     remedy — the refusal is a stated state, not the end of the channel.
+
+   Both refuse a tool outside the read-only set *before* a coroutine exists, so a refused call
+   is a call that never was.
 
 4. **Transport errors keep their shapes.** ``McpServerNotConnectedError`` and
    ``McpServerTimeoutError`` propagate to the sender, which relays them as ``GP_E_CHANNEL``
@@ -53,11 +53,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from ..mcp.client import McpServerTimeoutError
 from .glasspane_reverification import READ_ONLY_TOOLS
+from .reverify_trigger import GLASSPANE_ACALL_KEY, GLASSPANE_TRANSPORT_ABSENT_KEY, GLASSPANE_TRANSPORT_KEY
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +86,11 @@ LOOP_BUSY_CODE = "GP_E_HOST_LOOP_BUSY"
 #: entry per MCP content item (or the shell's coded-refusal text for a refusal this module
 #: made on the host's behalf).
 GlasspaneTransport = Callable[[str, dict[str, Any]], object]
+
+#: The same contract, awaitable: ``(tool, arguments) -> awaitable of the engine's reply``.
+#: This is the shape the round's publish site needs, because that site is already inside the
+#: loop that owns the MCP session.
+GlasspaneAsyncTransport = Callable[[str, dict[str, Any]], Awaitable[object]]
 
 
 def _refusal(code: str, message: str, remedy: str) -> str:
@@ -222,7 +228,8 @@ def make_host_transport(manager: object, server_name: str, *, timeout: float | N
                 "give the re-verification channel its own stdio session (a McpClientManager "
                 "connected on a thread with no running loop), or await "
                 "iterate.glasspane_reverification.run_reverification_async from this loop "
-                "before the round publishes",
+                "before the round publishes — which is what the publish site does through "
+                f"the awaitable transport this module binds under {GLASSPANE_ACALL_KEY!r}",
             )
         parts = getattr(manager, "call_tool_parts", None)
         if not callable(parts):
@@ -236,6 +243,39 @@ def make_host_transport(manager: object, server_name: str, *, timeout: float | N
         return _drive(parts(server_name, tool, dict(arguments)), tool=tool, window=window)
 
     return call_tool
+
+
+def make_host_acall(manager: object, server_name: str) -> GlasspaneAsyncTransport:
+    """An asynchronous read-only transport over ``manager.call_tool_parts``.
+
+    This is the transport the round's publish site uses: it awaits on the caller's own loop,
+    which is the loop the run's MCP sessions were connected on. No second ``asyncio`` window is
+    wrapped around the await here on purpose — ``McpClientManager._bounded_await`` already
+    clamps the call at ``MCP_CALL_TIMEOUT_SECONDS`` and raises the client's own error type, and
+    a host-side timer around it would decide which of two timeouts the engine reports.
+    """
+
+    async def acall_tool(tool: str, arguments: dict[str, Any]) -> object:
+        if tool not in READ_ONLY_TOOLS:
+            # Before the await: the session is never touched by a tool this channel may not send.
+            return _refusal(
+                WRITE_TOOL_CODE,
+                f"the re-verification transport does not send {tool!r}; it is not one of the "
+                "engine's read-only tools",
+                _read_only_remedy(),
+            )
+        parts = getattr(manager, "call_tool_parts", None)
+        if not callable(parts):
+            return _refusal(
+                "GP_E_HOST_NO_PARTS_PATH",
+                "the run's MCP client exposes no call_tool_parts, so the item boundary of the "
+                "engine's reply cannot be carried to the relay",
+                "run the harness with iterate_harness.mcp.client.McpClientManager (or a client "
+                "whose call_tool_parts returns one entry per content item)",
+            )
+        return await parts(server_name, tool, dict(arguments))
+
+    return acall_tool
 
 
 def host_transport(metadata: Mapping[str, Any] | None) -> tuple[GlasspaneTransport | None, str | None]:
@@ -253,31 +293,39 @@ def host_transport(metadata: Mapping[str, Any] | None) -> tuple[GlasspaneTranspo
 
 
 def bind_host_transport(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Metadata additions for the publish site: a transport, or a stated absence.
+    """Metadata additions for the publish site: both transports, or a stated absence.
 
     The round's own metadata is never mutated — the trigger is handed the merged copy, so a
     callable never leaks into the durable ``tool_metadata`` the engine folds across turns.
     An empty result means "this run already says what it means" (a host-bound transport, or
     no manager key at all where the default reason is already the accurate one).
+
+    Both transports are bound from one discovery pass because they are the same channel seen
+    from two hosts: the awaitable one is what the publish site uses, the synchronous one is
+    what a loop-free host (a CLI call, a test body) uses. Binding only the synchronous one is
+    how scenario ① shipped with a send that could never happen — the publish site always runs
+    inside the loop, so every round read :data:`LOOP_BUSY_CODE` and the accepting branch stayed
+    unexercised in production.
     """
     meta: Mapping[str, Any] = metadata or {}
     additions: dict[str, Any] = {}
 
-    from .reverify_trigger import GLASSPANE_TRANSPORT_ABSENT_KEY, GLASSPANE_TRANSPORT_KEY
-
-    if callable(meta.get(GLASSPANE_TRANSPORT_KEY)):
+    if callable(meta.get(GLASSPANE_TRANSPORT_KEY)) or callable(meta.get(GLASSPANE_ACALL_KEY)):
         # A host that bound its own transport wins; this module adds nothing and says nothing.
         return additions
 
-    transport, reason = host_transport(meta)
-    if transport is not None:
-        additions[GLASSPANE_TRANSPORT_KEY] = transport
+    manager = meta.get(MCP_MANAGER_METADATA_KEY)
+    server_name, reason = find_glasspane_server(manager, meta.get(GLASSPANE_SERVER_NAME_KEY))
+    if server_name is None:
+        if MCP_MANAGER_METADATA_KEY in meta:
+            # The run *has* an MCP plane and it cannot serve re-verification: that reason is more
+            # specific than the sender's default, and it is the difference between "the host never
+            # wired this" and "this run has no GlassPane server, because X".
+            additions[GLASSPANE_TRANSPORT_ABSENT_KEY] = reason or "no GlassPane MCP channel is reachable"
         return additions
-    if MCP_MANAGER_METADATA_KEY in meta:
-        # The run *has* an MCP plane and it cannot serve re-verification: that reason is more
-        # specific than the sender's default, and it is the difference between "the host never
-        # wired this" and "this run has no GlassPane server, because X".
-        additions[GLASSPANE_TRANSPORT_ABSENT_KEY] = reason or "no GlassPane MCP channel is reachable"
+
+    additions[GLASSPANE_TRANSPORT_KEY] = make_host_transport(manager, server_name)
+    additions[GLASSPANE_ACALL_KEY] = make_host_acall(manager, server_name)
     return additions
 
 
@@ -288,9 +336,11 @@ __all__ = [
     "MCP_MANAGER_METADATA_KEY",
     "READ_ONLY_TOOLS",
     "WRITE_TOOL_CODE",
+    "GlasspaneAsyncTransport",
     "GlasspaneTransport",
     "bind_host_transport",
     "find_glasspane_server",
     "host_transport",
+    "make_host_acall",
     "make_host_transport",
 ]

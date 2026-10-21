@@ -6,6 +6,36 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **#22 场景①真正接通：发布点改为 await，宿主一次绑两份 transport——并如实记下上一批那份"绑了但跑不到"。**
+  回代码复核 #21 的落地形状（不是推测，是读到的行）：`engine/query.py:801` 与 `:1521` 用
+  `await tool.execute(...)` 驱动工具，`ui/runtime.py:298-300` 在引擎 loop 上 `await connect_all()`、
+  `:424` 把同一个 manager 放进 tool metadata ⇒ 发布点**恒**在拥有 MCP session 的那个 loop 内。
+  `make_host_transport` 的接受分支只在"本线程无 running loop"时才走，因此它在生产里一次也没跑到，
+  每一轮读回的都是 `GP_E_HOST_LOOP_BUSY`。更要紧的是当时那条端到端用例把这句拒绝**断成了期望行为**
+  （`{answer["code"]} == {LOOP_BUSY_CODE}`）：闸是绿的，通道是死的——"测试通过"与"能力存在"是两回事，
+  这一处正是本项目反复告诫的那类假绿。跨 loop 驱动也不行（session 绑定在连接它的那个 loop 上），
+  所以唯一的诚实出路就是本批做的：在拥有客户端的循环上 await。新增 `make_host_acall(manager, server)`
+  ——同一份 deny-by-default 只读集合（`READ_ONLY_TOOLS` 从契约 import，不复述名字）、在 await 之前拒、
+  消费 `call_tool_parts` 交 `list[str]`；有意不再套一层 `asyncio.wait_for`：客户端自己的
+  `_bounded_await`/120s 决定错误形状，宿主加第二个计时器只会改写"该报哪个超时"。
+  `bind_host_transport` 改为一次发现绑两份（`GLASSPANE_TRANSPORT_KEY` + `GLASSPANE_ACALL_KEY`），
+  键串只在 `reverify_trigger` 定义一处并由宿主 import，具名用例数 `src/` 里该字面量的出现次数来防第二份
+  契约漂移。`trigger_reverification` 拆成 `_prepare`（能不能问、问哪些、拒绝怎么转述）+ `_finalize`
+  （发布载荷与 ledger 那一行），同步/异步两个触发器只差"怎么驱动"，规则正文不再有两份。
+  `_sync_transport` 现在过滤 coroutine 函数：把 awaitable 误绑到同步键上，原先会被真的调用、拿回一条
+  `GP_E_ASYNC_HOST` 拒绝并**以引擎回话的形状**进入 relay——本项目不接受这种冒充。
+  端到端断言改成立：真实 `tool.execute` 路径下 `attempted=True`、两条答案 `state=answered`、
+  `code` 集合恰为 `{None}`、帧走 `call_tool_parts` 且 `joined_calls==[]`、三个 content item 里两条旁项
+  原样进 `annotations`、`verified=True` 而 `clean=False`（引擎说"claim still does not hold"不会被这侧洗白）、
+  ledger 恰多一条、`invariant_state` 仍是 `fail` 且不因回验成功而变 measured。另加
+  `_LoopPinningClient` 断"驱动 session 的 loop 就是连接它的那个 loop"，跨 loop 这条错误出路从此是失败
+  断言而不是挂起；同步 transport 保留给无 loop 的宿主（CLI / 测试体），其在循环内的具名拒绝用例一字未改。
+  变异四发各点名一条用例变红（异步触发器无视 acall／acall 放弃只读拒绝／同步触发器把协程函数当
+  transport／宿主只绑同步那份），按自带备份 + sha256 核回；第一版 M3 打不动任何用例，因为我那条负例把
+  awaitable 绑在**异步键**上、同步触发器根本不看那个键——重写为绑错到同步键上之后 M3 当场点名变红，
+  这条账记在这里是因为"我的负例测的是自己写的键"正是假绿的另一种形状。全套件 2849 passed / 6 skipped /
+  4 failed——那 4 条在 pristine main（`3a0dc70d`）隔离复跑同样红，是本机无 `python` 可执行文件的既有环境
+  失败（`return_code=127`），与本批无关。`test_host_transport.py` 收集数 23 → **31**（新增 8 条）。
 - **#21 场景①的宿主半：harness 自己绑定同步只读 GlassPane transport，失败判决真的送达引擎。**
   `reverify_trigger` 的规则 5 一直如实记录 "not attempted"，因为这个仓库里没有人绑过 transport——
   `McpClientManager` 是 async，`run_reverification` 是 sync sender。新增

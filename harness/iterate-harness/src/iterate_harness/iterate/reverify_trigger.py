@@ -42,8 +42,15 @@ site where they can actually be broken):
    which is a stated state, not a silence (and
    :attr:`GLASSPANE_TRANSPORT_ABSENT_KEY` is where a host says *why* it has not, instead of
    letting the sender guess a generic reason). The harness now is such a host:
-   ``iterate/glasspane_host_transport.py`` builds the synchronous read-only transport from the
-   run's own ``McpClientManager`` and binds it at the publish site, and it answers with
+   ``iterate/glasspane_host_transport.py`` builds the read-only transport from the run's own
+   ``McpClientManager`` and binds it at the publish site. **It binds two, and the round uses the
+   awaitable one** (:data:`GLASSPANE_ACALL_KEY` → :func:`trigger_reverification_async`), because
+   the publish site's shape is fixed by the engine rather than chosen here: ``engine/query.py``
+   awaits ``tool.execute`` and ``ui/runtime.py`` connects the MCP manager on that same loop, so a
+   synchronous send at that site always read ``GP_E_HOST_LOOP_BUSY`` and the accepting branch
+   never ran. The synchronous transport stays for hosts that own no loop, and a host that hands
+   over only a synchronous transport while a loop runs still gets that named refusal — a stated
+   state, never an invented answer. It answers with
    ``call_tool_parts``' ``list[str]`` for exactly the reason below. The transport's reply shape is the engine's own
    boundary: prefer ``McpClientManager.call_tool_parts``, whose ``list[str]`` keeps one entry
    per content item (the shipped ``gp_diagnose`` answers with the daemon frame *plus* an
@@ -55,13 +62,19 @@ site where they can actually be broken):
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from .decision_log import DECISION_LOG_REFUSALS, append_entry, make_entry, read_entries
-from .glasspane_reverification import RelayedAnswer, ReverificationRun, run_reverification
+from .glasspane_reverification import (
+    RelayedAnswer,
+    ReverificationRun,
+    run_reverification,
+    run_reverification_async,
+)
 from .invariant_report import (
     OPERATION_ID_PATTERN,
     InvariantReportError,
@@ -94,6 +107,14 @@ GLASSPANE_TRANSPORT_KEY = "glasspane_reverify_transport"
 #: default text, so a host that binds nothing says nothing beyond "no channel".
 GLASSPANE_TRANSPORT_ABSENT_KEY = "glasspane_reverify_transport_absent"
 
+#: The awaitable twin of :data:`GLASSPANE_TRANSPORT_KEY`: ``await call_tool(tool, arguments) ->
+#: the engine's reply``. :func:`trigger_reverification_async` prefers it, and the round's publish
+#: site is asynchronous, so this is the key that makes scenario ① actually send. Kept separate
+#: from the synchronous key because the two are different contracts: a synchronous caller cannot
+#: await a session bound to its own loop, and an awaitable transport handed to the synchronous
+#: sender would be a coroutine filed as an answer.
+GLASSPANE_ACALL_KEY = "glasspane_reverify_acall"
+
 #: The ledger kind this decision is filed under. Shape-checked by the kernel, not by a list.
 LEDGER_DECISION_TYPE = "decision"
 LEDGER_DATA_KIND = "reverification"
@@ -113,9 +134,29 @@ def _sync_transport(metadata: Mapping[str, Any] | None) -> Callable[[str, dict[s
     there are items. The missing-verdict rule is the caller's and is unchanged: when
     the round measured no invariant verdict this trigger says nothing and publishes
     nothing.
+
+    An *awaitable* transport is not a synchronous one, and is filtered here rather than handed
+    to the sender to be refused as ``GP_E_ASYNC_HOST`` after the fact: a run that bound only
+    :data:`GLASSPANE_ACALL_KEY` and calls the synchronous trigger gets the honest
+    "no transport was handed over" state, not a refusal that reads as an engine answer.
     """
     candidate = (metadata or {}).get(GLASSPANE_TRANSPORT_KEY)
-    return candidate if callable(candidate) else None
+    if not callable(candidate) or inspect.iscoroutinefunction(candidate):
+        return None
+    return candidate
+
+
+def _acall_transport(metadata: Mapping[str, Any] | None) -> Callable[[str, dict[str, Any]], Any] | None:
+    """The host's awaitable transport, or ``None``.
+
+    Only a coroutine function counts: ``inspect.iscoroutinefunction`` sees through
+    ``functools.partial``, which is the one wrapping style this harness uses. A callable that
+    merely *returns* an awaitable is not accepted, because telling it apart from a synchronous
+    transport would mean calling it first — and a send made to discover the shape of the channel
+    is the thing rule 5 exists to stop.
+    """
+    candidate = (metadata or {}).get(GLASSPANE_ACALL_KEY)
+    return candidate if inspect.iscoroutinefunction(candidate) else None
 
 
 def _not_attempted_reason(metadata: Mapping[str, Any] | None) -> str | None:
@@ -250,23 +291,28 @@ def record_reverification_run(
     return None
 
 
-def trigger_reverification(
+def _prepare(
     *,
     project_root: Path | str,
     metadata: Mapping[str, Any] | None,
     gates: Mapping[str, object],
-    round_number: int,
     planned_dimensions: Sequence[str] = (),
-) -> dict[str, Any] | None:
-    """Send the failing invariant's re-verification, or state why nothing was sent.
+) -> tuple[str, Mapping[str, object] | None, int, dict[str, Any] | None]:
+    """What this round may honestly ask, decided once and shared by both senders.
 
-    Returns ``None`` when the round measured no invariant verdict at all — the caller then
-    publishes nothing, which is the difference between "not needed" and "not known". Otherwise a
-    JSON-safe payload for the round's ``iterate_state`` and the tool output.
+    Returns ``(verdict, request, not_asked, outcome)``. ``outcome`` is the payload to publish when
+    the round sends nothing — a contract refusal relayed as it came, or the kernel's own "the
+    report passed, no request is built" line. ``request`` is ``None`` exactly when nothing may be
+    sent, and when the round measured no invariant verdict at all both are ``None``, which is
+    rule 1: the caller publishes nothing.
+
+    Split from the send so the synchronous trigger and the awaitable trigger cannot grow into two
+    contracts: everything about *what may be asked* lives in this one body, and the only thing
+    that differs between them is how the ask is driven.
     """
     verdict = gates.get(INVARIANT_GATE_KEY)
     if not isinstance(verdict, str) or not verdict:
-        return None
+        return "", None, 0, None
 
     from ..defensive.kernel import DEFENSIVE_KERNEL_KEY
 
@@ -276,49 +322,66 @@ def trigger_reverification(
         # A verdict with no report behind it is a producer bug, and the honest answer about our
         # own action is "nothing was asked": no request, no ledger line, no published key.
         log.warning("iterate invariant gate %r carries no report; no re-verification was sent", verdict)
-        return None
+        return "", None, 0, None
 
     ensure = getattr(kernel, "invariant_ensure", None)
     commands = getattr(kernel, "invariant_commands", None)
     if ensure is None or commands is None:
-        return _refusal_payload(
-            InvariantReportError(
-                "INVARIANT_REPORT_E_CONFIGURED",
-                f"the invariant verdict {verdict!r} came from a kernel that does not name the "
-                "checks it ran",
-                "the request's digest is a citation of the report, and the report has to carry "
-                "every configured check; expose the runner's own ensure list and command map "
-                "(defensive.kernel.DefensiveKernel.invariant_ensure / invariant_commands) "
-                "instead of letting the loop guess them",
-                "checks",
-            ),
+        return (
             verdict,
+            None,
+            0,
+            _refusal_payload(
+                InvariantReportError(
+                    "INVARIANT_REPORT_E_CONFIGURED",
+                    f"the invariant verdict {verdict!r} came from a kernel that does not name the "
+                    "checks it ran",
+                    "the request's digest is a citation of the report, and the report has to carry "
+                    "every configured check; expose the runner's own ensure list and command map "
+                    "(defensive.kernel.DefensiveKernel.invariant_ensure / invariant_commands) "
+                    "instead of letting the loop guess them",
+                    "checks",
+                ),
+                verdict,
+            ),
         )
 
     try:
         contract_report = from_defensive_report(list(ensure), dict(commands), report)
     except InvariantReportError as error:
-        return _refusal_payload(error, verdict)
+        return verdict, None, 0, _refusal_payload(error, verdict)
 
     targets, not_asked = reverification_targets(project_root, planned_dimensions)
     try:
         request = re_verification_request_from_targets(contract_report, targets)
     except InvariantReportError as error:
-        return _refusal_payload(error, verdict)
+        return verdict, None, not_asked, _refusal_payload(error, verdict)
     if request is None:
         # The kernel's own rule: a passing report earns no request. Nothing is sent, and the
         # round records that it sent nothing because nothing was broken.
-        return {
-            "spawned": False,
-            "invariantState": verdict,
-            "reason": "the invariant report passed; the kernel builds no re-verification request",
-        }
+        return (
+            verdict,
+            None,
+            not_asked,
+            {
+                "spawned": False,
+                "invariantState": verdict,
+                "reason": "the invariant report passed; the kernel builds no re-verification request",
+            },
+        )
+    return verdict, request, not_asked, None
 
-    run = run_reverification(
-        request,
-        _sync_transport(metadata),
-        not_attempted_reason=_not_attempted_reason(metadata),
-    )
+
+def _finalize(
+    *,
+    project_root: Path | str,
+    round_number: int,
+    verdict: str,
+    request: Mapping[str, object],
+    not_asked: int,
+    run: ReverificationRun,
+) -> dict[str, Any]:
+    """One send, published: the round's payload plus the single ledger entry it earns."""
     payload: dict[str, Any] = {
         "spawned": True,
         "invariantState": verdict,
@@ -346,7 +409,92 @@ def trigger_reverification(
     return payload
 
 
+def trigger_reverification(
+    *,
+    project_root: Path | str,
+    metadata: Mapping[str, Any] | None,
+    gates: Mapping[str, object],
+    round_number: int,
+    planned_dimensions: Sequence[str] = (),
+) -> dict[str, Any] | None:
+    """Send the failing invariant's re-verification through a synchronous transport.
+
+    Returns ``None`` when the round measured no invariant verdict at all — the caller then
+    publishes nothing, which is the difference between "not needed" and "not known". Otherwise a
+    JSON-safe payload for the round's ``iterate_state`` and the tool output.
+
+    A host whose publish site runs inside the event loop that owns its MCP sessions must call
+    :func:`trigger_reverification_async` instead; this function is for a host that owns no loop.
+    """
+    verdict, request, not_asked, outcome = _prepare(
+        project_root=project_root,
+        metadata=metadata,
+        gates=gates,
+        planned_dimensions=planned_dimensions,
+    )
+    if request is None or outcome is not None:
+        return outcome
+    run = run_reverification(
+        request,
+        _sync_transport(metadata),
+        not_attempted_reason=_not_attempted_reason(metadata),
+    )
+    return _finalize(
+        project_root=project_root,
+        round_number=round_number,
+        verdict=verdict,
+        request=request,
+        not_asked=not_asked,
+        run=run,
+    )
+
+
+async def trigger_reverification_async(
+    *,
+    project_root: Path | str,
+    metadata: Mapping[str, Any] | None,
+    gates: Mapping[str, object],
+    round_number: int,
+    planned_dimensions: Sequence[str] = (),
+) -> dict[str, Any] | None:
+    """The same trigger, awaited: the transport is driven on the caller's own loop.
+
+    This is what the round's publish site calls, because that site is already inside the loop its
+    MCP client was connected on (rule 5). The awaitable transport wins; a host that handed over
+    only a synchronous one falls back to :func:`.glasspane_reverification.run_reverification`, so
+    the outcome is the same payload either way and a refusal still arrives relayed rather than as
+    an exception. Nothing about which checks to ask, or what is published, differs between the
+    two triggers — that is why both call :func:`_prepare` and :func:`_finalize`.
+    """
+    verdict, request, not_asked, outcome = _prepare(
+        project_root=project_root,
+        metadata=metadata,
+        gates=gates,
+        planned_dimensions=planned_dimensions,
+    )
+    if request is None or outcome is not None:
+        return outcome
+    acall = _acall_transport(metadata)
+    if acall is not None:
+        run = await run_reverification_async(request, acall)
+    else:
+        run = run_reverification(
+            request,
+            _sync_transport(metadata),
+            not_attempted_reason=_not_attempted_reason(metadata),
+        )
+    return _finalize(
+        project_root=project_root,
+        round_number=round_number,
+        verdict=verdict,
+        request=request,
+        not_asked=not_asked,
+        run=run,
+    )
+
+
 __all__ = [
+    "GLASSPANE_ACALL_KEY",
     "GLASSPANE_TRANSPORT_ABSENT_KEY",
     "GLASSPANE_TRANSPORT_KEY",
     "INVARIANT_GATE_KEY",
@@ -356,4 +504,5 @@ __all__ = [
     "recorded_operation_ids",
     "reverification_targets",
     "trigger_reverification",
+    "trigger_reverification_async",
 ]

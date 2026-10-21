@@ -33,7 +33,7 @@ from ..iterate.dimension_context import format_dimension_context
 from ..iterate.loop_policy import ITERATE_STATE_KEY
 from ..iterate.loop_gates import measured_gates
 from ..iterate.glasspane_host_transport import bind_host_transport
-from ..iterate.reverify_trigger import REVERIFICATION_STATE_KEY, trigger_reverification
+from ..iterate.reverify_trigger import REVERIFICATION_STATE_KEY, trigger_reverification_async
 from .base import BaseTool, ToolExecutionContext, ToolResult
 
 log = logging.getLogger(__name__)
@@ -321,7 +321,7 @@ class IterateReviewTool(BaseTool[BaseModel]):
             if arguments.operation == "plan":
                 return self._plan(arguments, context)
             if arguments.operation == "aggregate":
-                return self._aggregate(arguments, context)
+                return await self._aggregate(arguments, context)
             return self._meta_review(arguments, context)
         except ValueError as exc:
             return _json_output({"error": str(exc)}, error=True)
@@ -414,7 +414,7 @@ class IterateReviewTool(BaseTool[BaseModel]):
             payload["ledgerError"] = f"{getattr(error, 'code', type(error).__name__)}: {error}"
         return payload
 
-    def _aggregate(self, args: IterateReviewInput, context: ToolExecutionContext) -> ToolResult:
+    async def _aggregate(self, args: IterateReviewInput, context: ToolExecutionContext) -> ToolResult:
         if not args.rounds:
             return _json_output(
                 {"error": "aggregate requires rounds: [{round, findings}]"}, error=True
@@ -486,13 +486,16 @@ class IterateReviewTool(BaseTool[BaseModel]):
         # the wiring lives in one call. See iterate/reverify_trigger.py for the rules it is bound
         # by, including the one that keeps a missing verdict silent instead of satisfied.
         # Scenario ①'s host half: the transport this trigger needs is the run's own MCP client,
-        # driven synchronously and read-only. bind_host_transport either hands one over or says
-        # why the run cannot (no mcp plane / no GlassPane server / a server that never
-        # connected), so an absent channel reads as "not attempted, because …" rather than as
-        # silence. The additions go on a merged copy — a callable must never land in the
-        # durable tool_metadata the engine folds across turns.
+        # read-only. bind_host_transport hands over both shapes of it, or says why the run
+        # cannot (no mcp plane / no GlassPane server / a server that never connected), so an
+        # absent channel reads as "not attempted, because …" rather than as silence. This site
+        # awaits: engine/query.py runs tools with ``await tool.execute(...)`` and ui/runtime.py
+        # connects the MCP manager on that same loop, so the awaitable transport is the only one
+        # that can reach those sessions — a synchronous send here could only ever refuse. The
+        # additions go on a merged copy — a callable must never land in the durable
+        # tool_metadata the engine folds across turns.
         transport_metadata = {**context.metadata, **bind_host_transport(context.metadata)}
-        reverification = trigger_reverification(
+        reverification = await trigger_reverification_async(
             project_root=context.cwd,
             metadata=transport_metadata,
             gates=gates,

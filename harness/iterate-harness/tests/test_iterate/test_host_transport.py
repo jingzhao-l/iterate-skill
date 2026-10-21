@@ -14,11 +14,14 @@ with today (daemon frame + ``update state:`` block + ``provider:`` attribution l
 ``tests/test_mcp/test_call_tool_parts.py``).
 
 Two of these cases cannot be written in one shape, and that IS the re-entrancy decision: the
-no-running-loop path is a plain ``def`` test (pytest-asyncio gives it no loop, so the transport
-really drives its coroutine), and the already-inside-a-loop path is an ``async def`` test (the
-loop the session belongs to is running, so the transport must refuse without ever creating the
-coroutine). A suite that exercised only the first would stay green while the production publish
-site — which is always the second — went unbound.
+no-running-loop path is a plain ``def`` test (pytest-asyncio gives it no loop, so the synchronous
+transport really drives its coroutine), and the already-inside-a-loop path is an ``async def``
+test — which is where the production publish site sits, ``engine/query.py`` awaiting
+``tool.execute`` on the loop that connected the MCP sessions. The first version of this file
+asserted that the second case reads ``GP_E_HOST_LOOP_BUSY``, and that assertion was the defect
+recorded as expected behaviour: every real round refused, so the accepting branch never ran. It
+now asserts the awaited transport sends and the engine's answers arrive, while the synchronous
+transport keeps its named refusal for a host that has only ever that.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from iterate_harness.defensive.kernel import DEFENSIVE_KERNEL_KEY, DefensiveKern
 from iterate_harness.iterate import reverify_trigger
 from iterate_harness.iterate.decision_log import LOG_DIR, LOG_FILE, append_entry, make_entry, read_entries
 from iterate_harness.iterate.glasspane_host_transport import (
+    GLASSPANE_ACALL_KEY,
     GLASSPANE_SERVER_NAME_KEY,
     LOOP_BUSY_CODE,
     MCP_MANAGER_METADATA_KEY,
@@ -42,6 +46,7 @@ from iterate_harness.iterate.glasspane_host_transport import (
     bind_host_transport,
     find_glasspane_server,
     host_transport,
+    make_host_acall,
     make_host_transport,
 )
 from iterate_harness.iterate.glasspane_reverification import (
@@ -53,10 +58,12 @@ from iterate_harness.iterate.glasspane_reverification import (
 from iterate_harness.iterate.loop_gates import GATE_KEYS, measured_gates
 from iterate_harness.iterate.loop_policy import ITERATE_STATE_KEY
 from iterate_harness.iterate.reverify_trigger import (
+    GLASSPANE_ACALL_KEY as ACALL_METADATA_KEY,
     GLASSPANE_TRANSPORT_ABSENT_KEY,
     GLASSPANE_TRANSPORT_KEY,
     REVERIFICATION_STATE_KEY,
     trigger_reverification,
+    trigger_reverification_async,
 )
 from iterate_harness.mcp.client import McpServerNotConnectedError, McpServerTimeoutError
 from iterate_harness.mcp.types import McpToolInfo
@@ -631,13 +638,213 @@ def test_the_host_transport_is_reachable_from_the_publish_site_metadata(tmp_path
     assert result.is_error is False, result.output
     state = context.metadata[ITERATE_STATE_KEY]
     published = state[REVERIFICATION_STATE_KEY]
-    # Inside asyncio.run the loop IS running, so the honest outcome at the real publish site is
-    # a stated refusal — re-entrancy case (b), asserted where production actually sits.
+    client = context.metadata[MCP_MANAGER_METADATA_KEY]
+    # Inside asyncio.run the loop IS running — re-entrancy case (b), asserted where production
+    # actually sits. This is the case that used to read LOOP_BUSY for every round: the awaiting
+    # publish site sends on the loop that owns the session, so the engine's answers arrive.
     assert published["attempted"] is True
-    assert {answer["code"] for answer in published["answers"]} == {LOOP_BUSY_CODE}
-    assert published["verified"] is False
-    assert GLASSPANE_TRANSPORT_KEY not in state and GLASSPANE_TRANSPORT_KEY not in context.metadata[
-        ITERATE_STATE_KEY
-    ], "the bound callable must not be published into the round's durable state"
+    assert published["notAttemptedReason"] is None
+    assert {answer["code"] for answer in published["answers"]} == {None}, (
+        "a host-side refusal relayed as an answer is not a re-verification; the publish site "
+        "must reach the engine, and this is the one site that decides whether it can"
+    )
+    assert [answer["tool"] for answer in published["answers"]] == ["gp_last_evidence", "gp_diagnose"]
+    assert [answer["state"] for answer in published["answers"]] == ["answered", "answered"]
+    # The frames went through the item-preserving path, never the join.
+    assert [tool for tool, _ in client.frames] == ["gp_last_evidence", "gp_diagnose"]
+    assert client.joined_calls == []
+    diagnose = next(answer for answer in published["answers"] if answer["tool"] == "gp_diagnose")
+    assert UPDATE_BLOCK in diagnose["annotations"] and PROVIDER_LINE in diagnose["annotations"]
+    # The judgement stays the engine's: ``verified`` is relayed from an answered state, ``clean``
+    # is not earned by a diagnosis that says the claim still does not hold.
+    assert published["verified"] is True
+    assert published["clean"] is False
+    # One ledger line for one send, written by the awaited path.
+    assert _ledger_entry_count(tmp_path) == 2
+    assert GLASSPANE_TRANSPORT_KEY not in state and GLASSPANE_ACALL_KEY not in state
+    assert GLASSPANE_TRANSPORT_KEY not in context.metadata[ITERATE_STATE_KEY]
+    assert GLASSPANE_ACALL_KEY not in context.metadata[ITERATE_STATE_KEY], (
+        "a bound callable must not be published into the round's durable state"
+    )
     assert set(state) & set(GATE_KEYS) == {"invariant_state"}
-    assert state["invariant_state"] == "fail", "the measured verdict is not upgraded by the refusal"
+    assert state["invariant_state"] == "fail", "a relayed engine answer does not upgrade the measured verdict"
+
+
+# ----------------------------------------------------- the awaitable transport (the production path)
+
+
+class _LoopPinningClient(StubClient):
+    """A client whose sessions belong to the loop that connected it, exactly like the run's.
+
+    ``ui/runtime.py`` builds the ``McpClientManager`` and ``await connect_all()`` on the engine
+    loop, and ``engine/query.py`` awaits the tool on that same loop. So the only loop that can
+    drive these sessions is the one already running at the publish site — and a transport that
+    awaited on a *different* loop would be a bug this class turns into a failed assertion rather
+    than a hang.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.loop_at_connect = asyncio.get_running_loop()
+        self.loop_at_call: asyncio.AbstractEventLoop | None = None
+
+    async def call_tool_parts(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> list[str]:
+        self.loop_at_call = asyncio.get_running_loop()
+        return await super().call_tool_parts(server_name, tool_name, arguments)
+
+
+def test_the_publish_site_binds_both_transports_and_awaits_one() -> None:
+    """One discovery pass binds the sync transport for a loop-free host and the acall for this one."""
+
+    async def drive() -> dict[str, Any]:
+        return bind_host_transport({MCP_MANAGER_METADATA_KEY: StubClient(parts=[DAEMON_FRAME])})
+
+    additions = asyncio.run(drive())
+    assert set(additions) == {GLASSPANE_TRANSPORT_KEY, ACALL_METADATA_KEY}
+    assert asyncio.iscoroutinefunction(additions[GLASSPANE_TRANSPORT_KEY]) is False
+    assert asyncio.iscoroutinefunction(additions[ACALL_METADATA_KEY]) is True
+
+
+async def test_the_acall_awaits_on_the_loop_that_owns_the_sessions(tmp_path: Path) -> None:
+    """The awaited send runs on the connected loop, so the engine's answers reach the relay."""
+    pack = _real_pack()
+    client = _LoopPinningClient(parts=_reply_for(pack))
+    kernel = await _failing_kernel(tmp_path)
+    _record_an_operation(tmp_path, pack["operationId"])
+    metadata = {DEFENSIVE_KERNEL_KEY: kernel, MCP_MANAGER_METADATA_KEY: client}
+    bound = {**metadata, **bind_host_transport(metadata)}
+
+    published = await trigger_reverification_async(
+        project_root=tmp_path,
+        metadata=bound,
+        gates=_gates(tmp_path, kernel),
+        round_number=1,
+        planned_dimensions=["security"],
+    )
+
+    assert published is not None
+    assert client.loop_at_call is client.loop_at_connect, (
+        "driving those sessions from another loop is what GP_E_HOST_LOOP_BUSY exists to refuse"
+    )
+    assert published["attempted"] is True and published["verified"] is True
+    assert {answer["code"] for answer in published["answers"]} == {None}
+
+
+async def test_the_acall_refuses_a_write_tool_before_the_session_is_touched() -> None:
+    """Deny-by-default survives the awaitable path: an unlisted name never reaches the client."""
+    client = StubClient(parts=[DAEMON_FRAME])
+    acall = make_host_acall(client, SERVER)
+
+    async def drive() -> object:
+        return await acall("gp_act", {"action": "click"})
+
+    answer = await drive()
+    assert isinstance(answer, str) and answer.startswith(WRITE_TOOL_CODE)
+    assert client.frames == []
+
+
+async def test_the_acall_carries_the_item_boundary_to_the_relay(tmp_path: Path) -> None:
+    """A three-item reply relays as one answered frame plus two verbatim annotations."""
+    pack = _real_pack()
+    client = StubClient(parts=_reply_for(pack))
+    acall = make_host_acall(client, SERVER)
+
+    async def drive() -> object:
+        return await acall("gp_diagnose", {"operationId": pack["operationId"]})
+
+    parts = await drive()
+    assert isinstance(parts, list) and len(parts) == 3
+    answer = relay_answer("gp_diagnose", {"operationId": pack["operationId"]}, parts)
+    assert answer.state == "answered"
+    assert list(answer.annotations) == [UPDATE_BLOCK, PROVIDER_LINE]
+    assert client.joined_calls == []
+
+
+def test_the_sync_trigger_does_not_read_the_acall_as_a_transport(tmp_path: Path) -> None:
+    """An awaitable handed over under the *synchronous* key is not sent through synchronously.
+
+    This is the mis-wiring the filter exists for: a host that binds a coroutine function under
+    ``GLASSPANE_TRANSPORT_KEY`` would otherwise have it called, and the sender would answer with
+    ``GP_E_ASYNC_HOST`` — a refusal that arrives in the relayed shape and reads like an engine
+    reply. The sync trigger must report "no synchronous transport was handed over" instead.
+    """
+    pack = _real_pack()
+    kernel = _run_kernel(tmp_path)
+    client = StubClient(parts=_reply_for(pack))
+    metadata = {
+        DEFENSIVE_KERNEL_KEY: kernel,
+        GLASSPANE_TRANSPORT_KEY: make_host_acall(client, SERVER),
+    }
+
+    published = trigger_reverification(
+        project_root=tmp_path,
+        metadata=metadata,
+        gates=_gates(tmp_path, kernel),
+        round_number=1,
+        planned_dimensions=["security"],
+    )
+
+    assert published is not None
+    assert published["attempted"] is False
+    assert published["answers"] == []
+    assert client.frames == []
+    assert "no GlassPane MCP channel" in published["notAttemptedReason"]
+
+
+async def test_the_async_trigger_falls_back_to_a_host_bound_sync_transport(tmp_path: Path) -> None:
+    """A host that binds only the synchronous transport still gets sent — through that transport."""
+    pack = _real_pack()
+    kernel = await _failing_kernel(tmp_path)
+    _record_an_operation(tmp_path, pack["operationId"])
+    client = StubClient(parts=_reply_for(pack))
+    sent: list[str] = []
+
+    def sync_transport(tool: str, arguments: dict[str, Any]) -> object:
+        sent.append(tool)
+        return [json.dumps({"evidencePack": pack}), PROVIDER_LINE]
+
+    published = await trigger_reverification_async(
+        project_root=tmp_path,
+        metadata={
+            DEFENSIVE_KERNEL_KEY: kernel,
+            GLASSPANE_TRANSPORT_KEY: sync_transport,
+        },
+        gates=_gates(tmp_path, kernel),
+        round_number=1,
+        planned_dimensions=["security"],
+    )
+
+    assert published is not None and published["attempted"] is True
+    assert sent and client.frames == []
+
+
+def test_the_acall_metadata_key_is_defined_exactly_once() -> None:
+    """One module owns the key string; a second spelling is a contract that can drift."""
+    src = Path(__file__).resolve().parents[2] / "src" / "iterate_harness"
+    hits = [
+        f"{path.relative_to(src)}:{number}"
+        for path in sorted(src.rglob("*.py"))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if '"glasspane_reverify_acall"' in line
+    ]
+    assert len(hits) == 1, f"the key is spelled in {len(hits)} places: {hits}"
+    assert hits[0].startswith("iterate/reverify_trigger.py"), (
+        f"the trigger owns the metadata-key contract, not the host: {hits}"
+    )
+
+
+def test_the_async_names_resolve_through_the_lazy_export_map() -> None:
+    from iterate_harness import iterate as iterate_pkg
+    from iterate_harness.iterate import glasspane_host_transport, reverify_trigger
+
+    assert iterate_pkg.make_host_acall is glasspane_host_transport.make_host_acall
+    assert iterate_pkg.GlasspaneAsyncTransport is glasspane_host_transport.GlasspaneAsyncTransport
+    assert iterate_pkg.trigger_reverification_async is reverify_trigger.trigger_reverification_async
+    assert iterate_pkg.GLASSPANE_ACALL_KEY is reverify_trigger.GLASSPANE_ACALL_KEY
+    for name in (
+        "GLASSPANE_ACALL_KEY",
+        "GlasspaneAsyncTransport",
+        "make_host_acall",
+        "trigger_reverification_async",
+    ):
+        assert name in iterate_pkg.__all__
