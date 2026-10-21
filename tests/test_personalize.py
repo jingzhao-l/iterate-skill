@@ -292,6 +292,31 @@ class TestLoadPersonalizationFromConfig:
         )
         assert data.protected_paths == []
 
+    def test_null_list_entries_are_dropped_not_stringified(self, capsys) -> None:
+        """`[null, security]` must not become the literal dimension "None"."""
+        data = load_personalization_from_config(
+            {
+                "personalization": {
+                    "fix_priority_order": [None, "security", 7],
+                    "forbidden_fixes": [None, "no auto-merge"],
+                }
+            }
+        )
+        assert data.fix_priority_order == ["security"]
+        assert data.forbidden_fixes == ["no auto-merge"]
+        captured = capsys.readouterr()
+        assert "fix_priority_order" in captured.out + captured.err
+
+    def test_duplicate_list_entries_never_serialise_invalid(self) -> None:
+        """The schema requires uniqueItems; duplicates are collapsed."""
+        data = PersonalizationData(
+            protected_paths=["a/", "a/", "b/"],
+            forbidden_fixes=["x", "x"],
+        )
+        payload = data.to_config_dict()
+        assert payload["protected_paths"] == ["a/", "b/"]
+        assert payload["forbidden_fixes"] == ["x"]
+
     def test_malformed_entries_warn(self, capsys) -> None:
         """Dropped structural entries must be announced, not silently lost."""
         config = {

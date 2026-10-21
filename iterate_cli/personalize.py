@@ -16,8 +16,10 @@ from __future__ import annotations
 import copy
 import os
 import re
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -348,6 +350,17 @@ class DimensionFocusOverride:
     focus: str
 
 
+def _dedupe_strings(items: list[str]) -> list[str]:
+    """Return ``items`` without duplicates, preserving first-seen order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
 @dataclass
 class PersonalizationData:
     """All personalization categories collected by the wizard.
@@ -393,9 +406,12 @@ class PersonalizationData:
         merge step additionally copies these commands into
         ``validation.commands`` for the actual validation runner.
         """
+        # The schema declares these three lists ``uniqueItems``; dedupe at the
+        # serialisation boundary so a value added twice (or a hand-edited
+        # duplicate) can never persist an invalid config.
         return {
             "version": PERSONALIZATION_VERSION,
-            "protected_paths": list(self.protected_paths),
+            "protected_paths": _dedupe_strings(self.protected_paths),
             "risk_areas": [
                 {"path": r.path, "reason": r.reason} for r in self.risk_areas
             ],
@@ -412,8 +428,8 @@ class PersonalizationData:
                 {"dimension": d.dimension, "focus": d.focus}
                 for d in self.dimension_focus
             ],
-            "fix_priority_order": list(self.fix_priority_order),
-            "forbidden_fixes": list(self.forbidden_fixes),
+            "fix_priority_order": _dedupe_strings(self.fix_priority_order),
+            "forbidden_fixes": _dedupe_strings(self.forbidden_fixes),
             "extra_validation_commands": {
                 module: list(cmds)
                 for module, cmds in self.extra_validation_commands.items()
@@ -731,13 +747,26 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
     if not isinstance(raw_fix_order, list):
         dropped.append("fix_priority_order")
         raw_fix_order = []
-    fix_order = [str(d) for d in raw_fix_order]
+    # Nulls are dropped, not stringified: str(None) produced the literal
+    # "None", which is not a dimension id, so the next save wrote a config
+    # that `iterate doctor` immediately flagged.
+    fix_order: list[str] = []
+    for d in raw_fix_order:
+        if isinstance(d, str) and d.strip():
+            fix_order.append(d)
+        else:
+            dropped.append("fix_priority_order[]")
 
     raw_forbidden = raw.get("forbidden_fixes") or []
     if not isinstance(raw_forbidden, list):
         dropped.append("forbidden_fixes")
         raw_forbidden = []
-    forbidden = [str(f) for f in raw_forbidden]
+    forbidden: list[str] = []
+    for f in raw_forbidden:
+        if isinstance(f, str) and f.strip():
+            forbidden.append(f)
+        else:
+            dropped.append("forbidden_fixes[]")
 
     # Module name pattern: only allow alphanumeric, dash, underscore, dot.
     # Prevents shell metacharacter injection via module key.
@@ -755,26 +784,29 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
             # commands would be the one data loss nobody was told about.
             dropped.append(f"extra_validation_commands[{module_str}]")
             continue
-        if isinstance(cmds, list):
-            valid: list[str] = []
-            for c in cmds:
-                if not isinstance(c, str) or not c.strip():
-                    continue
-                # Fail closed: revalidate every config-sourced command against
-                # the strict whitelist before it can be persisted into
-                # executable ``validation.commands``. A manually edited
-                # iterate.config.yaml cannot smuggle an arbitrary command this
-                # way, keeping the "strict whitelist" guarantee intact.
-                ok, reason = validate_extra_command(c)
-                if ok:
-                    valid.append(c)
-                else:
-                    tui.warning(
-                        f"跳过非法验证命令 [{module_str}] '{c}': {reason}",
-                        indent=2,
-                    )
-            if valid:
-                extra_cmds[module_str] = valid
+        if not isinstance(cmds, list):
+            dropped.append(f"extra_validation_commands[{module_str}]")
+            continue
+        valid: list[str] = []
+        for c in cmds:
+            if not isinstance(c, str) or not c.strip():
+                dropped.append(f"extra_validation_commands[{module_str}][]")
+                continue
+            # Fail closed: revalidate every config-sourced command against
+            # the strict whitelist before it can be persisted into
+            # executable ``validation.commands``. A manually edited
+            # iterate.config.yaml cannot smuggle an arbitrary command this
+            # way, keeping the "strict whitelist" guarantee intact.
+            ok, reason = validate_extra_command(c)
+            if ok:
+                valid.append(c)
+            else:
+                tui.warning(
+                    f"跳过非法验证命令 [{module_str}] '{c}': {reason}",
+                    indent=2,
+                )
+        if valid:
+            extra_cmds[module_str] = valid
 
     if dropped:
         # One consolidated, de-duplicated line: the operator needs to know a
@@ -1043,11 +1075,27 @@ def save_personalization_to_config(
 
     existing = load_config_strict(config_path)
     updated = merge_personalization_into_config(existing, data)
-
-    atomic_write(
-        config_path,
-        yaml.safe_dump(updated, default_flow_style=False, allow_unicode=True, sort_keys=False),
+    new_text = yaml.safe_dump(
+        updated, default_flow_style=False, allow_unicode=True, sort_keys=False
     )
+    try:
+        current_text = config_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        current_text = None
+    if current_text != new_text:
+        # safe_dump cannot preserve comments; keep a timestamped copy so a
+        # personalize run is always recoverable (matches config set /
+        # doctor --fix, which never rewrite without a backup).
+        if current_text is not None:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup = config_path.with_name(f"{config_path.name}.personalize-{stamp}")
+            try:
+                shutil.copy2(config_path, backup)
+            except OSError as exc:
+                tui.warning(
+                    f"could not back up {config_path.name} before personalize: {exc}"
+                )
+        atomic_write(config_path, new_text)
     return config_path
 
 
@@ -1483,11 +1531,15 @@ def _run_string_list_step(
             return current
         if choice == "a":
             value = input_func(f"  └ {add_prompt}: ").strip()
-            if value:
+            if not value:
+                tui.hint("空输入，跳过 / Empty, skipped", indent=2)
+            elif value in current:
+                tui.hint(
+                    "已存在，跳过 / Already present, skipped", indent=2
+                )
+            else:
                 current.append(value)
                 tui.success("已添加 / Added", indent=2)
-            else:
-                tui.hint("空输入，跳过 / Empty, skipped", indent=2)
         elif choice == "r" and current:
             idx = _read_index(current, input_func)
             if idx is not None:

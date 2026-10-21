@@ -333,11 +333,29 @@ def _run_basic_wizard(
     # what the user confirmed, not the raw auto-detect (which they corrected).
     scan.detected_languages = confirmed_langs
 
-    validation_commands = _collect_validation_commands(scan, input_func)
-    command_whitelist = suggest_command_whitelist(scan)
+    existing_validation = existing.validation_commands if existing else None
+    validation_commands = _collect_validation_commands(
+        scan, input_func, existing=existing_validation
+    )
+    # Existing whitelist entries are project-specific vetting decisions (e.g.
+    # `make`, `./scripts/test.sh`); union them with new scan suggestions instead
+    # of replacing the list, which would make previously accepted commands fail
+    # validation after a re-onboard.
+    suggested_whitelist = suggest_command_whitelist(scan)
+    command_whitelist = list(existing.command_whitelist) if existing else []
+    for entry in suggested_whitelist:
+        if entry not in command_whitelist:
+            command_whitelist.append(entry)
     dimensions = _collect_dimensions(scan, input_func)
-    dimension_sets = _collect_dimension_sets(dimensions, scan, input_func)
-    target_branch, review_scope, push_per_round = _collect_git_config(input_func)
+    dimension_sets = _collect_dimension_sets(
+        dimensions,
+        scan,
+        input_func,
+        existing=existing.dimension_sets if existing else None,
+    )
+    target_branch, review_scope, push_per_round = _collect_git_config(
+        input_func, existing
+    )
     description, conventions = _collect_project_info(input_func)
 
     fingerprints = capture_fingerprints(project_root)
@@ -808,14 +826,37 @@ def _confirm_tech_stack(scan: ScanResult, input_func: InputFunc) -> list[str]:
 def _collect_validation_commands(
     scan: ScanResult,
     input_func: InputFunc,
+    existing: dict[str, list[str]] | None = None,
 ) -> dict[str, list[str]]:
-    """Collect validation commands from the user, with suggestions."""
+    """Collect validation commands from the user, with suggestions.
+
+    On a returning-user basic-config update the *configured* commands are
+    shown first and kept by default. The previous flow only displayed scan
+    suggestions, so pressing Enter (the default was "use these") silently
+    replaced tuned commands such as ``pytest -q tests/unit`` with generic
+    stack defaults — changing what ``guard post-check`` enforces.
+    """
     tui.section("验证命令 / Validation Commands")
     tui.info("这些命令会在每轮修复后自动执行。请确保它们正确且安全。")
     tui.hint("These commands run automatically after each round. Ensure they are correct and safe.", indent=2)
     tui.empty_line()
 
     suggested = suggest_validation_commands(scan)
+    if existing:
+        tui.info("当前配置的命令 / Currently configured commands:")
+        for module, cmds in existing.items():
+            tui.bullet(f"[{module}]", indent=4)
+            for cmd in cmds:
+                tui.info(f"- {cmd}", indent=6)
+        tui.empty_line()
+        if _ask_yes_no(
+            "保留当前命令? / Keep the current commands?",
+            input_func,
+            default=True,
+        ):
+            return existing
+        tui.info("已选择不使用当前命令；下面给出扫描建议。 / Current commands declined; showing scan suggestions.")
+
     if suggested:
         tui.info("建议的命令（基于检测到的技术栈）/ Suggested commands:")
         for module, cmds in suggested.items():
@@ -914,6 +955,7 @@ def _collect_dimension_sets(
     enabled_dimensions: list[str],
     scan: ScanResult,
     input_func: InputFunc,
+    existing: dict[str, dict] | None = None,
 ) -> dict[str, dict]:
     """Let the user choose scope-specific dimension-set blueprints.
 
@@ -934,18 +976,38 @@ def _collect_dimension_sets(
         future user-authored overrides).
     """
     suggested = suggest_dimension_sets(scan)
-    if not suggested:
+    # Existing sets are authoritative: a returning user's curated names and
+    # per-dimension focus text must survive a basic-config update. Scan
+    # suggestions only fill scopes the project does not already define.
+    if existing:
+        # Deliberately no scan additions here: re-adding a set the user removed
+        # would resurrect it on every onboarding. `iterate refresh` owns the
+        # "new layer appeared" merge and announces what it adds.
+        candidates: dict[str, dict] = {
+            name: dict(spec) for name, spec in existing.items()
+        }
+    else:
+        candidates = {name: dict(spec) for name, spec in suggested.items()}
+    if not candidates:
         return {}
 
     enabled = set(enabled_dimensions)
-    # Restrict every suggested set's dimensions to what the user enabled
-    # globally, so a blueprint never references a disabled dimension.
+    # Restrict every set's dimensions to what the user enabled globally, so a
+    # blueprint never references a disabled dimension.
     pruned: dict[str, dict] = {}
     names: list[str] = []
-    for name, spec in suggested.items():
+    for name, spec in candidates.items():
         dims = [d for d in spec.get("dimensions", []) if d in enabled]
         if dims:
-            pruned[name] = {"dimensions": dims}
+            entry: dict = {"dimensions": dims}
+            focus = {
+                dim: text
+                for dim, text in (spec.get("focus") or {}).items()
+                if dim in dims and isinstance(text, str) and text.strip()
+            }
+            if focus:
+                entry["focus"] = focus
+            pruned[name] = entry
             names.append(name)
 
     if not pruned:
@@ -1033,31 +1095,60 @@ def _parse_dimension_selection(raw: str) -> list[str]:
     return result
 
 
-def _collect_git_config(input_func: InputFunc) -> tuple[str, str, bool]:
-    """Collect git-related configuration."""
+def _collect_git_config(
+    input_func: InputFunc,
+    existing: OnboardingData | None = None,
+) -> tuple[str, str, bool]:
+    """Collect git-related configuration.
+
+    ``existing`` supplies the prompt defaults on a returning-user update, so
+    pressing Enter keeps the configured branch/scope/push policy instead of
+    silently resetting them to ``main`` / ``full`` / ``False``.
+    """
     tui.section("Git 配置 / Git Configuration")
 
-    tui.question(f"目标分支 / Target branch (默认 {DEFAULT_TARGET_BRANCH}, 留空用 {DEFAULT_TARGET_BRANCH}):")
+    current_branch = (
+        existing.target_branch if existing else DEFAULT_TARGET_BRANCH
+    ) or DEFAULT_TARGET_BRANCH
+    tui.question(
+        f"目标分支 / Target branch (默认 {current_branch}, 留空用 {current_branch}):"
+    )
     target_branch = input_func("  └ ").strip()
     if not target_branch:
-        target_branch = DEFAULT_TARGET_BRANCH
+        target_branch = current_branch
+
+    current_scope = (
+        existing.review_scope if existing else DEFAULT_REVIEW_SCOPE
+    ) or DEFAULT_REVIEW_SCOPE
+    if current_scope not in ("full", "changed-only"):
+        current_scope = DEFAULT_REVIEW_SCOPE
 
     tui.info("审查范围 / Review scope:")
     tui.numbered_list([
         "full — 全量审查（默认）/ Full review (default)",
         "changed-only — 增量审查 / Changed files only",
     ], indent=4)
-    tui.question("选择 / Select (1/2, 默认 1):")
+    default_num = "1" if current_scope == "full" else "2"
+    tui.question(f"选择 / Select (1/2, 默认 {default_num} = {current_scope}):")
     scope_choice = input_func("  └ ").strip()
-    if not scope_choice or scope_choice == "1":
+    if not scope_choice:
+        review_scope = current_scope
+    elif scope_choice == "1":
         review_scope = DEFAULT_REVIEW_SCOPE
     elif scope_choice == "2":
         review_scope = "changed-only"
     else:
-        tui.warning(f"无效输入 / Invalid input: {scope_choice!r}，使用默认 full。")
-        review_scope = DEFAULT_REVIEW_SCOPE
+        tui.warning(
+            f"无效输入 / Invalid input: {scope_choice!r}，使用当前值 {current_scope}。"
+        )
+        review_scope = current_scope
 
-    push = _ask_yes_no("每轮通过后立即 push? / Push after each round?", input_func, default=False)
+    current_push = bool(existing.push_per_round) if existing else False
+    push = _ask_yes_no(
+        "每轮通过后立即 push? / Push after each round?",
+        input_func,
+        default=current_push,
+    )
 
     return target_branch, review_scope, push
 

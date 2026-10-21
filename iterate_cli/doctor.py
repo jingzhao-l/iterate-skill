@@ -1238,6 +1238,51 @@ def apply_safe_fixes(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]
         new_config["dimensions"] = list(CANONICAL_DIMENSIONS)
         fixes.append("dimensions: non-list value reset to canonical defaults.")
 
+    # personalization.* lists and dimension_sets.*.dimensions declare
+    # ``uniqueItems`` in the schema. Dedupe them here too: `personalize`
+    # prevents new duplicates, but a hand edit (or a config written before
+    # that guard) otherwise left `doctor --fix` unable to repair the very
+    # error it reported.
+    personalization = new_config.get("personalization")
+    if isinstance(personalization, dict):
+        for key in ("protected_paths", "forbidden_fixes", "fix_priority_order"):
+            value = personalization.get(key)
+            if not isinstance(value, list):
+                continue
+            deduped: list[str] = []
+            seen_values: set[str] = set()
+            for entry in value:
+                if isinstance(entry, str) and entry not in seen_values:
+                    seen_values.add(entry)
+                    deduped.append(entry)
+            if len(deduped) != len(value):
+                fixes.append(
+                    f"personalization.{key}: removed "
+                    f"{len(value) - len(deduped)} duplicate/invalid entry(ies)."
+                )
+                personalization[key] = deduped
+
+    dimension_sets = new_config.get("dimension_sets")
+    if isinstance(dimension_sets, dict):
+        for name, spec in dimension_sets.items():
+            if not isinstance(spec, dict):
+                continue
+            dims = spec.get("dimensions")
+            if not isinstance(dims, list):
+                continue
+            deduped_dims: list[str] = []
+            seen_dims: set[str] = set()
+            for entry in dims:
+                if isinstance(entry, str) and entry not in seen_dims:
+                    seen_dims.add(entry)
+                    deduped_dims.append(entry)
+            if len(deduped_dims) != len(dims):
+                fixes.append(
+                    f"dimension_sets.{name}.dimensions: removed "
+                    f"{len(dims) - len(deduped_dims)} duplicate/invalid entry(ies)."
+                )
+                spec["dimensions"] = deduped_dims
+
     # language: must be one of zh/en. isinstance guard first so an unhashable
     # hand-edited value (`language: [zh]`) is repaired instead of crashing
     # `doctor --fix` with a TypeError (mirrors the check path above).
@@ -1650,6 +1695,26 @@ def _render_next_actions(
                 "run `iterate refresh` to sync the knowledge base (non-blocking)",
             )
         )
+    handled = {
+        "config.parse", "config.schema", "validation.commands",
+        "validation.command_whitelist", "validation.whitelist", "invariants",
+        "invariants.commands", "invariants.ensure", "skill_version",
+        "dimensions", "review.scope", "drift",
+    }
+    unmapped = sorted(checks - handled)
+    if unmapped:
+        # New checks used to appear on screen with no next action at all.
+        # One generic entry keeps every warning/error actionable.
+        actions.append(
+            _t(
+                "仍有诊断项未通过：" + ", ".join(unmapped),
+                "先运行 `iterate doctor --fix`；仍失败则按上方提示编辑配置或运行 `iterate refresh`",
+                "Unresolved diagnostic(s): " + ", ".join(unmapped),
+                "run `iterate doctor --fix` first; if it persists, edit the "
+                "config as shown above or run `iterate refresh`",
+            )
+        )
+
     if actions:
         tui.empty_line()
         tui.info("Next action(s): ", indent=2)

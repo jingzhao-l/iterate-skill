@@ -5636,6 +5636,36 @@ class TestShowCommand:
         report = collect_show_data(fake_project)
         assert report["config"]["reasoning_effort"] == "medium"
 
+    def test_show_missing_config_advises_onboard_not_doctor(
+        self, fake_project: Path, capsys
+    ) -> None:
+        """A missing config is not a corrupt one, and exit codes match status."""
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        (fake_project / "iterate.config.yaml").unlink()
+        capsys.readouterr()
+
+        ret = cli_main(["show", "-p", str(fake_project)])
+
+        captured = capsys.readouterr()
+        assert ret == 0
+        combined = captured.out + captured.err
+        assert "missing" in combined
+        assert "iterate onboard" in combined
+        assert "doctor --fix" not in combined
+
+    def test_show_json_marks_missing_config(self, fake_project: Path, capsys) -> None:
+
+        from iterate_cli.show import collect_show_data
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        (fake_project / "iterate.config.yaml").unlink()
+
+        report = collect_show_data(fake_project)
+        assert report["config_missing"] is True
+        assert report["config_error"] is False
+
     def test_show_json(self, fake_project: Path, capsys) -> None:
         data = _build_onboarding_data(fake_project)
         data.personalization = PersonalizationData(protected_paths=["legacy/**"])

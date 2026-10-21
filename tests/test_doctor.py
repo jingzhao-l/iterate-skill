@@ -386,6 +386,33 @@ class TestApplySafeFixes:
         _, fixes = apply_safe_fixes(config)
         assert not [f for f in fixes if "duplicate" in f], fixes
 
+    def test_personalization_unique_lists_are_deduped(self) -> None:
+        config = _base_config()
+        config["personalization"] = {
+            "protected_paths": ["a/", "a/"],
+            "forbidden_fixes": ["x", "x"],
+            "fix_priority_order": ["security", "security"],
+        }
+        new_config, fixes = apply_safe_fixes(config)
+
+        assert new_config["personalization"]["protected_paths"] == ["a/"]
+        assert new_config["personalization"]["forbidden_fixes"] == ["x"]
+        assert new_config["personalization"]["fix_priority_order"] == ["security"]
+        assert len([f for f in fixes if "personalization." in f]) == 3
+
+    def test_dimension_set_dimensions_are_deduped(self) -> None:
+        config = _base_config()
+        config["dimension_sets"] = {
+            "api": {"dimensions": ["security", "security", "correctness"]}
+        }
+        new_config, fixes = apply_safe_fixes(config)
+
+        assert new_config["dimension_sets"]["api"]["dimensions"] == [
+            "security",
+            "correctness",
+        ]
+        assert any("dimension_sets.api" in f for f in fixes)
+
     def test_empty_dimensions_restored(self) -> None:
         config = _base_config()
         config["dimensions"] = []
