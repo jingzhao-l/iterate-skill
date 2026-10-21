@@ -307,5 +307,34 @@ class TestScanIsDiscoverable:
         assert "usage: iterate scan" in out
 
 
+class TestNestedApiDetection:
+    """A standard ``src/api`` layout must count as an API layer."""
+
+    def test_src_api_is_detected(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        (tmp_path / "src" / "api").mkdir(parents=True)
+
+        data = collect_scan_data(tmp_path)
+
+        assert data["has_api"] is True
+        assert "api" in data["suggested_dimension_sets"]
+        assert "frontend-backend" in data["suggested_dimensions"]
+
+    def test_app_routes_is_detected(self, tmp_path: Path) -> None:
+        (tmp_path / "app" / "routes").mkdir(parents=True)
+        assert collect_scan_data(tmp_path)["has_api"] is True
+
+    def test_no_api_layer_is_reported_false(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "components").mkdir(parents=True)
+        data = collect_scan_data(tmp_path)
+        # The frontend marker alone must not imply an API layer.
+        assert data["has_api"] is False
+        assert "api" not in data["suggested_dimension_sets"]
+
+    def test_top_level_api_still_detected(self, tmp_path: Path) -> None:
+        (tmp_path / "api").mkdir()
+        assert collect_scan_data(tmp_path)["has_api"] is True
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

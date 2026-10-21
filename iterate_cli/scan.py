@@ -72,6 +72,15 @@ API_LAYER_INDICATORS: frozenset[str] = frozenset({
     "api", "routes", "controllers", "handlers", "endpoints", "server",
 })
 
+# Nested API-layer paths. A standard ``src/api`` (or ``app/routes``) layout is
+# invisible to a top-level-only check, so the scanner reported no API layer and
+# never suggested the ``api``/``frontend-backend`` dimensions for exactly the
+# layouts most projects use.
+API_LAYER_PATHS: tuple[str, ...] = (
+    "src/api", "src/routes", "src/controllers", "src/handlers",
+    "app/api", "app/routes", "app/controllers", "app/handlers",
+)
+
 
 @dataclass
 class ScanResult:
@@ -85,6 +94,7 @@ class ScanResult:
     has_tests: bool = False
     has_ci: bool = False
     has_frontend: bool = False
+    has_api: bool = False
 
 
 def scan_project(project_root: Path) -> ScanResult:
@@ -167,6 +177,15 @@ def _scan_features(project_root: Path, result: ScanResult) -> None:
             result.has_frontend = True
             break
 
+    result.has_api = any(
+        d in API_LAYER_INDICATORS for d in result.top_level_dirs
+    )
+    if not result.has_api:
+        for indicator in API_LAYER_PATHS:
+            if (project_root / indicator).is_dir():
+                result.has_api = True
+                break
+
 
 def suggest_dimensions(scan: ScanResult) -> list[str]:
     """Suggest review dimensions based on scan results.
@@ -204,9 +223,13 @@ def suggest_dimensions(scan: ScanResult) -> list[str]:
 def _has_api_layer(scan: ScanResult) -> bool:
     """Heuristic: check if the project likely has an API layer.
 
-    Looks for common API-related directory names in the top-level listing.
+    Considers both the dedicated flag (top-level AND nested paths such as
+    ``src/api``) and the top-level listing, so a ``ScanResult`` built by hand
+    (older callers/tests) keeps working.
     """
-    return any(d in API_LAYER_INDICATORS for d in scan.top_level_dirs)
+    return scan.has_api or any(
+        d in API_LAYER_INDICATORS for d in scan.top_level_dirs
+    )
 
 
 def _detect_test_dir(scan: ScanResult) -> str:
@@ -356,6 +379,7 @@ _SCAN_FEATURE_KEYS: tuple[tuple[str, str], ...] = (
     ("has_ci", "ci"),
     ("has_specs", "specs"),
     ("has_frontend", "frontend"),
+    ("has_api", "api"),
 )
 
 
@@ -375,6 +399,8 @@ def collect_scan_data(project_root: Path) -> dict[str, Any]:
         ``ScanResult`` field names verbatim, and the suggestion keys mirror the
         corresponding ``suggest_*`` function names.
     """
+    from iterate_cli.dimension_sets import suggest_dimension_sets
+
     result = scan_project(project_root)
     return {
         "project": str(project_root),
@@ -386,7 +412,9 @@ def collect_scan_data(project_root: Path) -> dict[str, Any]:
         "has_tests": result.has_tests,
         "has_ci": result.has_ci,
         "has_frontend": result.has_frontend,
+        "has_api": result.has_api,
         "suggested_dimensions": suggest_dimensions(result),
+        "suggested_dimension_sets": suggest_dimension_sets(result),
         "suggested_validation_commands": {
             module: list(commands)
             for module, commands in suggest_validation_commands(result).items()
@@ -452,6 +480,15 @@ def render_scan(data: dict[str, Any], json_output: bool = False) -> int:
     else:
         tui.hint("(none — no language was detected)", indent=4)
 
+    sets = data.get("suggested_dimension_sets") or {}
+    tui.section("Suggested scope sets / 建议范围维度集")
+    if sets:
+        for name in sorted(sets):
+            dims = sets[name].get("dimensions", [])
+            tui.bullet(f"{name}: {', '.join(str(d) for d in dims)}")
+    else:
+        tui.hint("(none suggested)", indent=4)
+
     commands = data.get("suggested_validation_commands") or {}
     tui.section("Suggested validation commands / 建议校验命令")
     if commands:
@@ -477,6 +514,9 @@ def render_scan(data: dict[str, Any], json_output: bool = False) -> int:
     # message that overflows the terminal width continues at column 0 and
     # reads as if it belonged to the block above.
     tui.hint("Read-only: nothing was written.")
-    tui.hint("Apply with `iterate onboard` or `iterate config set <key> <value>`.")
+    tui.hint(
+        "Apply with `iterate init --yes`, `iterate onboard`, or "
+        "`iterate config set <key> <value>`."
+    )
     tui.hint("Machine-readable: `iterate scan --json`")
     return 0
