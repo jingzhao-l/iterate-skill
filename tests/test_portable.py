@@ -414,6 +414,60 @@ class TestApplyBundle:
         with pytest.raises(BundleError, match="Failed to write"):
             apply_bundle(tmp_path / "missing", _valid_payload())
 
+    def test_bad_markdown_encoding_leaves_existing_config_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """Staging happens before any replace, so a bad ITERATE.md is harmless.
+
+        Regression: the config was written first, then a UnicodeEncodeError
+        from the markdown escaped as a raw traceback *after* the project had
+        already been modified.
+        """
+        _write_project(tmp_path, config={"goal": "old"}, md="old md")
+        payload = _valid_payload()
+        payload["iterate_md"] = "bad surrogate: \ud800"
+
+        with pytest.raises(BundleError, match="Nothing was written"):
+            apply_bundle(tmp_path, payload)
+
+        assert yaml.safe_load(
+            (tmp_path / "iterate.config.yaml").read_text()
+        ) == {"goal": "old"}
+        assert (tmp_path / "ITERATE.md").read_text() == "old md"
+
+    def test_failure_on_second_replace_rolls_back_the_first(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A failure writing ITERATE.md must restore the replaced config."""
+        from iterate_cli import portable
+
+        _write_project(tmp_path, config={"goal": "old"}, md="old md")
+        real_replace = portable.os.replace
+
+        def flaky_replace(src, dst):
+            if Path(dst).name == "ITERATE.md":
+                raise OSError("disk full")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(portable.os, "replace", flaky_replace)
+
+        with pytest.raises(BundleError, match="restored from backup"):
+            apply_bundle(tmp_path, _valid_payload())
+
+        assert yaml.safe_load(
+            (tmp_path / "iterate.config.yaml").read_text()
+        ) == {"goal": "old"}
+        assert (tmp_path / "ITERATE.md").read_text() == "old md"
+        assert [
+            p.name
+            for p in tmp_path.iterdir()
+            if ".import-" in p.name and not p.name.startswith(("iterate.config", "ITERATE"))
+        ] == []
+
+    def test_successful_apply_leaves_no_staging_files(self, tmp_path: Path) -> None:
+        apply_bundle(tmp_path, _valid_payload(), now=FIXED_NOW)
+        assert [p.name for p in tmp_path.iterdir() if ".import-" in p.name] == []
+
 
 # ---------------------------------------------------------------------------
 # CLI: export
@@ -516,6 +570,46 @@ class TestExportCli:
         assert code == 1
         assert "iterate onboard" in payload["error"]
 
+    def test_schema_invalid_config_is_not_exported(self, tmp_path: Path, capsys) -> None:
+        """A bundle `import` rejects must never be advertised as a backup."""
+        _write_project(tmp_path, config={"language": "fr"})
+        capsys.readouterr()
+
+        code = cli_main(["export", "-p", str(tmp_path), "--no-banner"])
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "would reject" in err
+        assert "iterate doctor" in err
+        assert list(tmp_path.glob("iterate-bundle-*.json")) == []
+
+    def test_force_refuses_to_overwrite_the_config(self, tmp_path: Path, capsys) -> None:
+        _write_project(tmp_path)
+        before = (tmp_path / "iterate.config.yaml").read_text()
+        capsys.readouterr()
+
+        code = cli_main(
+            ["export", "--out", str(tmp_path / "iterate.config.yaml"), "--force",
+             "-p", str(tmp_path), "--no-banner"]
+        )
+
+        assert code == 2
+        assert "refusing to overwrite" in capsys.readouterr().err
+        assert (tmp_path / "iterate.config.yaml").read_text() == before
+
+    def test_force_refuses_to_overwrite_iterate_md(self, tmp_path: Path, capsys) -> None:
+        _write_project(tmp_path)
+        before = (tmp_path / "ITERATE.md").read_text()
+        capsys.readouterr()
+
+        code = cli_main(
+            ["export", "--out", str(tmp_path / "ITERATE.md"), "--force",
+             "-p", str(tmp_path), "--no-banner"]
+        )
+
+        assert code == 2
+        assert (tmp_path / "ITERATE.md").read_text() == before
+
     def test_default_bundle_name_is_utc_and_timestamped(self) -> None:
         assert default_bundle_name(FIXED_NOW) == "iterate-bundle-20261020T090000Z.json"
 
@@ -590,7 +684,9 @@ class TestImportCli:
 
         code = cli_main(["import", str(bundle), "-p", str(target), "--no-banner"])
 
-        assert code == 1
+        # Missing a required flag is a usage error (2), identical on a TTY and
+        # in CI; this used to return 1 only because the non-TTY check ran first.
+        assert code == 2
         assert "--yes" in capsys.readouterr().err
         assert list(target.iterdir()) == []
 

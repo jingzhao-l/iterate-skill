@@ -326,7 +326,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Structured (JSON) output must not be polluted by the ASCII banner.
-    show_banner = _should_show_banner(args) and not getattr(args, "json", False)
+    show_banner = (
+        _should_show_banner(args)
+        and not getattr(args, "json", False)
+        # `export --out -` writes the bundle itself to stdout; the banner must
+        # not precede it, exactly like --json.
+        and not (
+            args.command == "export" and getattr(args, "out", None) == "-"
+        )
+    )
 
     try:
         return _dispatch_command(args, parser, project_root, show_banner)
@@ -1895,6 +1903,15 @@ def _cmd_export(
         return _bundle_failure(str(exc), json_output)
 
     text = bundle_to_json(bundle)
+    from iterate_cli.portable import MAX_BUNDLE_BYTES
+
+    if len(text.encode("utf-8", "replace")) > MAX_BUNDLE_BYTES:
+        return _bundle_failure(
+            f"the bundle is larger than {MAX_BUNDLE_BYTES // (1024 * 1024)} MiB "
+            "and could not be imported back; trim ITERATE.md or export from a "
+            "smaller project.",
+            json_output,
+        )
     if json_output or out == "-":
         # The bundle *is* the output here: write it raw so the caller can
         # redirect/pipeline it. json.dumps output is ASCII-safe JSON (UTF-8 by
@@ -1904,6 +1921,21 @@ def _cmd_export(
         return 0
 
     target = Path(out) if out else project_root / default_bundle_name()
+    # --force must never destroy iterate's own state: writing the bundle JSON
+    # over iterate.config.yaml (or ITERATE.md) was the only CLI path that
+    # replaced a file without a backup, and it suggested importing the
+    # resulting JSON as if it were a config.
+    protected_targets = {
+        (project_root / CONFIG_YAML).resolve(),
+        (project_root / "ITERATE.md").resolve(),
+    }
+    if target.resolve() in protected_targets:
+        return _bundle_failure(
+            f"refusing to overwrite {target.resolve()} — that is iterate's own "
+            "state file, not a bundle. Choose another --out path.",
+            json_output,
+            code=2,
+        )
     if target.exists() and not force:
         return _bundle_failure(
             f"{target} already exists; pass --force to overwrite it or choose "
@@ -2070,16 +2102,20 @@ def _cmd_import(
         return 0
 
     if not yes:
-        if not _stdin_is_interactive():
-            return _bundle_failure(
-                "Non-interactive stdin detected; pass --yes to apply this "
-                "import (or --dry-run to preview it).",
-                json_output,
-            )
+        # Usage mistakes (a write requested via --json without --yes) are exit
+        # 2 on every terminal; checking non-TTY first made the identical
+        # invocation return 1 in CI and 2 on a TTY.
         if json_output:
             return _bundle_failure(
                 "--json implies a write, so it requires --yes (like `iterate "
                 "update --json`).",
+                json_output,
+                code=2,
+            )
+        if not _stdin_is_interactive():
+            return _bundle_failure(
+                "Non-interactive stdin detected; pass --yes to apply this "
+                "import (or --dry-run to preview it).",
                 json_output,
                 code=2,
             )
@@ -2230,7 +2266,13 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
     data["personalization_rules"] = 0
     data["drift"] = "unknown"
     data["drift_detected"] = None
-    data["drift_reason"] = "unknown"
+    # A corrupt config is its own reason code, not the generic "unknown": a
+    # consumer can then tell "could not check because the file is broken" from
+    # "no baseline exists yet".
+    data["drift_reason"] = (
+        DRIFT_REASON_CORRUPT if (data["config_exists"] and config is None)
+        else "unknown"
+    )
     data["drifted_added"] = []
     data["drifted_removed"] = []
     data["drifted_changed"] = []
@@ -2272,8 +2314,13 @@ def _cmd_status(project_root: Path, json_output: bool = False) -> int:
             else None
         )
         # Machine-readable "why is there no drift result" code, derived from the
-        # shared helper so status/show/fingerprint cannot disagree.
-        data["drift_reason"] = drift_unavailable_code(project_root, config)
+        # shared helper so status/show/fingerprint cannot disagree. A computed
+        # result has no reason code: emitting "unknown" alongside
+        # `drift_detected: false` made a healthy project look unverifiable.
+        data["drift_reason"] = (
+            None if drift is not None
+            else drift_unavailable_code(project_root, config)
+        )
         if not data["drift_check"]:
             # "Check disabled" must be distinguishable from a genuine
             # "unknown" state for JSON consumers (the TUI already renders it
@@ -2557,10 +2604,23 @@ def _cmd_config(
     # it into `key` and treat the action as "get".
     if action is not None and action not in ("get", "set", "unset"):
         if key is not None:
-            _config_usage_error(
-                "Usage: iterate config get [KEY]  (get takes no VALUE)",
-                json_output,
-            )
+            # `config sett key value` used to be read as an implicit get and
+            # answered "get takes no VALUE" — a message about a verb the user
+            # never typed. Name the likely intended verb instead.
+            suggestion = _did_you_mean(action, ("get", "set", "unset"))
+            if suggestion:
+                message = (
+                    f"unknown config action {action!r} — did you mean "
+                    f"{suggestion!r}? Usage: iterate config set KEY VALUE "
+                    "(or omit the action and pass just a KEY to read it)."
+                )
+            else:
+                message = (
+                    f"unknown config action {action!r}; expected get/set/unset. "
+                    "Usage: iterate config set KEY VALUE, or "
+                    "`iterate config KEY` to read one value."
+                )
+            _config_usage_error(message, json_output)
             return 2
         key = action
         action = "get"

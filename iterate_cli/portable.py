@@ -36,7 +36,9 @@ untouched.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -48,7 +50,6 @@ import yaml
 
 from iterate_cli import __version__
 from iterate_cli.doctor import _schema_violations
-from iterate_cli.generator import atomic_write
 
 #: Value of the ``format`` field. A bundle from a different tool is refused
 #: rather than half-imported.
@@ -190,6 +191,20 @@ def build_bundle(project_root: Path, *, now: datetime | None = None) -> dict[str
         raise BundleError(
             f"{CONFIG_FILENAME} is empty. Run `iterate onboard` to populate it."
         )
+    # Export is the advertised backup/migration path: a bundle that `import`
+    # would reject is worse than no backup at all. Validate before writing so
+    # a schema-invalid config cannot be sealed into a file the tool then
+    # refuses to restore.
+    bundle_for_validation: dict[str, Any] = {
+        "format": BUNDLE_FORMAT,
+        "bundle_version": BUNDLE_VERSION,
+        "skill_version": __version__,
+        "exported_at": _utc_now(now).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "project": project_root.resolve().name,
+        "config": config,
+        # Placeholder: the real markdown is attached below. A null is valid.
+        "iterate_md": None,
+    }
 
     iterate_md: str | None = None
     md_path = project_root / ITERATE_MD_FILENAME
@@ -199,17 +214,19 @@ def build_bundle(project_root: Path, *, now: datetime | None = None) -> dict[str
         except (OSError, UnicodeDecodeError) as exc:
             raise BundleError(f"Cannot read {ITERATE_MD_FILENAME}: {exc}") from exc
 
-    return {
-        "format": BUNDLE_FORMAT,
-        "bundle_version": BUNDLE_VERSION,
-        "skill_version": __version__,
-        "exported_at": _utc_now(now).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        # Basename only: an absolute path from the exporting machine would be
-        # meaningless (and leak local directory layout) wherever it is imported.
-        "project": project_root.resolve().name,
-        "config": config,
-        "iterate_md": iterate_md,
-    }
+    bundle_for_validation["iterate_md"] = iterate_md
+    validation = validate_bundle(bundle_for_validation)
+    if not validation.ok:
+        joined = "\n".join(f"  - {error}" for error in validation.errors)
+        raise BundleError(
+            "refusing to export a bundle that `iterate import` would reject:\n"
+            f"{joined}\n"
+            "Run `iterate doctor --fix`, or fix the listed values by hand, "
+            "then retry the export."
+        )
+    # Basename only: an absolute path from the exporting machine would be
+    # meaningless (and leak local directory layout) wherever it is imported.
+    return bundle_for_validation
 
 
 def bundle_to_json(bundle: dict[str, Any]) -> str:
@@ -550,30 +567,87 @@ def apply_bundle(
         raise BundleError(f"Cannot serialise the bundle config: {exc}") from exc
 
     backups: list[Path] = []
+    backups_by_path: dict[Path, Path] = {}
     written: list[Path] = []
     config_path = project_root / CONFIG_FILENAME
-    try:
-        backup = _backup(config_path, "import", now)
-        if backup is not None:
-            backups.append(backup)
-        atomic_write(config_path, config_yaml)
-        written.append(config_path)
+    contents: list[tuple[Path, str]] = [(config_path, config_yaml)]
+    iterate_md = bundle.get("iterate_md")
+    if isinstance(iterate_md, str):
+        contents.append((project_root / ITERATE_MD_FILENAME, iterate_md))
 
-        iterate_md = bundle.get("iterate_md")
-        if isinstance(iterate_md, str):
-            md_path = project_root / ITERATE_MD_FILENAME
-            md_backup = _backup(md_path, "import", now)
-            if md_backup is not None:
-                backups.append(md_backup)
-            atomic_write(md_path, iterate_md)
-            written.append(md_path)
+    # Stage every file first: an encoding error (lone surrogate) or a full disk
+    # must fail BEFORE the existing config is touched. The previous flow wrote
+    # the config and only then discovered a bad ITERATE.md, leaving the project
+    # in a mixed old/new state despite the module's "refused import leaves the
+    # project untouched" contract.
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for path, content in contents:
+            staged_path = path.with_name(
+                f".{path.name}.import-{os.getpid()}-{uuid4().hex[:8]}"
+            )
+            with open(staged_path, "x", encoding="utf-8", newline="") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if path.exists():
+                with contextlib.suppress(OSError):
+                    shutil.copymode(path, staged_path)
+            staged.append((path, staged_path))
+    except (OSError, ValueError) as exc:
+        for _, staged_path in staged:
+            with contextlib.suppress(OSError):
+                staged_path.unlink()
+        raise BundleError(
+            f"Failed to write into {project_root}: {exc}. "
+            "Nothing was written."
+        ) from exc
+
+    try:
+        for path, _ in staged:
+            backup = _backup(path, "import", now)
+            if backup is not None:
+                backups.append(backup)
+                backups_by_path[path] = backup
     except OSError as exc:
+        for _, staged_path in staged:
+            with contextlib.suppress(OSError):
+                staged_path.unlink()
         kept = (
             " Backup(s) kept: " + ", ".join(path.name for path in backups)
             if backups
             else ""
         )
-        raise BundleError(f"Failed to write into {project_root}: {exc}.{kept}") from exc
+        raise BundleError(f"Failed to back up before import: {exc}.{kept}") from exc
+
+    try:
+        for path, staged_path in staged:
+            os.replace(staged_path, path)
+            written.append(path)
+    except (OSError, ValueError) as exc:
+        # Roll back the files already replaced, so a failure on the second
+        # replace cannot leave a new config next to an old knowledge base.
+        for path in reversed(written):
+            backup = backups_by_path.get(path)
+            try:
+                if backup is not None:
+                    shutil.copy2(backup, path)
+                else:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for _, staged_path in staged:
+            with contextlib.suppress(OSError):
+                staged_path.unlink()
+        kept = (
+            " Backup(s) kept: " + ", ".join(path.name for path in backups)
+            if backups
+            else ""
+        )
+        raise BundleError(
+            f"Failed to write into {project_root}: {exc}. "
+            "Already-replaced files were restored from backup." + kept
+        ) from exc
 
     return {
         "written": [path.name for path in written],

@@ -1552,6 +1552,63 @@ def test_copy_release_path_dir_failure_preserves_destination(
     assert [p.name for p in destination.iterdir() if ".tmp-" in p.name] == []
 
 
+def test_copy_release_path_dir_swap_failure_restores_old_tree(
+    tmp_path, monkeypatch
+) -> None:
+    """An interrupted final swap must leave the old install in place.
+
+    Regression: the old implementation ``rmtree``'d the destination before
+    ``os.replace``, so a failure (or Ctrl-C) in that window left the installed
+    skill partially deleted. The destination is now renamed aside first and
+    restored when the swap fails.
+    """
+    source = tmp_path / "src"
+    (source / "iterate_cli").mkdir(parents=True)
+    (source / "iterate_cli" / "new.py").write_text("new\n", encoding="utf-8")
+    destination = (tmp_path / "dest").resolve()
+    dest_dir = destination / "iterate_cli"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "old.py").write_text("old\n", encoding="utf-8")
+
+    real_replace = updater.os.replace
+
+    def flaky_replace(src, dst):
+        src_path, dst_path = Path(src), Path(dst)
+        if dst_path == dest_dir and ".tmp-" in src_path.name:
+            raise OSError("cannot replace: busy")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(updater.os, "replace", flaky_replace)
+
+    with pytest.raises(OSError):
+        updater._copy_release_path(source, destination, "iterate_cli")
+
+    assert (dest_dir / "old.py").read_text(encoding="utf-8") == "old\n"
+    assert not (dest_dir / "new.py").exists()
+    leftovers = [
+        p.name
+        for p in destination.iterdir()
+        if ".tmp-" in p.name or ".old-" in p.name
+    ]
+    assert leftovers == []
+
+
+def test_copy_release_path_dir_swap_success_removes_backup(tmp_path) -> None:
+    source = tmp_path / "src"
+    (source / "iterate_cli").mkdir(parents=True)
+    (source / "iterate_cli" / "new.py").write_text("new\n", encoding="utf-8")
+    destination = (tmp_path / "dest").resolve()
+    dest_dir = destination / "iterate_cli"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "old.py").write_text("old\n", encoding="utf-8")
+
+    updater._copy_release_path(source, destination, "iterate_cli")
+
+    assert (dest_dir / "new.py").is_file()
+    assert not (dest_dir / "old.py").exists()
+    assert [p.name for p in destination.iterdir() if ".old-" in p.name] == []
+
+
 # ---------------------------------------------------------------------------
 # --assistants names that are valid but not installed
 # ---------------------------------------------------------------------------

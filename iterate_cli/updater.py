@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from iterate_cli import __version__
 from iterate_cli.signing import enforce_signature_policy
@@ -786,19 +787,36 @@ def _copy_release_path(source: Path, destination: Path, relative: str) -> None:
         # scripts/install.py's force path rmtree+copied — `iterate update` and
         # the installer disagreed about what "refresh to the release" means.
         tmp_dir = Path(tempfile.mkdtemp(dir=dst.parent, prefix=f".{dst.name}.tmp-"))
+        backup_dir = dst.with_name(
+            f".{dst.name}.old-{os.getpid()}-{uuid4().hex[:8]}"
+        )
         replaced = False
+        moved_aside = False
         try:
             shutil.rmtree(tmp_dir)  # let copytree recreate it with the source's mode
             shutil.copytree(src, tmp_dir)
-            if dst.is_symlink() or dst.is_file():
-                dst.unlink()
-            elif dst.is_dir():
-                shutil.rmtree(dst)
-            os.replace(tmp_dir, dst)
+            # Two renames instead of rmtree-then-replace: between the old
+            # rmtree and os.replace the destination did not exist at all, so a
+            # Ctrl-C / permission error left the installed skill half-deleted
+            # (or missing entirely). Renaming it aside keeps the old tree intact
+            # and recoverable until the new one is in place.
+            if dst.is_symlink() or dst.exists():
+                os.replace(dst, backup_dir)
+                moved_aside = True
+            try:
+                os.replace(tmp_dir, dst)
+            except BaseException:
+                if moved_aside:
+                    with contextlib.suppress(OSError):
+                        os.replace(backup_dir, dst)
+                        moved_aside = False
+                raise
             replaced = True
         finally:
             if not replaced:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
+            if moved_aside:
+                _remove_path(backup_dir)
     else:
         fd, tmp_name = tempfile.mkstemp(dir=dst.parent, prefix=f".{dst.name}.tmp-")
         os.close(fd)
