@@ -133,6 +133,31 @@ class TestConfigGet:
         project = _make_project(tmp_path)
         assert run_config_get(project, "goal") == 1
 
+    def test_missing_config_message_points_at_init(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        capsys.readouterr()
+
+        assert run_config_get(project, "goal") == 1
+
+        err = capsys.readouterr().err
+        assert "missing" in err
+        assert "iterate init --yes" in err
+        assert "onboard" in err
+
+    def test_corrupt_config_message_points_at_doctor(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("goal: [unclosed\n", encoding="utf-8")
+        capsys.readouterr()
+
+        assert run_config_get(project, "goal") == 1
+
+        err = capsys.readouterr().err
+        assert "could not be parsed" in err
+        assert "iterate doctor" in err
+        # Onboarding refuses to overwrite a corrupt config; that advice was a
+        # dead end.
+        assert "onboard" not in err
+
     def test_gets_flat_value(self, tmp_path) -> None:
         project = _make_project(tmp_path)
         config = _base_config()
@@ -438,6 +463,21 @@ class TestConfigCliImplicitGet:
         code = cli_main(["config", "nope", "-p", str(project), "--no-banner"])
         assert code == 1
         assert "Unknown config key" in capsys.readouterr().err
+
+    def test_typoed_action_is_named(self, tmp_path, capsys) -> None:
+        """`config sett goal x` must say "did you mean set", not "get takes no VALUE"."""
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        capsys.readouterr()
+
+        code = cli_main(
+            ["config", "sett", "goal", "x", "-p", str(project), "--no-banner"]
+        )
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "did you mean 'set'" in err
+        assert "get takes no VALUE" not in err
 
     def test_implicit_get_with_stray_value_is_usage_error(
         self, tmp_path, capsys

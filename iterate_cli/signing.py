@@ -334,7 +334,16 @@ def verify_detached_signature(
                 )
             finally:
                 _kill_gpg_agent(gpg, home, timeout)
-    except (OSError, subprocess.SubprocessError) as exc:
+    except subprocess.TimeoutExpired as exc:
+        # A hung gpg is not a missing dependency: reporting it as
+        # "unavailable" let ITERATE_ALLOW_UNSIGNED bypass verification
+        # entirely. Fail closed; only a genuinely absent/unlaunchable gpg may
+        # take the explicit unsigned escape hatch.
+        return "invalid", (
+            f"gpg timed out while verifying (treated as invalid): {exc}. "
+            "Retry, or inspect the gpg agent/keyring."
+        )
+    except OSError as exc:
         return "unavailable", f"gpg could not run: {exc}"
 
     signer_fingerprints = _validsig_fingerprints(verified.stdout)

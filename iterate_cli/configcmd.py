@@ -268,7 +268,19 @@ def run_config_get(
         # body and a bare exit code, while the malformed-section failure in the
         # very same function *did* emit a JSON error — two contracts for one
         # command.
-        message = "iterate.config.yaml is missing or unreadable. Run 'iterate onboard' first."
+        # Distinguish missing from corrupt: `onboard` refuses to overwrite an
+        # existing-but-unparseable config, so telling the user to run it was a
+        # dead end. Corrupt configs need `doctor` (which can fix/back up).
+        if (project_root / "iterate.config.yaml").is_file():
+            message = (
+                "iterate.config.yaml exists but could not be parsed. Run "
+                "'iterate doctor' to diagnose it (add --fix to repair safely)."
+            )
+        else:
+            message = (
+                "iterate.config.yaml is missing. Run 'iterate onboard' "
+                "(interactive) or 'iterate init --yes' (prompt-free) first."
+            )
         if json_output:
             print(json.dumps({"error": message}, ensure_ascii=False))
         else:

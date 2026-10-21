@@ -227,6 +227,69 @@ class TestValidsigFingerprintEnforcement:
         assert status == "invalid"
 
 
+class TestVerifyTimeoutFailsClosed:
+    """A hung ``gpg --verify`` must never look like "gpg is unavailable".
+
+    ``unavailable`` is the one status the ``ITERATE_ALLOW_UNSIGNED`` escape
+    hatch may ignore, so reporting a timeout that way silently turned a
+    possibly-tampered artifact into an accepted install. A timeout is a
+    verification failure and must be treated as ``invalid``.
+    """
+
+    def _paths(self, tmp_path: Path) -> tuple[Path, Path]:
+        artifact = tmp_path / "a.bin"
+        artifact.write_bytes(b"payload\n")
+        signature = tmp_path / "a.bin.asc"
+        signature.write_text("sig\n", encoding="utf-8")
+        return artifact, signature
+
+    def test_verify_timeout_is_invalid_not_unavailable(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        artifact, signature = self._paths(tmp_path)
+
+        def run(argv, **kwargs):
+            if "--verify" in argv:
+                raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 1))
+            if "--list-keys" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 0, f"fpr:::::::::{_FPR_A}:\n", ""
+                )
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(signing.subprocess, "run", run)
+        monkeypatch.setattr(signing.shutil, "which", lambda name: None)
+
+        status, detail = verify_detached_signature(
+            artifact, signature, gpg_bin="/usr/bin/gpg"
+        )
+        assert status == "invalid", detail
+        assert "timed out" in detail.lower()
+
+    def test_verify_timeout_cannot_be_bypassed_by_allow_unsigned(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        artifact, signature = self._paths(tmp_path)
+
+        def run(argv, **kwargs):
+            if "--verify" in argv:
+                raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 1))
+            if "--list-keys" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 0, f"fpr:::::::::{_FPR_A}:\n", ""
+                )
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(signing.subprocess, "run", run)
+        monkeypatch.setattr(signing.shutil, "which", lambda name: None)
+
+        ok, detail = enforce_signature_policy(
+            artifact, signature, allow_unsigned_override=True, gpg_bin="/usr/bin/gpg"
+        )
+        assert ok is False, detail
+        assert "FAILED" in detail or "failed" in detail
+
+
 class TestGpgAgentTeardown:
     def _paths(self, tmp_path: Path) -> tuple[Path, Path]:
         artifact = tmp_path / "a.bin"

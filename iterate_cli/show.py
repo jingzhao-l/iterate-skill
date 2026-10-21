@@ -131,6 +131,7 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
     # with a truncated payload, so one broken state had two verdicts depending
     # on which command CI happened to watch.
     corrupt_config = config_exists and raw_config is None
+    data["config_missing"] = not config_exists
 
     if not is_onboarding_complete(project_root):
         data["onboarded"] = False
@@ -158,9 +159,12 @@ def collect_show_data(project_root: Path) -> dict[str, Any]:
 
     if raw_config is None:
         # ITERATE.md exists but the config is missing/unreadable/corrupt.
-        # Flag it so the renderer can hint instead of showing a silent empty
-        # config (doctor is the authoritative diagnostic for the details).
-        data["config_error"] = True
+        # Only a file that EXISTS but cannot be parsed is an error (matching
+        # both the docstring and `status`, which exits 0 for a missing file).
+        # A missing config is a distinct, actionable state: point at onboard
+        # instead of the dead-end "doctor --fix" advice.
+        data["config_error"] = corrupt_config
+        data["config_missing"] = not config_exists
         data["config"] = {}
         data["onboarding"] = {
             "completed_at": "unknown",
@@ -291,9 +295,30 @@ def render_show(data: dict[str, Any], json_output: bool = False) -> int:
 
     tui.intro("Iterate Skill — Show")
 
+    if data.get("config_missing"):
+        # `status` treats this state as non-fatal (exit 0); `show` used to
+        # exit 1 and tell the user to run `doctor --fix`, which answers
+        # "config not found; run onboard". Point at the command that can
+        # actually create the file.
+        tui.warning(
+            "iterate.config.yaml is missing — there is no config to show."
+        )
+        if data.get("onboarded"):
+            # ITERATE.md exists but the config was deleted: render the rest of
+            # the (empty) payload, but tell the operator how to restore it.
+            tui.hint(
+                "Run `iterate onboard` (interactive) or `iterate init --yes` "
+                "(prompt-free) to regenerate it.",
+                indent=2,
+            )
+
     if not data.get("onboarded"):
         tui.warning("Status: Not onboarded")
-        tui.hint("Run 'iterate onboard' to initialize.", indent=2)
+        tui.hint(
+            "Run 'iterate onboard' (interactive) or 'iterate init --yes' "
+            "(prompt-free) to initialize.",
+            indent=2,
+        )
         return 0
 
     onboarding = data["onboarding"]
