@@ -5,6 +5,100 @@
 
 ---
 
+## [3.7.0] — 2026-10-21
+
+本轮为无人值守每日例行的「全量评审 + 修复 + 功能/体验增长」版本：新增
+`iterate init`（无提问初始化）与 `scan` 的 API/维度集建议两项用户可感知能力，
+并集中修复了重新 onboarding 丢配置、更新器非原子替换、导入回滚、刷新擦除注释、
+签名超时被当成"不可验证"等一批真实缺陷，故升 minor。测试套件
+**1738 → 1788**（新增 `tests/test_init_command.py`、`tests/test_reonboard_preservation.py`，
+扩充 `tests/test_refresh_reconcile.py`、`tests/test_personalize.py`、
+`tests/test_doctor.py`、`tests/test_config.py`、`tests/test_onboarding.py`、
+`tests/test_scan_command.py`、`tests/test_portable.py`、`tests/test_updater.py`、
+`tests/test_signing.py`）。评审与发布范围仅限 skill 本体（`iterate_cli/`、
+`npm-installer/`、`scripts/`、`templates/`、`tests/`、`config/`、`tools/`、
+`SKILL.md`、`pyproject.toml`、`CHANGELOG.md`）；`harness/` 与 `kernel/` 未改、
+未发、未纳入任何发布包。
+
+### 新增 / Features
+
+- **`iterate init` —— 无提问初始化（面向 CI / 脚本 / 其它 agent）**。
+  `iterate onboard` 是交互式的，CI 与自动化无法驱动（会卡在第一个提问）。
+  `iterate init` 复用同一套扫描与生成逻辑，零提问完成初始化：
+  `--yes` 直接写盘、`--dry-run` 预览、`--json` 输出单个结构化文档（含将写入的
+  维度/校验命令/维度集），`--language` / `--target-branch` / `--goal` 覆盖
+  扫描默认值。已初始化项目默认**不改动**并明确告知（避免覆盖用户调好的配置）；
+  `--dry-run --json` 不落盘，可直接用于 CI 预检。16 个测试覆盖各参数组合、
+  退出码与"绝不写盘"契约。
+- **`iterate scan` 增加 `has_api` 与 `suggested_dimension_sets`**。此前扫描只在
+  顶层目录里找 API 层，标准的 `src/api`、`app/routes`、`src/controllers` 布局
+  一律识别不到，于是最需要 API 维度的项目反而拿不到建议。现在：
+  - 新增 `has_api` 特性开关（顶层 + 常见嵌套布局），TUI/JSON 均输出；
+  - 新增 `suggested_dimension_sets`，直接给出可落地到 `dimension_sets` 的具名
+    范围蓝图（含 per-dimension focus），`scan` 报告新增「建议范围维度集」小节；
+  - 输出提示改为 `iterate init --yes` / `onboard` / `config set` 三条可执行路径。
+
+### 修复 / Fixes
+
+- **重新 onboarding 不再丢配置**。`iterate reonboard`（以及返回用户的
+  `onboard` 基本配置更新）此前会用扫描建议覆盖用户已调好的值：
+  `dimension_sets`（含 focus）被清空、自定义 `validation.commands` 被通用默认值
+  替换、项目自行审核过的 `command_whitelist` 被重置、git 分支/审查范围/push
+  策略被强制回到 `main` / `full` / `false`。现在已有值优先展示并作为默认值，
+  whitelist 取并集，维度集保留原名称与 focus（扫描建议只填新出现的范围）。
+- **更新器的目录替换改为原子换位**。`iterate update` 覆盖安装目录时先
+  `rmtree` 再 `os.replace`，两者之间进程被中断/权限失败会让已安装的 skill
+  直接消失。现在先把旧目录 rename 到同目录的临时备份、再换入新目录；换入失败
+  自动换回，成功后才删除备份。
+- **可移植 bundle 的导出/导入全面加固**：
+  - 导出前先按与 `import` 相同的 schema 校验，拒绝导出"自己都导不回来"的
+    bundle；超过 8 MiB 直接报错而不是写出无法导入的文件；
+  - `export --force` 拒绝覆盖 `iterate.config.yaml` / `ITERATE.md`（此前会用
+    bundle JSON 覆盖 iterate 自身状态，且是唯一不备份的写入路径）；
+  - `export --out -` 不再在 JSON 前打印 ASCII banner；
+  - `import` 改为"先写临时文件、再统一备份、最后逐个 `os.replace`"，中途失败
+    按备份回滚已替换文件，不再留下"新配置 + 旧 ITERATE.md"的混合状态；
+  - 非 TTY 下 `import --json` 不带 `--yes` 的退出码统一为 2（此前同一命令在
+    CI 返回 1、在 TTY 返回 2）。
+- **`iterate refresh` 不再擦除手写注释**。配置此前按字节比较，而
+  `yaml.safe_dump` 必然丢注释，于是每次 refresh 都判定"有变化"并重写配置，
+  静默删掉操作者加的所有说明。现在按 YAML 语义比较；确需改值时先写
+  `.refresh-<UTC>` 备份，并保留原来的无变更幂等性。同时修复：
+  `command_whitelist` 含 `[["pytest"]]` / `123` 时 refresh 崩溃
+  （`TypeError: unhashable type`），现在过滤并告知；`push_per_round: "on"`
+  在向导里是 true、在 refresh 里却被改写成 false 的不一致；manifest 暂时不可读
+  时不再永久清空指纹基线。
+- **`iterate personalize` 不再写入非法配置**：`fix_priority_order` /
+  `forbidden_fixes` 里的 `null` 曾被 `str()` 成字面量 `"None"`（不是合法维度 id，
+  下次 `doctor` 立刻报错），现直接丢弃并汇总告知；三个 `uniqueItems` 列表在
+  序列化边界去重；向导中重复添加同一项会提示"已存在"而不是制造重复；改写配置
+  前生成 `.personalize-<UTC>` 备份。
+- **`doctor --fix` 能修复自己报的错**：`personalization.*` 与
+  `dimension_sets.*.dimensions` 的重复项（schema 要求 `uniqueItems`）此前只报
+  不修，现在会去重；未能映射到专用建议的诊断项也会给出通用下一步，而不是
+  只显示一行失败。
+- **`show` / `config get` 区分"缺失"与"损坏"**：配置缺失时 `show` 退出 0 并
+  指向 `onboard` / `init --yes`（此前退出 1 且建议 `doctor --fix`，而 doctor
+  只会再让你 onboard）；配置存在但无法解析时明确建议 `doctor`（onboard 拒绝
+  覆盖已存在的坏配置，旧提示是死路）。`config sett k v` 现在提示
+  `did you mean 'set'?`，而不是答非所问的"get takes no VALUE"。
+- **签名校验超时按失败处理（fail closed）**。`gpg --verify` 超时此前返回
+  `unavailable`，而 `ITERATE_ALLOW_UNSIGNED` 恰好只豁免 `unavailable`——一次
+  卡死的 gpg 就能让本应强制的签名校验被环境变量绕过。现在超时归类为
+  `invalid`，任何覆盖开关都不能放行。
+- **`status --json` 的 `drift_reason` 语义修正**：漂移已成功计算时输出 `null`
+  而不是 `"unknown"`（健康的项目不再看起来"无法校验"）；配置损坏时给出
+  `corrupt_config` 而不是泛化的 `"unknown"`。
+
+### 测试 / Tests
+
+- 新增 `tests/test_init_command.py`（16 项）、`tests/test_reonboard_preservation.py`
+  （5 项），并扩充 refresh（含"注释保留/备份"集成测试）、personalize、doctor、
+  config、onboarding、scan、portable、updater、signing 的回归用例。
+- 全量 `python -m pytest tests/ -q`：**1788 passed**；`ruff check .` 通过。
+
+---
+
 ## [3.6.0] — 2026-10-20
 
 本轮为无人值守每日例行的「功能与体验增长」版本：新增三个用户可直接感知的能力

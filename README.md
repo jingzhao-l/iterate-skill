@@ -373,7 +373,7 @@ iterate scan         # TUI report
 iterate scan --json  # one JSON document on stdout
 ```
 
-The report contains the detected `manifests`, `detected_languages`, `detected_package_managers` and `top_level_dirs`, the four feature flags (`has_specs` / `has_tests` / `has_ci` / `has_frontend`), and the suggestions the scanner derives from them: `suggested_dimensions`, `suggested_validation_commands` (a drop-in shape for `validation.commands`) and `suggested_command_whitelist` (for `validation.whitelist`).
+The report contains the detected `manifests`, `detected_languages`, `detected_package_managers` and `top_level_dirs`, the five feature flags (`has_specs` / `has_tests` / `has_ci` / `has_frontend` / `has_api`), and the suggestions the scanner derives from them: `suggested_dimensions`, `suggested_dimension_sets` (named scope blueprints for `dimension_sets`), `suggested_validation_commands` (a drop-in shape for `validation.commands`) and `suggested_command_whitelist` (for `validation.whitelist`). `has_api` also recognises the usual nested layouts (`src/api`, `app/routes`, `src/controllers`, …), not just top-level directories.
 
 ```json
 {
@@ -383,7 +383,9 @@ The report contains the detected `manifests`, `detected_languages`, `detected_pa
   "detected_package_managers": ["pip/poetry"],
   "top_level_dirs": ["iterate_cli", "scripts", "tests"],
   "has_specs": false, "has_tests": true, "has_ci": true, "has_frontend": false,
+  "has_api": false,
   "suggested_dimensions": ["correctness", "security", "..."],
+  "suggested_dimension_sets": {"backend": {"dimensions": ["..."]}},
   "suggested_validation_commands": {"python": ["ruff check .", "mypy . --ignore-missing-imports", "pytest tests -x -q"]},
   "suggested_command_whitelist": ["python", "python3", "ruff", "mypy", "pytest"]
 }

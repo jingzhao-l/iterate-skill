@@ -377,7 +377,7 @@ iterate scan         # TUI 报告
 iterate scan --json  # stdout 输出单个 JSON 文档
 ```
 
-报告包含识别到的 `manifests`、`detected_languages`、`detected_package_managers` 与 `top_level_dirs`，四个特性开关（`has_specs` / `has_tests` / `has_ci` / `has_frontend`），以及由它们推导出的建议：`suggested_dimensions`、`suggested_validation_commands`（可直接用作 `validation.commands` 的形状）与 `suggested_command_whitelist`（用于 `validation.whitelist`）。
+报告包含识别到的 `manifests`、`detected_languages`、`detected_package_managers` 与 `top_level_dirs`，五个特性开关（`has_specs` / `has_tests` / `has_ci` / `has_frontend` / `has_api`），以及由它们推导出的建议：`suggested_dimensions`、`suggested_dimension_sets`（可直接用于 `dimension_sets` 的具名范围蓝图）、`suggested_validation_commands`（可直接用作 `validation.commands` 的形状）与 `suggested_command_whitelist`（用于 `validation.whitelist`）。`has_api` 除顶层目录外，也识别常见的嵌套布局（`src/api`、`app/routes`、`src/controllers` 等）。
 
 ```json
 {
@@ -387,7 +387,9 @@ iterate scan --json  # stdout 输出单个 JSON 文档
   "detected_package_managers": ["pip/poetry"],
   "top_level_dirs": ["iterate_cli", "scripts", "tests"],
   "has_specs": false, "has_tests": true, "has_ci": true, "has_frontend": false,
+  "has_api": false,
   "suggested_dimensions": ["correctness", "security", "..."],
+  "suggested_dimension_sets": {"backend": {"dimensions": ["..."]}},
   "suggested_validation_commands": {"python": ["ruff check .", "mypy . --ignore-missing-imports", "pytest tests -x -q"]},
   "suggested_command_whitelist": ["python", "python3", "ruff", "mypy", "pytest"]
 }

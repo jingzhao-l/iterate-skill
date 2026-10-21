@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.6.0
+version: 3.7.0
 permissions:
   file_read: true
   file_write: true
@@ -315,7 +315,7 @@ iterate refresh      # 增量刷新（保留用户手写区；支持 --json / --
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
 iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查；--strict 将 warning 一并判失败；--fix 安全修复；--json / --json-out 结构化输出）
 iterate status       # 查看 onboarding 状态和漂移检测（--json 含 onboarded、config_exists/config_ok、drift_detected 与明细列表）
-iterate scan         # 只读导出项目扫描结果（识别到的 manifest/语言/包管理器/顶层目录/特性开关 + 建议维度/校验命令/命令白名单；不写文件，恒退出 0；--json）
+iterate scan         # 只读导出项目扫描结果（识别到的 manifest/语言/包管理器/顶层目录/五个特性开关含 has_api + 建议维度/维度集/校验命令/命令白名单；不写文件，恒退出 0；--json）
 iterate scan --json  # 同上，结构化输出，供脚本/CI 消费
 iterate export       # 把 iterate.config.yaml + ITERATE.md 导出为单个可移植 JSON bundle（只写 bundle，不改项目；--out / --json / --force）
 iterate import FILE  # 校验 bundle（含 schema）→ 时间戳备份 → 写回配置与 ITERATE.md（--dry-run / --yes / --reset-fingerprints / --json；FILE 为 - 时读 stdin）
