@@ -231,6 +231,13 @@ def _relay_answer(answer: RelayedAnswer, *, full: bool) -> dict[str, Any]:
     # payload of a single-item answer keeps the byte length it had before multi-item relay.
     if answer.annotations:
         relayed["annotations"] = list(answer.annotations)
+    # The shell's echoed declaration is carried as a structured field *in addition to* staying
+    # verbatim in the annotations above, because the consumer (:mod:`.dimension_ledger`) must be
+    # able to cross-check it without scraping prose it did not write. Absent means "this reply
+    # echoed nothing" — which a reader must not read as "the call served no dimension", since a
+    # call through the other surface declares it in metadata.
+    if answer.echoed_dimension is not None:
+        relayed["echoedDimension"] = answer.echoed_dimension
     if full:
         relayed["arguments"] = dict(answer.arguments)
         relayed["outcome"] = answer.outcome

@@ -6,6 +6,31 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **#23 面 A 的回显有了读者：交叉核对只减不加，缺回显永不算异议（场景②/⑧ 的补账）。**
+  上一批给面 A 装了 `dimension` 槽并让它把声明回显成独立 content item；如果没人读它，那行字就只是
+  多一块表面——本仓反复把这种形状叫"没交付"。现在它有读者，且读者只做一件事：**怀疑**，不裁决。
+  `relay_answer` 从旁项里认出 `dimension: <id> | …` 这一行，填进新的
+  `RelayedAnswer.echoed_dimension`，而**该行仍原样留在 `annotations` 里**（读出≠吃掉，模型照旧看得见
+  壳写的每一个字）；`reverify_trigger._relay_answer` 把它作为结构化字段
+  `echoedDimension` 同时写进这一轮的载荷与 ledger 那一行，读者因此不必去刮一句它没写过的话——写侧与
+  读侧共用 `dimension_ledger.ECHOED_DIMENSION_DATA_KEY` 这一个键名常量，两侧对不上时红在读侧而不是
+  一起静默失配。
+  `dimension_ledger` 新增 `echoed_dimension_map` / `contested_attributions` /
+  `dimension_context_with_contested`：一条决策把 op 归给维度 X，而壳为同一 op 的回答回显了 Y≠X，
+  这条归属就被**扣住不计**，该维度重新读作 unverified——并且扣了几条写在同一行覆盖率话术里
+  （`_dimension_coverage_line` 只在真有扣计时追加那句，没扣计时那行字节一字不动）。三条边界是这批的
+  全部要点：**缺席的回显永不算异议**（面 B 把声明放在 metadata 里，那里根本没有这行字，把沉默读成
+  不同意就是拿一侧的写法去判另一侧）；**畸形的回显算沉默而不是另一种主张**（id 过内核校验器才认，
+  过不了就不认，绝不让一个坏值变成反驳）；**交叉核对只减不加**（一句回显永远不能替账本凭空记上一个
+  维度的证据）。`project_dimension_context` 与 `dimension_context_with_contested` 从同一次读盘产出
+  结论与扣计数——两次读盘会让"数字"与"它描述的那份账"不是同一份，那是比不报数更坏的东西。
+  新增 `tests/test_iterate/test_dimension_echo.py` 15 条：证据包取自随包语料
+  （`tests/kernel_fixtures/evidence-decision.ok-01.json`）而不是手写形状，ledger 行由真实记录器
+  `record_reverification_run` 写出而不是拼字典——写侧停发这个字段时读侧用例点名变红，而不是两侧一起
+  跟我的猜测达成一致。变异七发逐一点名变红（不提取／把旁项吃掉／收下畸形 id／关掉交叉核对／把沉默
+  当异议／结论不再扣减／写侧停发字段），按自带备份 + sha256 核回。`tests/test_iterate` 与压缩顺序套件
+  合计 1221 passed，ruff 干净；回显行的形状来自父仓 `mcp-shell/src/dimension.ts`，因此本侧读得宽、
+  认得严：措辞漂了最多是让交叉核对不发生，不会把判决读反。
 - **#22 场景①真正接通：发布点改为 await，宿主一次绑两份 transport——并如实记下上一批那份"绑了但跑不到"。**
   回代码复核 #21 的落地形状（不是推测，是读到的行）：`engine/query.py:801` 与 `:1521` 用
   `await tool.execute(...)` 驱动工具，`ui/runtime.py:298-300` 在引擎 loop 上 `await connect_all()`、

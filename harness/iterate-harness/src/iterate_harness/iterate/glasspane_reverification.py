@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
@@ -75,6 +76,13 @@ class RelayedAnswer:
     #: plus a ``provider:`` attribution line; those side items are user-visible facts about
     #: the call, and silently dropping one is exactly as wrong as failing to read the frame.
     annotations: tuple[str, ...] = ()
+    #: The dimension 面 A says this call served, read out of the shell's own echo item
+    #: (``mcp-shell/src/dimension.ts``). ``None`` means the reply carried no such line — which
+    #: is NOT "the call served no dimension": a call through 面 B puts the declaration in tool
+    #: metadata instead of in the text, and this field says nothing about it. It is a citation
+    #: of what the shell said, used by :mod:`.dimension_ledger` to cross-check a self-declared
+    #: ledger attribution; the annotation itself stays in ``annotations`` regardless, verbatim.
+    echoed_dimension: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,8 +228,44 @@ def relay_answer(tool: str, arguments: Mapping[str, Any], raw: object) -> Relaye
         index = next((position for position, item in enumerate(items) if _is_answer_item(item)), 0)
         answer = _relay_item(tool, arguments, items[index])
         annotations = tuple(item if isinstance(item, str) else str(item) for position, item in enumerate(items) if position != index)
-        return replace(answer, annotations=annotations)
+        return replace(
+            answer,
+            annotations=annotations,
+            echoed_dimension=_echoed_dimension(annotations),
+        )
     return RelayedAnswer(tool=tool, arguments=dict(arguments), state="unparseable")
+
+
+#: 面 A's echo item, in the shape the shell writes it:
+#: ``dimension: <id> | declared by this call; …``. Only the id is read; the sentence after the
+#: pipe stays where it is — this parses a declaration, it does not re-summarise a remedy.
+_DIMENSION_ECHO = re.compile(r"^dimension:[ \t]*(?P<id>[^\s|]+)")
+
+
+def _echoed_dimension(items: Sequence[str]) -> str | None:
+    """The dimension id the shell echoed, or ``None`` when no item is an echo it owns.
+
+    Deliberately conservative in three ways, because this value is going to be used to
+    *doubt* a ledger attribution:
+
+    - the id is checked with the kernel's own validator (via
+      :func:`.dimension_ledger.is_valid_dimension_id`), so a truncated or malformed echo is
+      read as "no echo", not as a competing claim;
+    - only the first echo wins, and an item that merely contains the word is not one — the
+      line must start with it, which is the shape the shell emits;
+    - a joined string never reaches here (``relay_answer`` classifies sequences per item), so
+      this is not guessing at a boundary the transport already destroyed.
+
+    Drift in the shell's wording costs a cross-check, never a wrong verdict: that asymmetry is
+    why the reader is lenient about the sentence and strict about the id.
+    """
+    from .dimension_ledger import is_valid_dimension_id
+
+    for item in items:
+        match = _DIMENSION_ECHO.match(item)
+        if match is not None and is_valid_dimension_id(match.group("id")):
+            return str(match.group("id"))
+    return None
 
 
 def _is_answer_item(item: object) -> bool:

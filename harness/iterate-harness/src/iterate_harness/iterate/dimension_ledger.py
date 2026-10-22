@@ -55,6 +55,12 @@ OPERATION_ID_E_CODE = "KERNEL_E_OPERATION_ID"
 DIMENSION_DATA_KEY = "dimension"
 OPERATION_ID_DATA_KEY = "operationId"
 
+#: The relayed echo, as :mod:`.reverify_trigger` writes it into a ``reverification`` ledger
+#: entry. Named here because the writer and this reader are two halves of one key: a writer
+#: that used another name would leave every cross-check silently finding no echo, which is the
+#: quiet direction of wrong.
+ECHOED_DIMENSION_DATA_KEY = "echoedDimension"
+
 
 def is_valid_dimension_id(value: object) -> bool:
     """Whether ``value`` is a dimension id the kernel would carry into the ledger draft."""
@@ -189,6 +195,108 @@ def operation_dimension_map(project_root: str | Path) -> dict[str, str]:
     return mapping
 
 
+def echoed_dimension_map(project_root: str | Path) -> dict[str, str]:
+    """Operation id → the dimension the shell echoed on the call that answered for it.
+
+    Read out of the ledger's own ``reverification`` entries, because that is the one place this
+    harness holds the engine's answer and the shell's declaration for the same operation
+    together — and it is a citation of what came back, not a new claim: an answer with no echo
+    contributes nothing here, which is what makes "the other surface declares in metadata" read
+    as silence rather than as disagreement.
+    """
+    from .reverify_trigger import LEDGER_DATA_KIND
+
+    echoes: dict[str, str] = {}
+    for entry in decision_log.read_entries(project_root):
+        data: Mapping[str, Any] = entry.data if isinstance(entry.data, dict) else {}
+        if data.get("kind") != LEDGER_DATA_KIND:
+            continue
+        answers = data.get("answers")
+        if not isinstance(answers, list):
+            continue
+        for answer in answers:
+            if not isinstance(answer, dict):
+                continue
+            operation_id = answer.get(OPERATION_ID_DATA_KEY)
+            echoed = answer.get(ECHOED_DIMENSION_DATA_KEY)
+            if is_valid_operation_id(operation_id) and is_valid_dimension_id(echoed):
+                echoes[str(operation_id)] = str(echoed)
+    return echoes
+
+
+def contested_attributions(project_root: str | Path) -> list[dict[str, str]]:
+    """Decisions whose declared dimension the shell's own echo contradicts.
+
+    WHY THIS EXISTS AND WHY IT ONLY SUBTRACTS. A ledger attribution is the agent saying "this
+    call served dimension X"; the echo is the shell saying what the call it just answered was
+    declared as. When the two disagree, the harness has no basis to keep the more flattering
+    reading, and it has no mandate to decide which one is true either — the kernel decides
+    coverage from what was *recorded*, so the only honest action is to withhold the contested
+    attribution and say how many were withheld. Nothing here ever adds a verification, and a
+    missing echo is not a contest: silence leaves the attribution standing.
+    """
+    echoes = echoed_dimension_map(project_root)
+    contested: list[dict[str, str]] = []
+    for dimension, operation_id in _attributed_entries(project_root):
+        if operation_id is None:
+            continue
+        echoed = echoes.get(operation_id)
+        if echoed is not None and echoed != dimension:
+            contested.append(
+                {
+                    DIMENSION_DATA_KEY: dimension,
+                    OPERATION_ID_DATA_KEY: operation_id,
+                    ECHOED_DIMENSION_DATA_KEY: echoed,
+                }
+            )
+    return contested
+
+
+def _uncontested_counts(project_root: str | Path) -> tuple[dict[str, int], list[dict[str, str]]]:
+    """Per-dimension decision counts with contested attributions removed, plus what was removed."""
+    contested = contested_attributions(project_root)
+    withheld = {(item[DIMENSION_DATA_KEY], item[OPERATION_ID_DATA_KEY]) for item in contested}
+    counts: dict[str, int] = {}
+    for dimension, operation_id in _attributed_entries(project_root):
+        if operation_id is not None and (dimension, operation_id) in withheld:
+            continue
+        counts[dimension] = counts.get(dimension, 0) + 1
+    return counts, contested
+
+
+def dimension_context_with_contested(
+    project_root: str | Path, *, fallback: Sequence[str] | None = None
+) -> tuple[DimensionContext | None, list[dict[str, str]]]:
+    """One accounting pass: the kernel's verdict and the attributions it withheld.
+
+    Returned together because they must come from the SAME read. Two passes would let a writer
+    that appends between them produce a verdict and a count that describe different ledgers —
+    and a count that does not describe the verdict it is printed under is worse than no count.
+    """
+    planned = planned_dimension_ids(project_root, fallback=fallback)
+    if not planned:
+        return None, []
+    counts, contested = _uncontested_counts(project_root)
+    if contested:
+        log.info(
+            "iterate dimension coverage withholds %d contested attribution(s): %s",
+            len(contested),
+            ", ".join(
+                f"{item[OPERATION_ID_DATA_KEY]} declared {item[DIMENSION_DATA_KEY]!r} "
+                f"while the shell echoed {item[ECHOED_DIMENSION_DATA_KEY]!r}"
+                for item in contested
+            ),
+        )
+    recorded = {dimension: {"decisions": count} for dimension, count in counts.items()}
+    try:
+        return dimension_context(planned, recorded), contested
+    except DimensionContextError as error:
+        # A malformed id on either side is a producer bug; the run keeps working, but this
+        # verdict is not printed rather than printed wrong.
+        log.warning("iterate dimension coverage could not be computed: %s", error)
+        return None, contested
+
+
 def project_dimension_context(
     project_root: str | Path, *, fallback: Sequence[str] | None = None
 ) -> DimensionContext | None:
@@ -196,19 +304,8 @@ def project_dimension_context(
 
     ``None`` is the honest answer and it is not the same answer as an all-zero context: a
     caller that ordered compaction on an invented verdict would be clearing evidence the
-    kernel never said was verified.
+    kernel never said was verified. Contested attributions are already out of it — see
+    :func:`dimension_context_with_contested` for the version that also says how many.
     """
-    planned = planned_dimension_ids(project_root, fallback=fallback)
-    if not planned:
-        return None
-    recorded = {
-        dimension: {"decisions": count}
-        for dimension, count in recorded_dimension_counts(project_root).items()
-    }
-    try:
-        return dimension_context(planned, recorded)
-    except DimensionContextError as error:
-        # A malformed id on either side is a producer bug; the run keeps working, but this
-        # verdict is not printed rather than printed wrong.
-        log.warning("iterate dimension coverage could not be computed: %s", error)
-        return None
+    built, _contested = dimension_context_with_contested(project_root, fallback=fallback)
+    return built
