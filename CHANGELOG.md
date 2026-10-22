@@ -5,6 +5,113 @@
 
 ---
 
+## [3.8.0] — 2026-10-22
+
+本轮为无人值守每日例行的「全量评审 + 修复 + 功能/体验增长」版本：新增
+`iterate report`（把 status/scan/doctor 聚合成一份可直接贴 PR 或存 CI artifact
+的 Markdown/JSON 报告）与 `iterate completion`（bash/zsh/fish Tab 补全），并让
+`iterate show` 回显此前只能翻 YAML 才能看到的维度集；同时修复安装器校验子进程
+超时过短导致 `config --set` 在负载下把有效修改误判失败并回滚的真实缺陷，故升
+minor。测试套件 **1788 → 1856**（1855 passed、1 skipped：本机未安装 fish，跳过
+其语法校验；新增 `tests/test_report_command.py` 21 项、`tests/test_completion.py`
+20 项，`tests/test_install_script.py` 新增 8 项超时回归，另有 doctor/guard/
+portable/onboarding 的数据安全与竞态回归）。评审与发布范围仅限
+skill 本体（`iterate_cli/`、`npm-installer/`、`scripts/`、`templates/`、`tests/`、
+`config/`、`tools/`、`SKILL.md`、`pyproject.toml`、`CHANGELOG.md`）；`harness/`
+与 `kernel/` 未改、未发、未纳入任何发布包。
+
+### 新增 / Features
+
+- **`iterate report` —— 一份可直接分享的项目健康报告**。此前要展示项目状态，
+  只能分别运行 `status` / `scan` / `doctor`，再把三段终端输出手工拼进 PR 或
+  issue；`--json` 又各自是不同 schema。现在一条只读命令聚合三者：
+  - 默认输出 GitHub Flavored Markdown：技术栈、生效审查配置（目标分支、范围、
+    维度、维度集、校验命令/白名单、个性化规则数）、doctor 全项检查表（✅/⚠️/❌）、
+    漂移与建议、可直接执行的下一步命令；单元格内的 `|` 与换行会被转义，粘贴后
+    表格不会散；
+  - `--out PATH` 原子写入文件（stdout 保持为空，便于 `report --out x > y` 与
+    CI artifact 上传），默认写 stdout；默认拒绝覆盖已存在文件（需 `--force`），
+    并始终拒绝覆盖 `iterate.config.yaml` / `ITERATE.md`；
+  - `--json` 输出单个结构化文档（与 TUI 无关的稳定键集，含 `summary`、
+    `doctor`、`scan`、`config`、`drift`、`next_actions`）；
+  - `--strict` 把 warning 一并判为阻塞；退出码与 `doctor` 一致（健康 0 / 阻塞 1），
+    可直接作为 CI 门禁；
+  - 报告语言跟随项目 `language`（zh/en），损坏或手工改坏的嵌套配置也只报告、
+    不 traceback。`iterate init --json` 的 `next_actions` 同步加入 `iterate report`。
+- **`iterate completion bash|zsh|fish` —— Shell Tab 补全**。此前只有 `--help`
+  一条发现路径，Tab 只会补文件名。补全脚本从与 `--help` **同一个 argparse
+  parser** 生成，命令/参数永远不会与文档漂移：补全全部子命令及各自一行说明、
+  每个命令的可见参数（隐藏参数不出现）、固定取值（如 `init --language zh|en`）、
+  `-p/--project` 目录、`import` / `--out` 文件路径、以及 `iterate help <command>`
+  的命令名。输出纯脚本到 stdout，安装提示只写 stderr（`iterate completion zsh >
+  _iterate` 不会被污染）；已用 `bash -n` / `zsh -n` 校验生成脚本。
+- **`iterate show` 回显维度集**。`dimension_sets`（含每个范围的维度与 focus）
+  由 onboarding/personalize 持久化，但 `show` 的解析配置从未包含它，用户只能翻
+  YAML 确认。现在 `show` 的 TUI 与 `--json` 都会输出维度集名称，`report` 也复用
+  同一解析结果。
+
+### 修复 / Fixes
+
+- **安装器校验超时过短（真实偶发失败）**。`scripts/install.py` 以 30s 超时运行
+  `validate.py config`；全量测试中该子进程单独需 21s，负载下超过 30s，导致
+  `iterate config --set` 输出 `Command ... timed out after 30 seconds` 并把**有效
+  修改回滚**（测试 `test_sets_and_validates` 因此红）。现改为 120s 安全网，并支持
+  `ITERATE_VALIDATE_TIMEOUT` 覆盖（非法/非正值忽略，绝不关闭超时保护）；超时错误
+  明确告知配置未被修改并给出提高上限的命令。
+- **改写前必有可恢复备份（数据安全）**。`onboard` / `personalize` 的
+  `iterate.config.yaml` 与 `ITERATE.md` 重写此前可能在没有快照的情况下发生：
+  - `iterate onboard` 直接覆盖已有文件（只有 `reonboard` 会备份）；现在两个目标
+    文件在替换前都会写同目录 `*.onboard-<UTC>-<随机>` 备份，备份失败即中止；
+  - `personalize` 的配置备份失败只 warning 后继续写；现在失败即中止（fail-closed），
+    且事务式 `save_personalization` 同时备份 config 与 ITERATE.md；
+  - 备份文件名统一带随机后缀，修复同一秒内两次运行（CI 重试/并发终端）复用同一
+    路径、第二次覆盖掉唯一快照的碰撞。
+- **`personalize` 不再丢弃手写 Markdown**。用户在手写区用 `*` / `+` 或缩进写的
+  列表项此前因只匹配 `- ` 而在下次 personalize 时消失；现在接受所有 Markdown
+  列表标记与任意缩进，并原样保留非列表内容（段落、子标题、注释），不再重构章节
+  时静默删除。
+- **`doctor --fix` 可修复 `{}` / 仅注释的配置**。解析为 `{}` 的文件此前被当成
+  "可解析但无需修复"，`--fix` 返回成功却什么都没写，doctor 永久报告同一坏配置；
+  现在与空文件一样用 canonical 维度重建。
+- **`report --out` 默认不覆盖用户文件**（需 `--force`），避免一次误跑覆盖笔记；
+  仍始终拒绝覆盖 iterate 自己的状态文件。
+- **`import` 在读取前限制大小**。此前先 `read_text()`/`read()` 整个文档再检查
+  8 MiB 上限，超大文件已经把内存耗尽；现在文件先 `stat()`，stdin 最多读取
+  `MAX_BUNDLE_BYTES + 1` 个字符。
+- **`--json` 中断契约**。Ctrl+C / EOF 时 stdout 此前为空，`| jq` 得到解析错误；
+  现在仍输出恰好一个 `{"error": ..., "cancelled": true}` 文档（人类提示在非 JSON
+  模式下保持原样）。
+- **扫描建议不再指向不存在的目录**。无 `tests/` 的扁平 Python 项目此前得到
+  `pytest tests -x -q`，首次校验必然 file-not-found；现在只给 `pytest -x -q`。
+  同时从建议白名单移除 `npx`（会下载并执行任意包，与 personalize 的禁用策略一致）。
+- **`guard` 输出线程不再悬挂/竞态**。子进程派生的孙进程继承 stdout 时，读取线程
+  在命令退出后仍阻塞；现在有界 join 后关闭原始 fd 解除阻塞，再用锁取尾部快照，
+  避免与仍在写 `lines` 的线程竞态，并在确实无法退出时明确标注输出不完整。
+- **`import` 的 rename 也做目录 fsync**（与 `atomic_write` 一致），断电后不会出现
+  "写入成功但链接消失"。
+- **SKILL.md 配置文档纠错**：`config unset` 的备份位置（同目录
+  `iterate.config.yaml.configunset-*`，而非不存在的 `.iterate-backup/`）与
+  "键不存在"行为（退出码 1，不是静默成功）已与实现对齐。
+
+### 测试 / Tests
+
+- 新增 `tests/test_report_command.py`：Markdown 结构、中英文标签、漂移、损坏配置、
+  未 onboarding、Markdown 转义、JSON 单文档与稳定键、`--strict`、`--out`（写入/
+  JSON/`-`/拒绝覆盖状态文件/父目录缺失/空值）、缺失项目路径、`build_report` 可
+  序列化。
+- 新增 `tests/test_completion.py`：三种 shell 均包含全部命令、参数与取值补全、
+  隐藏参数不出现、fish 不全局禁用文件补全、`bash -n` / `zsh -n` 语法校验（fish
+  未安装则 skip）、非项目目录可用、未知 shell 与 `--json` 的退出码/单 JSON 契约、
+  安装提示不污染 stdout。
+- `tests/test_install_script.py` 新增 8 项：默认超时下限、环境变量覆盖、非法值
+  回退、超时文案、超时后不改写配置。
+- 数据安全与竞态回归：`doctor --fix` 修复 `{}`/仅注释配置与 `dimension_sets: []`
+  类型错误；`guard` 孙进程占用 stdout 时不悬挂且尾部快照无竞态；`import` 读取前
+  大小限制（文件 `stat` / stdin 有界读取）与 rename 后目录 fsync；`onboard` /
+  `personalize` 改写前备份及备份失败即中止；`personalize` 保留 `*`/`+`/缩进列表与
+  非列表 Markdown；`report --out` 默认拒绝覆盖；`--json` 中断仍输出单个文档；
+  无 `tests/` 的 Python 项目不再被建议 `pytest tests`。
+
 ## [3.7.0] — 2026-10-21
 
 本轮为无人值守每日例行的「全量评审 + 修复 + 功能/体验增长」版本：新增
