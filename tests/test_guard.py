@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from iterate_cli.cli import main as cli_main
 from iterate_cli.guard import (
-    _DRAIN_CHUNK_CHARS,
+    _DRAIN_CHUNK_BYTES,
     _OUTPUT_BYTE_CAP,
     EXIT_FAIL,
     EXIT_PASS,
@@ -672,7 +672,7 @@ class TestCommandExecutionBoundaries:
         scripts_dir.mkdir()
         script_path = scripts_dir / "blob.py"
         prefix = "LEAD-MARK-"
-        blob_size = _DRAIN_CHUNK_CHARS * 2 + 123  # uneven so it crosses oddly
+        blob_size = _DRAIN_CHUNK_BYTES * 2 + 123  # uneven so it crosses oddly
         script_path.write_text(
             "import sys\n"
             f"sys.stdout.write({prefix!r} + 'A' * {blob_size} + '\\n')\n",
@@ -698,7 +698,7 @@ class TestCommandExecutionBoundaries:
         scripts_dir = project / "scripts"
         scripts_dir.mkdir()
         script_path = scripts_dir / "blob.py"
-        blob_size = _DRAIN_CHUNK_CHARS * 64  # 4 MiB in one single line
+        blob_size = _DRAIN_CHUNK_BYTES * 64  # 4 MiB in one single line
         script_path.write_text(
             "import sys\n"
             f"sys.stdout.write('A' * {blob_size})\n"

@@ -31,6 +31,7 @@ Safety rules carried over from the iterate security baseline:
 
 from __future__ import annotations
 
+import codecs
 import os
 import shutil
 import signal
@@ -71,10 +72,14 @@ _DRAIN_JOIN_SECONDS = 5
 #: the pipe open (the direct child exited but its child inherited stdout).
 _DRAIN_UNBLOCK_SECONDS = 1
 
-#: Characters read per stream chunk while draining command output. Chunked reads
-#: (rather than readline) keep memory bounded even for a single gigantic
-#: newline-free line, and let the drain thread yield between chunks.
-_DRAIN_CHUNK_CHARS = 64 * 1024
+#: Bytes read per stream chunk while draining command output, through
+#: ``BufferedReader.read1`` — which returns as soon as *any* data is available. This is
+#: deliberately a byte count and deliberately not ``TextIOWrapper.read(n)``: that call blocks
+#: until it has accumulated ``n`` characters or the stream ends, so a command that writes a
+#: short line and then leaves a descendant holding stdout open would have its output trapped
+#: inside the wrapper and lost when the descriptor is closed to unblock the drain. Chunked
+#: reads still keep memory bounded for a single gigantic newline-free line.
+_DRAIN_CHUNK_BYTES = 64 * 1024
 #: Per-command timeout in seconds. A wedged validation/build command must not
 #: block the host agent forever; on expiry the whole process group is killed.
 _COMMAND_TIMEOUT_SECONDS = 600
@@ -436,6 +441,11 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
         # the cap must discard the oldest content, never the newest.
         carry = ""
         retained = 0  # chars currently held in `lines` (approximate bytes)
+        #: An incremental decoder, because a chunk boundary can split a multi-byte
+        #: character; decoding each chunk on its own would turn it into U+FFFD and the
+        #: wrapper's ``errors="replace"`` would not be there to stop it.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        read1 = proc.stdout.buffer.read1
 
         def _trim_lines() -> None:
             nonlocal retained
@@ -446,13 +456,17 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
 
         while True:
             try:
-                chunk = proc.stdout.read(_DRAIN_CHUNK_CHARS)
+                raw = read1(_DRAIN_CHUNK_BYTES)
             except (OSError, ValueError):
                 # The main thread may close the pipe to unblock a drain that
                 # outlived its command (a grandchild keeping stdout open).
                 break
-            if not chunk:
+            if not raw:
+                carry += decoder.decode(b"", final=True)
                 break
+            chunk = decoder.decode(raw)
+            if not chunk:
+                continue
             carry += chunk
             if "\n" in carry:
                 complete, _, carry = carry.rpartition("\n")
