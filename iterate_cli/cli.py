@@ -8,6 +8,7 @@ Provides subcommands for onboarding and personalization management:
     iterate reonboard   — Full re-onboarding (backup old files, run wizard)
     iterate status      — Show onboarding status and drift detection
     iterate scan        — Read-only export of the project tech-stack scan
+    iterate report      — Aggregated Markdown/JSON health report (PR/CI friendly)
     iterate export      — Snapshot config + ITERATE.md as a portable JSON bundle
     iterate import      — Restore a bundle (backups written first)
     iterate show        — Read-only resolved config + personalization detail
@@ -15,6 +16,7 @@ Provides subcommands for onboarding and personalization management:
     iterate guard       — Defensive-programming pre/post-edit checks (v3.0)
     iterate invariant   — Project-level invariant check (v3.0, defensive mode)
     iterate update      — Self-update the CLI + installed assistant skill dirs
+    iterate completion  — Print a bash/zsh/fish completion script
     iterate help        — Print help for iterate or for one command
     iterate --version   — Print version
 
@@ -292,6 +294,15 @@ def main(argv: list[str] | None = None) -> int:
             json_output=getattr(args, "json", False),
         )
 
+    if args.command == "completion":
+        # Same rationale as `help`: completion describes the CLI, not a
+        # project, so it must work outside one (and `-p` is irrelevant).
+        return _cmd_completion(
+            getattr(args, "shell", ""),
+            parser,
+            json_output=getattr(args, "json", False),
+        )
+
     # Interactive commands never produce structured output; a caller passing
     # --json to them has a misunderstanding, not a silent success.
     non_json_commands = {"onboard", "personalize", "reonboard"}
@@ -329,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     show_banner = (
         _should_show_banner(args)
         and not getattr(args, "json", False)
+        # `report` is a data-producing command: its stdout is the Markdown
+        # document, so an art block would corrupt a redirect/CI artifact.
+        and args.command != "report"
         # `export --out -` writes the bundle itself to stdout; the banner must
         # not precede it, exactly like --json.
         and not (
@@ -340,28 +354,34 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch_command(args, parser, project_root, show_banner)
     except KeyboardInterrupt:
         # Ctrl+C mid-interaction must not surface a raw traceback.
-        tui.cancel()
-        # Deliberately NOT "nothing was written": `config set` may already
-        # have copied its backup, `doctor --fix` may have applied fixes, and
-        # `update` may have copied files — the old blanket claim was false
-        # for exactly the paths where a user is most likely to interrupt.
-        tui.hint(
-            "已中止；写入类步骤可能已部分完成并留下时间戳备份，请检查项目目录 / "
-            "Interrupted mid-run; write steps may have left timestamped backups "
-            "(*.configset-*, *.doctorfix-*, .bak-*) — check the project directory.",
-            indent=2,
-        )
+        # Under `--json` stdout is reserved for the single JSON document, so
+        # the human cancellation output is suppressed (it would corrupt it).
+        if not getattr(args, "json", False):
+            tui.cancel()
+            # Deliberately NOT "nothing was written": `config set` may already
+            # have copied its backup, `doctor --fix` may have applied fixes, and
+            # `update` may have copied files — the old blanket claim was false
+            # for exactly the paths where a user is most likely to interrupt.
+            tui.hint(
+                "已中止；写入类步骤可能已部分完成并留下时间戳备份，请检查项目目录 / "
+                "Interrupted mid-run; write steps may have left timestamped backups "
+                "(*.configset-*, *.doctorfix-*, .bak-*) — check the project directory.",
+                indent=2,
+            )
+        _emit_json_failure("interrupted (KeyboardInterrupt)", args)
         return 1
     except EOFError:
         # Ctrl+D / closed stdin (e.g. piped without data) mid-prompt. Show a
         # clean cancellation instead of an unhandled-input traceback.
-        tui.cancel()
-        tui.hint(
-            "输入已结束（Ctrl+D / EOF）；已写入的备份文件仍保留在项目目录 / "
-            "Input ended (Ctrl+D / EOF); any backups already written remain in "
-            "the project directory.",
-            indent=2,
-        )
+        if not getattr(args, "json", False):
+            tui.cancel()
+            tui.hint(
+                "输入已结束（Ctrl+D / EOF）；已写入的备份文件仍保留在项目目录 / "
+                "Input ended (Ctrl+D / EOF); any backups already written remain in "
+                "the project directory.",
+                indent=2,
+            )
+        _emit_json_failure("interrupted (EOF on stdin)", args)
         return 1
     except BrokenPipeError:
         # A downstream consumer closed the pipe early (`iterate status --json |
@@ -431,6 +451,15 @@ def _dispatch_command(
         if show_banner:
             tui.banner()
         return _cmd_scan(project_root, json_output=getattr(args, "json", False))
+    if args.command == "report":
+        # No banner: stdout is the report document itself.
+        return _cmd_report(
+            project_root,
+            out=getattr(args, "out", None),
+            strict=getattr(args, "strict", False),
+            json_output=getattr(args, "json", False),
+            force=getattr(args, "force", False),
+        )
     if args.command == "export":
         if show_banner:
             tui.banner()
@@ -566,8 +595,8 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Emit structured JSON instead of TUI output for status, scan, "
-        "init, export, import, show, doctor, refresh, config, guard, invariant, "
-        "fingerprint and update "
+        "init, report, export, import, show, doctor, refresh, config, guard, "
+        "invariant, fingerprint and update "
         "(and for --version). Interactive commands (onboard/personalize/"
         "reonboard) reject it; on every other path stdout holds exactly one "
         "JSON document, including on failure.",
@@ -752,6 +781,42 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Emit a structured JSON report instead of TUI output.",
+    )
+    report_parser = subparsers.add_parser(
+        "report",
+        parents=[parent],
+        help="Aggregated Markdown/JSON health report for PRs and CI.",
+        description="One read-only command that aggregates status, scan and "
+        "doctor into a single document. Default output is GitHub-flavoured "
+        "Markdown, ready to paste into a PR/issue or save as a CI artifact; "
+        "--json emits one structured document instead. --out PATH writes the "
+        "document to PATH (stdout by default); --strict makes warnings "
+        "blocking. Exit code is 0 when healthy, 1 when the report is blocking, "
+        "matching `iterate doctor`.",
+    )
+    report_parser.add_argument(
+        "--out",
+        metavar="PATH",
+        default=argparse.SUPPRESS,
+        help="Write the report to PATH instead of stdout ('-' means stdout).",
+    )
+    report_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Replace an existing --out file (refused by default).",
+    )
+    report_parser.add_argument(
+        "--strict",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Treat warnings as blocking too (exit 1), like `doctor --strict`.",
+    )
+    report_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON report instead of Markdown.",
     )
     export_parser = subparsers.add_parser(
         "export",
@@ -1056,6 +1121,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Command to describe (omit for the top-level overview).",
     )
 
+    completion_parser = subparsers.add_parser(
+        "completion",
+        parents=[parent],
+        help="Print a shell completion script (bash/zsh/fish).",
+        description="Print a ready-to-install shell completion script generated "
+        "from the same parser as `--help`, so Tab completion can never drift "
+        "from the real command/option list. Completes commands, flags, fixed "
+        "value choices and path arguments. The script is printed to stdout: "
+        "`iterate completion zsh > \"${fpath[1]}/_iterate\"`.",
+    )
+    completion_parser.add_argument(
+        "shell",
+        choices=("bash", "zsh", "fish"),
+        help="Shell to generate completion for.",
+    )
+    # Same reachable-gate rationale as help: parse --json so the friendly
+    # rejection can emit one JSON document instead of an argparse error.
+    completion_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
+
     return parser
 
 
@@ -1302,6 +1391,7 @@ def _cmd_init(
                         "iterate doctor",
                         "iterate show",
                         "iterate scan --json",
+                        "iterate report",
                     ],
                 },
                 ensure_ascii=False,
@@ -1813,9 +1903,9 @@ def _cmd_reonboard(project_root: Path) -> int:
 def _count_personalization_rules(personalization: dict[str, Any]) -> int:
     """Count structured personalization rules for status display.
 
-    Excludes the ``version`` field (schema metadata, not a rule) and
-    properly handles ``extra_validation_commands`` which is a dict of
-    module -> command list (each command counts as one rule).
+    Kept as the CLI-facing name (tests and ``_cmd_status`` use it); the shared
+    implementation lives in :func:`iterate_cli.personalize.count_personalization_rules`
+    so ``iterate report`` and ``iterate status`` always agree.
 
     Args:
         personalization: The ``personalization`` section of iterate.config.yaml.
@@ -1825,23 +1915,9 @@ def _count_personalization_rules(personalization: dict[str, Any]) -> int:
     Returns:
         Total number of structured personalization rules across all categories.
     """
-    # Defensive: caller may pass None if config was manually edited.
-    if not isinstance(personalization, dict):
-        return 0
+    from iterate_cli.personalize import count_personalization_rules
 
-    # Fields that are metadata, not rules — excluded from the count.
-    META_FIELDS: frozenset[str] = frozenset({"version"})
-
-    total = 0
-    for key, value in personalization.items():
-        if key in META_FIELDS:
-            continue
-        if isinstance(value, list):
-            total += len(value)
-        elif isinstance(value, dict):
-            # extra_validation_commands: {module: [cmd, ...]}
-            total += sum(len(cmds) for cmds in value.values() if isinstance(cmds, list))
-    return total
+    return count_personalization_rules(personalization)
 
 
 def _cmd_scan(project_root: Path, json_output: bool = False) -> int:
@@ -1853,6 +1929,89 @@ def _cmd_scan(project_root: Path, json_output: bool = False) -> int:
     that exists, including one where nothing was recognised.
     """
     return render_scan(collect_scan_data(project_root), json_output=json_output)
+
+
+def _cmd_report(
+    project_root: Path,
+    *,
+    out: str | None = None,
+    strict: bool = False,
+    json_output: bool = False,
+    force: bool = False,
+) -> int:
+    """Handle ``iterate report`` — aggregated Markdown/JSON health report.
+
+    The report itself is built by :mod:`iterate_cli.report`; this handler owns
+    the CLI contract: protect iterate's own state files from ``--out``, write
+    atomically, honour the "one JSON document on stdout" promise, and mirror
+    ``doctor``'s exit code (errors block; ``--strict`` adds warnings).
+    """
+    from iterate_cli.generator import atomic_write
+    from iterate_cli.report import build_report, render_markdown, report_json
+
+    if out is not None and out.strip() == "":
+        message = "--out must not be empty (omit it to print to stdout)."
+        return _bundle_failure(message, json_output, code=2)
+
+    payload = build_report(project_root, strict=strict)
+    text = report_json(payload) if json_output else render_markdown(payload)
+    code = 1 if payload["summary"]["blocking"] else 0
+
+    if out is None or out == "-":
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        return code
+
+    target = Path(out)
+    protected = {
+        (project_root / CONFIG_YAML).resolve(),
+        (project_root / "ITERATE.md").resolve(),
+    }
+    if target.resolve() in protected:
+        return _bundle_failure(
+            f"refusing to overwrite {target.resolve()} — that is iterate's own "
+            "state file, not a report. Choose another --out path.",
+            json_output,
+            code=2,
+        )
+    if target.exists() and not force:
+        return _bundle_failure(
+            f"refusing to overwrite existing file {target} (use --force to replace it).",
+            json_output,
+            code=2,
+        )
+    if not target.parent.is_dir():
+        return _bundle_failure(
+            f"parent directory does not exist: {target.parent}", json_output
+        )
+    try:
+        atomic_write(target, text)
+    except OSError as exc:
+        return _bundle_failure(f"cannot write {target}: {exc}", json_output)
+
+    # The document went to a file; stdout stays empty for scripts. The hint is
+    # stderr-only so `report --out x > y` cannot interleave text.
+    print(f"report: written to {target}", file=sys.stderr)
+    return code
+
+
+def _emit_json_failure(message: str, args: argparse.Namespace) -> None:
+    """Emit one JSON error document when ``--json`` was requested.
+
+    ``KeyboardInterrupt`` / ``EOFError`` used to exit with an empty stdout
+    under ``--json``, so ``iterate status --json | jq`` reported a JSON parse
+    error instead of the cancellation. Kept separate from the human hint so
+    stdout still holds exactly one document on these paths.
+    """
+    if getattr(args, "json", False):
+        try:
+            print(
+                json.dumps(
+                    {"error": message, "cancelled": True}, ensure_ascii=False
+                )
+            )
+        except BrokenPipeError:
+            pass
 
 
 def _bundle_failure(message: str, json_output: bool, code: int = 1) -> int:
@@ -2022,6 +2181,7 @@ def _cmd_import(
     existing file is backed up before it is replaced.
     """
     from iterate_cli.portable import (
+        MAX_BUNDLE_BYTES,
         BundleError,
         apply_bundle,
         diff_against_project,
@@ -2038,7 +2198,11 @@ def _cmd_import(
     if bundle_path == "-":
         source = "<stdin>"
         try:
-            text = sys.stdin.read()
+            # Cap the read itself: reading an unbounded stdin into memory is
+            # exactly what the size limit exists to prevent, and checking the
+            # length only after read_text()/read() has already allocated the
+            # whole document is too late for a multi-GiB file.
+            text = sys.stdin.read(MAX_BUNDLE_BYTES + 1)
         except (OSError, UnicodeDecodeError) as exc:
             return _bundle_failure(f"cannot read {source}: {exc}", json_output)
     else:
@@ -2050,6 +2214,12 @@ def _cmd_import(
                 json_output,
             )
         try:
+            if path.stat().st_size > MAX_BUNDLE_BYTES:
+                return _bundle_failure(
+                    f"{path} is larger than {MAX_BUNDLE_BYTES // (1024 * 1024)} "
+                    "MiB; that is not an iterate bundle.",
+                    json_output,
+                )
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             return _bundle_failure(f"cannot read {path}: {exc}", json_output)
@@ -2164,6 +2334,57 @@ def _cmd_import(
     for warning in warnings:
         tui.warning(warning)
     tui.hint("Verify the result with `iterate doctor` (add --fix to repair).")
+    return 0
+
+
+def _cmd_completion(
+    shell: str,
+    parser: argparse.ArgumentParser,
+    json_output: bool = False,
+) -> int:
+    """Handle ``iterate completion <shell>``.
+
+    The script goes to stdout untouched so it can be redirected straight into
+    the shell's completion directory. Installation hints go to stderr only on
+    an interactive terminal, so ``iterate completion zsh > _iterate`` never
+    mixes prose into the generated file.
+
+    Args:
+        shell: ``bash`` / ``zsh`` / ``fish`` (validated by argparse, re-checked
+            here for programmatic callers).
+        parser: Top-level parser to introspect.
+        json_output: True when ``--json`` was passed. Completion output is a
+            shell script, not data, so the combination is a usage error.
+
+    Returns:
+        Exit code: 0 on success, 2 for a ``--json`` misuse or unsupported shell.
+    """
+    from iterate_cli.completion import SHELLS, install_hint, render_completion
+
+    if json_output:
+        message = (
+            "--json is not supported for 'completion' (it prints a shell "
+            "script). Use `iterate report --json` for structured project data."
+        )
+        print(json.dumps({"error": message}, ensure_ascii=False))
+        tui.error(message)
+        return 2
+
+    try:
+        script = render_completion(shell, parser)
+    except ValueError as exc:
+        message = str(exc)
+        print(json.dumps({"error": message}, ensure_ascii=False))
+        tui.error(message)
+        return 2
+
+    sys.stdout.write(script)
+    sys.stdout.flush()
+    # The hint must go to stderr: in `iterate completion zsh > _iterate` the
+    # shell keeps stderr on the terminal, so a stdout hint would corrupt the
+    # file the user is installing.
+    if sys.stderr.isatty() and shell in SHELLS:
+        print(install_hint(shell), file=sys.stderr)
     return 0
 
 

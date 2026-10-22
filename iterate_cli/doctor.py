@@ -958,10 +958,7 @@ def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
     an absent ``dimension_sets`` is healthy.
     """
     raw = config.get("dimension_sets")
-    if not raw:
-        # Absent key and an explicit-empty mapping are semantically identical
-        # (both mean "no sets configured"); report the same message for both
-        # instead of "All 0 dimension_set(s) are well-formed".
+    if raw is None:
         _ok(report, "dimension_sets", "No dimension_sets configured (defaults to global dimensions).")
         return
     if not isinstance(raw, dict):
@@ -971,6 +968,13 @@ def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
             "dimension_sets must be a mapping of scope name to set spec.",
             f"Got {type(raw).__name__} instead.",
         )
+        return
+    if not raw:
+        # An explicit-empty mapping is semantically identical to an absent key
+        # (both mean "no sets configured"). Other falsy values (``[]``, ``""``,
+        # ``0``) are *not*: they are the wrong type and must be reported, so
+        # only ``None`` and ``{}`` take this success path.
+        _ok(report, "dimension_sets", "No dimension_sets configured (defaults to global dimensions).")
         return
 
     canonical_set = set(CANONICAL_DIMENSIONS)
@@ -1356,16 +1360,27 @@ def run_doctor_fix(project_root: Path) -> tuple[bool, list[str]]:
 
     config = load_onboarding_config(project_root)
     empty_config_rebuilt = False
-    if config is None:
+    if config is None or not config:
         # An EMPTY config file is a repairable state, not a parse failure —
         # load_onboarding_config reports it as None, and reporting "could not be
         # parsed" sent the user chasing a YAML error that does not exist.
+        # A file whose content parses to an empty mapping (``{}``, ``---``, or
+        # only comments) arrives here as an empty dict, which is the same
+        # repairable state: ``apply_safe_fixes({})`` finds nothing to fix, so
+        # the old code returned "nothing to fix" while doctor kept reporting
+        # the config as unusable.
         raw_text: str | None
         try:
             raw_text = config_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             raw_text = None
-        if raw_text is not None and not raw_text.strip():
+        has_content = raw_text is not None and any(
+            line.strip() and not line.strip().startswith("#")
+            for line in raw_text.splitlines()
+        )
+        if config is not None or not has_content:
+            # Empty mapping (``{}``) or no meaningful text at all (empty file /
+            # comments only) → safe to rebuild.
             tui.warning(
                 "Doctor --fix: iterate.config.yaml is empty; rebuilding it with safe defaults."
             )

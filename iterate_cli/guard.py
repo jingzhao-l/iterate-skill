@@ -62,6 +62,15 @@ _OUTPUT_LINE_CAP = 200
 #: exceeds this cap the buffer stops growing (the pipe is still drained, so the
 #: child never blocks on a full pipe).
 _OUTPUT_BYTE_CAP = 1024 * 1024
+#: Seconds to wait for the output-reader thread after the direct child exits.
+#: Exposed as a module constant so tests can shorten it; production keeps a
+#: generous value for a slow filesystem flush.
+_DRAIN_JOIN_SECONDS = 5
+
+#: Seconds to wait after closing the read end when a descendant still holds
+#: the pipe open (the direct child exited but its child inherited stdout).
+_DRAIN_UNBLOCK_SECONDS = 1
+
 #: Characters read per stream chunk while draining command output. Chunked reads
 #: (rather than readline) keep memory bounded even for a single gigantic
 #: newline-free line, and let the drain thread yield between chunks.
@@ -399,6 +408,7 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
         return EXIT_FAIL, f"refused: unsafe command {command!r} (shell metacharacter or empty)"
 
     lines: list[str] = []
+    lines_lock = threading.Lock()
     try:
         proc = subprocess.Popen(
             command,
@@ -435,27 +445,66 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
                 retained -= len(lines.pop(0)) + 1
 
         while True:
-            chunk = proc.stdout.read(_DRAIN_CHUNK_CHARS)
+            try:
+                chunk = proc.stdout.read(_DRAIN_CHUNK_CHARS)
+            except (OSError, ValueError):
+                # The main thread may close the pipe to unblock a drain that
+                # outlived its command (a grandchild keeping stdout open).
+                break
             if not chunk:
                 break
             carry += chunk
             if "\n" in carry:
                 complete, _, carry = carry.rpartition("\n")
                 new_lines = complete.split("\n")
-                lines.extend(new_lines)
-                retained += sum(len(line) + 1 for line in new_lines)
-                _trim_lines()
+                with lines_lock:
+                    lines.extend(new_lines)
+                    retained += sum(len(line) + 1 for line in new_lines)
+                    _trim_lines()
             # Keep only the tail of a still-open line (half-line before the
             # next newline arrives) so a newline-free flood stays bounded.
             if len(carry) > _OUTPUT_BYTE_CAP:
                 carry = carry[-_OUTPUT_BYTE_CAP:]
         if carry:
-            lines.append(carry)
-            retained += len(carry)
-            _trim_lines()
+            with lines_lock:
+                lines.append(carry)
+                retained += len(carry)
+                _trim_lines()
 
     thread = threading.Thread(target=_drain, daemon=True)
     thread.start()
+
+    def _finish_drain() -> bool:
+        """Join the reader, unblocking a pipe held open by a descendant.
+
+        Returns True when the reader exited. ``proc.wait()`` only proves the
+        direct child exited; a grandchild that inherited stdout keeps the pipe
+        open, so ``read()`` never returns EOF. Closing our read end unblocks it
+        instead of leaving a daemon thread mutating ``lines`` after this
+        function returned.
+        """
+        thread.join(timeout=_DRAIN_JOIN_SECONDS)
+        if thread.is_alive():
+            # Close the *descriptor*, not the TextIOWrapper: ``close()`` on the
+            # buffered wrapper waits for the same internal lock the blocked
+            # ``read()`` holds, so it would hang until the descendant exits.
+            # Closing the raw fd makes the in-flight read fail immediately.
+            try:
+                if proc.stdout is not None:
+                    os.close(proc.stdout.fileno())
+            except (OSError, ValueError):
+                pass
+            thread.join(timeout=_DRAIN_UNBLOCK_SECONDS)
+            if not thread.is_alive() and proc.stdout is not None:
+                # Mark the wrapper closed so its finalizer does not try to
+                # close the already-closed descriptor again (which surfaces as
+                # an "Exception ignored" on stderr).
+                try:
+                    proc.stdout.close()
+                except (OSError, ValueError):
+                    pass
+        return not thread.is_alive()
+
     try:
         returncode = proc.wait(timeout=_COMMAND_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
@@ -467,15 +516,20 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             pass
-        thread.join(timeout=5)
+        _finish_drain()
         return EXIT_FAIL, f"command timed out after {_COMMAND_TIMEOUT_SECONDS}s"
-    thread.join(timeout=5)
+    drain_finished = _finish_drain()
     # Per-line truncation BEFORE joining: a single megabyte-wide noise line
     # would otherwise consume the whole 400-char budget on its own and push
     # the (short) fatal error line out of the tail entirely — the exact
     # "kept the noise, lost the error" failure the tail-first retention
     # above exists to prevent.
-    tail = " | ".join(line.rstrip("\n")[:160] for line in lines[-3:])
+    with lines_lock:
+        snapshot = list(lines[-3:])
+    tail = " | ".join(line.rstrip("\n")[:160] for line in snapshot)
+    if not drain_finished:
+        note = "output reader did not exit: a child may still hold stdout"
+        tail = f"{tail} | {note}" if tail else note
     return returncode, tail[:400]
 
 

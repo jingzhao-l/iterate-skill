@@ -623,6 +623,39 @@ class TestRunDoctorFix:
             "empty" in finding.detail.lower() for finding in report.findings
         ), [f.detail for f in report.findings]
 
+    def test_empty_mapping_config_is_rebuilt_not_silently_skipped(
+        self, tmp_path
+    ) -> None:
+        """`{}` parses successfully but is as unusable as an empty file.
+
+        Regression: ``load_onboarding_config`` returns ``{}`` (not ``None``),
+        so the fix path fell through to ``apply_safe_fixes({})``, found nothing
+        to repair, and returned "nothing to fix" while doctor kept reporting
+        the same broken config forever.
+        """
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("{}\n", encoding="utf-8")
+
+        ok, fixes = run_doctor_fix(project)
+
+        assert ok
+        assert any("empty, rebuilt" in f for f in fixes), fixes
+        rebuilt = load_onboarding_config(project)
+        assert rebuilt is not None
+        assert rebuilt["dimensions"] == list(CANONICAL_DIMENSIONS)
+
+    def test_comments_only_config_is_rebuilt(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("# just a note\n", encoding="utf-8")
+
+        ok, fixes = run_doctor_fix(project)
+
+        assert ok
+        assert any("empty, rebuilt" in f for f in fixes), fixes
+        assert load_onboarding_config(project)["dimensions"] == list(
+            CANONICAL_DIMENSIONS
+        )
+
     def test_cli_fix_flag_applies(self, tmp_path) -> None:
         project = _make_project(tmp_path)
         config = _base_config()
@@ -790,6 +823,33 @@ class TestDoctorDimensionSets:
         _write_config(project, config)
         report = run_doctor(project)
         assert not report.has_errors()
+        assert any(
+            f.check == "dimension_sets" and f.severity == "ok"
+            for f in report.findings
+        )
+
+    def test_empty_list_is_error_not_absent(self, tmp_path) -> None:
+        """A falsy non-mapping (``[]``) is the wrong type, not "no sets".
+
+        The old ``if not raw`` treated ``[]``/``""``/``0`` as absent and
+        reported OK, hiding a schema violation from the diagnostic.
+        """
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimension_sets"] = []
+        _write_config(project, config)
+        report = run_doctor(project)
+        assert any(
+            f.check == "dimension_sets" and f.severity == "error"
+            for f in report.findings
+        )
+
+    def test_empty_mapping_is_ok(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimension_sets"] = {}
+        _write_config(project, config)
+        report = run_doctor(project)
         assert any(
             f.check == "dimension_sets" and f.severity == "ok"
             for f in report.findings

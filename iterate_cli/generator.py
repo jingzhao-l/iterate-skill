@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -456,6 +457,28 @@ def generate_config_yaml(data: OnboardingData) -> str:
     return yaml.safe_dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
+def fsync_dir(directory: Path) -> None:
+    """Best-effort ``fsync`` of a directory entry after a rename.
+
+    ``fsync`` on the file persists its bytes, but the *rename* that publishes
+    it is a directory mutation: without a directory fsync a power loss can
+    still lose the link (the file "vanishes" though the write returned
+    success). Directories cannot be opened/fsynced on every platform (Windows),
+    and a failure here must never fail an otherwise successful write, so both
+    operations are suppressed.
+    """
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
 def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     """Write ``content`` to ``path`` atomically (temp file + ``os.replace``).
 
@@ -471,6 +494,14 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     Raises:
         OSError: If the write or the final replace fails.
     """
+    # Follow a symlinked destination and replace the *target*, not the link.
+    # `os.replace(tmp, path)` on a symlink would swap the link for a regular
+    # file, silently detaching dotfile-style setups (e.g. iterate.config.yaml
+    # symlinked to ~/dotfiles): the real file keeps stale content and the
+    # project points at a copy. Resolving first makes the atomic replace happen
+    # at the real path while the symlink stays intact.
+    if path.is_symlink():
+        path = Path(os.path.realpath(path))
     # Use a process-unique, collision-resistant temp name so concurrent calls
     # (even within the same process) never write the same temp file.
     tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex[:8]}")
@@ -513,14 +544,7 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
         # self-contained: directories cannot be opened on some platforms
         # (Windows), and a failed dir-fsync must never fail a write whose
         # bytes already landed.
-        try:
-            dir_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass
+        fsync_dir(path.parent)
     except BaseException:
         # Clean up on *any* failure (not just OSError): a UnicodeEncodeError
         # from a limited ``encoding`` reaches here too and must not leave a
@@ -531,6 +555,32 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
         except OSError as cleanup_err:
             _log_tmp_cleanup_failure(tmp_path, cleanup_err)
         raise
+
+
+def backup_file(path: Path, tag: str) -> Path:
+    """Copy ``path`` to a unique timestamped sibling backup.
+
+    Backup names include a short random suffix on top of the UTC second: two
+    writes in the same second (a loop, a CI retry, or refresh + personalize)
+    used to reuse the same path, so the second ``copy2`` overwrote the only
+    pre-change snapshot.
+
+    Args:
+        path: File to back up (must exist).
+        tag: Short operation tag (e.g. ``refresh`` / ``personalize``).
+
+    Returns:
+        The backup path.
+
+    Raises:
+        OSError: If the copy fails. Callers must treat this as fatal before
+            rewriting the original — a write without a recoverable backup is
+            exactly the data-loss case this helper exists to prevent.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = path.with_name(f"{path.name}.{tag}-{stamp}-{uuid4().hex[:6]}")
+    shutil.copy2(path, backup)
+    return backup
 
 
 def _log_tmp_cleanup_failure(tmp_path: Path, exc: OSError) -> None:
@@ -641,6 +691,21 @@ def write_onboarding_outputs(
         )
 
     config_yaml = generate_config_yaml(data)
+
+    # Snapshot both destinations before replacing them. Onboarding rewrites
+    # ITERATE.md's AI sections and drops YAML comments, so a re-onboard must
+    # always be recoverable; ``reonboard`` already did this explicitly, but
+    # plain ``onboard``/``init`` reaching an existing file did not. A failed
+    # backup aborts the write (no unrecoverable rewrite).
+    for destination in (iterate_md_path, config_path):
+        if destination.is_file():
+            try:
+                backup_file(destination, "onboard")
+            except OSError as exc:
+                raise OSError(
+                    f"failed to back up {destination} before onboarding: {exc}"
+                ) from exc
+
     atomic_write(iterate_md_path, iterate_md_content)
     try:
         atomic_write(config_path, config_yaml)

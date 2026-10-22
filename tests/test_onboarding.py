@@ -68,6 +68,7 @@ from iterate_cli.personalize import (
     PersonalizationData,
     RiskArea,
     _operator_extra_prefixes,
+    build_updated_iterate_md,
     load_existing_personalization,
     load_personalization_from_config,
     load_personalization_from_iterate_md,
@@ -379,7 +380,40 @@ class TestScanProject:
         assert commands.get("python", [])
         for command in commands["python"]:
             assert "spec" not in command, f"a specs-only project must not be told to run {command}"
-            assert "pytest" not in command or "tests" in command
+            # No test dir exists → pytest is suggested without a path (a bare
+            # `pytest tests/` would fail on the first run).
+            if command.startswith("pytest"):
+                assert command in ("pytest -x -q", "pytest")
+
+    def test_flat_python_project_gets_pathless_pytest(self, tmp_path: Path) -> None:
+        """A flat project (tests at the root) must not be told `pytest tests/`.
+
+        Regression: ``_detect_test_dir`` fell back to ``tests`` even when the
+        directory did not exist, so a fresh Python project's first validation
+        failed with "file or directory not found".
+        """
+        project = tmp_path / "flat"
+        project.mkdir()
+        (project / "pyproject.toml").write_text(
+            '[project]\nname = "flat"\nversion = "0.1.0"\n', encoding="utf-8"
+        )
+        (project / "test_app.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
+
+        result = scan_project(project)
+        commands = suggest_validation_commands(result)
+        assert "pytest -x -q" in commands["python"]
+
+    def test_existing_tests_dir_is_used(self, tmp_path: Path) -> None:
+        project = tmp_path / "with_tests"
+        project.mkdir()
+        (project / "pyproject.toml").write_text(
+            '[project]\nname = "with_tests"\nversion = "0.1.0"\n', encoding="utf-8"
+        )
+        (project / "tests").mkdir()
+        (project / "tests" / "test_x.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+
+        commands = suggest_validation_commands(scan_project(project))
+        assert "pytest tests -x -q" in commands["python"]
 
     def test_ruby_spec_dir_is_reported_as_tests(self, tmp_path: Path) -> None:
         """Ruby projects keep `spec/` as their test directory."""
@@ -785,6 +819,39 @@ class TestWriteOutputs:
         assert config_path.is_file()
         assert md_path.name == "ITERATE.md"
         assert config_path.name == "iterate.config.yaml"
+
+    def test_rewrites_back_up_both_existing_files(self, fake_project: Path) -> None:
+        """Re-onboarding an existing project must be recoverable.
+
+        ``reonboard`` backed up explicitly, but plain ``onboard``/``init``
+        reaching existing files rewrote them with no snapshot at all.
+        """
+        data = _build_onboarding_data(fake_project)
+        md_path, _config_path = write_onboarding_outputs(data, fake_project)
+        existing_md = md_path.read_text(encoding="utf-8")
+
+        write_onboarding_outputs(data, fake_project, existing_md=existing_md)
+
+        assert list(fake_project.glob("ITERATE.md.onboard-*"))
+        assert list(fake_project.glob("iterate.config.yaml.onboard-*"))
+
+    def test_backup_failure_aborts_without_rewriting(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        md_path, config_path = write_onboarding_outputs(data, fake_project)
+        before = config_path.read_text(encoding="utf-8")
+        existing_md = md_path.read_text(encoding="utf-8")
+
+        from iterate_cli import generator
+
+        def fail(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(generator, "backup_file", fail)
+        with pytest.raises(OSError, match="failed to back up"):
+            write_onboarding_outputs(data, fake_project, existing_md=existing_md)
+        assert config_path.read_text(encoding="utf-8") == before
 
 
 class TestExtractUserOwnedSection:
@@ -2710,6 +2777,32 @@ class TestCLIGracefulInterrupt:
         assert "Input ended" in out or "输入已结束" in out
         assert "Traceback" not in out
 
+    @pytest.mark.parametrize("exc", [KeyboardInterrupt, EOFError])
+    def test_json_mode_still_emits_one_document(
+        self, empty_project: Path, capsys, monkeypatch, exc
+    ) -> None:
+        """`--json` promises exactly one JSON document on stdout.
+
+        Interrupts used to print only the human hint on stderr, leaving stdout
+        empty so `iterate status --json | jq` failed with a parse error instead
+        of reporting the cancellation.
+        """
+        import iterate_cli.cli as cli_mod
+
+        def boom(_root, **kwargs):
+            raise exc
+
+        monkeypatch.setattr(cli_mod, "_cmd_status", boom)
+        capsys.readouterr()
+        ret = cli_main(["status", "-p", str(empty_project), "--json"])
+        captured = capsys.readouterr()
+
+        assert ret == 1
+        payload = json.loads(captured.out)  # exactly one document
+        assert payload["cancelled"] is True
+        assert "interrupted" in payload["error"]
+        assert "Traceback" not in captured.err
+
 
 class TestCLINoCommand:
     def test_no_command_prints_help(self, capsys) -> None:
@@ -3050,16 +3143,79 @@ class TestLoadPersonalizationFromIterateMd:
             "<!-- ITERATE:USER-OWNED:END -->\n",
             encoding="utf-8",
         )
-        notes, conventions = load_personalization_from_iterate_md(project)
+        notes, conventions, preserved = load_personalization_from_iterate_md(project)
         assert conventions == ["使用 snake_case", "禁止魔法数字"]
         assert notes == ["注意 auth 模块的边界"]
+        assert preserved == {}
 
     def test_load_missing_file_returns_empty(self, tmp_path: Path) -> None:
         project = tmp_path / "proj"
         project.mkdir()
-        notes, conventions = load_personalization_from_iterate_md(project)
+        notes, conventions, preserved = load_personalization_from_iterate_md(project)
         assert notes == []
         assert conventions == []
+        assert preserved == {}
+
+    def test_load_accepts_every_bullet_marker_and_indentation(
+        self, tmp_path: Path
+    ) -> None:
+        """``*``/``+`` bullets and indented items are normal Markdown.
+
+        Regression: only ``- `` at column 0 used to be parsed, so a user who
+        wrote ``* item`` lost it on the next personalize run.
+        """
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "ITERATE.md").write_text(
+            "# ITERATE.md\n\n"
+            "<!-- ITERATE:USER-OWNED:START -->\n\n"
+            "## 自定义代码约定 / Custom Code Conventions\n\n"
+            "* 使用 snake_case\n"
+            "+ 禁止魔法数字\n"
+            "  - 嵌套项\n\n"
+            "## Iterate 注意点 / Iterate Notes\n\n"
+            "注意：这里有一段普通说明文字。\n\n"
+            "* 注意 auth 模块的边界\n\n"
+            "<!-- ITERATE:USER-OWNED:END -->\n",
+            encoding="utf-8",
+        )
+        notes, conventions, preserved = load_personalization_from_iterate_md(project)
+        assert conventions == ["使用 snake_case", "禁止魔法数字", "嵌套项"]
+        assert notes == ["注意 auth 模块的边界"]
+        assert preserved == {
+            "## Iterate 注意点 / Iterate Notes": ["注意：这里有一段普通说明文字。"]
+        }
+
+    def test_load_preserves_non_bullet_lines_across_round_trip(
+        self, tmp_path: Path
+    ) -> None:
+        """Paragraphs and sub-headings inside notes/conventions survive a save.
+
+        Previously the parser kept only bullets and ``merge_user_sections``
+        rebuilt the section, silently deleting prose the user had added.
+        """
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "ITERATE.md").write_text(
+            "# ITERATE.md\n\n"
+            "<!-- ITERATE:USER-OWNED:START -->\n\n"
+            "## Iterate 注意点 / Iterate Notes\n\n"
+            "### 背景\n\n"
+            "- 保留我\n\n"
+            "这是不能被删除的说明。\n\n"
+            "<!-- ITERATE:USER-OWNED:END -->\n",
+            encoding="utf-8",
+        )
+        data = load_existing_personalization(project, {})
+        assert data.iterate_notes == ["保留我"]
+        assert data.preserved_md == {
+            "## Iterate 注意点 / Iterate Notes": ["### 背景", "这是不能被删除的说明。"]
+        }
+        updated = build_updated_iterate_md(project, data)
+        assert updated is not None
+        assert "### 背景" in updated
+        assert "这是不能被删除的说明。" in updated
+        assert "- 保留我" in updated
 
     def test_load_existing_merges_structured_and_free_form(self, tmp_path: Path) -> None:
         project = tmp_path / "proj"
@@ -3392,6 +3548,58 @@ class TestSavePersonalizationToConfig:
         assert "bandit -r src/" in python_cmds
         # Original commands from scan should still be there.
         assert any("pytest" in c for c in python_cmds)
+
+    def test_save_writes_on_disk_backup(self, fake_project: Path) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        save_personalization_to_config(
+            fake_project, PersonalizationData(protected_paths=["legacy/**"])
+        )
+
+        assert list(fake_project.glob("iterate.config.yaml.personalize-*"))
+
+    def test_backup_failure_aborts_the_write(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        config_path = fake_project / "iterate.config.yaml"
+        before = config_path.read_text(encoding="utf-8")
+
+        from iterate_cli import generator
+
+        monkeypatch.setattr(
+            generator,
+            "backup_file",
+            lambda *_a, **_k: (_ for _ in ()).throw(OSError("read-only")),
+        )
+        with pytest.raises(OSError, match="read-only"):
+            save_personalization_to_config(
+                fake_project, PersonalizationData(protected_paths=["x/**"])
+            )
+        # No silent rewrite without a recoverable snapshot.
+        assert config_path.read_text(encoding="utf-8") == before
+
+    def test_transactional_save_backs_up_both_files(
+        self, fake_project: Path
+    ) -> None:
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        # Give ITERATE.md a user-owned section to rewrite.
+        md_path = fake_project / "ITERATE.md"
+        assert "<!-- ITERATE:USER-OWNED:START -->" in md_path.read_text(
+            encoding="utf-8"
+        )
+
+        save_personalization(
+            fake_project,
+            PersonalizationData(iterate_notes=["keep me"], protected_paths=["a/**"]),
+        )
+
+        assert list(fake_project.glob("iterate.config.yaml.personalize-*"))
+        assert list(fake_project.glob("ITERATE.md.personalize-*"))
+        assert "keep me" in md_path.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

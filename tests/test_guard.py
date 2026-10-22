@@ -727,6 +727,47 @@ class TestCommandExecutionBoundaries:
         assert result.passed is False
         assert any("timed out" in detail for _, _, detail in result.items)
 
+    def test_descendant_holding_stdout_does_not_hang_the_drain(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A grandchild that inherits stdout must not hang ``guard``.
+
+        ``proc.wait()`` only proves the direct child exited; the reader thread
+        blocks on ``read()`` until every writer closes the pipe. It used to be
+        joined for 5s and then abandoned while still mutating the shared
+        ``lines`` list (a race with the snapshot). The fix closes our read end
+        and joins again, bounded.
+        """
+        import time
+
+        monkeypatch.setenv("ITERATE_EXTRA_SAFE_COMMAND_PREFIXES", "python3")
+        monkeypatch.setattr("iterate_cli.guard._DRAIN_JOIN_SECONDS", 0.3)
+        project = _make_project(tmp_path)
+        scripts_dir = project / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "holder.py").write_text(
+            "import subprocess, sys\n"
+            "subprocess.Popen(['sleep', '5'])\n"
+            "print('parent-done')\n"
+            "sys.stdout.flush()\n",
+            encoding="utf-8",
+        )
+        config = _base_config()
+        config["validation"]["commands"] = {
+            "python": ["python3 scripts/holder.py"]
+        }
+        _write_config(project, config)
+
+        started = time.monotonic()
+        result = run_guard_postcheck(project, None)
+        elapsed = time.monotonic() - started
+
+        assert result.passed is True
+        assert elapsed < 5, f"guard hung on inherited stdout for {elapsed:.1f}s"
+        # The parent's output was still captured before the pipe was closed.
+        detail = next(d for _, ok, d in result.items if ok)
+        assert "parent-done" in detail
+
     def test_overflow_keeps_tail_not_head(self, tmp_path, monkeypatch) -> None:
         """When the byte cap overflows, the FATAL (last) lines must survive.
 

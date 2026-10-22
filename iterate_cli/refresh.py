@@ -444,20 +444,21 @@ def _config_semantically_equal(existing_text: str, new_yaml: str) -> bool:
 def _backup_refresh_config(config_path: Path) -> Path | None:
     """Copy the current config before a value-changing rewrite.
 
-    Comments cannot survive ``safe_dump``; keeping a timestamped copy makes a
-    refresh recoverable (same ``.refresh-<utc>`` convention as the other
-    writers' ``.configset-*`` / ``.doctorfix-*`` backups).
+    Comments cannot survive ``safe_dump``; keeping a timestamped, uniquely
+    suffixed copy makes a refresh recoverable (same ``.refresh-*`` convention
+    as the other writers' ``.configset-*`` / ``.doctorfix-*`` backups).
+
+    Raises:
+        OSError: If the copy fails. The caller aborts the rewrite: proceeding
+            without a recoverable pre-change snapshot would make the very
+            failure mode (permissions/quota) that caused the backup error
+            irreversible.
     """
     if not config_path.is_file():
         return None
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = config_path.with_name(f"{config_path.name}.refresh-{stamp}")
-    try:
-        shutil.copy2(config_path, backup)
-    except OSError as exc:
-        tui.warning(f"could not back up {config_path.name} before refresh: {exc}")
-        return None
-    return backup
+    from iterate_cli.generator import backup_file
+
+    return backup_file(config_path, "refresh")
 
 
 def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: str) -> bool:
@@ -486,12 +487,20 @@ def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: s
     try:
         try:
             backup_md = iterate_md_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            # A failed backup read means rollback for this file is impossible;
-            # surface it so the user knows a mid-refresh failure cannot be
-            # fully reverted (instead of silently losing rollback capability).
-            tui.error(f"Failed to back up {iterate_md_path} for rollback: {exc}")
+        except FileNotFoundError:
+            # A refresh on a project without ITERATE.md creates it; there is
+            # nothing to roll back TO.
             backup_md = None
+        except (OSError, UnicodeDecodeError) as exc:
+            # An existing-but-unreadable file cannot be rolled back. Fail
+            # closed *before* writing anything instead of leaving a rewritten
+            # config next to a file we could not snapshot.
+            tui.error(
+                f"Cannot refresh: {iterate_md_path} exists but cannot be read "
+                f"for rollback ({exc}). Fix its permissions/encoding and retry; "
+                "nothing was written."
+            )
+            return False
         try:
             backup_config = config_path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -501,8 +510,12 @@ def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: s
             # line here used to appear on every successful first refresh.
             backup_config = None
         except (OSError, UnicodeDecodeError) as exc:
-            tui.error(f"Failed to back up {config_path} for rollback: {exc}")
-            backup_config = None
+            tui.error(
+                f"Cannot refresh: {config_path} exists but cannot be read for "
+                f"rollback ({exc}). Fix its permissions/encoding and retry; "
+                "nothing was written."
+            )
+            return False
 
         # A logical no-op refresh (nothing changed since the last run) must not
         # churn file mtimes/inodes or fail on read-only project dirs, so only

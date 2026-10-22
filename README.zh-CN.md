@@ -308,6 +308,17 @@ iterate reonboard
 iterate fingerprint           # verify（默认）：退出码 0 = 无漂移，1 = 新增/移除/变更了 manifest
 iterate fingerprint --json    # 结构化 JSON 输出（脚本友好）
 
+# 一份可直接贴 PR / 存 CI artifact 的健康报告
+iterate report                # 默认 Markdown：技术栈 + 生效配置 + doctor 全项 + 漂移 + 下一步
+iterate report --out report.md   # 原子写入文件（stdout 保持为空）
+iterate report --json         # 单个结构化 JSON 文档
+iterate report --strict       # warning 也判失败（退出码 1），适合 CI 门禁
+
+# Shell 补全（命令 / 参数 / 固定取值 / 路径）
+iterate completion bash
+iterate completion zsh > "${fpath[1]}/_iterate"
+iterate completion fish > ~/.config/fish/completions/iterate.fish
+
 # 非交互式配置查看与修改（不走向导）
 iterate config                      # 列出全部可设值
 iterate config get max_rounds      # 读单个解析值（--json 输出 {"key": value}）
@@ -522,6 +533,33 @@ iterate statu --json
 ```
 
 若没有足够接近的候选就不猜（错误的建议比没有更糟），原始诊断信息保持原样。
+
+### iterate report（一份可直接分享的项目报告）
+
+`status` / `scan` / `doctor` 各自回答一个问题；`iterate report` 把它们聚合成一份只读文档，可直接贴进 PR、issue 或作为 CI artifact 上传：
+
+```bash
+iterate report                  # 默认输出 GitHub Markdown
+iterate report --out report.md  # 原子写入文件（stdout 保持为空）
+iterate report --out report.md --force  # 覆盖已存在的报告文件
+iterate report --json           # 单个结构化 JSON 文档
+iterate report --strict         # warning 也判失败（退出码 1），同 doctor --strict
+```
+
+Markdown 包含技术栈、生效的审查配置（目标分支、范围、维度、维度集、校验命令/白名单、个性化规则数）、doctor 全项检查表、漂移与建议、以及可直接执行的下一步命令。单元格中的 `|` 与换行会转义，粘贴后表格不会散。`--out` 默认拒绝覆盖已存在文件（以及 iterate 自己的状态文件），需显式 `--force`，避免误删你的笔记。健康时退出码 0，阻塞时 1（错误；`--strict` 下还包括警告），可直接作为 CI 门禁。
+
+### iterate completion（Shell Tab 补全）
+
+补全脚本与 `--help` 由同一个 argparse parser 生成，命令/参数永远不会与文档漂移：
+
+```bash
+iterate completion bash                # 打印脚本
+iterate completion zsh > "${fpath[1]}/_iterate"
+iterate completion fish > ~/.config/fish/completions/iterate.fish
+source <(iterate completion bash)      # 或直接 source
+```
+
+补全命令、各命令参数（隐藏参数不会出现）、固定取值（如 `init --language zh|en`）、`-p/--project` 目录、`import`/`--out` 文件路径，以及 `iterate help <command>` 的命令名。
 
 ---
 

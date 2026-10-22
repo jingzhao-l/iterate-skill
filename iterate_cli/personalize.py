@@ -16,10 +16,8 @@ from __future__ import annotations
 import copy
 import os
 import re
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +35,39 @@ from iterate_cli.wizard import (
 # Personalization schema version. Increment when the personalization
 # data model changes, so future migrations can detect old configs.
 PERSONALIZATION_VERSION = "1.0"
+
+
+def count_personalization_rules(personalization: Any) -> int:
+    """Count structured personalization rules.
+
+    Shared by ``iterate status`` and ``iterate report`` so the two commands
+    can never disagree about how many rules are configured.
+
+    Excludes the ``version`` field (schema metadata, not a rule) and counts
+    ``extra_validation_commands`` per command (it is a module → command-list
+    mapping, not one rule per module). Non-dict input (a hand-edited config)
+    counts as zero instead of raising.
+
+    Args:
+        personalization: The ``personalization`` mapping, or any invalid value.
+
+    Returns:
+        Total number of structured personalization rules.
+    """
+    if not isinstance(personalization, dict):
+        return 0
+    total = 0
+    for key, value in personalization.items():
+        if key == "version":
+            continue
+        if isinstance(value, list):
+            total += len(value)
+        elif isinstance(value, dict):
+            total += sum(
+                len(cmds) for cmds in value.values() if isinstance(cmds, list)
+            )
+    return total
+
 
 
 class CorruptConfigError(RuntimeError):
@@ -379,6 +410,12 @@ class PersonalizationData:
     iterate_notes: list[str] = field(default_factory=list)
     code_conventions: list[str] = field(default_factory=list)
     extra_validation_commands: dict[str, list[str]] = field(default_factory=dict)
+    #: Non-bullet lines found under the free-form notes/conventions sections
+    #: (paragraphs, HTML comments, `*`/`+` details that were not simple items,
+    #: sub-headings). Kept verbatim so a personalize round-trip cannot delete
+    #: user formatting the wizard does not model. Not persisted to YAML; it
+    #: lives only for the duration of a load → merge → write cycle.
+    preserved_md: dict[str, list[str]] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
         """Return True if every category is empty."""
@@ -440,10 +477,11 @@ class PersonalizationData:
         """Render iterate_notes and code_conventions as Markdown for ITERATE.md."""
         sections: list[str] = []
 
-        if self.code_conventions:
+        if self.code_conventions or self.preserved_md.get(CONVENTIONS_SECTION_HEADER):
             sections.append(f"{CONVENTIONS_SECTION_HEADER}\n")
             for conv in self.code_conventions:
                 sections.append(f"- {conv}")
+            sections.extend(self.preserved_md.get(CONVENTIONS_SECTION_HEADER, []))
             sections.append("")
 
         if self.protected_paths or self.risk_areas:
@@ -459,10 +497,11 @@ class PersonalizationData:
                     sections.append(f"- `{r.path}` — {r.reason}")
                 sections.append("")
 
-        if self.iterate_notes:
+        if self.iterate_notes or self.preserved_md.get(NOTES_SECTION_HEADER):
             sections.append(f"{NOTES_SECTION_HEADER}\n")
             for note in self.iterate_notes:
                 sections.append(f"- {note}")
+            sections.extend(self.preserved_md.get(NOTES_SECTION_HEADER, []))
             sections.append("")
 
         if self.known_intentional:
@@ -831,7 +870,7 @@ def load_personalization_from_config(config: dict[str, Any]) -> PersonalizationD
 
 def load_personalization_from_iterate_md(
     project_root: Path,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], dict[str, list[str]]]:
     """Load free-form ``iterate_notes`` and ``code_conventions`` from ITERATE.md.
 
     These two categories are written to the user-owned section of
@@ -846,23 +885,27 @@ def load_personalization_from_iterate_md(
         project_root: Project root directory containing ITERATE.md.
 
     Returns:
-        A ``(iterate_notes, code_conventions)`` tuple of bullet items.
-        Empty lists are returned if ITERATE.md is missing or unreadable.
+        A ``(iterate_notes, code_conventions, preserved)`` tuple. The first two
+        hold bullet items (all Markdown markers: ``-``, ``*``, ``+``); the
+        third maps section header → non-bullet lines (paragraphs, sub-headings,
+        comments) that must be carried through the merge verbatim. All values
+        are empty when ITERATE.md is missing or unreadable.
     """
     from iterate_cli.generator import extract_user_owned_section
 
     iterate_md_path = project_root / "ITERATE.md"
     if not iterate_md_path.is_file():
-        return [], []
+        return [], [], {}
     try:
         content = iterate_md_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return [], []
+        return [], [], {}
 
     user_content = extract_user_owned_section(content)
 
     notes: list[str] = []
     conventions: list[str] = []
+    preserved: dict[str, list[str]] = {}
     current_section: str | None = None
 
     for line in user_content.split("\n"):
@@ -870,14 +913,29 @@ def load_personalization_from_iterate_md(
         if stripped.startswith("## "):
             current_section = stripped
             continue
-        if stripped.startswith("- ") and len(stripped) > 2:
-            item = stripped[2:].strip()
+        if current_section not in (
+            NOTES_SECTION_HEADER,
+            CONVENTIONS_SECTION_HEADER,
+        ):
+            continue
+        # Accept every Markdown bullet marker (`-`, `*`, `+`) and any
+        # indentation: users write normal Markdown, and only matching `- `
+        # made `*`/`+`/nested items disappear when merge_user_sections
+        # regenerated the section from the parsed data.
+        bullet = re.match(r"^\s*[-*+]\s+(.*\S)\s*$", line)
+        if bullet:
+            item = bullet.group(1).strip()
             if current_section == NOTES_SECTION_HEADER:
                 notes.append(item)
-            elif current_section == CONVENTIONS_SECTION_HEADER:
+            else:
                 conventions.append(item)
+            continue
+        # Anything else (paragraphs, sub-headings, HTML comments, blank lines
+        # between paragraphs) is preserved verbatim rather than regenerated.
+        if stripped:
+            preserved.setdefault(current_section, []).append(line.rstrip())
 
-    return notes, conventions
+    return notes, conventions, preserved
 
 
 def load_existing_personalization(
@@ -900,9 +958,12 @@ def load_existing_personalization(
         A PersonalizationData populated from both sources.
     """
     data = load_personalization_from_config(config)
-    notes, conventions = load_personalization_from_iterate_md(project_root)
+    notes, conventions, preserved = load_personalization_from_iterate_md(
+        project_root
+    )
     data.iterate_notes = notes
     data.code_conventions = conventions
+    data.preserved_md = preserved
     return data
 
 
@@ -1067,7 +1128,7 @@ def save_personalization_to_config(
     Raises:
         FileNotFoundError: If iterate.config.yaml does not exist.
     """
-    from iterate_cli.generator import atomic_write
+    from iterate_cli.generator import atomic_write, backup_file
 
     config_path = project_root / "iterate.config.yaml"
     if not config_path.is_file():
@@ -1085,16 +1146,11 @@ def save_personalization_to_config(
     if current_text != new_text:
         # safe_dump cannot preserve comments; keep a timestamped copy so a
         # personalize run is always recoverable (matches config set /
-        # doctor --fix, which never rewrite without a backup).
+        # doctor --fix, which never rewrite without a backup). A failed backup
+        # aborts the write: rewriting config with no recoverable snapshot is
+        # the exact data-loss case this guard exists to prevent.
         if current_text is not None:
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            backup = config_path.with_name(f"{config_path.name}.personalize-{stamp}")
-            try:
-                shutil.copy2(config_path, backup)
-            except OSError as exc:
-                tui.warning(
-                    f"could not back up {config_path.name} before personalize: {exc}"
-                )
+            backup_file(config_path, "personalize")
         atomic_write(config_path, new_text)
     return config_path
 
@@ -1181,7 +1237,7 @@ def save_personalization(
         FileNotFoundError: If iterate.config.yaml does not exist.
         OSError: If a write (or a rollback) fails.
     """
-    from iterate_cli.generator import atomic_write
+    from iterate_cli.generator import atomic_write, backup_file
 
     config_path = project_root / "iterate.config.yaml"
     if not config_path.is_file():
@@ -1199,8 +1255,27 @@ def save_personalization(
 
     # Snapshot prior config content for rollback (config is written first, so
     # a failure while writing ITERATE.md rolls config back to this snapshot).
+    # The read is fail-closed: without it a rollback would be impossible.
     old_config = config_path.read_text(encoding="utf-8")
     iterate_md_path = project_root / "ITERATE.md"
+    old_iterate_md: str | None = None
+    if iterate_md_content is not None:
+        try:
+            old_iterate_md = iterate_md_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            old_iterate_md = None
+
+    # On-disk backups of both files before rewriting either. A failed backup
+    # aborts the save: safe_dump drops YAML comments and the ITERATE.md merge
+    # regenerates a section, so both rewrites need a recoverable snapshot.
+    if old_config != config_yaml:
+        backup_file(config_path, "personalize")
+    if (
+        iterate_md_content is not None
+        and old_iterate_md is not None
+        and old_iterate_md != iterate_md_content
+    ):
+        backup_file(iterate_md_path, "personalize")
 
     atomic_write(config_path, config_yaml)
     if iterate_md_content is not None:

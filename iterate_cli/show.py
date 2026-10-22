@@ -100,6 +100,13 @@ def _collect_resolved_config(config: dict[str, Any]) -> dict[str, Any]:
     dimensions_conf = config.get("dimensions")
     if dimensions_conf is not None:
         resolved["dimensions"] = dimensions_conf
+    # Named dimension sets are part of the effective review configuration
+    # (they drive scoped rounds). They were persisted by onboarding/personalize
+    # but never read back by `show`, so a user could configure sets and then
+    # have no CLI way to confirm them except paging through the YAML.
+    dimension_sets = config.get("dimension_sets")
+    if dimension_sets is not None:
+        resolved["dimension_sets"] = dimension_sets
     return resolved
 
 
@@ -402,6 +409,10 @@ def _render_config(config: dict[str, Any]) -> None:
     dimensions = config.get("dimensions")
     if isinstance(dimensions, list) and dimensions:
         tui.key_value("Dimensions", ", ".join(str(d) for d in dimensions))
+
+    dimension_sets = config.get("dimension_sets")
+    if isinstance(dimension_sets, dict) and dimension_sets:
+        tui.key_value("Dimension sets", ", ".join(sorted(str(k) for k in dimension_sets)))
 
 
 def _render_personalization(personalization: dict[str, Any]) -> None:

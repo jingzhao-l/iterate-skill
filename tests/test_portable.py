@@ -376,6 +376,24 @@ class TestApplyBundle:
         assert yaml.safe_load((tmp_path / "iterate.config.yaml").read_text()) == CONFIG
         assert (tmp_path / "ITERATE.md").read_text() == ITERATE_MD
 
+    def test_published_renames_are_directory_fsynced(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A rename is a directory mutation; the directory must be fsynced.
+
+        Without it a crash right after import can lose the link even though the
+        import reported success (the files' bytes were fsynced, the rename was
+        not).
+        """
+        from iterate_cli import generator
+
+        calls: list[Path] = []
+        monkeypatch.setattr(generator, "fsync_dir", lambda path: calls.append(path))
+
+        apply_bundle(tmp_path, _valid_payload(), now=FIXED_NOW)
+
+        assert calls == [tmp_path]
+
     def test_existing_files_are_backed_up(self, tmp_path: Path) -> None:
         _write_project(tmp_path, config={"goal": "old"}, md="old md")
         report = apply_bundle(tmp_path, _valid_payload(), now=FIXED_NOW)
@@ -717,6 +735,51 @@ class TestImportCli:
 
         assert code == 1
         assert list(target.iterdir()) == []
+
+    def test_oversized_bundle_file_is_refused_before_reading(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """The size cap must be enforced with stat(), not after read_text().
+
+        Reading a multi-GiB file into memory first defeats the limit entirely.
+        """
+        target = tmp_path / "dst"
+        target.mkdir()
+        bundle = tmp_path / "huge.json"
+        with bundle.open("wb") as handle:
+            handle.truncate(MAX_BUNDLE_BYTES + 1)
+        capsys.readouterr()
+
+        code = cli_main(
+            ["import", str(bundle), "--yes", "--json", "-p", str(target), "--no-banner"]
+        )
+        payload = json.loads(capsys.readouterr().out)
+
+        assert code == 1
+        assert "larger than" in payload["error"]
+        assert list(target.iterdir()) == []
+
+    def test_oversized_stdin_is_bounded(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        target = tmp_path / "dst"
+        target.mkdir()
+        seen: list[int] = []
+
+        class _HugeStdin:
+            def read(self, n: int = -1) -> str:
+                seen.append(n)
+                return "x" * n
+
+        monkeypatch.setattr("sys.stdin", _HugeStdin())
+        capsys.readouterr()
+
+        code = cli_main(
+            ["import", "-", "--yes", "--json", "-p", str(target), "--no-banner"]
+        )
+        payload = json.loads(capsys.readouterr().out)
+
+        assert code == 1
+        assert "larger than" in payload["error"]
+        assert seen == [MAX_BUNDLE_BYTES + 1]
 
     def test_stdin_bundle(self, tmp_path: Path, capsys, monkeypatch) -> None:
         import io

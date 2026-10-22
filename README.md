@@ -519,6 +519,33 @@ iterate statu --json
 
 When nothing is close enough, no guess is made (a wrong suggestion is worse than none) and the original diagnosis is left intact.
 
+### iterate report (one document for PRs, issues and CI)
+
+`status` / `scan` / `doctor` each answer one question. `iterate report` combines them into a single read-only document you can paste into a PR, attach to an issue, or upload as a CI artifact:
+
+```bash
+iterate report                          # GitHub-flavoured Markdown on stdout
+iterate report --out report.md          # write it to a file (atomic; stdout stays empty)
+iterate report --out report.md --force  # replace an existing report file
+iterate report --json                   # one structured JSON document for scripts
+iterate report --strict                 # warnings become blocking (exit 1), like doctor --strict
+```
+
+The Markdown contains the tech stack, effective review configuration (target branch, scope, dimensions, dimension sets, validation/whitelist, personalization count), every doctor check as a table, drift + advice, and concrete next commands. Values are pipe/newline escaped, so the document is safe to paste as-is. `--out` refuses to overwrite an existing file (and iterate's own state files) unless `--force` is given, so a stray report can never clobber your notes. Exit code is `0` when healthy, `1` when the report is blocking (errors, plus warnings under `--strict`) — drop it into CI with no extra parsing.
+
+### iterate completion (shell tab-completion)
+
+Completion is generated from the same argparse parser as `--help`, so it can never drift from the real command and option list:
+
+```bash
+iterate completion bash                # print the script
+iterate completion zsh > "${fpath[1]}/_iterate"
+iterate completion fish > ~/.config/fish/completions/iterate.fish
+source <(iterate completion bash)      # or source it directly
+```
+
+It completes subcommands, per-command flags (hidden options are excluded), fixed values such as `init --language zh|en`, directories for `-p/--project`, file arguments for `import` / `--out`, and command names after `iterate help`.
+
 ---
 
 ## How It Works

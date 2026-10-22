@@ -624,6 +624,11 @@ def apply_bundle(
         for path, staged_path in staged:
             os.replace(staged_path, path)
             written.append(path)
+        # Publish durability: fsync the file's directory so the renames (not
+        # just the staged bytes) survive a crash. Best-effort by design.
+        from iterate_cli.generator import fsync_dir
+
+        fsync_dir(project_root)
     except (OSError, ValueError) as exc:
         # Roll back the files already replaced, so a failure on the second
         # replace cannot leave a new config next to an old knowledge base.

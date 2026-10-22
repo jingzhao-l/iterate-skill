@@ -233,10 +233,13 @@ def _has_api_layer(scan: ScanResult) -> bool:
 
 
 def _detect_test_dir(scan: ScanResult) -> str:
-    """Return the test directory name detected by the scanner.
+    """Return the detected test directory, or ``""`` when none exists.
 
-    Falls back to ``tests`` (the most common Python convention) when none of
-    the candidates is in the top-level directory listing.
+    ``tests/`` used to be the unconditional fallback, so a flat Python project
+    (``app.py`` + ``test_app.py`` at the root) was told to run
+    ``pytest tests/ -x -q`` and the very first validation failed with
+    "file or directory not found". An empty string means "no explicit path":
+    pytest then collects the project's default layout.
     """
     for candidate in TEST_DIR_CANDIDATES:
         if candidate in scan.top_level_dirs:
@@ -246,7 +249,7 @@ def _detect_test_dir(scan: ScanResult) -> str:
     # — otherwise a specs-only project would be told to run `pytest spec`.
     if "spec" in scan.top_level_dirs and "Ruby" in scan.detected_languages:
         return "spec"
-    return "tests"
+    return ""
 
 
 def _detect_src_root(scan: ScanResult) -> str:
@@ -288,7 +291,7 @@ def suggest_validation_commands(scan: ScanResult) -> dict[str, list[str]]:
             commands["python"] = [
                 f"ruff check {src_root}",
                 f"mypy {src_root} --ignore-missing-imports",
-                f"pytest {test_dir} -x -q",
+                f"pytest {test_dir + ' ' if test_dir else ''}-x -q",
             ]
         elif lang in ("JavaScript/TypeScript", "TypeScript"):
             commands["typescript"] = [
@@ -338,7 +341,10 @@ def suggest_command_whitelist(scan: ScanResult) -> list[str]:
         elif lang in ("JavaScript/TypeScript", "TypeScript"):
             # ``npm test`` is not a prefix of ``npm run``; include the bare
             # ``npm`` prefix so both ``npm run X`` and ``npm test`` match.
-            base.extend(["npm", "npm run", "yarn", "pnpm", "npx"])
+            # ``npx`` is deliberately absent: it downloads and runs an
+            # arbitrary package, so it must never be suggested into the
+            # persistent command whitelist (matches personalize.py).
+            base.extend(["npm", "npm run", "yarn", "pnpm"])
         elif lang == "Swift":
             base.append("swift")
         elif lang == "Go":
