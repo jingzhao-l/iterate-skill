@@ -88,6 +88,16 @@ All notable changes to iterate-harness should be recorded in this file.
   把已处理的失败变成未处理的异常——包上 `safeWriteTo()`。
   npm 测试从 76 条扩到 89 条全绿。
 
+- **`pyproject.toml`：把 `mcp` 的 Dependabot 升级回收到源头，而不是在发版时把它回退掉。**
+  独立发布仓 `jingzhao-l/iterate-harness` 已接受 `mcp 2.0.0 → 2.2.0`，但本 subtree 仓库把
+  `uv.lock` 列为 gitignore，那处 bump 没有 lockfile 跟随、也就没回流到这里，于是
+  **产物比它自己声明的依赖新**（独立仓是 2.2.0，源头是 2.0.0）。发版同步 tree 时若照抄
+  源头，就会把那处已接受的升级静默回退。改为在源头补上升级：2.2.0 里
+  `mcp.server.mcpserver` 从模块变成了包，但包的 `__init__` 仍从 `.server` 重导出 `MCPServer`，
+  客户端 `mcp.client.stdio.stdio_client` 与
+  `mcp.client.streamable_http.streamable_http_client` 入口未变——`src/iterate_harness/mcp/client.py`
+  与 `tests/test_mcp/` 用到的每个符号都逐一导入验证过。全量 2879 passed，与 2.0.0 读数一致。
+
 ### Added
 
 - **#23 面 A 的回显有了读者：交叉核对只减不加，缺回显永不算异议（场景②/⑧ 的补账）。**
