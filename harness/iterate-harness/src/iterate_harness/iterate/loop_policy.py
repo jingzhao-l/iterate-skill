@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import cast
 
 from ..api.usage import UsageSnapshot
 from . import prompts
@@ -37,6 +38,7 @@ from .convergence_policy import (
     BREAKER_TRIPPED_LEVEL,
     ConvergenceDecision,
     ConvergencePolicyError,
+    InvariantState,
     MIN_ROUND,
     RoundState,
     convergence_decision,
@@ -93,7 +95,11 @@ class AggregateSnapshot:
     # The convergence contract's invariant verdict, or None when nothing measured
     # it. Never defaulted: see iterate/invariant_state.py for why absent beats
     # "unmeasured" beats "pass" here.
-    invariant_state: str | None = None
+    #
+    # Typed as the contract's literal union, not `str`: `_read_invariant_state`
+    # is the only producer and it rejects anything outside those four values, so
+    # a plain `str` here would promise more than the snapshot can actually hold.
+    invariant_state: InvariantState | None = None
     # The convergence contract's evidence attestation, or None when the project declares no
     # evidence gate. Absent means the kernel cannot be consulted at all: the contract has no
     # "unknown" slot for this field, so inventing either bool would be a verdict nobody
@@ -173,7 +179,7 @@ def _read_state_unsafe(tool_metadata: dict[str, object] | None) -> AggregateSnap
     )
 
 
-def _read_invariant_state(raw: object) -> str | None:
+def _read_invariant_state(raw: object) -> InvariantState | None:
     """Accept only the four contract verdicts; anything else stays absent.
 
     A producer that misspells the value must not silently upgrade "nobody looked"
@@ -181,7 +187,12 @@ def _read_invariant_state(raw: object) -> str | None:
     """
     from .invariant_state import INVARIANT_STATE_VALUES
 
-    return raw if isinstance(raw, str) and raw in INVARIANT_STATE_VALUES else None
+    if not isinstance(raw, str) or raw not in INVARIANT_STATE_VALUES:
+        return None
+    # The membership test above is the guard; the cast only says what that guard
+    # already proves at runtime. mypy cannot narrow `str` through `in` against a
+    # tuple of literals, so the type must be stated for it explicitly.
+    return cast(InvariantState, raw)
 
 
 def _read_evidence_complete(raw: object) -> bool | None:
@@ -478,6 +489,35 @@ class IterateLoopPolicy:
             blockers.append("no evidence attestation was made")
         return blockers
 
+    def _validated_snapshot(self, snapshot: AggregateSnapshot) -> tuple[InvariantState, bool] | None:
+        """``(invariant_state, evidence_complete)`` when both gates were measured.
+
+        The exact opposite of :meth:`kernel_blockers`: that method returns the
+        reasons for declining, this one returns the narrowed values that make
+        asking the kernel safe. The two answers must agree for the same snapshot,
+        and :meth:`kernel_blockers` is what the operator sees when they do not.
+
+        The round-cap check is part of the condition here too, so "the cap was
+        reached" and "every gate was measured" stay a single test -- the values
+        are only useful once a full round has been counted.
+
+        Each field is read into its own local before the ``None`` check. Mypy
+        narrows locals from that; narrowing a dataclass attribute across a
+        ``return None`` branch is what the two ``arg-type`` errors were about.
+        The tuple is therefore annotated without ``None``, which is how the
+        kernel arguments get their exact contract types with no cast and no
+        assert standing in for a guard that was already present.
+        """
+        if snapshot.rounds_seen < MIN_ROUND:
+            return None
+        invariant_state = snapshot.invariant_state
+        if invariant_state is None:
+            return None
+        evidence_complete = snapshot.evidence_complete
+        if evidence_complete is None:
+            return None
+        return invariant_state, evidence_complete
+
     def _kernel_decision(self, snapshot: AggregateSnapshot) -> ConvergenceDecision | None:
         """Ask the kernel what this round decides, or decline when a gate was never measured.
 
@@ -485,18 +525,19 @@ class IterateLoopPolicy:
         refuses a `None` at construction, so declining here is not what keeps a fabricated verdict
         out; it is what keeps the *reason* the loop kept running honest and nameable.
         """
-        blockers = self.kernel_blockers(snapshot)
-        if blockers:
+        validated = self._validated_snapshot(snapshot)
+        if validated is None:
             return None
+        invariant_state, evidence_complete = validated
         last_new = snapshot.findings_by_round[-1] if snapshot.findings_by_round else 0
         try:
             return convergence_decision(
                 RoundState(
                     round=snapshot.rounds_seen,
                     max_rounds=self.max_review_rounds,
-                    invariant_state=snapshot.invariant_state,
+                    invariant_state=invariant_state,
                     open_findings=last_new,
-                    evidence_complete=snapshot.evidence_complete,
+                    evidence_complete=evidence_complete,
                     breaker_level=self._breaker_level,
                 )
             )

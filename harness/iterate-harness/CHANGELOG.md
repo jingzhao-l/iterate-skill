@@ -4,6 +4,90 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-22
+
+### Fixed
+
+- **`tasks/manager.py`：投递监视器不再把已经干完的活儿重跑一遍。** 监视器判断"payload 有没有被读"
+  的唯一信号是写入之后输出文件是否增长，所以基线必须在写入**之前**采样。旧实现先 `sleep` 100ms
+  再采基线——一次快得可怜的 worker（`python -u -c "import sys; print(sys.stdin.readline())"`）
+  在这 100ms 里已经把回显写进文件，于是回复被算进"写入前的旧输出"，监视器判定"没有新输出＝
+  payload 被吞了"，把一条已 `completed` 的任务拉回 `running`、重新投递、把输出重复一份、
+  `SUBAGENT_STOP` 触发两次。实测 6/6 复现（`restart_count=1`，输出里多出一份 restart 告示）。
+  现在基线在写入前采，并加一个有上限的"安静轮询"（`_OUTPUT_BASELINE_SETTLE` 50ms /
+  `_OUTPUT_BASELINE_POLL` 10ms）等异步 copier 把最后一块刷完，避免把**写入前**但还没落盘的
+  输出误判成回复；两种失败方向都被压到亚毫秒量级，而不是原来的 100ms 窗口。
+  反向也钉住：真正被吞的 payload 仍然会被重启补投
+  （`test_delivery_monitor_still_redelivers_a_swallowed_payload`）。
+  两条新用例都经过反向变异验证——把源码改回旧实现时
+  `does_not_restart_a_completed_one_shot_agent` 当场红在 `assert 'running' == 'completed'`，
+  与最初的失败现场一致。
+
+- **`personalization/extractor.py`：`git_remote` 终于能抽出远程地址了。** 旧正则
+  `(?:github|gitlab)\.com[:/](\S+?)(?:\.git)?` 里 `\S+?` 是懒惰的、后面又跟一个可选的
+  `(?:\.git)?`，于是永远只匹配一个字符——`github.com:jingzhao-l/iterate-harness.git` 抽出
+  `'j'`，然后被 `len(value) < 3` 的守卫静默丢弃。结果是这一类事实**从来没被记过**，
+  而 `_FACT_PATTERNS` 里其余九条都正常。改为 `((?:[\w-]+(?:\.[\w-]+)*/)+[\w-]+)`：
+  最后一段刻意不允许点号，这样贪心匹配吞不进 `.git` 后缀；带点号的 owner
+  （`owner.name/repo`）仍能匹配。实测：`.git` 后缀 → `jingzhao-l/iterate-harness`，
+  无后缀 → `foo/bar`，`gitlab.com/team/api.git` → `team/api`。5 条新用例，
+  反向变异（把正则换回旧写法）5 条同时变红。
+
+- **`personalization/extractor.py` / `session_hook.py`：抽出本地规则不再因坏历史崩掉，
+  也不再是一份没人调的副本。** `extract_local_rules()` 直接对 `msg.get("content")` 取值，
+  历史上任何一条不是 dict 的条目（截断的记录、手工改过的存档、`[]`、`None`、裸字符串）都会
+  抛 `AttributeError` 把整个会话收尾钩子打断；content 是 list 时也没有校验 block 里的
+  `text` 是不是字符串，`[{"text": None}]` 会在 `"\n".join()` 上炸 `TypeError`。
+  另外它一直挂在 `__all__` 里作为公共 API，但**没有任何调用方**——真在跑的是
+  `session_hook.update_rules_from_session()`，它自己写了一份几乎相同的收集循环。
+  现在把收集逻辑提成 `_collect_message_text()`，两种形态（线上 dict 形状 / 内存里的
+  `ConversationMessage` 对象，block 的 `text` 或 `content` 字段）走同一份实现，
+  非 dict 条目与类型不对的字段一律跳过而不是抛异常；`extract_local_rules` 与
+  `session_hook` 都改用它，死代码清零、行为收敛到一处。7 条新用例覆盖 dict 形态、
+  对象形态、各类畸形条目与非法入参。
+
+- **`iterate/loop_gates.py` / `loop_policy.py`：两处 mypy 一直在报的类型洞补上，
+  而且"闸门已测量"与"没有阻塞"被收成同一个判据。** `loop_gates.py` 从 `.types` 导入
+  `Finding`，而 `types.py` 里只有 `ReviewFinding`——`mypy src` 因此恒定报
+  `has no attribute "Finding"`；改为真实类型，`metadata` 也顺带从 `dict[str, Any]` 收紧到
+  `dict[str, object]`。`loop_policy.py` 的 `_kernel_decision` 把
+  `snapshot.invariant_state`（`str | None`）和 `evidence_complete`（`bool | None`）直接喂给
+  `RoundState`，而 `RoundState` 要的是四个判决字的 `Literal` 联合与真正的 `bool`——mypy 恒报
+  `arg-type`。根因是"没有阻塞 ⇒ 两把闸都已测量"这个不变量只存在于
+  `kernel_blockers()` 的返回语义里，type checker 看不穿那个 helper，于是拿一个 `str | None`
+  冒充 `Literal`。现在把收窄点提成 `_validated_snapshot()`（`kernel_blockers` 与
+  `_kernel_decision` 共用，两个答案必须一致），返回值标成 `tuple[InvariantState, bool] | None`，
+  `AggregateSnapshot.invariant_state` 本身也改标成 `InvariantState | None`——
+  唯一的产出方 `_read_invariant_state` 只会给出那四个合法值，标 `str` 是承诺了快照实际持不住
+  的东西；该函数里的 `in` 成员判定是真正的运行时守卫，`cast` 只是把守卫已经证明的事实说给
+  mypy 听（mypy 无法凭 `in` 对字面量元组的判定收窄 `str`）。`mypy src` 由 2 error 归零，
+  260 files 干净；`ruff check` 同时清掉 `tests/test_services/test_compact.py` 里一个未使用的
+  `TextBlock` 导入。
+
+- **npm 包装器：无人值守的首次运行不再自动确认下载；stamp 现在记得运行时是"怎么装出来的"。**
+  五条各不相关的缺陷一起修掉：
+  ① `askYesNo(question, defaultNo=true)` 的超时/EOF/空输入回落到 `defaultNo`，也就是
+  **true＝继续**——而提示打印的是 `[y/N]`。无人值守（`< /dev/null` 或 120s 无回应）的
+  首次运行会**自动确认几百兆的下载**，用户从来没同意过。现在回落值统一取 `!defaultNo`，
+  与显示出来的默认一致，提示也写明回落到了哪一个默认值；原先把错误语义钉成正确的那条
+  测试已经反转并扩充为 7 条。
+  ② stamp 以前只记版本字符串，所以换掉 `ITERATE_HARNESS_PYTHON` 或 `ITERATE_HARNESS_INSTALL_URL`
+  后 stamp 仍然"匹配"，包装器会静默复用一份不是用户当前配置装出来的运行时。
+  现在 stamp 是 JSON（`version` + `pythonEnv` + `source`），三者任一变化都触发重装；
+  老的裸版本 stamp 标记为 `legacy`，版本匹配时重装一次并重写成新格式——升级本身就会因
+  版本变化而重装，所以这条路径不额外付出成本。
+  ③ `packageVersion()` 在 `package.json` 读不出时返回 `"0.0.0-unknown"`，而
+  `needsBootstrap` 永远判定"过期"，于是一次注定失败的
+  `pip install iterate-harness==0.0.0-unknown` 在**每一次**调用上都跑一遍。现在版本号不可读时：
+  有现成运行时就复用并提示，没有则以可执行的报错退出，而不是尝试一个不存在的版本。
+  ④ `DOWNLOAD_TIMEOUT_MS`（120s）大于 `DOWNLOAD_TOTAL_TIMEOUT_MS`（60s），按请求的超时分支
+  永远不会触发（总时限一定先到）。下调到 30s，让那条分支重新可达。
+  ⑤ 包装器参数只应在 `--` **之前**属于包装器，`ih sub -- --no-verify` 以前会把
+  转发给子进程的标志吞掉（抽成 `splitHarnessArgs()` 便于单测）；以及 `reportBootstrapFailure`
+  与 `child.on("error")` 里的 `process.stderr.write` 在错误处理器内部可能再次抛错，
+  把已处理的失败变成未处理的异常——包上 `safeWriteTo()`。
+  npm 测试从 76 条扩到 89 条全绿。
+
 ### Added
 
 - **#23 面 A 的回显有了读者：交叉核对只减不加，缺回显永不算异议（场景②/⑧ 的补账）。**

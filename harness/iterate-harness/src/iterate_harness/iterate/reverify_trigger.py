@@ -140,7 +140,11 @@ def _sync_transport(metadata: Mapping[str, Any] | None) -> Callable[[str, dict[s
     :data:`GLASSPANE_ACALL_KEY` and calls the synchronous trigger gets the honest
     "no transport was handed over" state, not a refusal that reads as an engine answer.
     """
-    candidate = (metadata or {}).get(GLASSPANE_TRANSPORT_KEY)
+    # Typed as `object` rather than left as the `Any` a `Mapping[str, Any].get()`
+    # yields: `callable()` narrows `object` down to a callable, but does not narrow a
+    # value that is already `Any`, and returning that `Any` past the declared
+    # signature was the unchecked hole mypy was reporting here.
+    candidate: object = (metadata or {}).get(GLASSPANE_TRANSPORT_KEY)
     if not callable(candidate) or inspect.iscoroutinefunction(candidate):
         return None
     return candidate

@@ -402,10 +402,16 @@ class IterateReviewTool(BaseTool[BaseModel]):
                 "error": f"RUN_PLAN_E_WRITE: cannot write the run plan ({error})",
                 "remedy": "make .iterate/run-plan.json writable, then plan again",
             }
+        # build_run_plan publishes "dimensions" as a list of dimension dicts, but its
+        # `dict[str, object]` return type cannot say so, so iterating that value would
+        # be unchecked. State the shape once at the read site.
+        dimension_ids = [
+            str(item["id"]) for item in cast(list[dict[str, object]], plan["dimensions"])
+        ]
         payload: dict[str, Any] = {
             "path": str(written.path),
             "digest": written.digest,
-            "dimensions": [str(item["id"]) for item in plan["dimensions"]],
+            "dimensions": dimension_ids,
         }
         # The digest must be checkable from the audit chain, not only from the tool
         # output an agent may compact away. A ledger refusal never cancels the
