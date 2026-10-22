@@ -401,7 +401,14 @@ GITHUB_TOKEN_PREFIXES: tuple[str, ...] = (
 # constants so the magic values are not scattered through the code.
 GITHUB_API_TIMEOUT_SECONDS = 15
 DOWNLOAD_TIMEOUT_SECONDS = 30
-VALIDATE_SUBPROCESS_TIMEOUT_SECONDS = 30
+# Config validation spawns a fresh Python process that imports jsonschema and
+# scans the dimensions directory. On a loaded machine (or a cold, slow disk)
+# startup alone can exceed 30s — the previous value made `config --set` revert
+# a perfectly valid change with "Command timed out after 30 seconds". The
+# timeout is a safety net against a hung interpreter, not a performance gate,
+# so it is generous and overridable for constrained CI sandboxes.
+VALIDATE_SUBPROCESS_TIMEOUT_SECONDS = 120
+VALIDATE_TIMEOUT_ENV = "ITERATE_VALIDATE_TIMEOUT"
 
 # Upper bound for a single downloaded payload (release tarball / checksum).
 # Streams are read in chunks and truncated when the cap is exceeded, so a
@@ -2406,6 +2413,25 @@ def update_command(
     return 0
 
 
+def _validate_timeout_seconds() -> float:
+    """Return the validate.py subprocess timeout in seconds.
+
+    ``ITERATE_VALIDATE_TIMEOUT`` overrides the default for constrained
+    environments (slow disks, emulated CI). Invalid/non-positive values are
+    ignored so a typo can never disable the safety net (``timeout=0`` would
+    make every validation fail immediately).
+    """
+    raw = os.environ.get(VALIDATE_TIMEOUT_ENV, "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return float(VALIDATE_SUBPROCESS_TIMEOUT_SECONDS)
+
+
 def _run_validate_subprocess(
     source: Path, config_path: Path, schema_path: Path, dimensions_dir: Path
 ) -> list[str]:
@@ -2429,10 +2455,19 @@ def _run_validate_subprocess(
         str(schema_path),
         str(dimensions_dir),
     ]
+    timeout = _validate_timeout_seconds()
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=VALIDATE_SUBPROCESS_TIMEOUT_SECONDS, check=False
+            cmd, capture_output=True, text=True, timeout=timeout, check=False
         )
+    except subprocess.TimeoutExpired:
+        return [
+            (
+                f"validate.py did not finish within {timeout:g}s (the config "
+                "was not changed). Retry on a less loaded machine, or raise "
+                f"the limit with {VALIDATE_TIMEOUT_ENV}=300."
+            )
+        ]
     except (OSError, subprocess.SubprocessError) as exc:
         return [f"Failed to run validate.py: {exc}"]
 

@@ -1114,6 +1114,81 @@ class TestListConfig:
         assert install.list_config(target) == 1
 
 
+class TestValidateSubprocessTimeout:
+    """The validation timeout is a hang guard, not a performance gate.
+
+    Regression: a hard 30s timeout made ``config --set`` report "Command
+    timed out after 30 seconds" and revert a valid edit whenever the machine
+    was loaded (observed in the full suite: validate.py needed 21s alone and
+    crossed 30s under parallel load). The fix raises the default and makes it
+    overridable, while keeping a real timeout so a hung interpreter cannot
+    block the installer forever.
+    """
+
+    def test_default_timeout_is_generous(self) -> None:
+        assert install.VALIDATE_SUBPROCESS_TIMEOUT_SECONDS >= 60
+
+    def test_env_override_is_honoured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(install.VALIDATE_TIMEOUT_ENV, "7.5")
+        assert install._validate_timeout_seconds() == 7.5
+
+    @pytest.mark.parametrize("raw", ["", "fast", "0", "-1"])
+    def test_invalid_env_never_disables_the_guard(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str
+    ) -> None:
+        monkeypatch.setenv(install.VALIDATE_TIMEOUT_ENV, raw)
+        assert (
+            install._validate_timeout_seconds()
+            == install.VALIDATE_SUBPROCESS_TIMEOUT_SECONDS
+        )
+
+    def test_timeout_error_names_the_knob(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        source = _make_fake_source(tmp_path, monkeypatch)
+        _seed_real_validation_source(source)
+        target = tmp_path / "proj"
+        target.mkdir()
+        config = target / "iterate.config.yaml"
+        config.write_text("goal: hi\n", encoding="utf-8")
+
+        def boom(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="validate.py", timeout=1)
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        errors = install._run_validate_subprocess(
+            source,
+            config,
+            source / "config" / "config.schema.json",
+            source / "config" / "dimensions",
+        )
+        assert len(errors) == 1
+        assert "did not finish" in errors[0]
+        assert install.VALIDATE_TIMEOUT_ENV in errors[0]
+
+    def test_timeout_reverts_the_edit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = _make_fake_source(tmp_path, monkeypatch)
+        _seed_real_validation_source(source)
+        target = tmp_path / "proj"
+        target.mkdir()
+        shutil.copy(
+            source / "config" / "iterate.config.yaml",
+            target / "iterate.config.yaml",
+        )
+        monkeypatch.setattr(
+            install,
+            "_run_validate_subprocess",
+            lambda *args, **kwargs: ["validate.py did not finish within 120s"],
+        )
+
+        assert install.set_config_values(target, source, [["goal=Changed"]]) == 1
+        assert install.load_config(target / "iterate.config.yaml")["goal"] != "Changed"
+
+
 class TestSetConfigValues:
     def test_sets_and_validates(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         source = _make_fake_source(tmp_path, monkeypatch)
