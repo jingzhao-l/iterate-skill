@@ -31,6 +31,13 @@ All notable changes to iterate-harness should be recorded in this file.
   当异议／结论不再扣减／写侧停发字段），按自带备份 + sha256 核回。`tests/test_iterate` 与压缩顺序套件
   合计 1221 passed，ruff 干净；回显行的形状来自父仓 `mcp-shell/src/dimension.ts`，因此本侧读得宽、
   认得严：措辞漂了最多是让交叉核对不发生，不会把判决读反。
+  真机走查（2026-10-22，本机 /usr/local/bin/glasspane-mcp，非夹具）：McpClientManager 连上已安装的那个壳
+  （广告 16 个工具），在引擎 loop 上 await 这条新通路发了一次真实回验——gp_last_evidence 回 answered 并
+  带上被引用的 op 号，gp_diagnose 回 refused 且用的是 daemon 自己的 GP_E_NOT_ATTACHED 与它自己的 remedy
+  （"call attach first"，一字未改），载荷 attempted=True / verified=True / clean=False，账上多出一条
+  reverification 归属行。两条回显字段都是 None——本机装的这个壳还是面 A 那批之前的构建，它还不写那行字，
+  于是新读者读到的是沉默而不是异议，这正是该行为在生产形状下的证明。反过来讲：回显这条链的端到端
+  （面 A 写 → Python 读）目前只有单元与变异证据，要等父仓把带槽的壳装上本机才算真机闭合。
 - **#22 场景①真正接通：发布点改为 await，宿主一次绑两份 transport——并如实记下上一批那份"绑了但跑不到"。**
   回代码复核 #21 的落地形状（不是推测，是读到的行）：`engine/query.py:801` 与 `:1521` 用
   `await tool.execute(...)` 驱动工具，`ui/runtime.py:298-300` 在引擎 loop 上 `await connect_all()`、
