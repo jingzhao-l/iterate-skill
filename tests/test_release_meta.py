@@ -78,6 +78,34 @@ def test_five_version_sources_agree() -> None:
     assert len(unique) == 1, f"version sources drifted: {versions}"
 
 
+def _version_chain_gaps(changelog: str) -> tuple[list[int], list[tuple[int, int]]]:
+    """Return (missing minors, missing patches) for the 3.x release chain.
+
+    Every minor from 3.4 upward must have a heading, and within each minor the
+    patches must be contiguous from ``.0`` to that minor's highest patch. It
+    deliberately does NOT demand a patch for every minor: the skill line
+    skipped 3.6.1/3.7.1 (those tags belong to iterate-plugin), so demanding a
+    global 0..latest-patch range would force invented release notes.
+    """
+    patches_by_minor: dict[int, set[int]] = {}
+    for line in changelog.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## [3."):
+            end = stripped.find("]")
+            parts = stripped[4:end].split(".")
+            if len(parts) == 3 and parts[0] == "3":
+                patches_by_minor.setdefault(int(parts[1]), set()).add(int(parts[2]))
+    latest_minor = max(patches_by_minor)
+    missing_minors = [m for m in range(4, latest_minor + 1) if m not in patches_by_minor]
+    missing_patches = sorted(
+        (m, p)
+        for m, patches in patches_by_minor.items()
+        for p in range(max(patches) + 1)
+        if p not in patches
+    )
+    return missing_minors, missing_patches
+
+
 def test_changelog_version_chain_has_no_gaps() -> None:
     """Every released minor version in CHANGELOG.md must have a heading.
 
@@ -87,18 +115,25 @@ def test_changelog_version_chain_has_no_gaps() -> None:
     invariant that the 3.x series is contiguous from 3.4.0 upward.
     """
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    minors = set()
-    for line in changelog.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("## [3."):
-            end = stripped.find("]")
-            parts = stripped[4:end].split(".")
-            if len(parts) == 3 and parts[0] == "3":
-                minors.add((int(parts[1]), int(parts[2])))
-    latest = max(minors)
-    expected = {(m, p) for m in range(4, latest[0] + 1) for p in range(latest[1] + 1)}
-    missing = sorted(expected - minors)
-    assert not missing, f"CHANGELOG.md is missing headings for 3.{missing}"
+    missing_minors, missing_patches = _version_chain_gaps(changelog)
+    assert not missing_minors, f"CHANGELOG.md is missing minor headings for 3.{missing_minors}"
+    assert not missing_patches, f"CHANGELOG.md is missing headings for 3.{missing_patches}"
+
+
+def test_version_chain_allows_skipped_patch_but_rejects_internal_gap() -> None:
+    """Plugin-only patch numbers must not be demanded, real gaps still fail.
+
+    Regression for the 3.8.1 release: the old global range demanded 3.6.1 and
+    3.7.1 (iterate-plugin tags) as soon as the skill published its first patch,
+    turning a green main red on a tag that had no way to add those headings.
+    """
+    without_plugin_patches = (
+        "## [3.4.0]\n## [3.5.0]\n## [3.6.0]\n## [3.7.0]\n## [3.8.0]\n## [3.8.2]\n"
+    )
+    assert _version_chain_gaps(without_plugin_patches) == ([], [(8, 1)])
+
+    missing_minor = "## [3.4.0]\n## [3.5.0]\n## [3.7.0]\n"
+    assert _version_chain_gaps(missing_minor) == ([6], [])
 
 
 def test_version_is_three_part_semver() -> None:
