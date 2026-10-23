@@ -100,6 +100,54 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ### Added
 
+- **#24 交叉核对搬到见证侧：#23 那个"账本侧裁决"在生产里永远跑不到，这次换成 agent 自己那一次调用。**
+  先记清为什么搬。#23 把判定放在 ledger 的 `reverification` 行上（声明 X、壳回 Y ⇒ 扣住不计），落码后回
+  读发送方才看见死路：那条路上唯一可能写进回显的发送者就是 ① 自己，而 ① 要声明某 op 服务哪个维度，
+  只能把账本里那条归属抄回来——被拿来核对的正是被核对的东西，比较永远相等；不抄就没有回显。于是
+  "沉默不算异议"这条我自己写下的规矩，反过来证明了那个读者没有生产者。**删掉裁决，保留引用**：
+  `echoed_dimension_map` / `contested_attributions` / `_uncontested_counts` /
+  `dimension_context_with_contested` 一并移除，覆盖率那行回到原状，`echoedDimension` 仍随 ① 的行写进
+  ledger（它是"壳当时说了什么"的旁证，与 `annotations` 同一性质，不接任何判决），键名改由
+  `dimension_ledger.ECHOED_DIMENSION_DATA_KEY` 一处拼写、写侧 import。
+  新的读者放在真正有生产者的那条缝上：`tools/mcp_tool.py`——agent 自己调 `gp_*` 就是它。改动三处，
+  各自有能红的对照：(1) 适配器改吃 `call_tool_parts`，交给模型的仍是 `call_tool` 那句一字不差的
+  join（用例把两种视图逐字节比过），因为回显是**独立 content item**，拼平了就再也分不出来；
+  (2) `record_observed_echo` 把见证按 op 存进 run 的 tool metadata（与 `iterate_state` 同一条 durable
+  通道，才能在后面那一笔写账本时还在），有界 64、滑窗淘汰最旧——不设界的 dict 会跟着每一轮折叠；
+  (3) `iterate_decision_log` 的 append 在 `attribution_refusal` 之后查 `echo_contestation`，声明与见证
+  不一致就**拒写**、返回 `KERNEL_E_DIMENSION_CONTEST`，remedy 给出两条都能执行的路（按见证的维度记，
+  或重新按你要的维度读一次再引那一次），并且**不许改前一次调用的声明**——它就是这次核对用的证据。
+  不一致以外的全部情形都放行：没有见证、见证属于别的 op、以及声明与见证一致。核对不替账本凭空加一个
+  维度的证据，这一点与 #23 同一条边界。
+  前缀守卫也有读者：只有存在 `dimension: ` 开头的旁项时才进分类器，普通工具回话不吃那次 JSON 解析；
+  探针用"记账式 spy"而非抛异常的 spy——适配器刻意兜住见证失败不让它打断 agent 的工具回话，会抛的
+  探针正好被那道兜底吞掉，那样测不到"从没被调用"这句话（这条是本轮变异教我的，见下）。见证失败也从
+  debug 提到 warning：坏掉的见证若静默停摆，所有走回话的用例照样绿。
+  真机对照（2026-10-22，两个壳都是本机真物，op 号取自 `~/.glasspane/evidence` 里真实落盘的文件名）：
+  今天从 main 打出的 bundle 广告 `dimension`、真回话里带出那行回显、见证写下
+  `{op_01M35PAMYNNPJRNCCM6Q2C34XQ: security}`，随后用 "correctness" 去记决策被拒；而 `/usr/local/bin`
+  那个旧壳不广告、无回显、无见证，核对放行——沉默不算异议在生产形状下同时被两侧测到。顺带量到一件事：
+  这台机器的 daemon 自报 **1.6.2**，它的 `capabilities` 还是修好之前那份手抄表（多 `probe`、缺
+  attach/last_evidence/probe_status），所以壳那句"该调用会被答 methodNotFound"与"last_evidence 真的
+  答了 pack"同时成立——**读得对、后果说过头**，源里清单已由 `EngineMethod` 派生，父仓下一次发布即消失；
+  这不是新缺陷，但它是"漂移告警要拿在跑的构建去核"的一条实例。
+  测试：`test_dimension_echo.py` 15 → **21** 条。新加的两条走的是 `engine/query._execute_tool_call`
+  本体，不是把手工 stash 递给被测函数：先看 MCP 那一调把见证折进 `context.tool_metadata`，再看同一
+  context 上的 `iterate_decision_log` 因此被拒、而换成一致的维度就写得进去——上一版栽的正是"函数单测
+  绿、状态没人搬"。顺带修了两个假件的形状：`_FakeMcpManager` / `FakeMcpManager` 只有 `call_tool` 而
+  真 `McpClientManager` 两个视图都有，适配器改吃 parts 后它们当场 AttributeError——**假件缺哪个方法，
+  就该补哪个方法，而不是让产品代码去迁就假件**，两边现在保持"join 就是 parts 的拼接"这个真实关系。
+  变异九发逐一点名变红（适配器不再见证／模型字节改形／前缀守卫拿掉／写时核对删除／把别的 op 的缺席
+  当异议／一致也当异议／上限不淘汰／收下非法 key／① 的行停发引用），按自带备份 + sha256 核回。P5
+  第一版打不动东西：我那条"沉默当异议"的变异改的是*已有 stash* 那一支，而对应用例根本没建 stash——
+  换到有 stash 的那条上才红，这条也记着。
+  归属留档（这一轮量了三次，每次都换说法，记清楚）：第一次全量 16 失败里 8 条（openai client /
+  reasoning effort / untested_features）是这台机器 shell 带着 HTTP(S)_PROXY 时 httpx 建 transport 就炸
+  的噪声，清掉代理变量后基线（`origin/main` `82369b99`）与我这棵树跑同一子集都是同样 3 条既有环境失败
+  （`test_tasks/test_manager.py`，本机没有 `python` 可执行文件），另 2 条就是上面那两个假件——**"我
+  改红了套件"与"这台机器的代理改红了套件"是两句话，得分别量**。干净环境再全量一次：2876 passed /
+  9 failed；把那 9 条单独再跑做对照，我这棵树红 6 条、基线在同一份名单上红 **7** 条，全落在那一族
+  环境项（无 `python` + 负载下的计时）里，本批一条也没新弄红。ruff check 干净。落 iterate-skill main。
 - **#23 面 A 的回显有了读者：交叉核对只减不加，缺回显永不算异议（场景②/⑧ 的补账）。**
   上一批给面 A 装了 `dimension` 槽并让它把声明回显成独立 content item；如果没人读它，那行字就只是
   多一块表面——本仓反复把这种形状叫"没交付"。现在它有读者，且读者只做一件事：**怀疑**，不裁决。
