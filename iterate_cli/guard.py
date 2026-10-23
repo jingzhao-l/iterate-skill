@@ -33,10 +33,12 @@ from __future__ import annotations
 
 import codecs
 import os
+import select
 import shutil
 import signal
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -68,17 +70,28 @@ _OUTPUT_BYTE_CAP = 1024 * 1024
 #: generous value for a slow filesystem flush.
 _DRAIN_JOIN_SECONDS = 5
 
-#: Seconds to wait after closing the read end when a descendant still holds
-#: the pipe open (the direct child exited but its child inherited stdout).
+#: Seconds to wait for the reader to stop after ``stop_drain`` is set (the
+#: fallback path used when a descendant still holds the pipe open).
 _DRAIN_UNBLOCK_SECONDS = 1
 
-#: Bytes read per stream chunk while draining command output, through
-#: ``BufferedReader.read1`` — which returns as soon as *any* data is available. This is
-#: deliberately a byte count and deliberately not ``TextIOWrapper.read(n)``: that call blocks
-#: until it has accumulated ``n`` characters or the stream ends, so a command that writes a
-#: short line and then leaves a descendant holding stdout open would have its output trapped
-#: inside the wrapper and lost when the descriptor is closed to unblock the drain. Chunked
-#: reads still keep memory bounded for a single gigantic newline-free line.
+#: How long the reader parks in ``select`` between checks of the stop/child
+#: flags. Small enough that shutdown is prompt, large enough to stay cheap.
+_DRAIN_POLL_SECONDS = 0.05
+
+#: After the direct child exits, keep consuming until the pipe has been quiet
+#: for this long. A descendant can inherit stdout and keep the pipe open with
+#: no further output; closing the descriptor the moment the child exits would
+#: race the reader and lose bytes the child had already flushed. This grace
+#: window lets those bytes land before the reader stops on its own.
+_DRAIN_QUIET_SECONDS = 0.2
+
+#: Bytes read per stream chunk while draining command output, via ``os.read``
+#: after ``select`` reports the pipe readable. This is deliberately not
+#: ``TextIOWrapper.read(n)``: that call blocks until it has accumulated ``n``
+#: characters or the stream ends, so a command that writes a short line and
+#: then leaves a descendant holding stdout open would have its output trapped
+#: inside the wrapper. Chunked reads still keep memory bounded for a single
+#: gigantic newline-free line.
 _DRAIN_CHUNK_BYTES = 64 * 1024
 #: Per-command timeout in seconds. A wedged validation/build command must not
 #: block the host agent forever; on expiry the whole process group is killed.
@@ -429,8 +442,12 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
     except (OSError, subprocess.SubprocessError) as exc:
         return EXIT_FAIL, f"could not execute: {exc}"
 
+    child_done = threading.Event()
+    stop_drain = threading.Event()
+
     def _drain() -> None:
         assert proc.stdout is not None
+        fd = proc.stdout.fileno()
         # Chunked (not readline) draining: a tool that emits one gigantic
         # newline-free line (progress deltas, minified output) would otherwise
         # materialize the whole line in memory and silently bypass the byte
@@ -445,7 +462,6 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
         #: character; decoding each chunk on its own would turn it into U+FFFD and the
         #: wrapper's ``errors="replace"`` would not be there to stop it.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        read1 = proc.stdout.buffer.read1
 
         def _trim_lines() -> None:
             nonlocal retained
@@ -454,19 +470,12 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
             ):
                 retained -= len(lines.pop(0)) + 1
 
-        while True:
-            try:
-                raw = read1(_DRAIN_CHUNK_BYTES)
-            except (OSError, ValueError):
-                # The main thread may close the pipe to unblock a drain that
-                # outlived its command (a grandchild keeping stdout open).
-                break
-            if not raw:
-                carry += decoder.decode(b"", final=True)
-                break
-            chunk = decoder.decode(raw)
+        def _consume(raw: bytes) -> None:
+            """Decode one chunk and fold it into the bounded line tail."""
+            nonlocal carry, retained
+            chunk = decoder.decode(raw, final=not raw)
             if not chunk:
-                continue
+                return
             carry += chunk
             if "\n" in carry:
                 complete, _, carry = carry.rpartition("\n")
@@ -479,6 +488,54 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
             # next newline arrives) so a newline-free flood stays bounded.
             if len(carry) > _OUTPUT_BYTE_CAP:
                 carry = carry[-_OUTPUT_BYTE_CAP:]
+
+        quiet_deadline: float | None = None
+        while True:
+            if stop_drain.is_set():
+                # The caller is shutting us down (the direct child exited but
+                # a descendant still holds the pipe, or the join timed out).
+                # Sweep whatever is already in the pipe before leaving, so
+                # bytes the child flushed just before exiting are never lost.
+                # Bounded: a descendant that keeps writing cannot pin us here,
+                # and we stop at the first EAGAIN rather than waiting.
+                try:
+                    os.set_blocking(fd, False)
+                except (OSError, ValueError):
+                    pass
+                for _ in range(64):
+                    try:
+                        raw = os.read(fd, _DRAIN_CHUNK_BYTES)
+                    except (BlockingIOError, OSError, ValueError):
+                        break
+                    if not raw:
+                        _consume(b"")
+                        break
+                    _consume(raw)
+                break
+            if child_done.is_set() and quiet_deadline is None:
+                quiet_deadline = time.monotonic() + _DRAIN_QUIET_SECONDS
+            try:
+                readable, _, _ = select.select([fd], [], [], _DRAIN_POLL_SECONDS)
+            except (OSError, ValueError):
+                break
+            if readable:
+                try:
+                    raw = os.read(fd, _DRAIN_CHUNK_BYTES)
+                except (OSError, ValueError):
+                    break
+                if not raw:
+                    _consume(b"")
+                    break
+                _consume(raw)
+                if child_done.is_set():
+                    quiet_deadline = time.monotonic() + _DRAIN_QUIET_SECONDS
+            elif quiet_deadline is not None and time.monotonic() >= quiet_deadline:
+                # The direct child is gone and the pipe has been quiet long
+                # enough that a flush would have arrived. A descendant may
+                # still hold the descriptor, but every byte written before the
+                # child exited has been consumed, so stop without closing the
+                # read end (closing first is what used to drop that tail).
+                break
         if carry:
             with lines_lock:
                 lines.append(carry)
@@ -489,34 +546,27 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
     thread.start()
 
     def _finish_drain() -> bool:
-        """Join the reader, unblocking a pipe held open by a descendant.
+        """Join the reader, telling it to stop if a descendant holds the pipe.
 
         Returns True when the reader exited. ``proc.wait()`` only proves the
         direct child exited; a grandchild that inherited stdout keeps the pipe
-        open, so ``read()`` never returns EOF. Closing our read end unblocks it
-        instead of leaving a daemon thread mutating ``lines`` after this
-        function returned.
+        open, so the reader will not see EOF. Rather than closing the read end
+        (which races the reader and can drop bytes the child already flushed),
+        signal the reader to stop; it performs a final non-blocking sweep of
+        the pipe and exits bounded.
         """
+        child_done.set()
         thread.join(timeout=_DRAIN_JOIN_SECONDS)
         if thread.is_alive():
-            # Close the *descriptor*, not the TextIOWrapper: ``close()`` on the
-            # buffered wrapper waits for the same internal lock the blocked
-            # ``read()`` holds, so it would hang until the descendant exits.
-            # Closing the raw fd makes the in-flight read fail immediately.
+            stop_drain.set()
+            thread.join(timeout=_DRAIN_UNBLOCK_SECONDS)
+        if not thread.is_alive() and proc.stdout is not None:
+            # The reader is gone; close our end so the descriptor is not
+            # leaked. Safe now: all pending bytes were swept above.
             try:
-                if proc.stdout is not None:
-                    os.close(proc.stdout.fileno())
+                proc.stdout.close()
             except (OSError, ValueError):
                 pass
-            thread.join(timeout=_DRAIN_UNBLOCK_SECONDS)
-            if not thread.is_alive() and proc.stdout is not None:
-                # Mark the wrapper closed so its finalizer does not try to
-                # close the already-closed descriptor again (which surfaces as
-                # an "Exception ignored" on stderr).
-                try:
-                    proc.stdout.close()
-                except (OSError, ValueError):
-                    pass
         return not thread.is_alive()
 
     try:

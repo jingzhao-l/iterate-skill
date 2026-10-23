@@ -733,15 +733,19 @@ class TestCommandExecutionBoundaries:
         """A grandchild that inherits stdout must not hang ``guard``.
 
         ``proc.wait()`` only proves the direct child exited; the reader thread
-        blocks on ``read()`` until every writer closes the pipe. It used to be
-        joined for 5s and then abandoned while still mutating the shared
-        ``lines`` list (a race with the snapshot). The fix closes our read end
-        and joins again, bounded.
+        blocks until every writer closes the pipe. It used to be joined for 5s
+        and then abandoned while still mutating the shared ``lines`` list (a
+        race with the snapshot). The fix signals the reader to stop and gives
+        it one bounded, non-blocking sweep of whatever the child already
+        flushed — closing the read end first is exactly what lost the tail
+        (observed as a CI-only failure of this test under Python 3.11).
         """
         import time
 
         monkeypatch.setenv("ITERATE_EXTRA_SAFE_COMMAND_PREFIXES", "python3")
-        monkeypatch.setattr("iterate_cli.guard._DRAIN_JOIN_SECONDS", 0.3)
+        # Aggressively short join so the stop/sweep path is exercised even on
+        # a fast machine; the child's line must survive regardless.
+        monkeypatch.setattr("iterate_cli.guard._DRAIN_JOIN_SECONDS", 0.01)
         project = _make_project(tmp_path)
         scripts_dir = project / "scripts"
         scripts_dir.mkdir()
