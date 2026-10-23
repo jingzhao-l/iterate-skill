@@ -1034,6 +1034,7 @@ harness/iterate-plugin/
 | P5 | Budget & Rate | 累计 token / 美元预算、限流窗口、熔断状态 | loop_policy / cost meter |
 | P6 | Config | iterate.config.yaml 只读预览 + 受控编辑（校验后写回、备份回滚）；provider / BYOK 管理（key 脱敏） | config/settings.py / auth/manager.py |
 | P7 | Reports | 报告列表、HTML 报告内嵌预览、回放页入口 | report 目录 / html_report |
+| P8 | Trend 趋势 | 逐轮 new / fixed / regressed / unchanged 历史、最新一轮变化明细、未解决与顽固（3+ 轮）问题、按维度汇总；随 SSE 决策条目实时刷新 | decision log（report 条目）+ trend-library |
 
 **操作边界（安全默认）**：P2/P3/P6 涉及写操作（启动/停止/恢复 checkpoint/保存配置）一律「只读默认 + 显式确认 + 写入前备份 + 失败回滚」，与 CLI 既有语义一致。
 

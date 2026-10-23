@@ -4,6 +4,81 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-10-23
+
+### Added
+
+- **`ih iterate trend`：把「这一轮到底变好了没有」变成一条可查询、可门禁的事实。**
+  趋势库一直只有一个 `file|line|dimension` 指纹的当前状态，`log --trend` 也只把它压成
+  tracked/open/fixed/stubborn 四个数；"最新一轮新增了什么、修掉了什么、有没有把修过的
+  问题又带回来" 这个问题在 CLI 与 WebUI 里都**无法回答**，尽管决策日志里每条 `report`
+  条目早就带着完整 findings。新增 `iterate/trend_report.py` 从日志还原逐轮历史：
+  - `new` = 本轮有、上一轮没有；`fixed` = 上一轮有、本轮没有；
+  - `regressed` = 本轮出现，且在**更早**某一轮被修复过（按整段历史判定，不是只看上一轮）；
+  - `unchanged` = 两轮都在；首轮全部计为 `new`。
+  命令行支持 `--history/--top/--json`，以及两个 CI 门禁：`--fail-on-regression`
+  （最新一轮出现回归即 exit 1）与 `--fail-on-new <none|low|medium|high|critical>`
+  （最新一轮新增达到该严重度即 exit 1）。没有历史时输出明确下一步（先跑一次循环），
+  不是空白或 traceback。旧版 `log --trend` 保持原样，不破坏脚本。
+  日志里的历史形状（`findings` / `topFindings` / `notableFindings` / 嵌套 `summary`）
+  都走既有 `findings_from_report`，损坏条目与不可跟踪 finding 跳过而不是让整页崩溃；
+  列表长度有上限（计数仍精确），避免几千条 finding 把 API 响应撑爆。
+- **WebUI 新增「趋势」页（`GET /api/v1/trend`，快捷键 `g t`）。** 这是引擎能力第一次
+  真正接到管理台，而不是再包一层 CLI 文本：卡片区展示运行数 / 跟踪中 / 未解决 / 顽固 /
+  可见窗口净方向；「最近一轮变化」按回归 / 新增 / 修复三列列出文件、行号、维度、严重度；
+  「运行历史」表逐轮列出 total/new/fixed/regressed/unchanged，有回归的行高亮；
+  顽固问题与未解决问题各有一张表，并按维度给出未解决计数。页面在 SSE 报告新决策条目时
+  自动刷新（运行中无需手动 reload），也有显式刷新与失败重试。只读接口，不写 `.iterate`。
+
+### Fixed
+
+- **`trend_store.record_run` 的读-改-写终于加锁了；并发收尾不再丢 finding。**
+  2.7.0 只把**写文件**换成了临时文件 + 原子 replace，读和写之间仍然没有任何互斥：
+  两个进程（例如 WebUI 与 TUI，或两个 swarm worker）同时收尾时都读到旧库、各自保存，
+  后写者把先写者的记录整段覆盖掉——文件始终是合法 JSON，所以没有任何报错，只是趋势
+  永久少了一条。现在整段临界区用 `sidecar_lock_path` + `exclusive_file_lock` 串行化，
+  与其他共享注册表（credentials/settings/mailbox）一致。新增的并发用例把 `load_library`
+  拉长 100ms 并让两个线程同时进入：去掉锁时稳定只剩 1 条记录（复现丢更新），加锁后
+  `a.py`/`b.py` 两条都在。
+- **SOCKS 代理用户不再在启动阶段直接崩掉。** `httpx`（OpenAI/Anthropic SDK 共用）默认
+  读取 `ALL_PROXY`/`HTTPS_PROXY`；当环境里是 `socks5://…` 而没装 `socksio` 时，客户端
+  构造就抛 `ImportError`，用户看到的是一段 SDK 栈，harness 根本起不来。新增精确锁版依赖
+  `socksio==1.0.0`（纯 Python、无传递依赖），SOCKS 代理可直接使用。这也是本机全量测试里
+  7 条 `test_openai_client` / hooks 用例失败的根因。
+- **`tests/test_tools/test_bash_tool.py` 的 drain 用例不再看机器负载脸色。** 测试替身在
+  第一次 `read()` 里 `sleep(0.08)` 后返回 `b""`，本意是"错过 50ms 读窗口"；但真实
+  `StreamReader` 只在 EOF 返回 `b""`，负载高时事件循环先跑完 sleep，drain 正确地把它
+  当成流结束而提前返回，用例随即红。改为抛 `asyncio.TimeoutError`（与 `wait_for` 的
+  超时语义一致），让"第一次读超时、第二次拿到 late burst"在任何调度下都成立；生产代码
+  未改（它把 `b""` 当 EOF 是对的）。
+- **工作树里跑 `pytest` 不再去测另一棵树的代码（这条让此前的绿是假的）。**
+  harness 是 `pip install -e` 装的，editable 记录把 `iterate_harness` 固定到**某一个**
+  checkout；在别的 worktree 里 `cd harness/iterate-harness && pytest tests/ -q` 时，
+  测试文件里的 `from iterate_harness import ...` 解析到的是那个被固定的 checkout 的源码。
+  于是本版本的工作树实测**根本没能被测到**：全量用例如期跑到最后一步，报
+  `ImportError: cannot import name 'trend_report'`（新模块只存在于工作树里），
+  而此前任何一次绿灯都无法证明是这棵树的代码在跑。`[tool.pytest.ini_options]`
+  显式加 `pythonpath = ["src"]`，让"你在哪跑"就等于"测的是哪"，CI 与工作树一致
+  （与 mypy 早已用 `mypy_path = "src"` 规避的同一陷阱）。
+- **`trend_report` 不再把布尔值当成行号或计数。** Python 里 `True` 是 `int` 的实例，
+  所以 `line: true` 会被认成第 1 行、`totalFindings: true` 会被当成 1 条 finding——
+  而趋势库的指纹对同样的 `true` 一律按"文件级、无行号"处理（`finding_fingerprint`
+  显式拒绝 bool），于是同一个 finding 在趋势报告里显示成 `file:1`、在趋势库里显示成
+  `file`，两个视图对不上，行号列还会冒出字面 `True`。现在两处口径一致：`line` 为布尔
+  时按"无行号"处理，`totalFindings` 不是真整数时回落到该条目实际还原出的 finding 数。
+- **`python -m iterate_harness.cli` 不再静默空跑。** 应用此前只在 `__main__.py` 里接上，
+  所以按模块路径调用时导入成功、什么都不做、退出码 0——看起来像"跑完了"，其实什么都没
+  执行。现在模块路径与 `python -m iterate_harness` 行为一致。
+
+### Changed
+
+- `.gitignore` 的 `node_modules` 去掉尾斜杠。带斜杠的 `frontend/web/node_modules/`
+  只匹配**目录**，而共享 checkout 的工作树里 node_modules 是一个**符号链接**（git 眼里
+  是文件），于是它一路显示为未跟踪，任何一次 `git add -A` 都可能把一个 200MB 的安装
+  目录推上发布仓。
+- `frontend/web/package.json` 与 lock 从落后的 2.7.0 对齐到本次版本；此前 2.8.0 发版
+  只 bump 了 Python 包与 npm 包装器，前端元数据留在旧版本，构建产物与发布记录对不上。
+
 ## [2.8.0] - 2026-10-22
 
 ### Fixed
