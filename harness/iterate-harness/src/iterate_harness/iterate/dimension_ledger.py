@@ -203,6 +203,13 @@ def echoed_dimension_map(project_root: str | Path) -> dict[str, str]:
     together — and it is a citation of what came back, not a new claim: an answer with no echo
     contributes nothing here, which is what makes "the other surface declares in metadata" read
     as silence rather than as disagreement.
+
+    WHAT THIS IS NOT: a verdict input. The only sender that can put an echo into those rows is
+    scenario ①'s own re-verification, and ① cannot declare a dimension for an operation without
+    quoting the very attribution the check would be testing — a declaration derived from the
+    ledger makes the comparison circular, so the request carries no per-operation dimension and
+    these rows arrive with ``echoedDimension`` absent. The judgement lives at
+    :func:`echo_contestation`, on the seam where an agent's own call is witnessed by the shell.
     """
     from .reverify_trigger import LEDGER_DATA_KIND
 
