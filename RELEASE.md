@@ -198,6 +198,59 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 保留含独有提交的 `backup/*`、`kernel/decision-log-chain` 等分支。
       > **⚠️ 唯一未决项**：无（三平台 + npm 均已确认 3.7.0）。
       >
+      > **3.8.2 状态（2026-10-23）**：patch 链（3.8.0 功能 → 3.8.1 guard 竞态 →
+      > 3.8.2 版本链测试修复）。测试套件 **1856 passed / 1 skipped**（3.8.0 为
+      > 1855 passed；3.8.2 新增 `test_version_chain_allows_skipped_patch_but_rejects_internal_gap`），
+      > `ruff check .` 通过。
+      > ✅ **3.8.0 功能**：`iterate report`（status/scan/doctor 聚合为 Markdown/JSON，
+      > `--out/--force/--strict`）、`iterate completion bash|zsh|fish`、`iterate show`
+      > 回显 `dimension_sets`；同轮完成持久化/导入/诊断多项加固（备份唯一后缀、
+      > symlink 安全 atomic_write、import 大小上限前移、doctor 修 `{}` 配置、
+      > guard 孙进程持有 stdout 等）。
+      > ✅ **3.8.1 修复**：3.8.0 的 guard 输出读取在 CI Python 3.11 上暴露竞态——
+      > 孙进程继承 stdout 时旧实现等 5s 后先关读端，可能丢掉子进程已 flush 的输出。
+      > 现改为 `select` 轮询 + 子进程退出后的短暂静默窗口 + 有界非阻塞清扫，
+      > 回归测试把 join 压到 0.01s，连续 20 次复跑通过。
+      > ✅ **3.8.2 修复**：3.8.1 的发布门禁触发
+      > `test_changelog_version_chain_has_no_gaps` 的过严假设（要求所有 minor 的
+      > 每个 patch 都有标题，于是要求 plugin-only 的 3.6.1/3.7.1）。现按 minor 校验：
+      > 3.4 起每个 minor 必须有标题，且已出现 minor 内部 patch 从 `.0` 连续到其最高
+      > patch；新增合成 changelog 回归用例。3.8.1 的产物与 npm 版本保留（npm 不可
+      > 同版本重发），3.8.2 为最终 latest。
+      > ✅ **GitHub Release**：v3.8.0 run 39703505442、v3.8.1 run 39880327985、
+      > v3.8.2 run 39881233894 均 success。v3.8.2 六资产齐备；
+      > `shasum -a 256 -c SHA256SUMS.txt` OK；三份 `.asc` 均对本机校验通过；
+      > `iterate-skill.tar.gz` 693,544 字节 / **95 条目**、`harness/|kernel/|tests/`
+      > **0 条**；`iterate-qoder.zip` 736,926 字节、同上 0 条；两份包内
+      > `SKILL.md version: 3.8.2`。
+      > ✅ **npm**：v3.8.0/v3.8.1/v3.8.2 三次 `npm-publish.yml` 均 success；
+      > `npm view iterate-skill-installer version` → **3.8.2**，
+      > `npx -y iterate-skill-installer@latest --version` → **3.8.2**。
+      > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：3.8.2 精简包
+      > 726,478 字节，`upload_file_to_openapi` → `update_skill_settings` 成功
+      > （file_id `a26461c0-5355-453c-8b48-77f32a38514b`）；消费端
+      > `download_skill()` 实测 **72 文件**、`harness/|kernel/|tests/` 0 条、
+      > `SKILL.md version: 3.8.2`，且含 `iterate_cli/report.py`、
+      > `iterate_cli/completion.py`。
+      > ✅ **ClawHub**：3.8.0 与 3.8.2 均发布 72 文件（3.8.2 versionId
+      > `k974v75bdsj9hhf8n2jckxjdc18gva9v`，`ok:true`，`publicationStatus=pending`）；
+      > 平台审核约 12 分钟后完成：`GET /api/v1/skills/iterate-skill` 的
+      > `tags.latest = 3.8.2`，`/versions` 首项为 3.8.2，`resolve` 的
+      > `latestVersion = 3.8.2`。
+      > ✅ **SkillHub**（skillId `104490`）：3.8.2 发布 70 文件 / 724,095 字节，
+      > `ok:true`，versionId `455049`，`tags.latest = 3.8.2`；
+      > `reviewStatus/securityScanStatus/contentAuditStatus=pending` 为平台异步审核。
+      > **✅ 清洁门禁（2026-10-23T01:05Z 左右）**：`git status` 干净、
+      > `origin/main == main == 55fc8a25`；Dependabot open **0 × 3 仓**
+      > （7 条 skill/harness 的 dev-only vite/@vitest 告警以
+      > `tolerable_risk` + 限定 280 字符说明关闭；均为 harness frontend，
+      > 不在任何发布包内）；open issue **0 × 3 仓**；open PR **0 × 3 仓**
+      > （harness #5 dependabot vite 因 Python 测试 jobs 红且属独立 lane，
+      > 已带原因关闭，分支保留）；`git worktree prune --dry-run` 为空；
+      > 其他 lane 的 17 个 worktree 全部 clean 且分支有效，未动；
+      > 新增 `backup/2026-10-23-harness-wip` 保存主工作区里一条 harness
+      > docstring WIP 后恢复干净。
+      >
       > **3.6.0 状态（2026-10-20）**：minor（三个新能力 + 同轮全量复审修复）。测试套件
       > **1563 → 1738**（实测 `pytest tests/ -q` → 1738 passed, 2 warnings；
       > 新增 `tests/test_scan_command.py`、`tests/test_cli_help.py`、
