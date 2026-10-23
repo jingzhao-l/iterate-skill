@@ -224,13 +224,12 @@ def record_observed_echo(
     ``iterate_state`` travels on), because a long session must not grow an unbounded dict that
     gets folded into every following turn.
 
-    One stated limit, in the safe direction. The engine's fold carries back a key it has not seen
-    before, so if two MCP calls run in the SAME turn and neither has folded yet, each starts from
-    its own new dict and the later fold wins — an earlier sibling's witness can be lost. The
-    failure mode is a missed contest, never a wrong one: nothing here can refuse a decision that
-    agrees with what was witnessed, and the surviving call still has its own witness. Closing it
-    would mean a merge-on-fold rule in the engine, which is a bigger contract than a dimension
-    check is worth.
+    One stated limit, in the safe direction. Two MCP calls in the SAME turn both start from a
+    shallow copy with no witness dict, so each builds its own; the engine's fold therefore
+    **merges** this one key instead of replacing it (see ``engine/query.py``), and both siblings'
+    witnesses survive. A sibling that overflows the cap can still evict the oldest entry — the
+    failure mode is a missed contest, never a wrong one, and nothing here can refuse a decision
+    that agrees with what was witnessed.
     """
     if metadata is None or not is_valid_operation_id(operation_id):
         return
@@ -267,6 +266,13 @@ def echo_contestation(
     Nothing here decides which side is true, and nothing edits the earlier call. It refuses the
     new write and names the two ways forward, because a harness that quietly kept the more
     flattering attribution would be the thing being lied to.
+
+    And please read this before "fixing the asymmetry" on the other surface: the fork's plugin
+    (``packages/opencode/src/plugin/glasspane-decision-log.ts``) writes its decision from the
+    evidence frame in the reply it just handled, and its dimension comes from that same call's
+    tool metadata. Declaration and record are one source there, so there is no second witness to
+    disagree — a check copied onto that side would compare a value with itself. The contest is
+    meaningful exactly where two moments exist: a call witnessed now, a claim written later.
     """
     if not isinstance(metadata, dict):
         return None

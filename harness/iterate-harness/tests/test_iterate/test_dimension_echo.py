@@ -476,6 +476,72 @@ def test_the_engine_carries_the_witness_from_the_call_to_the_later_ledger_write(
     assert decision_log.read_entries(tmp_path)[-1].data["dimension"] == "security"
 
 
+def test_two_sibling_mcp_calls_in_one_turn_both_leave_a_witness(tmp_path: Path) -> None:
+    """The fold merges this one key: two parallel siblings must not overwrite each other.
+
+    The barrier inside the fake client is the test. Without it the two calls finish one after the
+    other, the second snapshots the first's dict and mutates it in place, and the assertion passes
+    no matter how the fold behaves — it would be measuring the scheduler, not the rule. Forced
+    overlap is the real shape of a multi-tool turn: both calls snapshot the durable metadata before
+    either returns, so each builds its own witness dict and the second fold would otherwise
+    replace the first's.
+    """
+    from iterate_harness.engine.query import _execute_tool_call
+    from iterate_harness.tools.base import ToolRegistry
+
+    class _OverlappingManager:
+        """Two clients, one barrier: neither call returns until both are in flight."""
+
+        def __init__(self, parts: list[str], both_in_flight: "asyncio.Event", arrivals: list[str]) -> None:
+            self._parts = parts
+            self._both = both_in_flight
+            self._arrivals = arrivals
+
+        async def call_tool_parts(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> list[str]:
+            self._arrivals.append(server_name)
+            if len(self._arrivals) >= 2:
+                self._both.set()
+            await asyncio.wait_for(self._both.wait(), timeout=10)
+            return list(self._parts)
+
+        async def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> str:
+            return "\n".join(await self.call_tool_parts(server_name, tool_name, arguments)).strip()
+
+    both_in_flight = asyncio.Event()
+    arrivals: list[str] = []
+
+    def adapter_for(server: str, operation_id: str) -> McpToolAdapter:
+        pack = json.loads(json.dumps(PACK))
+        pack["operationId"] = operation_id
+        parts = [json.dumps({"evidencePack": pack}), UPDATE_BLOCK, PROVIDER_LINE, ECHO_SECURITY]
+        info = McpToolInfo(
+            server_name=server,
+            name="gp_last_evidence",
+            description="read the pack",
+            input_schema={"type": "object", "properties": {"operationId": {"type": "string"}}},
+        )
+        return McpToolAdapter(_OverlappingManager(parts, both_in_flight, arrivals), info)
+
+    first = adapter_for("glasspane-mcp", OP)
+    second = adapter_for("glasspane-mcp-b", OTHER_OP)
+    registry = ToolRegistry()
+    registry.register(first)
+    registry.register(second)
+    context = _query_context(tmp_path, registry)
+
+    async def both() -> list[Any]:
+        return await asyncio.gather(
+            _execute_tool_call(context, first.name, "toolu_a", {"operationId": OP}),
+            _execute_tool_call(context, second.name, "toolu_b", {"operationId": OTHER_OP}),
+        )
+
+    results = asyncio.run(both())
+    assert [result.is_error for result in results] == [False, False]
+    assert len(arrivals) == 2, "the barrier never engaged, so the calls did not overlap"
+    stash = context.tool_metadata[dimension_ledger.ECHO_METADATA_KEY]
+    assert stash == {OP: "security", OTHER_OP: "security"}, stash
+
+
 def test_the_contest_names_resolve_through_the_lazy_export_map() -> None:
     from iterate_harness import iterate as iterate_pkg
 
