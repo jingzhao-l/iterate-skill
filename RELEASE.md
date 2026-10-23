@@ -1159,6 +1159,73 @@ stamp 不匹配会自动重装到新 tag。
       > 提交（本提交零删除，工作区未动）；其过期 badges/downloads.json 快照（10-10 数据，落后于
       > 已推送的 10-15）在 rebase autostash 冲突中解析为远端新值，原始字节保留在 `stash@{0}`。
       >
+      > **2.9.0 发布记录（2026-10-23）**：例行「审查 → 修复 → 缺口补齐 → 自检 → 发版」（minor）。
+      > **新能力**：跨运行趋势（cross-run trend）——此前趋势库只有一个 `file|line|dimension`
+      > 指纹的当前状态，「上一轮修了什么、这轮又冒出新什么、有没有把修好的问题带回来」
+      > 只能靠人翻 `.iterate/decision-log.jsonl`。新增 `iterate/trend_report.py`（纯推导，
+      > 不写盘）+ `ih iterate trend` 子命令（`--json`、`--fail-on-regression`、
+      > `--fail-on-new high` 三个 CI 门禁）+ WebUI 趋势页（`GET /api/v1/trend`，`g t` 键，
+      > 卡片 / 近轮三列 diff / 逐轮历史表 / 未解决与顽固表 / 维度汇总）。修复：①
+      > `trend_store.record_run` 的读-改-写**没有锁**（并发收尾丢 finding），改用与其余共享
+      > 注册表一致的 file lock；② 新增依赖 `socksio==1.0.0`——`ALL_PROXY=socks5://` 环境下
+      > `AsyncOpenAI` 构造直接 `ImportError: Using SOCKS proxy, but the 'socksio' package is
+      > not installed`，本机 4 条 openai 客户端 + 2 条 reasoning effort + 2 条 hooks 用例整片
+      > 红；③ **测试基线本身是假的**——`pyproject.toml` 缺 `pythonpath = ["src"]`，editable
+      > 安装把 `iterate_harness` 固定到某一个 checkout，于是在别的工作树里 `pytest tests/`
+      > 导入的是**另一棵树**的源码（本轮实测直接 `ImportError: cannot import name
+      > 'trend_report'`），任何绿灯都无法证明测的是这棵树；与 mypy 的 `mypy_path` 同形补齐；
+      > ④ `trend_report` 两处把布尔当整数（`True is int`）：`line: true` 被当第 1 行、
+      > `totalFindings: true` 被当 1 条 finding，而 `trend_store` 指纹层早已拒绝 bool——
+      > 两个视图对不上，行号列还会印出字面 `True`；⑤ `python -m iterate_harness.cli`
+      > 静默空跑（退出码 0、零输出，应用只接在 `__main__.py` 上）；⑥ `test_bash_tool`
+      > 的 drain 用例改用 `asyncio.TimeoutError`，不再随机器负载变红；⑦ 前端
+      > `package.json` / lock 从 2.7.0 对齐到 2.9.0（此前只 bump Python 与 npm 包装器，
+      > 构建产物与发布记录对不上）；⑧ `.gitignore` 的 `node_modules` 去掉尾斜杠（带斜杠只
+      > 匹配目录，共享 checkout 里 node_modules 是符号链接、git 眼里是文件，一路显示为
+      > 未跟踪，一次 `git add -A` 就能把 200MB 装上发布仓）。
+      > 版本锁步：`__init__.py` / `npm/package.json` / `frontend/web/package.json`（+ lock）
+      > / `CHANGELOG.md` 同步 2.9.0。校验 **2910 passed + 6 skipped**（本机 3.13）、
+      > ruff clean、mypy strict clean、npm 包装器 **89 passed**、前端 `tsc --noEmit` +
+      > vitest 通过；端到端门禁在真实决策日志上验证（回归与 critical 新增都被拦下 exit 1）。
+      > 发布仓 CI：**Python quality / npm wrapper / Frontend typecheck 三项绿**；
+      > `Python tests (3.10/3.11)` 两项红——**属既有基线**，v2.6.0 / v2.7.0 / v2.8.0 三次
+      > main push 的同一 job 同样失败（日志已过期不可取），非本版引入。
+      > 走 `.release/iterate-harness` 替代路径（与公开 main 共享历史）rsync + 提交
+      > `fe8d0d27` 并推送；主仓库 push `3d1c39f6`（本版本还顺带把同批在途的
+      > `34707585` 维度见证键折叠修复一并带上，rebase 冲突在 `iterate/__init__.py`
+      > 的 `__all__` 段落，取「上游删掉的三个符号不再导出 + 本版新增的两个 trend 导出」）。
+      > GitHub Release **v2.9.0** 已建（tag push 即完整发版；release.yml 全绿，
+      > `iterate_harness-2.9.0-py3-none-any.whl` **1,011,804 字节** + `.sha256` + `.asc`
+      > 三件 asset），PyPI latest=**2.9.0**（已验证），npm `iterate-harness@2.9.0` 已发布
+      > （`npm publish` 成功、9 文件 25.0kB / 75.7kB unpacked、shasum
+      > `9b861f9c54e2eef78230e9acf3959808d2542a3e`，registry 传播约 60s 后 latest=2.9.0）。
+      > 端到端：`npm install -g --prefix /tmp/ih-verify-290 iterate-harness@2.9.0` 后
+      > `ih --version` = **`iterate_harness 2.9.0`**（exit 0；托管 venv 由 2.7.0 升级到
+      > 2.9.0，装的依赖树里 `socksio-1.0.0` 已在列）。
+      > **环境注记（既有、非本版缺陷）**：本机 `ALL_PROXY=socks5://127.0.0.1:15556`。
+      > 首次 bootstrap 走 socks 代理时 pip 失败——pip 24.0 内嵌 urllib3 1.26 的 SOCKS 支持
+      > 需要 **PySocks**（`import socks`），全新 venv 里既没有 PySocks 也没有 socksio，
+      > 于是 pip 连索引都够不着（`Missing dependencies for SOCKS support`），三个候选
+      > （PyPI spec / GitHub wheel / GitHub tarball）全红。这不是 socksio 依赖能修的：
+      > socksio 给 httpx2 用，pip 认的是 PySocks，且装 PySocks 本身又需要网络（鸡生蛋）。
+      > 绕过方式：给 pip 设 `no_proxy` 覆盖索引主机，或在网络可达时先
+      > `python -m pip install pysocks` 进托管 venv。**装上之后不受影响**——stamp 匹配即
+      > 跳过重装，`ih --version` 在 socks 代理开启时 exit 0 已验证。
+      > 2.8.0 未在本节记录（上一版发布记录缺失），此处只补 2.9.0。
+      > **卫生状态**：主仓与发布仓工作区均干净且与各自 `origin/main` 逐字一致（
+      > `3d1c39f6` / `fe8d0d27`）；dependabot alerts 与 open issues / PRs 在
+      > `jingzhao-l/iterate-harness` 与 `jingzhao-l/iterate-skill` 两仓均为 **0**；
+      > 已合并的本地+远端分支（`fix-drain-read1`、`kernel-zod-pin`、`plugin-kernel-flip`、
+      > `sc-dimension-ledger`、`sc-host-transport`、`sc-items-boundary`、
+      > `sc1-async-transport`、`sc1-reverify-loop`、`sc2-dim-echo`、`sc2-dimension-wiring`、
+      > `sc3-writeside`、`sc4-flip`）全数删除，保留 `backup/*` 与仍在用的长线分支
+      > （`kernel/decision-log-chain` 未合入、`kernel/npm-canonical` 挂在脏工作树、
+      > `sc2-echo-witness` 有并行会话在用）；一次性 worktree 17 个（`it-baseline`、
+      > `it-016-chain`、`it-dim`、`it-dim-echo`、`it-guard-drain`、`it-host`、`it-items`、
+      > `it-sc1`、`it-sc1-async`、`it-sc2`、`it-sc3`、`it-sc4-flip`、`it-zod`、`it-plugin`、
+      > `it-kernel-016-push`、`it-kernel-018`、`it-kernel-push`）全部 clean 移除，
+      > 保留各有明确用途者（本轮 daily、`it-echo-witness`、`it-kernel`、`it-kernel-rebase`）。
+      >
       > **2.7.0 发布记录（2026-10-17）**：例行「审查 → 修复 → UX 评审 → 缺口补齐 → 自检」发版
       > （minor）。约 40 处修复横跨权限 / 引擎 / hooks / 防御 / 任务 / 工具 / CLI / Web / cron /
       > 配置。**主体亮点**：① 任务投递——`send_message` 发给刚完成的 agent 时消息会被静默吞掉
