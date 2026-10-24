@@ -57,11 +57,28 @@ test("the zod this build resolves is the declared one", () => {
 
 test("the shipped declarations are the shape that zod emits at that version", () => {
   const declaration = readFileSync(join(packageRoot, "dist", "evidence-pack.d.ts"), "utf8");
+  // The canary is read against the declared major rather than frozen at one string, because the
+  // thing it guards is the *correspondence* between what this package promises to install and what
+  // its emitted .d.ts was typed by. The two tests above pin the declared version and the resolved
+  // one; this one pins that the emission actually came from that line. zod 4 changed a strict
+  // object's emission from `"strict", z.ZodTypeAny, …` to `z.core.$strict`, and a consumer that
+  // type-checks against these declarations moves with the major — which is why the move belongs in
+  // a release note, not in a silent dependency bump.
+  const major = Number.parseInt(manifest.dependencies.zod, 10);
+  const expected = major >= 4 ? /, z\.core\.\$strict>/ : /"strict", z\.ZodTypeAny,/;
   assert.match(
     declaration,
-    /"strict", z\.ZodTypeAny,/,
-    "evidence-pack.d.ts no longer looks like zod-3 emission. If this package moved zod majors, "
-    + "every consumer that type-checks against these declarations moved with it — say so in the "
-    + "release note and update this canary in the same commit.",
+    expected,
+    `evidence-pack.d.ts matches neither the zod-${major} emission (${expected}) nor anything this `
+    + "package declared. If this package moved zod majors, every consumer that type-checks against "
+    + "these declarations moved with it — say so in the release note and update this canary in the "
+    + "same commit.",
+  );
+  const other = major >= 4 ? /"strict", z\.ZodTypeAny,/ : /, z\.core\.\$strict>/;
+  assert.doesNotMatch(
+    declaration,
+    other,
+    `the declaration carries emission from BOTH zod majors, which means the build that produced it `
+    + "resolved a different zod than package.json declares",
   );
 });

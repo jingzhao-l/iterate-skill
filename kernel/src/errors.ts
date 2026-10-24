@@ -30,7 +30,18 @@ export class KernelSchemaError extends Error {
  * imports them.
  */
 export interface SchemaErrorLike {
-  readonly issues: readonly { readonly path: readonly (string | number)[]; readonly message: string }[];
+  readonly issues: readonly { readonly path: readonly PropertyKey[]; readonly message: string }[];
+}
+
+/**
+ * A path segment as text. `PropertyKey` is not pedantry: zod 4 types an issue path that way, and
+ * `String(symbol)` throws — a symbol in a path would turn a schema rejection, which is this
+ * package's normal way of saying "no", into a crash at the moment it is being reported. The
+ * description is the only part of a symbol a schema could have placed there on purpose, so that is
+ * what reaches the message; an unnamed symbol says it was unnamed rather than disappearing.
+ */
+function segmentText(segment: PropertyKey): string {
+  return typeof segment === "symbol" ? (segment.description ?? "<symbol>") : String(segment);
 }
 
 /** One place that turns a validation failure into `KernelSchemaError`. */
@@ -38,7 +49,7 @@ export function schemaErrorFrom(label: string, error: SchemaErrorLike): KernelSc
   return new KernelSchemaError(
     label,
     error.issues.map((issue) => ({
-      path: issue.path.map((segment) => String(segment)).join("."),
+      path: issue.path.map(segmentText).join("."),
       message: issue.message
     }))
   );
