@@ -83,6 +83,15 @@
       ]
     },
     {
+      "path": "recipe-config.ok-01.json",
+      "sha256": "68613bcabf45cf059d7086ead38c099ef0dd9b678bb67d5a5e31da77b6ca3549",
+      "bytes": 628,
+      "consumedBy": [
+        "src/iterate_harness/iterate/glasspane_recipe.py",
+        "tests/test_iterate/test_glasspane_recipe.py"
+      ]
+    },
+    {
       "path": "run-plan.ok-01.json",
       "sha256": "a7f52399c8501e34c27fcc0293f52d796f0724c92cd0dbfecc3ebf8e4871972f",
       "bytes": 5329,
