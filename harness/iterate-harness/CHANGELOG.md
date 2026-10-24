@@ -24,13 +24,19 @@ All notable changes to iterate-harness should be recorded in this file.
 - **③ 的账本第一次有对面读者**：`fix_proof` 走内核链校验器（`read_decision_log`），既能读工程自己的
   `.iterate/decision-log.jsonl`，也能读 `GLASSPANE_DECISION_LOG` 递进来的**另一个 harness 写的**账本。
   断链拒绝并说停在第几行；pre-chain 的旧形状另给一句"这是历史不是篡改"。
-- **① 的请求从此能带 `recipeSteps`**：逐字带配置里的步骤、不重排不重塑，上限 8 条，超出计入
-  `recipeStepsNotRequested`（不是静默截断）。引擎对它的回答仍是它原有的纪律：重跑步骤属于对真 app
-  动手，deferred 并给理由——本批没改它的判决面，也没把 deferred 说成 answered。
-- **发布点接线**：pass 分支除 `reason` 之外发布 `recipeStepGate`（允许与被拒两种都带出处）。
-  sync 与 awaited 两个 sender 仍共用 `_prepare`；新增的唯一一次通道使用是那一次 registry 读，它被
-  `CONFIG_READ_TOOLS` 与 `READ_ONLY_TOOLS` 分开钉住——**读配置不许冒充一次关于 app 的回答**，
-  `test_reverify_wiring` / `test_host_transport` 各有一条断言把两个集合分开数。
+- **`recipeSteps` 不进出站请求**，这条是本批第二版才定下来的。第一版让①的失败请求带上配方步骤，
+  读起来像"④  closed"，实际违反 ④ 自己要的那件事：复核没通过时不许让对面重跑步骤。而契约在这一层
+  没有缺口可钻——`reVerificationRequestFrom` 两份实现对 pass 一律返回 null（失败才生成请求），所以
+  "带权限的请求"按构造不存在。于是本模块把这条写成**禁令**而不是能力：`reverification_targets` 没有
+  收配方的参数，`test_targets_never_carry_recipeSteps_however_the_recipe_looks` 同时钉住返回值与
+  函数签名（参数回来就得红）。配方本身仍被读、被校验、被摘要——它以 `recipeStepGate.steps` 出现在
+  本轮发布里，那是给驱动配方的人看的事实，不是本仓替引擎动手的许可。
+- **发布点接线**：`recipeStepGate` 在**每一条**能发布的路径上一起出去（通过、契约拒绝、以及真正
+  发出的那一轮），不再只挂在 pass 分支——只挂一边的话，`RECIPE_GATE_E_*` 那两条拒绝按构造跑不到，
+  而"跑不到的拒绝分支"在本仓等于没修。sync 与 awaited 两个 sender 仍共用 `_prepare`；新增的唯一一次
+  通道使用是那一次 registry 读，它被 `CONFIG_READ_TOOLS` 与 `READ_ONLY_TOOLS` 分开钉住——**读配置
+  不许冒充一次关于 app 的回答**，`test_reverify_wiring` / `test_host_transport` 各有一条断言把两个
+  集合分开数。
 
 ### 实测与反向验证
 
@@ -42,7 +48,10 @@ All notable changes to iterate-harness should be recorded in this file.
 新增 62 条用例（`tests/test_iterate/test_glasspane_recipe.py`）。十发反向变异
 （`/var/tmp/it-mutate.sh`，备份 + sha256 核回，全程未用 `git checkout`/`stash`）每发都点名变红：
 unmeasured 当 pass、放行无可验账本、contest 悄悄取一个、多配方取第一个、回包降级成"没有配方"、
-断链改用宽容读法、判定顺序颠倒、发布点不发闸、无配方也塞步骤、放行面放宽到 `gp_act`。
+断链改用宽容读法、判定顺序颠倒、发出去的那轮不带闸、未通过也塞 recipeStep、放行面放宽到 `gp_act`。
+闸的六条码里，`RECIPE_GATE_E_NO_VERDICT` 在本轮**发布不到**：无判定的轮次按规则 1 连 `reverification`
+都不发布（`_prepare` 第五个位置此时返回 `None`，不为它编一个没人读的形状），所以这条是给直接调用方的
+契约、由测试钉住形状，不算"产品上会看到的拒绝"。
 
 ## [2.10.0] - 2026-10-24
 

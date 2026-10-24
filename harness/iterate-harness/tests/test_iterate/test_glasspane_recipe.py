@@ -22,6 +22,7 @@ module so this file stands on its own — the same discipline ``invariant_report
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -57,6 +58,7 @@ from iterate_harness.iterate.glasspane_recipe import (
     recipe_step_gate,
     validate_recipe_document,
 )
+from iterate_harness.iterate.decision_log import append_entry, make_entry
 from iterate_harness.iterate.kernel_decision_log import (
     append_decision_log_entry,
     new_decision_entry_id,
@@ -431,6 +433,26 @@ def test_a_pre_chain_ledger_line_gets_its_own_sentence(tmp_path: Path) -> None:
 # -------------------------------------------------------------------------------------- the gate
 
 
+def _record_an_operation(project_root: Path, operation_id: str) -> None:
+    """Seed the shape ``recorded_operation_ids`` reads: a loop record carrying ``data.operationId``.
+
+    Worth saying out loud because the two ledger readers answer different questions. ①'s target list
+    comes from ``decision_log.read_entries``, which projects a canonical line's ``payload`` into
+    ``data`` — so an operation id belongs at the top level of a canonical entry does *not* put it in
+    that list, and a fork-written line (which carries it top level) feeds ④'s proof through
+    ``fix_proof`` without ever becoming something ① can ask the engine about. Both readers are right
+    about their own question; this test seeds the shape ① needs.
+    """
+    append_entry(
+        project_root,
+        make_entry(
+            entry_type="decision",
+            round_number=1,
+            data={"kind": "evidence", "operationId": operation_id, "summary": "engine recorded"},
+        ),
+    )
+
+
 def _read_for(tmp_path: Path) -> RecipeRead:
     return read_recipe_or_refusal(env={RECIPE_ENV_VAR: _write_recipe(tmp_path)}, registry_asked=True)
 
@@ -582,17 +604,24 @@ def test_a_passing_round_publishes_the_gate_with_the_recipe_it_read(tmp_path: Pa
     assert asked[0] == (reverify_trigger.REGISTRY_READ_TOOL, {})
 
 
-def test_a_failing_round_names_the_configured_steps_and_the_engine_defers_them(tmp_path: Path, monkeypatch) -> None:
-    """①'s request finally carries ``recipeSteps`` — the target kind that had no producer.
+def test_a_failing_recheck_publishes_the_refusal_and_names_no_steps(tmp_path: Path, monkeypatch) -> None:
+    """④'s ordering, expressed as the one thing this round can actually be made to obey.
 
-    The steps that reach the engine are the recipe's own bytes, and the engine's answer is still
-    the honest one it has always given: re-running a step moves the app, so it is deferred with a
-    reason rather than executed from an error path.
+    The scenario says the recipe proceeds to re-verification *after* the invariant re-check passes.
+    The contract this round builds under refuses to make a re-verification request from a passing
+    report at all (both implementations return null on ``pass``) — so there is no send that carries
+    permission. What this module can be made to do, and does, is the safe half: while the re-check
+    has not passed, a request must not name recipe steps, because naming one is asking the other
+    product to move the app. That is the assertion below, and the gate that justifies it is
+    published next to it rather than only on the passing branch.
+
+    The first version of this file asserted the opposite — that a failing round *did* carry the
+    recipe's steps — which read as a closed scenario while contradicting the row it cites.
     """
     import asyncio
 
     kernel = asyncio.run(_failing_kernel(tmp_path))
-    _chained_ledger(tmp_path, _passing_draft())
+    _record_an_operation(tmp_path, OPERATION_ID)
     monkeypatch.delenv(RECIPE_ENV_VAR, raising=False)
     monkeypatch.delenv(FIX_LEDGER_ENV_VAR, raising=False)
     recipe_path = _write_recipe(tmp_path)
@@ -610,29 +639,34 @@ def test_a_failing_round_names_the_configured_steps_and_the_engine_defers_them(t
         ),
         round_number=1,
     )
-    assert payload is not None and payload["spawned"] is True
-    steps = payload["targets"]["recipeSteps"]
-    assert steps == _fixture_document()["steps"], "carried verbatim, in the recipe's own order"
-    assert {entry["kind"] for entry in payload["deferred"]} == {"recipeStep"}, (
-        "the engine defers a step rather than running it; the relay must show the deferral, not "
-        "an answer it never got"
+    assert payload is not None and payload["spawned"] is True, "the failing re-check still earns ①'s read-only send"
+    assert "recipeSteps" not in payload["targets"], (
+        "a request built while the re-check is failing must not ask the engine to re-run recipe steps"
+    )
+    gate = payload[RECIPE_GATE_STATE_KEY]
+    assert gate["allowed"] is False and gate["invariantState"] == "fail"
+    assert gate["refusal"]["code"] == GATE_E_GATE
+    assert gate["steps"] == [], (
+        "the verdict outranks the hand-off, so on this branch no recipe file was even opened — the "
+        "same rule that keeps a round without a verdict from reading files. Where the recipe *was* "
+        "read and permission still fails (the no-proof case) the steps are published; both shapes "
+        "have their own test above."
+    )
+    assert payload["targets"]["operationIds"] == [OPERATION_ID], (
+        "①'s read-only send is unchanged by ④: it asks about recorded operations, nothing else"
     )
 
 
-def test_more_steps_than_the_cap_are_counted_not_silently_dropped(tmp_path: Path, monkeypatch) -> None:
-    document = _fixture_document()
-    long_document = dict(document, steps=[document["steps"][0]] * 12)
-    recipe_path = _write_recipe(tmp_path, long_document)
-    held = read_recipe(env={RECIPE_ENV_VAR: recipe_path})
-    assert held is not None
-    targets, _not_asked = reverify_trigger.reverification_targets(tmp_path, ("spec-compliance",), recipe=held)
-    assert len(targets["recipeSteps"]) == reverify_trigger.MAX_REQUESTED_RECIPE_STEPS
-    assert reverify_trigger.recipe_steps_not_requested(held) == 12 - reverify_trigger.MAX_REQUESTED_RECIPE_STEPS
-
-
-def test_no_recipe_means_no_recipeSteps_and_no_invented_target(tmp_path: Path) -> None:
-    targets, _ = reverify_trigger.reverification_targets(tmp_path, (), recipe=None)
+def test_targets_never_carry_recipeSteps_however_the_recipe_looks(tmp_path: Path) -> None:
+    """The unit half of the same rule: the target builder has no path to a recipe step."""
+    held = read_recipe(env={RECIPE_ENV_VAR: _write_recipe(tmp_path)})
+    assert held is not None and len(held.steps) == 4
+    targets, _ = reverify_trigger.reverification_targets(tmp_path, ("spec-compliance",))
     assert "recipeSteps" not in targets
+    assert "recipeSteps" not in inspect.signature(reverify_trigger.reverification_targets).parameters, (
+        "the parameter itself must not come back: a caller that *can* hand in a recipe will, and "
+        "the next reader has to re-derive which of the two paths was reachable in production"
+    )
 
 
 def test_a_recipe_object_carries_its_steps_as_the_contract_names_them(tmp_path: Path) -> None:

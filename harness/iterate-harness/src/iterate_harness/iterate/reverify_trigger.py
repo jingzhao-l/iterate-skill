@@ -72,9 +72,9 @@ from .decision_log import DECISION_LOG_REFUSALS, append_entry, make_entry, read_
 from .dimension_ledger import ECHOED_DIMENSION_DATA_KEY
 from .glasspane_recipe import (
     RECIPE_E_READ,
-    Recipe,
     RecipeError,
     RecipeRead,
+    StepGate,
     read_recipe_or_refusal,
     recipe_path_from_project_list,
     recipe_step_gate,
@@ -144,11 +144,6 @@ RECIPE_GATE_STATE_KEY = "recipeStepGate"
 #: literal for one tool is the drift this harness keeps getting fined for.
 REGISTRY_READ_TOOL = CONFIG_READ_TOOLS[0]
 
-#: How many configured steps one request may name. The contract allows 64 and a recipe may hold
-#: all of them; a published payload and a ledger line have to carry the citation of every answer
-#: they relay, so asking without saying so is the lie — :func:`reverification_targets` counts what
-#: it left out instead of silently truncating.
-MAX_REQUESTED_RECIPE_STEPS = 8
 
 
 def _sync_transport(metadata: Mapping[str, Any] | None) -> Callable[[str, dict[str, Any]], object] | None:
@@ -229,16 +224,21 @@ def recorded_operation_ids(project_root: Path | str) -> list[str]:
 def reverification_targets(
     project_root: Path | str,
     planned_dimensions: Sequence[str] = (),
-    recipe: Recipe | None = None,
 ) -> tuple[dict[str, object], int]:
     """The targets this round may honestly name, plus how many ids it could not ask about.
 
-    ``recipeSteps`` are carried only when the hand-off actually delivered a recipe (see
-    :func:`.glasspane_recipe.read_recipe`): a step is something the engine's own recipe carries,
-    and a request that names one this run never read would be naming an invention. The steps
-    travel verbatim and bounded by :data:`MAX_REQUESTED_RECIPE_STEPS`, never re-ordered or
-    re-shaped. Dimensions come from the report the reviewer aggregated, so the list is what this
-    run planned rather than what a config once said.
+    ``recipeSteps`` are deliberately never produced here. ④ asks that the recipe move only after the
+    invariant re-check passes, and the contract this request is built under refuses to build one from
+    a passing report (both implementations: ``reVerificationRequestFrom`` returns null on ``pass``).
+    So the two conditions never coexist in one send: there is no request that may name steps *and*
+    carries permission to run them. The recipe is still held, validated and digested —
+    :func:`.glasspane_recipe.read_recipe` and the gate publish what it contains — and the steps stay
+    the engine's own deferral when a caller names them some other way. Naming them from an error path
+    would be this harness asking the engine to move the app on the strength of a check that did not
+    pass, which is the opposite of the row this module exists to close.
+
+    Dimensions come from the report the reviewer aggregated, so the list is what this run planned
+    rather than what a config once said.
     """
     recorded = recorded_operation_ids(project_root)
     asked = recorded[:MAX_REQUESTED_OPERATIONS]
@@ -248,16 +248,7 @@ def reverification_targets(
     dimensions = [str(dimension) for dimension in planned_dimensions if str(dimension).strip()]
     if dimensions:
         targets["dimensions"] = dimensions
-    if recipe is not None and recipe.steps:
-        targets["recipeSteps"] = [step.to_json() for step in recipe.steps[:MAX_REQUESTED_RECIPE_STEPS]]
     return targets, max(0, len(recorded) - len(asked))
-
-
-def recipe_steps_not_requested(recipe: Recipe | None) -> int:
-    """How many configured steps this round left out of the ask, counted rather than dropped."""
-    if recipe is None:
-        return 0
-    return max(0, len(recipe.steps) - MAX_REQUESTED_RECIPE_STEPS)
 
 
 def _registry_refusal(error: Exception, *, how: str) -> RecipeError:
@@ -386,7 +377,7 @@ def _prepare(
     gates: Mapping[str, object],
     planned_dimensions: Sequence[str] = (),
     read: RecipeRead | None = None,
-) -> tuple[str, Mapping[str, object] | None, int, dict[str, Any] | None]:
+) -> tuple[str, Mapping[str, object] | None, int, dict[str, Any] | None, StepGate | None]:
     """What this round may honestly ask, decided once and shared by both senders.
 
     Returns ``(verdict, request, not_asked, outcome)``. ``outcome`` is the payload to publish when
@@ -406,7 +397,7 @@ def _prepare(
     """
     verdict = gates.get(INVARIANT_GATE_KEY)
     if not isinstance(verdict, str) or not verdict:
-        return "", None, 0, None
+        return "", None, 0, None, None
 
     from ..defensive.kernel import DEFENSIVE_KERNEL_KEY
 
@@ -416,7 +407,17 @@ def _prepare(
         # A verdict with no report behind it is a producer bug, and the honest answer about our
         # own action is "nothing was asked": no request, no ledger line, no published key.
         log.warning("iterate invariant gate %r carries no report; no re-verification was sent", verdict)
-        return "", None, 0, None
+        return "", None, 0, None, None
+
+    # ④'s gate, computed once for every outcome this round can publish — the passing one, the
+    # contract refusals, and the send. It used to be computed only on the passing branch, which made
+    # its non-pass refusals unreachable: a guard nobody can reach is not a delivered control, and the
+    # publish site is the only place that knows the verdict, the recipe and the ledger together.
+    gate = recipe_step_gate(
+        project_root=project_root,
+        invariant_verdict=verdict,
+        read=read if read is not None else RecipeRead(registry_asked=False),
+    )
 
     ensure = getattr(kernel, "invariant_ensure", None)
     commands = getattr(kernel, "invariant_commands", None)
@@ -425,7 +426,7 @@ def _prepare(
             verdict,
             None,
             0,
-            _refusal_payload(
+            _with_gate(_refusal_payload(
                 InvariantReportError(
                     "INVARIANT_REPORT_E_CONFIGURED",
                     f"the invariant verdict {verdict!r} came from a kernel that does not name the "
@@ -437,36 +438,40 @@ def _prepare(
                     "checks",
                 ),
                 verdict,
-            ),
+            ), gate),
+            gate,
         )
 
     try:
         contract_report = from_defensive_report(list(ensure), dict(commands), report)
     except InvariantReportError as error:
-        return verdict, None, 0, _refusal_payload(error, verdict)
+        return verdict, None, 0, _with_gate(_refusal_payload(error, verdict), gate), gate
 
-    targets, not_asked = reverification_targets(project_root, planned_dimensions, recipe=read.recipe if read else None)
+    targets, not_asked = reverification_targets(project_root, planned_dimensions)
     try:
         request = re_verification_request_from_targets(contract_report, targets)
     except InvariantReportError as error:
-        return verdict, None, not_asked, _refusal_payload(error, verdict)
+        return verdict, None, not_asked, _with_gate(_refusal_payload(error, verdict), gate), gate
     if request is None:
-        # The kernel's own rule: a passing report earns no request. Nothing is sent, and the
-        # round records that it sent nothing because nothing was broken — and, when ④ has the
-        # three things it reads from, whether the recipe may move forward now that they did pass.
-        outcome_payload: dict[str, Any] = {
-            "spawned": False,
-            "invariantState": verdict,
-            "reason": "the invariant report passed; the kernel builds no re-verification request",
-        }
-        gate = recipe_step_gate(
-            project_root=project_root,
-            invariant_verdict=verdict,
-            read=read if read is not None else RecipeRead(registry_asked=False),
+        # The kernel's own rule: a passing report earns no request. Nothing is sent, and the round
+        # records that it sent nothing because nothing was broken — alongside ④'s answer to the
+        # question the pass actually raises: may the recipe move forward now?
+        outcome = _with_gate(
+            {
+                "spawned": False,
+                "invariantState": verdict,
+                "reason": "the invariant report passed; the kernel builds no re-verification request",
+            },
+            gate,
         )
-        outcome_payload[RECIPE_GATE_STATE_KEY] = gate.to_payload()
-        return verdict, None, not_asked, outcome_payload
-    return verdict, request, not_asked, None
+        return verdict, None, not_asked, outcome, gate
+    return verdict, request, not_asked, None, gate
+
+
+def _with_gate(payload: dict[str, Any], gate: StepGate) -> dict[str, Any]:
+    """Publish ④'s answer next to whatever else this round is saying about itself."""
+    payload[RECIPE_GATE_STATE_KEY] = gate.to_payload()
+    return payload
 
 
 def _finalize(
@@ -477,7 +482,7 @@ def _finalize(
     request: Mapping[str, object],
     not_asked: int,
     run: ReverificationRun,
-    recipe: Recipe | None = None,
+    gate: StepGate | None,
 ) -> dict[str, Any]:
     """One send, published: the round's payload plus the single ledger entry it earns."""
     payload: dict[str, Any] = {
@@ -501,9 +506,8 @@ def _finalize(
     }
     if not_asked:
         payload["operationIdsNotRequested"] = not_asked
-    steps_left_out = recipe_steps_not_requested(recipe)
-    if steps_left_out:
-        payload["recipeStepsNotRequested"] = steps_left_out
+    if gate is not None:
+        payload[RECIPE_GATE_STATE_KEY] = gate.to_payload()
     ledger_error = record_reverification_run(project_root, round_number, request, run)
     if ledger_error is not None:
         payload["ledgerError"] = ledger_error
@@ -566,7 +570,7 @@ def trigger_reverification(
             )
         else:
             read = _resolve_recipe_read(shell_reported_path=None, channel_refusal=None, registry_asked=False)
-    verdict, request, not_asked, outcome = _prepare(
+    verdict, request, not_asked, outcome, gate = _prepare(
         project_root=project_root,
         metadata=metadata,
         gates=gates,
@@ -587,7 +591,7 @@ def trigger_reverification(
         request=request,
         not_asked=not_asked,
         run=run,
-        recipe=read.recipe if read is not None else None,
+        gate=gate,
     )
 
 
@@ -620,7 +624,7 @@ async def trigger_reverification_async(
             read = _resolve_recipe_read(shell_reported_path=path, channel_refusal=refusal, registry_asked=True)
         else:
             read = _resolve_recipe_read(shell_reported_path=None, channel_refusal=None, registry_asked=False)
-    verdict, request, not_asked, outcome = _prepare(
+    verdict, request, not_asked, outcome, gate = _prepare(
         project_root=project_root,
         metadata=metadata,
         gates=gates,
@@ -644,7 +648,7 @@ async def trigger_reverification_async(
         request=request,
         not_asked=not_asked,
         run=run,
-        recipe=read.recipe if read is not None else None,
+        gate=gate,
     )
 
 
@@ -654,13 +658,11 @@ __all__ = [
     "GLASSPANE_TRANSPORT_KEY",
     "INVARIANT_GATE_KEY",
     "MAX_REQUESTED_OPERATIONS",
-    "MAX_REQUESTED_RECIPE_STEPS",
     "RECIPE_GATE_STATE_KEY",
     "REGISTRY_READ_TOOL",
     "REVERIFICATION_STATE_KEY",
     "record_reverification_run",
     "recorded_operation_ids",
-    "recipe_steps_not_requested",
     "reverification_targets",
     "trigger_reverification",
     "trigger_reverification_async",
