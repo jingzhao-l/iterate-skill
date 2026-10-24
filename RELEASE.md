@@ -1159,8 +1159,79 @@ stamp 不匹配会自动重装到新 tag。
       > 提交（本提交零删除，工作区未动）；其过期 badges/downloads.json 快照（10-10 数据，落后于
       > 已推送的 10-15）在 rebase autostash 冲突中解析为远端新值，原始字节保留在 `stash@{0}`。
       >
+      > **2.10.0 发布记录（2026-10-24）**：例行「审查 → 修复 → 缺口补齐 → 自检 → 发版」（minor）。
+       > **新能力**：团队名单与停止通道——引擎其实一直在同时跑三类工人（子进程 teammate、
+       > 进程内 teammate、普通 Shell 任务），它们全往同一个 `BackgroundTaskManager` 登记记录，
+       > 可那个 store 外面**零调用方**：`list_teammates` / `get_teammate_status` /
+       > `active_agents` / `shutdown_all` 写了没人用，CLI 与 WebUI 都答不出「现在有哪些
+       > 子代理在跑、跑了多久、最后说了什么」，也停不掉其中一个。新增 `swarm/roster.py`
+       > （纯聚合层，`build_roster` / `render_roster_text` / `roster_as_json` / `stop_agent`）
+       > + `ih iterate agents`（`--json` / `--tail` / `--status` / `--limit` / `--max-lines` /
+       > `--stop <id|--name@team> --confirm`，退出码 0/1/2）+ WebUI「团队」页
+       > （`GET /api/v1/agents` + `POST /api/v1/agents/shutdown`，`g a` 键，KPI 卡 + 状态筛选 +
+       > 全文搜索 + 逐行展开，在跑的行走 5s 轮询、名单安静自动停轮；停止走二次确认弹窗并写
+       > `agent.shutdown` 审计）。停止返回结构化 `stopped|not_found|already_terminal|error|invalid`
+       > 而不是抛异常——「找不到」是「它已退出」的实话。名单是**进程内**快照（任务记录只在
+       > 该进程内存里，输出文件才落盘），这一点写进了接口文档，避免被读成跨进程全局视图。
+       > 修复：① **`engine/query.py` 并行工具调用把 `CancelledError` 吞成一条工具报错**——
+       > `gather(return_exceptions=True)` 把 `CancelledError`（3.11 里是 `BaseException`）收进
+       > 列表当数据返回，于是被包成 `is_error=True` 的 `ToolResultBlock`，**操作者按下的
+       > 「停止运行」变成没人在意的小红点，循环照样进入下一次模型调用**；现在先判并原样抛出，
+       > 真异常仍走原 `is_error` 分支、未回复 `tool_use` 配对语义不变。
+       > ② **`tasks/manager.py` 跨事件循环的停止报失败却已杀掉进程**——manager 是**进程**单例、
+       > 键是 tasks 目录不是 loop，于是同进程第二次 `serve()` / `--reload` / 新 loop 上的调用
+       > 拿到一堆「属于死循环的 future」，`process.wait()` 与 `stdin.wait_closed()` 抛
+       > `RuntimeError: ... attached to a different loop` / `Event loop is closed`，
+       > 停止返回失败而进程其实已被 SIGTERM 打掉（「活儿干了但报告失败」）；新增
+       > `_wait_for_exit()` 退回用 `os.kill(pid,0)` 向内核确认（只探测不发信号），
+       > `_close_process_stdin()` 把 `stdin.close()` 也包进容错（原来只有 `wait_closed()` 在
+       > try 里，`close()` 自己就会抛），watcher drain 对「watcher 属于别的 loop」降级为 debug。
+       > ③ **`stop_task` 的 watcher drain 吞 `CancelledError`**——原来
+       > `except (TimeoutError, CancelledError)` 一视同仁记 debug 然后返回；但「这个停止请求
+       > 本身被取消了」就是操作者的停止信号，正常返回会把没走完的停止报成成功并掩盖第二次停止；
+       > 现在超时降级、取消则原样抛出。
+       > ④ **`tasks/manager.py::read_task_output` 大于 12KB 的日志读不出来**——旧实现把
+       > `seek(-max_bytes, os.SEEK_END)` 用在**文本模式** handle 上，Python 直接抛
+       > `io.UnsupportedOperation: can't do nonzero end-relative seeks`；改二进制 seek+read
+       > 再 `decode(replace)`，`roster._read_output_tail` 同写法并在截断处打
+       > `… earlier output truncated (N bytes)` 标记。
+       > ⑤ **`web/events.py` 零成本被永久钉在旧值**——`as_float(report["totalCostUsd"]) or
+       > checkpoint["cost_usd"]` 把任何合法的**零**成本/零 token 判为假值回落到检查点陈旧数字，
+       > 仪表盘米表从此不动；改存在性判断（对齐 `status.py` 写对了的 `_budget_view`）+ 两侧
+       > `as_finite()`。
+       > ⑥ **`web/security.py` 审计日志在每次仪表盘心跳时读整个 append-only 文件**——
+       > `AuditLog.entries` 被 SSE 状态推送反复调用、文件只增不减；加 `_AUDIT_TAIL_BYTES = 1 MiB`
+       > 只扫尾部，seek 落在行中间时丢弃那半行头部而不是当一条记录。
+       > ⑦ **`KNOWN_STATUSES` 单一事实来源**——CLI `--status` 与路由 `?status=` 此前各维护一份
+       > 合法值集合且已不一致（路由收 `status=exploding` 回 200 空列表，CLI 同样输入报用法错误）；
+       > 两处都改从 `roster.KNOWN_STATUSES` 取，输错字母两个入口拿到同一个 422/用法错误。
+       > ⑧ 前端 `formatBytes()` 的假安全写法——`Number.isFinite(bytes ?? 0) ? (bytes as number) : 0`
+       > 里那个 `as number` 没把 `undefined` 变成数字，所有比较静默为假，缺省体积渲染成
+       > `"NaNMB"` 而非 `"0B"`；改先归一化再判断并用测试钉住（`undefined`/`null`/负数落到 `0B`）。
+       > 顺带全文扫同类模式，其余三处（`Dashboard.formatTokens`/`formatUsd`、`BudgetRate.formatTokens`、
+       > `RunStatusCard`）都是先判后用的正确写法。
+       > 版本锁步：`__init__.py` / `npm/package.json` / `frontend/web/package.json`（+ lock）/
+       > `CHANGELOG.md` 同步 2.10.0（README / README.zh-CN 同步补 CLI 段落、特性条目与「团队」页说明）。
+       > 校验 **2977 passed + 6 skipped**（本机 3.11.9）、ruff clean、mypy strict clean（268 源文件）、
+       > npm 包装器 **89 passed**、前端 `tsc --noEmit` + vitest **61 passed**；新增测试为
+       > roster 34 条、路由 17 条（含 3 条真实子进程集成测：真 `sleep` 子进程、真读回输出、
+       > 真杀进程组并断言 OS 进程消失）、CLI 13 条、前端 agents 21 条。真机端到端：
+       > `ih iterate agents`（空名单）与 `--json` 输出正确；`ih web serve` 起服后 curl
+       > `GET /api/v1/agents` → 200 空名单、`?status=exploding` → 422、
+       > 不存在的 `project_root` → 404、`POST /agents/shutdown` 不带 `confirm=true` → 422；
+       > 浏览器侧 `GET /` 200，`GET /agents` 200 + 401（令牌鉴权按预期生效）。
+       > 主仓库 push **`fd384a30`**；走 `.release/iterate-harness` 替代路径（与公开 main
+       > 共享历史）rsync + 提交 **`6ed8dffe`** 并快进推送（`fe8d0d27..6ed8dffe`）。
+       > GitHub Release **v2.10.0** 已建（tag push 即完整发版；release.yml 32s 成功，
+       > `iterate_harness-2.10.0-py3-none-any.whl` **1,028,931 字节** + `.sha256` + `.asc`
+       > 三件 asset），PyPI latest=**2.10.0**（已验证）。wheel 已解包复核：313 文件、
+       > `Version: 2.10.0`、`_frontend_web/` 3 件（前端 CI 构建已打进 wheel）、
+       > `swarm/roster.py` 与 `web/routes/agents.py` 均在列。npm `iterate-harness@2.10.0` 已发布
+       > （`npm publish` 成功、9 文件 25.0kB / 75.7kB unpacked、shasum
+       > `27c3670050ffe025aea6bfdef81927088473ee37`）。
+
       > **2.9.0 发布记录（2026-10-23）**：例行「审查 → 修复 → 缺口补齐 → 自检 → 发版」（minor）。
-      > **新能力**：跨运行趋势（cross-run trend）——此前趋势库只有一个 `file|line|dimension`
+       > **新能力**：跨运行趋势（cross-run trend）——此前趋势库只有一个 `file|line|dimension`
       > 指纹的当前状态，「上一轮修了什么、这轮又冒出新什么、有没有把修好的问题带回来」
       > 只能靠人翻 `.iterate/decision-log.jsonl`。新增 `iterate/trend_report.py`（纯推导，
       > 不写盘）+ `ih iterate trend` 子命令（`--json`、`--fail-on-regression`、
