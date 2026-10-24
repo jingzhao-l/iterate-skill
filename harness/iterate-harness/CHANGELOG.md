@@ -4,6 +4,46 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+### Added — 场景④ 第一次可执行：配方交接、判定闸、跨账本佐证
+
+综述 §8.5 row 4（"GlassPane 修复完成 → 配方下一步挂接 iterate invariant 复核，通过后才进入重验"）
+此前在本仓**没有任何落点**：`reverify_trigger` 拒绝产出 `recipeSteps`，理由写在它自己的 docstring
+里——"a step is something the engine's own recipe carries, and this harness has never held one"。
+本批不新增内核 API、不发明配方执行器，只把现有契约能承担的部分落成可执行、可拒、可红的东西。
+
+- **`iterate/glasspane_recipe.py`（新）**：配方从两个真实生产者取得——`GLASSPANE_RECIPE`
+  （与 `GLASSPANE_RUN_PLAN` 同一套交接纪律）或 `gp_project_list` 报出的 `recipeConfigPath`。
+  文档按 `glasspane.recipe/0.1-draft` 校验，这是该契约的第二份实现，语料钉在
+  `tests/kernel_fixtures/recipe-config.ok-01.json`（sha256 `68613bca…`，`check_kernel_fixtures.py`
+  两模式实测 10 个文件逐字节一致）；摘要取 `rc_` + canonical sha256，是本地出处凭据而非契约字段
+  （内核没有配方摘要）。两个生产者各说一套 → `RECIPE_E_CONTEST`，不挑一个顺眼的用；registry 回包
+  认不出形状 → `RECIPE_E_READ`，**不降级成"没有配方"**；多项目各配一份 → 拒绝，因为"这次评审属于
+  哪个项目"不是本模块能猜的。
+- **判定闸 `recipe_step_gate`**：按固定次序读三件实测——本轮 invariant 判定、配方、一条**链可验**的
+  账本行。`unmeasured` 与缺席判定都不算 pass；缺任何一件都具名拒绝（六个码）。
+- **③ 的账本第一次有对面读者**：`fix_proof` 走内核链校验器（`read_decision_log`），既能读工程自己的
+  `.iterate/decision-log.jsonl`，也能读 `GLASSPANE_DECISION_LOG` 递进来的**另一个 harness 写的**账本。
+  断链拒绝并说停在第几行；pre-chain 的旧形状另给一句"这是历史不是篡改"。
+- **① 的请求从此能带 `recipeSteps`**：逐字带配置里的步骤、不重排不重塑，上限 8 条，超出计入
+  `recipeStepsNotRequested`（不是静默截断）。引擎对它的回答仍是它原有的纪律：重跑步骤属于对真 app
+  动手，deferred 并给理由——本批没改它的判决面，也没把 deferred 说成 answered。
+- **发布点接线**：pass 分支除 `reason` 之外发布 `recipeStepGate`（允许与被拒两种都带出处）。
+  sync 与 awaited 两个 sender 仍共用 `_prepare`；新增的唯一一次通道使用是那一次 registry 读，它被
+  `CONFIG_READ_TOOLS` 与 `READ_ONLY_TOOLS` 分开钉住——**读配置不许冒充一次关于 app 的回答**，
+  `test_reverify_wiring` / `test_host_transport` 各有一条断言把两个集合分开数。
+
+### 实测与反向验证
+
+`pytest tests` 全量 2966 passed；6 条红（`test_tasks/test_manager.py` 三条、
+`test_tools/test_bash_tool.py` 一条、`test_tools/test_integration_flows.py` 一条、
+`test_engine/test_query_engine.py::test_subagent_stop_hook_fires_when_spawned_agent_finishes`）
+在 `d14da4b2` 的**干净基线工作树**上同样红，属本机环境而非本批引入；
+`ruff check src tests scripts` 干净、`mypy --strict src` 267 文件干净。
+新增 62 条用例（`tests/test_iterate/test_glasspane_recipe.py`）。十发反向变异
+（`/var/tmp/it-mutate.sh`，备份 + sha256 核回，全程未用 `git checkout`/`stash`）每发都点名变红：
+unmeasured 当 pass、放行无可验账本、contest 悄悄取一个、多配方取第一个、回包降级成"没有配方"、
+断链改用宽容读法、判定顺序颠倒、发布点不发闸、无配方也塞步骤、放行面放宽到 `gp_act`。
+
 ## [2.10.0] - 2026-10-24
 
 ### Added
