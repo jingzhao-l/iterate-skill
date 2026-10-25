@@ -91,6 +91,14 @@ unmeasured 当 pass、放行无可验账本、contest 悄悄取一个、多配�
   删掉兜底换绿）；豁免只到整模块导入为止，`from datetime import UTC` 那种"名字"包在 try 里不豁免——那正是
   2.5.0 事故的形状：3.10 的失败落在 `try` 内、被 handler 咽掉，代码安静降级。
 
+### Fixed — 语料清单的 `version` 从 0.1.9 追到 0.1.10（并两次实测它是同一份字节）
+
+`tests/kernel_fixtures/manifest.json` 的 pin 停在 `iterate-kernel@0.1.9`，而对面那条线（harness 的
+`contracts/kernel-pin.json`）早已吃 0.1.10——"两仓吃同一份内核"这句话此前靠一个说 0.1.9 的标签撑着。
+先证明字节没漂，再动标签：`scripts/check_kernel_fixtures.py --source <0.1.10 安装产物的 fixtures/>` 与
+registry 模式（`npm pack` 真包）**各跑一次，10 份文件逐字节对上**。0.1.10 那版内核动的只有 `zod`，
+契约语料未变，所以这是一次追标签而不是迁移。
+
 ### 实测与反向验证（本批）
 
 `pytest tests` 全量 3062 passed / 6 failed / 6 skipped。红的那 6 条就是上一条目里已经在
