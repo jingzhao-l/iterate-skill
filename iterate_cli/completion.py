@@ -19,10 +19,22 @@ needed) and complete:
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
+from pathlib import Path
 from typing import Any
+
+from iterate_cli.generator import atomic_write
 
 #: Shells with a renderer, in the order shown by ``--help``.
 SHELLS: tuple[str, ...] = ("bash", "zsh", "fish")
+
+#: Filename each shell's loader expects in its completion directory.
+INSTALL_FILENAMES: dict[str, str] = {
+    "bash": "iterate",
+    "zsh": "_iterate",
+    "fish": "iterate.fish",
+}
 
 #: Option destinations that take a filesystem path.
 _DIR_OPTION_DESTS: frozenset[str] = frozenset({"project"})
@@ -162,8 +174,8 @@ def _render_bash(parser: argparse.ArgumentParser) -> str:
 
     lines = [
         "# bash completion for iterate",
-        "# Install: save as ~/.local/share/bash-completion/completions/iterate",
-        "# (or `source <(iterate completion bash)` in ~/.bashrc).",
+        "# Install: `iterate completion bash --install` (or save as",
+        "# ~/.local/share/bash-completion/completions/iterate).",
         "_iterate_complete_files() {",
         "    local IFS=$'\\n'",
         '    COMPREPLY=( $(compgen -f -- "$cur") )',
@@ -277,8 +289,8 @@ def _render_zsh(parser: argparse.ArgumentParser) -> str:
     lines = [
         "#compdef iterate",
         "# zsh completion for iterate",
-        "# Install: save as a file named _iterate in a directory on $fpath,",
-        "# e.g. `iterate completion zsh > \"${fpath[1]}/_iterate\"`.",
+        "# Install: `iterate completion zsh --install` (writes _iterate to",
+        "# ~/.zfunc or ~/.oh-my-zsh/completions and prints the fpath hint).",
         "",
         "_iterate() {",
         "    local -a commands",
@@ -409,21 +421,112 @@ def install_hint(shell: str) -> str:
     """Return the one-line install instruction for ``shell``."""
     if shell == "bash":
         return (
-            "Install: save the output to "
-            "~/.local/share/bash-completion/completions/iterate "
-            "(or add `source <(iterate completion bash)` to ~/.bashrc)."
+            "Install: run `iterate completion bash --install` (or save the "
+            "output to ~/.local/share/bash-completion/completions/iterate)."
         )
     if shell == "zsh":
         return (
-            "Install: save the output as _iterate in a directory on $fpath, "
-            "e.g. `iterate completion zsh > \"${fpath[1]}/_iterate\"`."
+            "Install: run `iterate completion zsh --install` (writes _iterate "
+            "to ~/.zfunc or ~/.oh-my-zsh/completions, then prints the fpath hint)."
         )
     if shell == "fish":
         return (
-            "Install: `iterate completion fish > "
-            "~/.config/fish/completions/iterate.fish`."
+            "Install: run `iterate completion fish --install` (or redirect to "
+            "~/.config/fish/completions/iterate.fish)."
         )
     return ""
+
+
+def default_install_path(shell: str, env: dict[str, str] | None = None) -> Path:
+    """Return the conventional per-user completion file for ``shell``.
+
+    bash and fish load these paths automatically when their standard
+    completion support is enabled. zsh has no single auto-loaded user path, so
+    prefer Oh My Zsh's completions directory when it exists and otherwise use
+    the widely documented ``~/.zfunc``; :func:`reload_hint` tells the user how
+    to put that directory on ``$fpath``.
+    """
+    if shell not in INSTALL_FILENAMES:
+        raise ValueError(
+            f"unsupported shell {shell!r}; choose one of: {', '.join(SHELLS)}"
+        )
+    values = os.environ if env is None else env
+    home = Path(values.get("HOME") or Path.home())
+    filename = INSTALL_FILENAMES[shell]
+    if shell == "bash":
+        data_home = Path(values.get("XDG_DATA_HOME") or home / ".local" / "share")
+        return data_home / "bash-completion" / "completions" / filename
+    if shell == "fish":
+        config_home = Path(values.get("XDG_CONFIG_HOME") or home / ".config")
+        return config_home / "fish" / "completions" / filename
+    omz = home / ".oh-my-zsh" / "completions"
+    if omz.is_dir():
+        return omz / filename
+    return home / ".zfunc" / filename
+
+
+def reload_hint(shell: str, target: Path) -> str:
+    """Return a shell-specific instruction for activating an installed file."""
+    quoted = shlex.quote(str(target))
+    if shell == "bash":
+        return f"Open a new shell, or run: source {quoted}"
+    if shell == "fish":
+        return "Open a new fish shell; fish loads this file automatically."
+    if target.parent.name == ".zfunc":
+        parent = shlex.quote(str(target.parent))
+        return (
+            "Add `fpath=(" + parent + " $fpath)` before "
+            "`compinit` in ~/.zshrc, then open a new shell."
+        )
+    return "Run `compinit` (or open a new shell) to load the completion."
+
+
+def install_completion(
+    shell: str,
+    parser: argparse.ArgumentParser,
+    *,
+    directory: str | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Write the completion script to the shell's per-user completion path.
+
+    Args:
+        shell: ``bash`` / ``zsh`` / ``fish``.
+        parser: Top-level parser used to render the script.
+        directory: Optional directory override; the shell's conventional
+            filename is still used inside it.
+        force: Replace an existing file when true.
+
+    Returns:
+        A JSON-serialisable summary (``shell``, ``path``, ``bytes``,
+        ``reload_hint``).
+
+    Raises:
+        ValueError: Unsupported shell.
+        FileExistsError: The target exists and ``force`` is false.
+        OSError: The directory cannot be created or the file cannot be written.
+    """
+    if shell not in INSTALL_FILENAMES:
+        raise ValueError(
+            f"unsupported shell {shell!r}; choose one of: {', '.join(SHELLS)}"
+        )
+    script = render_completion(shell, parser)
+    if directory:
+        target = Path(directory).expanduser() / INSTALL_FILENAMES[shell]
+    else:
+        target = default_install_path(shell)
+    if target.exists() and not force:
+        raise FileExistsError(
+            f"{target} already exists; pass --force to replace it."
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(target, script)
+    return {
+        "shell": shell,
+        "path": str(target),
+        "bytes": len(script.encode("utf-8")),
+        "reload_hint": reload_hint(shell, target),
+    }
 
 
 def validate_script_syntax(shell: str, script: str) -> str | None:

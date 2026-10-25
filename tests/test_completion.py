@@ -180,3 +180,121 @@ class TestCliContract:
         assert captured.out.startswith("# bash completion for iterate")
         assert captured.out.count("# bash completion for iterate") == 1
         assert "Install:" in captured.err
+
+
+class TestInstall:
+    """`iterate completion --install` writes to a conventional per-user path."""
+
+    def _isolate_home(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    def test_bash_default_path_and_content(self, tmp_path, monkeypatch, capsys) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        capsys.readouterr()
+
+        code = cli_main(["completion", "bash", "--install"])
+
+        target = tmp_path / ".local/share/bash-completion/completions/iterate"
+        captured = capsys.readouterr()
+        assert code == 0
+        assert target.is_file()
+        assert target.read_text(encoding="utf-8").startswith(
+            "# bash completion for iterate"
+        )
+        assert "Completion installed" in captured.out
+        assert "bash-completion/completions" in captured.out.replace("\n", "")
+        assert "source" in captured.out
+
+    def test_fish_default_path(self, tmp_path, monkeypatch) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+
+        code = cli_main(["completion", "fish", "--install"])
+
+        target = tmp_path / ".config/fish/completions/iterate.fish"
+        assert code == 0
+        assert target.read_text(encoding="utf-8").startswith("# fish completion")
+
+    def test_zsh_prefers_oh_my_zsh_when_present(self, tmp_path, monkeypatch) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        (tmp_path / ".oh-my-zsh/completions").mkdir(parents=True)
+
+        code = cli_main(["completion", "zsh", "--install"])
+
+        assert code == 0
+        assert (tmp_path / ".oh-my-zsh/completions/_iterate").is_file()
+
+    def test_zsh_fallback_mentions_fpath(self, tmp_path, monkeypatch, capsys) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        capsys.readouterr()
+
+        code = cli_main(["completion", "zsh", "--install"])
+
+        target = tmp_path / ".zfunc/_iterate"
+        captured = capsys.readouterr()
+        assert code == 0
+        assert target.is_file()
+        assert "fpath=" in captured.out
+
+    def test_custom_dir_and_force(self, tmp_path, monkeypatch, capsys) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        target_dir = tmp_path / "completions"
+
+        assert cli_main(
+            ["completion", "bash", "--install", "--dir", str(target_dir)]
+        ) == 0
+        target = target_dir / "iterate"
+        target.write_text("old", encoding="utf-8")
+
+        capsys.readouterr()
+        assert cli_main(
+            ["completion", "bash", "--install", "--dir", str(target_dir)]
+        ) == 2
+        assert "already exists" in capsys.readouterr().err
+
+        assert cli_main(
+            ["completion", "bash", "--install", "--dir", str(target_dir), "--force"]
+        ) == 0
+        assert target.read_text(encoding="utf-8").startswith("# bash completion")
+
+    def test_install_json_is_one_document(self, tmp_path, monkeypatch, capsys) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        capsys.readouterr()
+
+        code = cli_main(["--json", "completion", "bash", "--install"])
+
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        assert code == 0
+        assert payload["shell"] == "bash"
+        assert Path(payload["path"]).is_file()
+        assert payload["bytes"] > 0
+        assert "source" in payload["reload_hint"]
+
+    def test_dir_without_install_is_a_usage_error(self, tmp_path, capsys) -> None:
+        capsys.readouterr()
+
+        code = cli_main(["completion", "bash", "--dir", str(tmp_path)])
+
+        captured = capsys.readouterr()
+        assert code == 2
+        assert "--install" in captured.err
+        assert "bash completion" not in captured.out
+
+    def test_install_works_outside_a_project(self, tmp_path, monkeypatch, capsys) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        capsys.readouterr()
+
+        code = cli_main(
+            [
+                "completion",
+                "bash",
+                "--install",
+                "-p",
+                str(tmp_path / "missing-project"),
+            ]
+        )
+
+        assert code == 0
+        assert "Completion installed" in capsys.readouterr().out

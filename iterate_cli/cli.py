@@ -301,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
             getattr(args, "shell", ""),
             parser,
             json_output=getattr(args, "json", False),
+            install=getattr(args, "install", False),
+            directory=getattr(args, "dir", None),
+            force=getattr(args, "force", False),
         )
 
     # Interactive commands never produce structured output; a caller passing
@@ -1129,12 +1132,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "from the same parser as `--help`, so Tab completion can never drift "
         "from the real command/option list. Completes commands, flags, fixed "
         "value choices and path arguments. The script is printed to stdout: "
-        "`iterate completion zsh > \"${fpath[1]}/_iterate\"`.",
+        "`iterate completion zsh > \"${fpath[1]}/_iterate\"`. With --install, "
+        "write it to the shell's conventional per-user completion path instead.",
     )
     completion_parser.add_argument(
         "shell",
         choices=("bash", "zsh", "fish"),
         help="Shell to generate completion for.",
+    )
+    completion_parser.add_argument(
+        "--install",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Install the script to the shell's per-user completion path "
+        "instead of printing it.",
+    )
+    completion_parser.add_argument(
+        "--dir",
+        metavar="DIR",
+        default=argparse.SUPPRESS,
+        help="With --install, write into DIR instead of the default path.",
+    )
+    completion_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="With --install, replace an existing completion file.",
     )
     # Same reachable-gate rationale as help: parse --json so the friendly
     # rejection can emit one JSON document instead of an argparse error.
@@ -2341,30 +2364,79 @@ def _cmd_completion(
     shell: str,
     parser: argparse.ArgumentParser,
     json_output: bool = False,
+    install: bool = False,
+    directory: str | None = None,
+    force: bool = False,
 ) -> int:
     """Handle ``iterate completion <shell>``.
 
     The script goes to stdout untouched so it can be redirected straight into
     the shell's completion directory. Installation hints go to stderr only on
     an interactive terminal, so ``iterate completion zsh > _iterate`` never
-    mixes prose into the generated file.
+    mixes prose into the generated file. With ``--install`` the script is
+    written to the shell's conventional per-user path (or ``--dir``) instead.
 
     Args:
         shell: ``bash`` / ``zsh`` / ``fish`` (validated by argparse, re-checked
             here for programmatic callers).
         parser: Top-level parser to introspect.
-        json_output: True when ``--json`` was passed. Completion output is a
-            shell script, not data, so the combination is a usage error.
+        json_output: True when ``--json`` was passed. Without ``--install``
+            completion output is a shell script, not data, so that combination
+            is a usage error; with ``--install`` it emits one result document.
+        install: Write the script to disk instead of stdout.
+        directory: Optional ``--dir`` override for ``--install``.
+        force: Replace an existing completion file when true.
 
     Returns:
-        Exit code: 0 on success, 2 for a ``--json`` misuse or unsupported shell.
+        Exit code: 0 on success, 2 for a usage error or unsupported shell,
+        1 when an install write fails.
     """
-    from iterate_cli.completion import SHELLS, install_hint, render_completion
+    from iterate_cli.completion import (
+        SHELLS,
+        install_completion,
+        install_hint,
+        render_completion,
+    )
+
+    if not install and (directory is not None or force):
+        return _bundle_failure(
+            "--dir and --force only make sense with --install.",
+            json_output,
+            code=2,
+        )
+
+    if install:
+        if directory is not None and not directory.strip():
+            return _bundle_failure(
+                "--dir must not be empty (omit it to use the default path).",
+                json_output,
+                code=2,
+            )
+        try:
+            result = install_completion(
+                shell,
+                parser,
+                directory=directory,
+                force=force,
+            )
+        except FileExistsError as exc:
+            return _bundle_failure(str(exc), json_output, code=2)
+        except ValueError as exc:
+            return _bundle_failure(str(exc), json_output, code=2)
+        except OSError as exc:
+            return _bundle_failure(f"cannot install completion: {exc}", json_output)
+        if json_output:
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            tui.success(f"Completion installed: {result['path']}")
+            tui.hint(result["reload_hint"])
+        return 0
 
     if json_output:
         message = (
             "--json is not supported for 'completion' (it prints a shell "
-            "script). Use `iterate report --json` for structured project data."
+            "script). Use `iterate report --json` for structured project data, "
+            "or add --install to get one JSON result document."
         )
         print(json.dumps({"error": message}, ensure_ascii=False))
         tui.error(message)
