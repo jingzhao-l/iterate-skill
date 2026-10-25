@@ -1354,7 +1354,7 @@ stamp 不匹配会自动重装到新 tag。
        > 秒数并断言 124/<=10s）：此前所有"上限过了还在跑，所以有东西活过了信号"的推论都默认"那把上限
        > 会落地"，而这句话从没被验过；本机没有 `timeout`/`gtimeout`，只能在 runner 上观察。判据进
        > `tests/test_ci_workflow_shape.py`（现 10 条）。
-       > **下一问：artifact 到手之后，名单停在哪一行。**
+       > **那一问后来是这样收的：名单没有停在某一行——它根本没有停止开始**（见下面"同夜之后"那段）。
        > **在这一格落地之前，本版的"CI 绿"不成立**；其余四格（tag／Release／PyPI／npm）都成立。
        > 另记一笔我自己的账：改这段注释的过程中我把 `ci.yml` 的那个 step 写出了**两个 `run:` 键**，
        > PyYAML 不报错、取最后一个，于是新加的 `timeout` 块只是"看起来在"。它就是被上面那份新测试
@@ -1362,6 +1362,42 @@ stamp 不匹配会自动重装到新 tag。
        > 吃过同形一次）；四条反向变异各点名变红、逐文件 sha256 核回（`0d536303…`）。
        > 同文件里两处 `npm ci` / `npm run build` 的多行体一并补了 `set -euo pipefail`。
        >
+      > **2.11.1 之后（同夜，2026-10-25→10-26）· CI 那一格的最终读数，以及 2.11.2 为什么不取**
+      >
+      > 主干 CI 的 `Python tests` 从一整步改成 `python-version × bucket` 的 12 条腿
+      > （`scripts/split_suite.py` 按测试模块做 FFD，三道拒绝保证拆分是**精确划分**：pytest 自报的
+      > `N tests collected` 必须等于解析到的 node id 数；每桶跑前重新收集并 `--expect-total` 对上计划数；
+      > 桶数多于模块数直接拒）。本机等价性：单体 `3113 passed, 6 skipped in 123.69s`，六桶合起来同样，
+      > 六次 `--expect-total` 全 rc=0。
+      > 结果 **14 个 job 绿、2 条腿挂**（run 40209916121）：`Python tests (3.10 / bucket 06)` 与
+      > `(3.11 / bucket 06)`。挂起第一次落成 31 个具名模块（`test_docker_backend_stop`、
+      > `test_react_backend`、`test_swarm/test_worktree`、`test_cron_scheduler`、`test_voice_mode`、
+      > `test_hooks/test_executor`、`test_remote_trigger_tool` 等），本机因缺 docker/node 全部跳过 ⇒
+      > 不可复现。同 run 里十条腿各约一分钟、artifact 末尾写着 `520 passed in 9.86s` ⇒
+      > "这套在 2 核 runner 上就是慢"被直接证据推翻（先前那句"account/plan 侧上限"也一并收回：
+      > `gh repo view --json visibility` = PUBLIC）。
+      > **六把表实测都不能让那一步结束**：`timeout --kill-after=60 1200`；把输出从 Actions 管道挪到文件；
+      > `setsid` 完全脱离 + 600 s 有界轮询 + `kill -9 -- -$pid` 打整组；`gh run cancel`；
+      > `pytest-timeout` 的 240 s 逐条表（它从不响 ⇒ 等待不在任何一条用例里，而在最后一条之后）；
+      > 以及进程级 `faulthandler.dump_traceback_later(420, exit=True)`。最后动刀的只有 GitHub 的
+      > job 超时（实测 30 分钟那一档 cut 在整 35 分钟＝上限 + 约 5 分钟宽限），而它不上传 artifact、
+      > 日志端点持续 HTTP 404 ⇒ 另一条被量出来的事实是 **job 的日志只在 job 结束之后才存在**
+      > （同一 run 里已完成的 `Python quality` 日志取到 31,956 字节作对照）。
+      > 判据：`tests/test_ci_workflow_shape.py` 16 条 + `tests/test_split_suite.py` 10 条 +
+      > `tests/test_ci_suite_step_program.py` 5 条（把 `Run test suite` 那段 bash 当程序跑，用 stub
+      > 顶掉 `setsid`/`uv`/`ps`/`timeout`）+ `tests/test_test_watchdog.py` 6 条；变异电池 29 条全
+      > 具名变红。四道上限由判据钉成嵌套：**用例 240 s < 看门狗 420 s < 步骤预算 600 s < job 20 min**。
+      > 本机整树复跑 `3120 passed, 6 skipped in 127.16s`，ruff／mypy 绿。
+      > **2.11.2 现在不该取**：`pytest-timeout` 那笔 dev 依赖确实写进了 wheel 的 METADATA
+      > （实测 `Requires-Dist: pytest-timeout==2.4.0; extra == 'dev'`，7 条 extra 门控行）⇒ 2.11.1 那份
+      > 产物与主干不一致，需要一个 patch 号；但 `.github`／`scripts`／`tests` 实测不进 wheel
+      > （`unzip -l` 数到 0 条）⇒ 先前那几笔 CI 提交不需要号。取号等 bucket 06 那一格落地——
+      > 带着已知红 lane 取号，比让这一格挂着更糟。
+      > 双向集成本身不受这一格影响：五场景在 2.11.1 的产物里逐条复核过，三条跨仓验收
+      > （`check_run_plan_channel` / `check_glasspane_channel` / `check_glasspane_reverification`）
+      > 都在这份交付物上重跑过；对面那半 **glasspane-harness 0.11.1 已发**（tag/Release 6 件资产/
+      > npm 三包，父仓 CI 的 `The released artifact and the split branch are trunk's bytes` 绿）。
+      >
       > **2.11.0 发布记录（2026-10-25）**：与 GlassPane 的双向集成第一次「两头都能跑」（minor）。
        > **判据**：只加不减——④ 第一次可执行（配方交接 + 判定闸 + 闸随它那一轮的账本行落盘）、
        > ③ 的跨账本链接（`.iterate/glasspane-ledger.json`，对面那本可被项目记为默认）、两条读门
