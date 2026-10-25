@@ -316,8 +316,10 @@ iterate report --strict       # warning 也判失败（退出码 1），适合 C
 
 # Shell 补全（命令 / 参数 / 固定取值 / 路径）
 iterate completion bash
-iterate completion zsh > "${fpath[1]}/_iterate"
-iterate completion fish > ~/.config/fish/completions/iterate.fish
+iterate completion bash --install      # 写入常规用户补全目录
+iterate completion zsh --install       # ~/.zfunc 或 ~/.oh-my-zsh/completions
+iterate completion fish --install      # ~/.config/fish/completions/iterate.fish
+iterate completion bash --install --dir ./completions --force  # 指定目录
 
 # 非交互式配置查看与修改（不走向导）
 iterate config                      # 列出全部可设值
@@ -546,7 +548,7 @@ iterate report --json           # 单个结构化 JSON 文档
 iterate report --strict         # warning 也判失败（退出码 1），同 doctor --strict
 ```
 
-Markdown 包含技术栈、生效的审查配置（目标分支、范围、维度、维度集、校验命令/白名单、个性化规则数）、doctor 全项检查表、漂移与建议、以及可直接执行的下一步命令。单元格中的 `|` 与换行会转义，粘贴后表格不会散。`--out` 默认拒绝覆盖已存在文件（以及 iterate 自己的状态文件），需显式 `--force`，避免误删你的笔记。健康时退出码 0，阻塞时 1（错误；`--strict` 下还包括警告），可直接作为 CI 门禁。
+Markdown 包含技术栈、生效的审查配置（目标分支、范围、维度、维度集、校验命令/白名单、个性化规则数）、doctor 全项检查表、漂移与建议、以及可直接执行的下一步命令。单元格中的 `|`、换行、反引号与 HTML 标记会转义，粘贴后表格不会散，也不会被项目内容注入裸 HTML。`--out` 默认拒绝覆盖已存在文件（以及 iterate 自己的状态文件），需显式 `--force`，避免误删你的笔记。健康时退出码 0，阻塞时 1（错误；`--strict` 下还包括警告），可直接作为 CI 门禁。
 
 ### iterate completion（Shell Tab 补全）
 
@@ -559,7 +561,7 @@ iterate completion fish > ~/.config/fish/completions/iterate.fish
 source <(iterate completion bash)      # 或直接 source
 ```
 
-补全命令、各命令参数（隐藏参数不会出现）、固定取值（如 `init --language zh|en`）、`-p/--project` 目录、`import`/`--out` 文件路径，以及 `iterate help <command>` 的命令名。
+补全命令、各命令参数（隐藏参数不会出现）、固定取值（如 `init --language zh|en`）、`-p/--project` 目录、`import`/`--out` 文件路径，以及 `iterate help <command>` 的命令名。加 `--install` 会按 shell 惯例写入用户补全目录（遵循 `XDG_DATA_HOME` / `XDG_CONFIG_HOME`），自动创建父目录；已有文件默认拒绝覆盖，需 `--force`；`--json` 输出单个 `{shell, path, bytes, reload_hint}` 结果文档。
 
 ---
 

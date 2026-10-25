@@ -5,6 +5,58 @@
 
 ---
 
+## [3.9.0] — 2026-10-25
+
+本轮为无人值守每日例行的「全量评审 + 修复 + 功能/体验增长」版本。新增
+`iterate completion --install`，把原先“打印脚本后自己找目录、自己重定向”的
+补全安装流程变成一条命令；同时修复 `iterate report` 在值含反引号时可能让
+Markdown 表格后半段被当成代码块的真实渲染缺陷，以及 zsh 安装提示在路径含
+空格时给出不可执行 `fpath` 语句的问题，并堵住报告中的 HTML 注入面，故升 minor。
+测试套件 **1856 → 1866 passed**（1 skipped：本机未安装 fish，跳过其语法校验），`ruff check .` 通过。
+评审与发布范围仅限 skill 本体（`iterate_cli/`、`npm-installer/`、`scripts/`、
+`templates/`、`tests/`、`config/`、`tools/`、`SKILL.md`、`pyproject.toml`、
+`CHANGELOG.md`）；`harness/` 与 `kernel/` 未改、未发、未纳入任何发布包。
+
+### 新增 / Features
+
+- **`iterate completion <shell> --install` —— 一条命令装好 Tab 补全**。此前
+  `iterate completion` 只把脚本写到 stdout，用户必须自己知道 bash-completion /
+  fish / zsh 的目录，再手动重定向，路径写错时只会得到一个“补全不生效”的哑失败。
+  现在：
+  - `bash` 写入 `$XDG_DATA_HOME/bash-completion/completions/iterate`（默认
+    `~/.local/share/...`）；`fish` 写入 `$XDG_CONFIG_HOME/fish/completions/iterate.fish`
+    （默认 `~/.config/...`）；`zsh` 优先写入已存在的 `~/.oh-my-zsh/completions/_iterate`，
+    否则写入 `~/.zfunc/_iterate`；
+  - 自动创建父目录，原子写入；已有文件默认拒绝覆盖并提示 `--force`，避免静默
+    覆盖用户自定义补全；
+  - `--dir DIR` 可指定目录（仍使用该 shell 的约定文件名）；`--json` 输出单个
+    `{shell, path, bytes, reload_hint}` 文档，便于脚本消费；
+  - zsh 会打印可直接粘贴的 `fpath=(... $fpath)` + `compinit` 提示；bash/fish
+    打印 reload 提示。`--install` 不向 stdout 打印脚本，避免污染重定向；
+  - 新增 8 项回归测试，覆盖三个 shell 的默认路径、`XDG_*` 覆盖、Oh My Zsh
+    优先、`.zfunc` 回退、`--dir`、覆盖保护/`--force`、`--json` 与“安装不依赖
+    项目存在”。
+
+### 修复 / Fixes
+
+- **`iterate report` 反引号与 HTML 注入**：`_cell()` 的文档承诺转义反引号，但
+  实现只处理了 `|`、换行和反斜杠。若 doctor 的 check/message 或配置值里出现奇数
+  个反引号，GFM 会把后续表格甚至整段文档当成代码块，粘贴到 PR 后排版损坏。
+  同时 GFM 允许裸内联 HTML，项目可控值（如 `<img src=x onerror=...>`）会被
+  原样写进报告，在非净化渲染器里形成注入面。现在表格文本统一转义反引号与
+  `& < >`；`_code()` 遇到含反引号或尖括号的值会退回普通转义文本，避免在行内
+  代码里显示多余反斜杠。新增 2 项回归测试。
+- **zsh 安装提示的空格路径**：`reload_hint()` 之前对完整文件路径做
+  `rsplit("/", 1)` 后再拼进 `fpath=(...)`，路径含空格时引号不闭合，提示不可执行。
+  现在对父目录单独 `shlex.quote()`。
+
+### 验证 / Verification
+
+- `python -m pytest tests/ -q`：**1866 passed, 1 skipped**（fish 未安装）。
+- `python -m ruff check .`：All checks passed.
+- 新增/更新测试：`tests/test_completion.py`（安装路径、覆盖保护、JSON 合约、
+  项目外可用）、`tests/test_report_command.py`（反引号/HTML 不破坏表格）。
+
 ## [3.8.2] — 2026-10-23
 
 修复 3.8.1 发布时才触发的版本链测试缺陷：`test_changelog_version_chain_has_no_gaps`
