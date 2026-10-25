@@ -1335,13 +1335,24 @@ stamp 不匹配会自动重装到新 tag。
        > `/usr/bin/time -l` 的 maximum resident set = **286,605,312 字节 ≈ 273 MB**，对面是 7 GB 的
        > hosted runner，OOM 讲不通。而 `timeout-minutes: 90` 是我们自己写在 job 上的，它没生效，
        > 说明那把 45 分钟的刀不在本工作流里。
-       > 第三次仪表换成一根**会自己结束、因此会把日志留在世上**的硬停：
-       > `timeout --kill-after=60 1200` 包住 `-v`。它跑出三种读数中的哪一种，下一步就是什么：
-       > 名单末尾出现 summary ⇒ 测试跑完了、进程卡在退出（非守护线程，或握着管道的子进程——
-       > asyncio 的 MCP transport 与它启的 daemon 正是这个形状）；名单断在中途 ⇒ 一条具名用例在
-       > ubuntu 上等；仍在 45:00 整断 ⇒ 上限在外面，那就把这一步按 `tests/…` 目录拆开。
-       > 判据与禁忌（不许抬硬停、不许改 skip、不许把 `-v` 与收集步拿掉）都写进 step 注释，
-       > 并由 `tests/test_ci_workflow_shape.py` 钉住：那一步还带着哪三件探针，抽掉任一件就红在该件上。
+       > 第三次仪表换成一根**会自己结束、因此会把日志留在世上**的硬停
+       > （`timeout --kill-after=60 1200` 包住 `-v`）。**它跑了，答的是第四种，并把前三种一起否掉**
+       > （run 40184095706）：步骤跑到 **27 分钟仍在继续**——比它自己的 1200 s 上限晚 7 分钟，
+       > `--kill-after=60` 早过完；随后被取消，而取消之后的 `runs/{id}/logs` 归档里**仍然只有那三条
+       > 成功的 job**，Python 这条的日志从头到尾不存在。两条事实合起来指向 **fd，不指向 pytest**：
+       > ① 进程组被 SIGKILL 之后还拖着步骤不放，只能在组外——本套件五处用 `start_new_session=True`
+       > 起孩子（`tasks/manager.py`、`tools/bash_tool.py`、`hooks/executor.py`、
+       > `services/cron_scheduler.py`、`tools/remote_trigger_tool.py`），那种会话领导者**继承了这一步
+       > 的 stdout 且永不 EOF**，于是 runner 在等一根只有死进程还握着的管道；
+       > ② "从来没有日志"是因为 **pytest 在非 TTY 下块缓冲**（本机实测：`-v` 接管道，12 秒 0 字节、
+       > 24 秒才 519 字节，一次 flush 要几十条用例过去），2 核 runner 上 45 分钟可以一次都不 flush
+       > ⇒ 看门狗把 runner 判死、缓冲跟着一起没。**所以"账号有 45 分钟硬墙"这个猜测也收回：
+       > 墙是真的，但它量的是沉默，不是时长。**
+       > 修法跟着机制走：把 pytest 从那根管道上摘下来（`> pytest-ci.log 2>&1` 之后再 `cat`），
+       > 孤儿继承的是文件 fd，末尾那一大段输出保证 agent 一定被告知、日志一定会上传。判据与禁忌写进
+       > step 注释，并由 `tests/test_ci_workflow_shape.py` 钉住"这一步还带着哪几件探针"
+       > （`timeout`／重定向＋`cat`／`-v`／faulthandler 两个 ini），抽掉任一件红在该件上。
+       > 下一问留给带这条修复的那次运行：**日志到手之后，名单停在哪一行。**
        > **在这一格落地之前，本版的"CI 绿"不成立**；其余四格（tag／Release／PyPI／npm）都成立。
        > 另记一笔我自己的账：改这段注释的过程中我把 `ci.yml` 的那个 step 写出了**两个 `run:` 键**，
        > PyYAML 不报错、取最后一个，于是新加的 `timeout` 块只是"看起来在"。它就是被上面那份新测试
