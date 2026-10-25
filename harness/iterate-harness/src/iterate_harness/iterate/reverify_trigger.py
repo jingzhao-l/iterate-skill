@@ -71,6 +71,7 @@ from typing import Any
 from .decision_log import DECISION_LOG_REFUSALS, append_entry, make_entry, read_entries
 from .dimension_ledger import ECHOED_DIMENSION_DATA_KEY
 from .glasspane_recipe import (
+    RECIPE_GATE_DATA_KEY,
     RECIPE_E_READ,
     RecipeError,
     RecipeRead,
@@ -135,10 +136,11 @@ LEDGER_DATA_KIND = "reverification"
 #: asking without saying so is the lie — the remainder is counted in the published payload.
 MAX_REQUESTED_OPERATIONS = 4
 
-#: Where ④'s answer is published next to ①'s, in the same ``iterate_state`` payload. Kept as its
-#: own key because the two say different things: ``reverification`` reports a send, ``recipeStep``
-#: reports whether the recipe may move forward at all.
-RECIPE_GATE_STATE_KEY = "recipeStepGate"
+#: Where ④'s answer is published next to ①'s, in the same ``iterate_state`` payload, in the ledger
+#: line that accompanies the send, and in the reader that prints it later. The string is defined once,
+#: in :mod:`.glasspane_recipe`; this is an alias, not a second spelling — a key written twice is a
+#: state that stops being findable the day one of them is renamed.
+RECIPE_GATE_STATE_KEY = RECIPE_GATE_DATA_KEY
 
 #: The registry read, taken from the producer's own list rather than re-spelled here — a second
 #: literal for one tool is the drift this harness keeps getting fined for.
@@ -333,6 +335,7 @@ def record_reverification_run(
     round_number: int,
     request: Mapping[str, object],
     run: ReverificationRun,
+    gate: StepGate | None = None,
 ) -> str | None:
     """Append the one ledger entry this send earns; return the refusal text, never raise.
 
@@ -355,6 +358,11 @@ def record_reverification_run(
     }
     if run.not_attempted_reason is not None:
         data["notAttemptedReason"] = run.not_attempted_reason
+    # The ④ answer travels with the send it accompanied. Without this the gate exists only in the
+    # round's transient payload and in tests: `/iterate gate` would have nothing to read afterwards,
+    # and a published state that evaporates with the round is one step from a claim nobody checks.
+    if gate is not None:
+        data[RECIPE_GATE_STATE_KEY] = gate.to_payload()
     try:
         append_entry(
             project_root,
@@ -508,7 +516,7 @@ def _finalize(
         payload["operationIdsNotRequested"] = not_asked
     if gate is not None:
         payload[RECIPE_GATE_STATE_KEY] = gate.to_payload()
-    ledger_error = record_reverification_run(project_root, round_number, request, run)
+    ledger_error = record_reverification_run(project_root, round_number, request, run, gate)
     if ledger_error is not None:
         payload["ledgerError"] = ledger_error
     return payload

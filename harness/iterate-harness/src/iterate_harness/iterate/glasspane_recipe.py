@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Final
 
 from .canonical_json import canonical_json
+from .decision_log import LOG_DIR, LOG_FILE
 from .kernel_decision_log import DecisionLogEntry, DecisionLogVerification, read_decision_log
 from .kernel_decision_record import is_legacy_decision_record
 
@@ -94,6 +95,11 @@ GATE_E_LEDGER: Final = "RECIPE_GATE_E_LEDGER_UNVERIFIABLE"
 #: inconclusive`` — and only ``pass`` proves a fix. A ``blocked`` line is the engine saying it
 #: could not judge, which is the opposite of permission to proceed.
 FIX_PROVING_OUTCOMES: Final = ("pass",)
+
+#: One home for the key ④'s answer is published and recorded under. The round's payload, the ledger
+#: line that accompanies it, and the reader that prints it later all use this string — three copies of
+#: a key is how a state stops being findable.
+RECIPE_GATE_DATA_KEY: Final = "recipeStepGate"
 
 _OPERATION_ID_PATTERN = re.compile(r"^op_[0-9A-HJKMNP-TV-Z]{26}$")
 
@@ -161,7 +167,7 @@ class FixProof:
     operation_id: str
     outcome: str
     ledger_path: str
-    ledger_source: str  # "handed" | "project"
+    ledger_source: str  # "handed" | "link" | "project"
     created_at: str
 
 
@@ -593,37 +599,221 @@ def _broken_ledger_remedy(path_str: str, verified: DecisionLogVerification) -> s
     )
 
 
+#: ------------------------------------------------------------------ the ledger link (③'s last mile)
+#:
+#: ``fix_proof`` can read a chain the *other* harness wrote, but until now the only way to tell it
+#: where that chain lives was to export ``GLASSPANE_DECISION_LOG`` on the process. A capability whose
+#: activation requires an environment variable nobody's shell has set is a capability with a reader in
+#: tests and none in production — the shape this repo keeps paying for. So the hand-off gets a home on
+#: disk: one command links a ledger, every later run reads it.
+#:
+#: What the link pins, and why that is the right thing to pin: the ledger's **genesis entry id**. The
+#: chain is append-only, so a live ledger grows — pinning its head would make the link expire on the
+#: next decision, which is a claim nobody can keep. Pinning the genesis plus the whole-file hash
+#: check at read time means: same chain, still verifiable, possibly longer. A replaced file, a
+#: truncated file, or a rewritten first line all fail that test, and the refusal names both ids.
+
+LEDGER_LINK_FILENAME: Final = "glasspane-ledger.json"
+LEDGER_LINK_SCHEMA_VERSION: Final = "iterate.glasspane-ledger-link/0.1"
+LINK_E_PATH: Final = "LEDGER_LINK_E_PATH"
+LINK_E_READ: Final = "LEDGER_LINK_E_READ"
+LINK_E_SCHEMA: Final = "LEDGER_LINK_E_SCHEMA"
+LINK_E_CHAIN: Final = "LEDGER_LINK_E_LEDGER_CHAIN"
+LINK_E_STALE: Final = "LEDGER_LINK_E_STALE"
+
+_ENTRY_ID_PATTERN = re.compile(r"^dl_[0-9A-HJKMNP-TV-Z]{26}$")
+
+
+def ledger_link_path(project_root: Path | str) -> Path:
+    """Where the link lives: beside the ledger and the run plan, in the directory this harness owns."""
+    return Path(project_root) / LOG_DIR / LEDGER_LINK_FILENAME
+
+
+def link_ledger(project_root: Path | str, ledger_path: Path | str, *, linked_at: str) -> dict[str, str]:
+    """Verify one foreign ledger and record it as this project's link.
+
+    Verification happens *before* anything is written: a link to a ledger that does not verify would
+    turn a bad file into a permanent refusal downstream, and the operator would hear about it at the
+    worst possible moment (mid-round). An empty ledger is accepted — a harness that has not recorded a
+    decision yet is a normal state — but the link then says so with ``genesisEntryId`` absent, and the
+    reader refuses a fix citation exactly as it does today.
+    """
+    target = Path(str(ledger_path))
+    if not target.is_absolute():
+        raise RecipeError(
+            LINK_E_PATH,
+            f"{str(target)!r} is not absolute",
+            "give the absolute path of the decision log to link (面 B prints its own resolved path "
+            "in the receipt it writes; that is the value to paste)",
+            str(target),
+        )
+    _reject_engine_root(target)
+    if not target.is_file():
+        raise RecipeError(
+            LINK_E_READ,
+            f"no ledger to link at {target}",
+            "link the file the other harness actually wrote, not the directory its state root "
+            "would create — this command never makes a ledger, it only vouches for one",
+            str(target),
+        )
+    verified = read_decision_log(str(target))
+    if not verified.ok:
+        raise RecipeError(
+            LINK_E_CHAIN,
+            f"the ledger at {target} does not verify (line {verified.first_broken_line}: "
+            f"{verified.broken_kind}; {verified.reason})",
+            "link a chain that verifies: preserve the file and investigate the break, or point the "
+            "link at the ledger that holds the intact chain",
+            str(target),
+        )
+    genesis = verified.entries[0].entry_id if verified.entries else ""
+    if genesis and not _ENTRY_ID_PATTERN.match(genesis):
+        raise RecipeError(
+            LINK_E_CHAIN,
+            f"the first line of {target} carries entryId {genesis!r}, which is not the kernel's id",
+            "this is not a kernel-chain ledger; do not link it as one",
+            str(target),
+        )
+    document: dict[str, str] = {
+        "schemaVersion": LEDGER_LINK_SCHEMA_VERSION,
+        "path": str(target),
+        "genesisEntryId": genesis,
+        "linkedAt": linked_at,
+    }
+    directory = ledger_link_path(project_root).parent
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    # `os.open` is inside the refusal, not above it: the same defect that made a link's own
+    # directory unreadable escape as a bare OSError would make a path occupied by a directory
+    # (`IsADirectoryError`) escape as one, and the gate's caller only ever sees `RecipeError`.
+    try:
+        handle = os.open(ledger_link_path(project_root), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    except OSError as error:
+        raise RecipeError(
+            LINK_E_READ,
+            f"cannot create the ledger link at {ledger_link_path(project_root)}: {error}",
+            "make the project's .iterate directory writable, or clear whatever holds that path; "
+            "the link is configuration, not evidence, and losing it costs only the hand-off",
+            str(ledger_link_path(project_root)),
+        ) from error
+    try:
+        os.write(handle, (json.dumps(document, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
+        os.fsync(handle)
+    except OSError as error:
+        raise RecipeError(
+            LINK_E_READ,
+            f"cannot write the ledger link beside {directory}: {error}",
+            "make the project's .iterate directory writable; the link is configuration, not evidence, "
+            "and losing it costs only the hand-off",
+            str(directory),
+        ) from error
+    finally:
+        os.close(handle)
+    return document
+
+
+def read_ledger_link(project_root: Path | str) -> dict[str, str] | None:
+    """The recorded link, or ``None`` when this project has none.
+
+    Absence is the only quiet answer. A link file that exists and cannot be honoured is a refusal
+    with its own code: silently falling back to the project's own ledger would let a hand-edited or
+    half-written link read as "no link was ever recorded", and the fix then cited would come from a
+    file nobody meant to vouch for. The caller cannot tell those two apart from a ``None``.
+    """
+    path = ledger_link_path(project_root)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise RecipeError(
+            LINK_E_READ,
+            f"the ledger link at {path} could not be read: {error}",
+            "repair access to the project's .iterate directory, or delete the link file and re-link "
+            "with `/iterate glasspane-ledger <absolute path>` — an unreadable link is not no link",
+            str(path),
+        ) from error
+    required = {"schemaVersion", "path", "genesisEntryId", "linkedAt"}
+    try:
+        decoded = json.loads(raw)
+    except ValueError as error:
+        raise RecipeError(
+            LINK_E_SCHEMA,
+            f"the ledger link at {path} is not JSON: {error}",
+            "rewrite it with `/iterate glasspane-ledger <absolute path>` (it is written, not "
+            "hand-edited) — a link this harness cannot parse cannot license a fix either",
+            str(path),
+        ) from error
+    if not isinstance(decoded, dict) or set(decoded) != required or decoded.get("schemaVersion") != LEDGER_LINK_SCHEMA_VERSION:
+        raise RecipeError(
+            LINK_E_SCHEMA,
+            f"the ledger link at {path} does not match {LEDGER_LINK_SCHEMA_VERSION}: it must hold "
+            f"exactly {sorted(required)}",
+            "re-link it with `/iterate glasspane-ledger <absolute path>`; a link of an unknown shape "
+            "is not read as an empty one",
+            str(path),
+        )
+    return {key: str(decoded[key]) for key in required}
+
+
+def resolve_ledger(
+    project_root: Path | str,
+    env: Mapping[str, str] | None = None,
+) -> tuple[Path, str, dict[str, str] | None]:
+    """Where this run's fix evidence lives: ``env`` → ``link`` → ``project``.
+
+    Returns the path, the name of the producer that won, and the link (so the caller can check the
+    genesis it pins). The environment variable still outranks the link — an explicit hand-off is the
+    operator overriding a recorded default, and it must stay possible without editing files.
+    """
+    environment: Mapping[str, str] = os.environ if env is None else env
+    handed = environment.get(FIX_LEDGER_ENV_VAR)
+    if isinstance(handed, str) and handed.strip():
+        candidate = Path(handed.strip())
+        if not candidate.is_absolute():
+            raise RecipeError(
+                RECIPE_E_PATH,
+                f"{FIX_LEDGER_ENV_VAR}={str(candidate)!r} is not absolute",
+                "point it at an absolute path to the ledger (the same rule 面 B applies when it "
+                "resolves its own decision log)",
+                str(candidate),
+            )
+        _reject_engine_root(candidate)
+        return candidate, "handed", None
+    link = read_ledger_link(project_root)
+    if link is not None:
+        linked = Path(link["path"])
+        if not linked.is_absolute():
+            raise RecipeError(
+                LINK_E_PATH,
+                f"the recorded ledger link is not absolute: {link['path']!r}",
+                "re-link it (`/iterate glasspane-ledger <absolute path>`); a relative link resolves "
+                "wherever the process happens to stand, which is not where the other harness wrote it",
+                link["path"],
+            )
+        _reject_engine_root(linked)
+        return linked, "link", link
+    return Path(project_root) / LOG_DIR / LOG_FILE, "project", None
+
+
 def fix_proof(
     project_root: Path | str,
     env: Mapping[str, str] | None = None,
 ) -> FixProof:
     """The newest chain-verified ledger line that proves a fix, or a refusal saying why there is none.
 
-    This is ③ doing real work: the ledger is read through the kernel's chain verifier, and it may
-    be a ledger *the other harness wrote* (``GLASSPANE_DECISION_LOG``), which is the only way
-    "opID ↔ decision 条目哈希链互通" is more than two files that share a format.
+    This is ③ doing real work: the ledger is read through the kernel's chain verifier, and it may be
+    a ledger *the other harness wrote* — named by ``GLASSPANE_DECISION_LOG`` or by the project's
+    recorded link (``resolve_ledger``), which is the only way "opID ↔ decision 条目哈希链互通" is more
+    than two files that share a format.
 
     A broken chain is a refusal, never a fallback to the lenient reader. ``decision_log.read_entries``
-    deliberately skips unparseable lines because it answers "what did the loop decide"; this
-    question is "is this claim verifiable", and a line that does not verify cannot license a run.
+    deliberately skips unparseable lines because it answers "what did the loop decide"; this question
+    is "is this claim verifiable", and a line that does not verify cannot license a run. A link whose
+    genesis no longer matches the file is its own refusal: the ledger was replaced, not extended, and
+    citing a fix out of the replacement would quote a chain nobody witnessed.
     """
-    environment: Mapping[str, str] = os.environ if env is None else env
-    handed = environment.get(FIX_LEDGER_ENV_VAR)
-    if isinstance(handed, str) and handed.strip():
-        ledger_path = Path(handed.strip())
-        source = "handed"
-        if not ledger_path.is_absolute():
-            raise RecipeError(
-                RECIPE_E_PATH,
-                f"{FIX_LEDGER_ENV_VAR}={str(ledger_path)!r} is not absolute",
-                "point it at an absolute path to the ledger (the same rule 面 B applies when it "
-                "resolves its own decision log)",
-                str(ledger_path),
-            )
-        _reject_engine_root(ledger_path)
-    else:
-        ledger_path = Path(project_root) / ".iterate" / "decision-log.jsonl"
-        source = "project"
+    ledger_path, source, link = resolve_ledger(project_root, env=env)
 
     path_str = str(ledger_path)
     try:
@@ -644,6 +834,23 @@ def fix_proof(
             _broken_ledger_remedy(path_str, verified),
             path_str,
         )
+    if link is not None and link["genesisEntryId"]:
+        # The link vouches for a chain, not for a filename. Genesis is the right thing to compare:
+        # an intact ledger only grows, so a different first line means the file was replaced or
+        # truncated — the opposite of "the same chain, longer". A link recorded against an empty
+        # ledger has no genesis to compare (it pins nothing), which is why ``genesisEntryId`` may be
+        # blank and why that case is a weaker vouch, stated at link time rather than discovered here.
+        observed = verified.entries[0].entry_id if verified.entries else ""
+        if observed != link["genesisEntryId"]:
+            raise RecipeError(
+                LINK_E_STALE,
+                f"the linked ledger at {path_str} is not the chain that was linked: its first entry "
+                f"is {observed or '(none)'}, the link recorded {link['genesisEntryId']}",
+                "the file was replaced or truncated, not extended. Re-link it only after deciding "
+                "the replacement is the ledger you mean (`/iterate glasspane-ledger <path>`); until "
+                "then no fix may be cited out of it",
+                path_str,
+            )
     for entry in reversed(verified.entries):
         if _entry_proves_fix(entry):
             return FixProof(
@@ -661,6 +868,81 @@ def fix_proof(
         "produces the evidence pack and let the write side append its chain entry, or hand this "
         f"run the ledger that already holds it through {FIX_LEDGER_ENV_VAR}",
         path_str,
+    )
+
+
+def render_ledger_link(project_root: Path | str, env: Mapping[str, str] | None = None) -> str:
+    """What the ledger is right now: which of the three producers answers, and does it verify.
+
+    Printed for an operator, so it names files and states what was measured. The three sources are
+    printed because the difference matters when a fix is refused: a project ledger with no entries is
+    a different problem from a link pointing at a ledger that no longer verifies.
+    """
+    try:
+        ledger_path, source, link = resolve_ledger(project_root, env=env)
+    except RecipeError as error:
+        return f"{error.code}: {error.message}\nremedy: {error.remedy}"
+    lines = [f"fix-evidence ledger: {ledger_path}", f"resolved from: {source}"]
+    if link is not None:
+        lines.append(f"linked at: {link['linkedAt']}  genesis: {link['genesisEntryId'] or '(empty ledger)'}")
+    if source == "project":
+        lines.append(
+            "no link recorded: to cite the other harness's own ledger instead, run "
+            "`/iterate glasspane-ledger <absolute path to its decision-log.jsonl>` once per project"
+        )
+    try:
+        verified = read_decision_log(str(ledger_path))
+    except (OSError, ValueError) as error:
+        return "\n".join(lines + [f"LEDGER UNREADABLE: {error}"])
+    if not verified.ok:
+        return "\n".join(
+            lines + [f"chain: BROKEN at line {verified.first_broken_line} ({verified.broken_kind}) — {verified.reason}"]
+        )
+    proving = sum(1 for entry in verified.entries if _entry_proves_fix(entry))
+    lines.append(
+        f"chain: verified, {len(verified.entries)} entries, "
+        f"{proving} of them a passing outcome carrying an operation id"
+    )
+    return "\n".join(lines)
+
+
+def render_gate_state(project_root: Path | str) -> str:
+    """The last ④ answer this project recorded, read back out of its own ledger.
+
+    Read through the lenient projector, not the chain verifier: this answers "what did the loop
+    publish", and it must still answer after a chain break elsewhere. The distinction is the one
+    ``decision_log.read_entries`` already draws.
+    """
+    from .decision_log import read_entries  # local: decision_log imports nothing from here
+
+    for entry in reversed(read_entries(project_root)):
+        data = entry.data if isinstance(entry.data, Mapping) else {}
+        gate = data.get(RECIPE_GATE_DATA_KEY)
+        if not isinstance(gate, Mapping):
+            continue
+        lines = [
+            f"round {entry.round}: recipe gate — "
+            + ("ALLOWED" if gate.get("allowed") else "not allowed"),
+            f"  invariant verdict: {gate.get('invariantState', 'unknown')}",
+        ]
+        if gate.get("recipeDigest"):
+            lines.append(f"  recipe: {gate['recipeDigest']}")
+        if isinstance(gate.get("steps"), list) and gate["steps"]:
+            lines.append(f"  steps configured: {', '.join(str(step) for step in gate['steps'])}")
+        proof = gate.get("fixProof")
+        if isinstance(proof, Mapping):
+            lines.append(
+                f"  fix cited from: {proof.get('operationId', '?')} "
+                f"(entry {proof.get('entryId', '?')}, ledger {proof.get('ledgerSource', '?')})"
+            )
+        refusal = gate.get("refusal")
+        if isinstance(refusal, Mapping):
+            lines.append(f"  refused: {refusal.get('code')}: {refusal.get('message')}")
+            lines.append(f"  remedy: {refusal.get('remedy')}")
+        return "\n".join(lines)
+    return (
+        "no recipe gate recorded yet: it is published by a round that measured an invariant verdict, "
+        "so a project that has not run one has nothing to report here — that is absence, not a pass"
     )
 
 
@@ -751,6 +1033,13 @@ def recipe_step_gate(
 
 
 __all__ = [
+    "LEDGER_LINK_FILENAME",
+    "LEDGER_LINK_SCHEMA_VERSION",
+    "LINK_E_CHAIN",
+    "LINK_E_PATH",
+    "LINK_E_READ",
+    "LINK_E_SCHEMA",
+    "LINK_E_STALE",
     "FIX_LEDGER_ENV_VAR",
     "GATE_E_GATE",
     "GATE_E_LEDGER",
@@ -774,6 +1063,13 @@ __all__ = [
     "RecipeStep",
     "StepGate",
     "fix_proof",
+    "ledger_link_path",
+    "link_ledger",
+    "read_ledger_link",
+    "resolve_ledger",
+    "render_gate_state",
+    "render_ledger_link",
+    "RECIPE_GATE_DATA_KEY",
     "parse_recipe_text",
     "read_recipe",
     "read_recipe_or_refusal",

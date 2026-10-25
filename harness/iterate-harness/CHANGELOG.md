@@ -53,6 +53,59 @@ unmeasured 当 pass、放行无可验账本、contest 悄悄取一个、多配�
 都不发布（`_prepare` 第五个位置此时返回 `None`，不为它编一个没人读的形状），所以这条是给直接调用方的
 契约、由测试钉住形状，不算"产品上会看到的拒绝"。
 
+### Added — ③ 的最后一程（把对面那本账链接进来）与 ④ 的读者
+
+上一条留下的两处"能做但没人配置"，本批各自接到底：
+
+- **`.iterate/glasspane-ledger.json`（`iterate.glasspane-ledger-link/0.1`）**：`fix_proof` 早就能读
+  对面写的链，但"去哪儿读"只剩 `GLASSPANE_DECISION_LOG` 一条环境变量——没配的那台机器上，③ 静默退化成
+  "只读工程自己的台账"，而 GlassPane 修的东西恰恰不在那本里。现在 `link_ledger` 把交接做成一次性的
+  项目动作：先跑内核链校验器**再落笔**（校验不过就一个字节都不写，因为给坏链背书会让之后每一轮都拒绝，
+  而操作者是在最坏的时机——轮次中间——才知道），钉住 `genesisEntryId`，0700 目录里 0600 文件。空台账允许
+  链接，但 genesis 留空＝弱一档的背书，这话写在链接时而不是等读的时候才发现。
+- **解析次序 `env` → `link` → `project`**：显式交接仍然压过记录，操作者必须能在不改文件的前提下临时换一本。
+  genesis 与文件首条不符 ⇒ `LEDGER_LINK_E_STALE`：一条链只会变长，首条换了就是被**替换**了，从替换品里
+  引一条"修复已证"等于引用一条没人见证过的链。截断则先被链校验器抓住（第 1 行）——两条拒绝指向不同地方，
+  所以次序是量出来的而不是随手写的。
+- **④ 的闸有了不是测试的读者**：`recipeStepGate` 现在随它那一轮的账本行一起落盘，`/iterate gate`
+  把"上一轮答了什么"读回来。读法故意与 `fix_proof` 不同——用宽容投影器，因为它答的是"这一轮发布了什么"，
+  这个问号在别处断链时也必须还能答。没有记录时它说"那是缺席，不是通过"，不打印一个绿色的默认值。
+- **`/iterate glasspane-ledger [<路径>]`**：带路径就链接（把对面打印的绝对路径贴进来），不带就打印当前
+  是哪一本、链的是谁、链不链得通。两条子命令都进了 usage 文本——发现不了等于没有。
+
+### Fixed — 三条自己写出来的、形状已知的缺陷（复核时抓到，不是别人报的）
+
+- `LINK_E_SCHEMA` **声明了却没人举**，而 `read_ledger_link` 把手写过/半写的链接当"没有链接"，悄悄退回
+  工程自己的台账。那不是"降级"，是给错的文件作背书：操作者以为读的是对面那本，代码读的是另一本。
+  现在只有"文件不存在"才回 `None`，不合形状/不是 JSON/读不到各自具名拒绝。
+- `os.open` 在 `try` **外面**：链接路径被一个目录占住时抛裸 `IsADirectoryError`，而闸的调用方只处理
+  `RecipeError`。两处 OSError 出口现在都包进同一条 `LEDGER_LINK_E_READ`。
+- 两条从未被 raise 的码（`LEDGER_LINK_E_STATE_ROOT`、`LEDGER_LINK_E_LEDGER_EMPTY`）删掉——本仓的规矩是
+  声明一个不存在的拒绝＝给不存在的能力作背书。
+- **`from datetime import UTC` 是 3.11 的**，我把它写进了 `commands/iterate.py`，`tests/test_py310_compat.py`
+  当场红（本包 `requires-python >= 3.10`，CI 跑 3.10/3.11/3.12/3.13 四个作业）。改成仓内既有的
+  `from datetime import datetime, timezone` + `UTC = timezone.utc`。顺着这条把闸本身也修了：它此前只扫
+  `src/`，而一个测试文件里的 3.11-only 名字在 3.10 上是**收集期**炸——整文件用例静默消失，本机 3.13 上
+  永远看不见。现在扫 `src/` 与 `tests/` 两个根，并给"整模块导入"补了 guarded-import 豁免
+  （`try: import tomllib / except ModuleNotFoundError: import tomli as tomllib` 是本仓已有写法，误报会逼人
+  删掉兜底换绿）；豁免只到整模块导入为止，`from datetime import UTC` 那种"名字"包在 try 里不豁免——那正是
+  2.5.0 事故的形状：3.10 的失败落在 `try` 内、被 handler 咽掉，代码安静降级。
+
+### 实测与反向验证（本批）
+
+`pytest tests` 全量 3062 passed / 6 failed / 6 skipped。红的那 6 条就是上一条目里已经在
+`d14da4b2` 干净基线上复现过的那一组（`test_engine/test_query_engine.py` 一条、`test_tasks/test_manager.py`
+三条、`test_tools/test_bash_tool.py` 一条、`test_tools/test_integration_flows.py` 一条），本批没碰它们
+指向的面，本轮未重跑基线；本批**新**红的那条 `test_py310_compat` 已修，见上。
+`ruff check src tests` 0、`mypy --strict src`
+269 文件 0 问题；新增 23 条用例
+（`tests/test_iterate/test_glasspane_ledger_link.py`）+ `tests/test_py310_compat.py` 补 2 条。
+十一发反向变异每发**具名**变红并按 sha256 逐字核回（`glasspane_recipe.py` `043471f1…`、
+`reverify_trigger.py` `5e287f84…`；全程自带备份 `cp`，未用 `git checkout`/`stash`）：链接前先验链被去掉、
+genesis 不钉、轮换后的台账照样被引用、环境变量不再压过链接、坏 JSON 与错形状各自被悄悄忽略、
+`os.open` 的 OSError 不再被包、闸的读者读错 key、闸不落进账本行。闸自身另外两发（豁免放宽到
+`ImportFrom`、扫描退回单根）也各自具名变红。
+
 ## [2.10.0] - 2026-10-24
 
 ### Added
