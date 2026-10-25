@@ -74,6 +74,8 @@ The relationship: the **skill** (this repo's core deliverable) targets conversat
 
 **Related project: [GlassPane](https://github.com/jingzhao-l/GlassPane).** The JSON Schema contract layer in [`kernel/`](kernel) (`iterate-kernel`) is also the language spoken by GlassPane, a runtime verification engine for AI agents on macOS: an agent acts through MCP, and GlassPane returns evidence of whether the claimed UI change actually happened — accessibility-tree and pixel deltas, an attribution verdict, and a checkpoint to roll back to. iterate answers "is this code right?"; GlassPane answers "did that operation really take effect?". It is a deliberately separate concern: GlassPane does not read `iterate.config.yaml`, and it ships on its own release line.
 
+The separation is not a wall: since 2026-10-25 the two halves exchange verifiable records — GlassPane's evidence ledger and the review loop's decision log are the same hash chain format and each side verifies the other's file, a `dimension` declaration travels with a verification call and a contradicting decision is refused, and the loop gates "the fix is done" on a chain-verified entry rather than on the agent's word. The commands are `ih iterate gate` / `ih iterate glasspane-ledger <path>` (and their `/iterate` twins); [the harness README](https://github.com/jingzhao-l/iterate-harness#-glasspane-integration) documents the whole exchange.
+
 The harness and plugin can also be installed and used independently of this repo:
 
 ```bash
