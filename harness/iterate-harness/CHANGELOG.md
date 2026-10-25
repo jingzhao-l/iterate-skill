@@ -83,13 +83,21 @@ unmeasured 当 pass、放行无可验账本、contest 悄悄取一个、多配�
 - 两条从未被 raise 的码（`LEDGER_LINK_E_STATE_ROOT`、`LEDGER_LINK_E_LEDGER_EMPTY`）删掉——本仓的规矩是
   声明一个不存在的拒绝＝给不存在的能力作背书。
 - **`from datetime import UTC` 是 3.11 的**，我把它写进了 `commands/iterate.py`，`tests/test_py310_compat.py`
-  当场红（本包 `requires-python >= 3.10`，CI 跑 3.10/3.11/3.12/3.13 四个作业）。改成仓内既有的
-  `from datetime import datetime, timezone` + `UTC = timezone.utc`。顺着这条把闸本身也修了：它此前只扫
-  `src/`，而一个测试文件里的 3.11-only 名字在 3.10 上是**收集期**炸——整文件用例静默消失，本机 3.13 上
-  永远看不见。现在扫 `src/` 与 `tests/` 两个根，并给"整模块导入"补了 guarded-import 豁免
-  （`try: import tomllib / except ModuleNotFoundError: import tomli as tomllib` 是本仓已有写法，误报会逼人
-  删掉兜底换绿）；豁免只到整模块导入为止，`from datetime import UTC` 那种"名字"包在 try 里不豁免——那正是
-  2.5.0 事故的形状：3.10 的失败落在 `try` 内、被 handler 咽掉，代码安静降级。
+  当场红（本包 `requires-python >= 3.10`）。改成仓内既有的 `from datetime import datetime, timezone`
+  形式；下一笔又把时间戳整个搬进 `glasspane_recipe.link_ledger_now`，所以 `commands/` 里现在**根本不出现**
+  时间戳格式（有一条用例数着全仓 `isoformat(timespec="milliseconds")` 只出现 1 次）。
+  顺着这条把闸本身也修了：它此前只扫 `src/`，而一个测试文件里的 3.11-only 名字在 3.10 上是**收集期**
+  ImportError——整文件用例静默消失，本机 3.13 上永远看不见。**这条仓的 CI 分布是量出来的，不是想象的**：
+  父仓 `iterate-skill` 的 push CI（`Python tests (3.10…3.13)` 那份矩阵）跑的是根上的 `pytest tests/ -q`
+  ——实测 1865 passed，那是 **skill 自己的套件**，碰不到 `harness/iterate-harness/tests/`；harness 套件
+  的 3.10 覆盖在 `harness/iterate-harness/.github/workflows/ci.yml`（`uv run pytest -q`），而那份工作流
+  只有 **subtree push 到 `jingzhao-l/iterate-harness` 之后**才作为该仓根工作流执行。也就是说：一个坏掉的
+  测试导入在本仓 push 上是**静默**的，要等搬运之后才红。静态闸把 `tests/` 纳进扫描面之后，任何一次跑
+  harness 套件（本机也算）都能看见它——这才是这条修法的价值所在。
+  同时给"整模块导入"补了 guarded-import 豁免（`try: import tomllib / except ModuleNotFoundError:
+  import tomli as tomllib` 是本仓已有写法，误报会逼人删掉兜底换绿）；豁免只到整模块导入为止，
+  `from datetime import UTC` 那种"名字"包在 try 里不豁免——那正是 2.5.0 事故的形状：3.10 的失败落在
+  `try` 内、被 handler 咽掉，代码安静降级。
 
 ### Fixed — 语料清单的 `version` 从 0.1.9 追到 0.1.10（并两次实测它是同一份字节）
 
