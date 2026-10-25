@@ -251,6 +251,65 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 新增 `backup/2026-10-23-harness-wip` 保存主工作区里一条 harness
       > docstring WIP 后恢复干净。
       >
+      > **3.9.0 状态（2026-10-25）**：minor（一个净新增能力 + 同轮全量复审修复）。
+      > 测试套件 **1856 → 1866 passed**（1 skipped：本机未安装 fish；
+      > `python -m pytest tests/ -q` 与 `python -m ruff check .` 均通过，
+      > `npm-installer` 测试全绿）。
+      > **新增**：`iterate completion <shell> --install` —— 直接写入 bash / fish /
+      > zsh 的常规用户补全目录（bash/fish 遵循 `XDG_DATA_HOME` /
+      > `XDG_CONFIG_HOME`；zsh 优先已存在的 `~/.oh-my-zsh/completions`，否则
+      > `~/.zfunc` 并打印可粘贴的 `fpath`+`compinit` 提示）；自动建父目录、
+      > 原子写入、默认拒绝覆盖已有文件（需 `--force`）、`--dir` 指定目录、
+      > `--json` 输出 `{shell,path,bytes,reload_hint}`。新增 8 项回归测试，
+      > 覆盖三 shell 默认路径、XDG 覆盖、OMZ 优先、`.zfunc` 回退、`--dir`、
+      > 覆盖保护/`--force`、JSON 合约与项目外可用。
+      > **修复**：`report` 的 `_cell()` 文档承诺转义反引号但实现未做，奇数个反
+      > 引号会把后续表格吞成代码块；GFM 又允许裸内联 HTML，项目可控值
+      > （如 `<img src=x onerror=...>`）会被原样写进要贴 PR 的报告。现统一
+      > 转义反引号与 `& < >`，`_code()` 遇到含反引号/尖括号的值退回普通转义
+      > 文本；zsh 安装提示改为对父目录单独 `shlex.quote()`，路径含空格不再产出
+      > 不可执行的 `fpath`。新增 2 项回归测试。
+      > 提交链 3 个逻辑提交（`560348de` feat(completion)、`ca526128`
+      > fix(report)、`aa279b68` release），全部 GPG 签名；
+      > signed annotated tag `v3.9.0`（tag 对象 `882120b5`）→ `aa279b68`，
+      > `git verify-tag v3.9.0` 完好的签名，签发指纹
+      > `0929EA31DF4F7429F63FC53189D88B1D043A1298`（与钉死值一致）。
+      > ⚠️ **本地 tag 命名空间撞名（第 5 次）**：本地 `refs/tags/v3.9.0` 原为
+      > iterate-plugin 的轻量 tag（→ `fc228d37`）。首轮 `git push origin v3.9.0`
+      > 误把该 plugin tag 推上 origin（远端此前无此 tag），随即用
+      > `git tag -f -s v3.9.0 aa279b68` + `git push --force origin v3.9.0`
+      > 纠正为 skill 签名 tag；plugin tag 仍可在 `plugin-origin` 找回
+      > （`git fetch plugin-origin v3.9.0`）。找回 skill 侧请
+      > `git tag -f v3.9.0 fc228d37` 会指向 plugin 提交，勿用。
+      > ✅ **GitHub Release**（success run `40145609344`）：6 资产齐备；
+      > `shasum -a 256 -c SHA256SUMS.txt` → `iterate-skill.tar.gz: OK`；
+      > 三份 `.asc` 本机均 `完好的签名`；`iterate-skill.tar.gz` 689K /
+      > **95 条目**、`harness/|kernel/|tests/` **0 条**；`iterate-qoder.zip`
+      > 731K / **80 文件**、同上 0 条；两份包内 `SKILL.md version: 3.9.0`、
+      > `pyproject.toml 3.9.0`、`npm-installer/package.json 3.9.0` 三处一致。
+      > ✅ **npm**（`npm-publish.yml` success run `40145609319`）：
+      > `npm view iterate-skill-installer version` → **3.9.0**，
+      > `dist-tags.latest` → **3.9.0**，
+      > `npx -y iterate-skill-installer@3.9.0 --version` →
+      > **iterate-skill-installer 3.9.0**。
+      > ✅ **ClawHub**：`.dist_tmp/clawhub_publish.py --concurrency 16` 发布
+      > 72 文件 / 2,104,031 字节，`ok:true`，versionId
+      > `k97d4jqk87ehsqryvc03wzw3f58gy8jj`，`publicationStatus=pending`；
+      > 平台异步审核后 `GET /api/v1/skills/iterate-skill` 的
+      > `latestVersion.version = 3.9.0`，`/versions/3.9.0` → **200**。
+      > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：3.9.0 精简包
+      > 74 文件 / 738,069 字节（< 5MiB、`harness/|kernel/|tests/` 0 条），
+      > `upload_file_to_openapi` → `update_skill_settings` 成功
+      > （file_id `9296145c-fde6-485c-ac6a-2f2c92f2b735`，`UPDATE_OK`）；
+      > 消费端 `download_skill()` 实测 **74 文件**、banned **0 条**，
+      > `SKILL.md version: 3.9.0`、`pyproject.toml 3.9.0`、
+      > `npm-installer/package.json 3.9.0` 三处一致，且含
+      > `iterate_cli/completion.py::install_completion`。
+      > ✅ **SkillHub**（skillId `104490`）：3.9.0 发布 70 文件 /
+      > 735,686 字节，`ok:true`，versionId `459647`，`tags.latest = 3.9.0`；
+      > `reviewStatus/securityScanStatus/contentAuditStatus=pending` 为平台
+      > 异步审核。
+      >
       > **3.6.0 状态（2026-10-20）**：minor（三个新能力 + 同轮全量复审修复）。测试套件
       > **1563 → 1738**（实测 `pytest tests/ -q` → 1738 passed, 2 warnings；
       > 新增 `tests/test_scan_command.py`、`tests/test_cli_help.py`、
