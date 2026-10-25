@@ -45,6 +45,7 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
@@ -712,6 +713,44 @@ def link_ledger(project_root: Path | str, ledger_path: Path | str, *, linked_at:
     return document
 
 
+def link_ledger_now(project_root: Path | str, ledger_path: Path | str) -> dict[str, str]:
+    """``link_ledger`` with the stamp this module owns.
+
+    The `linkedAt` shape belongs here rather than at each call site: the slash command and the
+    terminal command both link a ledger, and a stamp reformatted at a call site is one silent
+    step away from a link no later reader can parse.
+    """
+    return link_ledger(
+        project_root,
+        ledger_path,
+        linked_at=datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+    )
+
+
+def format_recipe_error(error: RecipeError) -> str:
+    """One refusal, one wording: the slash surface, the terminal surface and the renderers all use this.
+
+    The three used to format `code: message / remedy: remedy` independently, which is how a reader
+    ends up with two spellings of the same refusal — and a refusal nobody can grep for is a refusal
+    nobody can act on.
+    """
+    return f"{error.code}: {error.message}\nremedy: {error.remedy}"
+
+
+def render_link_success(project_root: Path | str, ledger_path: Path | str) -> str:
+    """Link a foreign ledger and return the whole success answer.
+
+    Raises :class:`RecipeError` for the caller to format; the exit code is surface-specific (the
+    terminal says 1, the in-session command says "here is the refusal"), but the *text* is not.
+    """
+    document = link_ledger_now(project_root, ledger_path)
+    return (
+        "linked the GlassPane ledger; the gate now cites fixes from that chain.\n"
+        + render_ledger_link(project_root)
+        + f"\ngenesis pinned: {document['genesisEntryId'] or '(empty ledger at link time)'}"
+    )
+
+
 def read_ledger_link(project_root: Path | str) -> dict[str, str] | None:
     """The recorded link, or ``None`` when this project has none.
 
@@ -881,7 +920,7 @@ def render_ledger_link(project_root: Path | str, env: Mapping[str, str] | None =
     try:
         ledger_path, source, link = resolve_ledger(project_root, env=env)
     except RecipeError as error:
-        return f"{error.code}: {error.message}\nremedy: {error.remedy}"
+        return format_recipe_error(error)
     lines = [f"fix-evidence ledger: {ledger_path}", f"resolved from: {source}"]
     if link is not None:
         lines.append(f"linked at: {link['linkedAt']}  genesis: {link['genesisEntryId'] or '(empty ledger)'}")
@@ -1063,12 +1102,15 @@ __all__ = [
     "RecipeStep",
     "StepGate",
     "fix_proof",
+    "format_recipe_error",
     "ledger_link_path",
     "link_ledger",
+    "link_ledger_now",
     "read_ledger_link",
     "resolve_ledger",
     "render_gate_state",
     "render_ledger_link",
+    "render_link_success",
     "RECIPE_GATE_DATA_KEY",
     "parse_recipe_text",
     "read_recipe",

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -50,10 +49,11 @@ from iterate_harness.iterate.settings import (
 
 _LOG = logging.getLogger(__name__)
 
-# `datetime.UTC` is 3.11 and this package claims 3.10 (`requires-python`); the alias is the form
-# every other module here uses, and `tests/test_py310_compat.py` is the guard that says so. I hit
-# that guard with the ③ link command, so the shape is recorded here rather than re-derived.
-UTC = timezone.utc
+# No timestamp is formatted here: the ③ link's `linkedAt` shape lives in
+# `iterate.glasspane_recipe.link_ledger_now`, which both this slash surface and `ih iterate
+# glasspane-ledger` call. (An earlier revision of this file imported `datetime.UTC` for it —
+# 3.11-only, caught by `tests/test_py310_compat.py`, and the real fix was to give the stamp one
+# home rather than to keep re-deriving it per call site.)
 
 if TYPE_CHECKING:
     # Imported lazily to avoid a registry ⇄ iterate-handler import cycle.
@@ -386,20 +386,10 @@ async def iterate_command_handler(args: str, context: CommandContext) -> Command
 
         if rest and rest[0] not in ("--show", "show"):
             try:
-                document = glasspane_recipe.link_ledger(
-                    cwd,
-                    Path(rest[0]).expanduser(),
-                    linked_at=datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                )
+                link_text = glasspane_recipe.render_link_success(cwd, Path(rest[0]).expanduser())
             except glasspane_recipe.RecipeError as error:
-                return _result(message=f"{error.code}: {error.message}\nremedy: {error.remedy}")
-            return _result(
-                message=(
-                    "linked the GlassPane ledger; the gate now cites fixes from that chain.\n"
-                    + glasspane_recipe.render_ledger_link(cwd)
-                    + f"\ngenesis pinned: {document['genesisEntryId'] or '(empty ledger at link time)'}"
-                )
-            )
+                return _result(message=glasspane_recipe.format_recipe_error(error))
+            return _result(message=link_text)
         return _result(message=glasspane_recipe.render_ledger_link(cwd))
 
     if sub == "gate":
@@ -572,9 +562,10 @@ async def iterate_command_handler(args: str, context: CommandContext) -> Command
             "- resume: continue the last finished run from its decision log\n"
             "- log [n]: tail the decision log (or `log trend`)\n"
             "- trend: cross-run finding trend (new/fixed/stubborn)\n"
-            "- gate: the last recipe-gate answer this project recorded (scenario 4)\n"
+            "- gate: the last recipe-gate answer this project recorded (scenario 4; terminal: `ih iterate gate`)\n"
             "- glasspane-ledger [<path>]: show which decision log the fix evidence is read from, "
-            "or link the one the GlassPane harness wrote (absolute path)\n"
+            "or link the one the GlassPane harness wrote (absolute path; terminal: "
+            "`ih iterate glasspane-ledger <path>`)\n"
             "- report [--html|--serve]: render the final report from the decision log\n"
             "  --html writes .iterate/report.html; --serve also writes .iterate/replay.html\n"
             "  and starts a local HTTP server that opens in the browser\n"

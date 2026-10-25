@@ -99,20 +99,44 @@ unmeasured 当 pass、放行无可验账本、contest 悄悄取一个、多配�
 registry 模式（`npm pack` 真包）**各跑一次，10 份文件逐字节对上**。0.1.10 那版内核动的只有 `zod`，
 契约语料未变，所以这是一次追标签而不是迁移。
 
+### Added — 那两个读者要有第二扇门：`ih iterate gate` / `ih iterate glasspane-ledger`
+
+上一条把读者写成了"只有 session 里 `/iterate …` 敲得动"。拿真 `ih` 一试，终端回的是
+`No such command 'gate'`——Typer 那面给 `status`/`log`/`trend`/`agents` 都配了孪生命令，我新加的这两条
+没有。一个只能从代理里问的读者，仍然是一个读者，但操作者坐在终端前问不到，就等于他手上没有这个数。
+
+- 两条 Typer 命令落进 `cli.py`，与 slash 面共用同一批函数；**退出码按面分**（终端拒绝退 1，
+  session 里把拒绝当答案返回），**措辞按面统一**（同一个 `format_recipe_error` / `render_link_success`）。
+- `linkedAt` 的格式从 `commands/` 搬进 `glasspane_recipe.link_ledger_now`：上一条刚把那里的
+  `datetime.UTC` 修成 `timezone.utc`，而真正的病是"每个调用点各排一次时间戳"——两个面各排一次，
+  就是两份会各自漂的格式。现在 `isoformat(timespec="milliseconds")` 在全仓出现 1 次，由一条用例数着。
+- registry 里 `/iterate` 那条描述此前抄了一份六条的命令清单（实际 14 条，`gate` 与
+  `glasspane-ledger` 都不在内）。改成指向 usage 文本："不带参数就打印当前清单"——这句抄不旧。
+- 两面一致性由三条用例钉住（同一条项目、同一个 cwd，终端输出与 slash 输出逐字相等，只豁免
+  `linkedAt` 那个墙钟字段），拒绝那条另断言 `exit_code == 1` 且**没有留下链接文件**。
+
 ### 实测与反向验证（本批）
 
-`pytest tests` 全量 3062 passed / 6 failed / 6 skipped。红的那 6 条就是上一条目里已经在
+`pytest tests` 全量 3067 passed / 6 failed / 6 skipped。红的那 6 条就是上一条目里已经在
 `d14da4b2` 干净基线上复现过的那一组（`test_engine/test_query_engine.py` 一条、`test_tasks/test_manager.py`
 三条、`test_tools/test_bash_tool.py` 一条、`test_tools/test_integration_flows.py` 一条），本批没碰它们
 指向的面，本轮未重跑基线；本批**新**红的那条 `test_py310_compat` 已修，见上。
-`ruff check src tests` 0、`mypy --strict src`
-269 文件 0 问题；新增 23 条用例
-（`tests/test_iterate/test_glasspane_ledger_link.py`）+ `tests/test_py310_compat.py` 补 2 条。
-十一发反向变异每发**具名**变红并按 sha256 逐字核回（`glasspane_recipe.py` `043471f1…`、
-`reverify_trigger.py` `5e287f84…`；全程自带备份 `cp`，未用 `git checkout`/`stash`）：链接前先验链被去掉、
+`ruff check src tests scripts` 0、`mypy --strict src` 269 文件 0 问题；
+`tests/test_iterate/test_glasspane_ledger_link.py` 现有 28 条（本批 +5）+ `tests/test_py310_compat.py` 补 2 条。
+十五发反向变异每发**具名**变红并按 sha256 逐字核回（`glasspane_recipe.py` `043471f1…`、
+`reverify_trigger.py` `5e287f84…`、`cli.py` `4b7d4f61…`、`commands/iterate.py` `362be1ed…`；
+全程自带备份 `cp`，未用 `git checkout`/`stash`——并行会话正在用主树）：链接前先验链被去掉、
 genesis 不钉、轮换后的台账照样被引用、环境变量不再压过链接、坏 JSON 与错形状各自被悄悄忽略、
-`os.open` 的 OSError 不再被包、闸的读者读错 key、闸不落进账本行。闸自身另外两发（豁免放宽到
-`ImportFrom`、扫描退回单根）也各自具名变红。
+`os.open` 的 OSError 不再被包、闸的读者读错 key、闸不落进账本行、闸自身另外两发（豁免放宽到
+`ImportFrom`、扫描退回单根），再加这一批的门：终端自己编一句拒绝、终端自己编一句缺席、slash 自己
+重排成功文本（**只改一个句号也红**）、拒绝不再让 shell 非零退出。
+
+真机读数（`ih`，隔离项目目录，被链接的链取 `tests/fixtures/glasspane_chain_ts_written.jsonl`
+那份**真内核字节**）：未链接时打印三条来源与 `0 entries`；链接后 `resolved from: link` +
+`chain: verified, 3 entries, 1 of them a passing outcome carrying an operation id` +
+`genesis pinned: dl_AAAA…`；`gate` 答的是"那是缺席，不是通过"；被改过一个字段的链拒绝并退 **1**、
+点名 `LEDGER_LINK_E_LEDGER_CHAIN`、报出断在第 2 行，而 `.iterate/` **一个文件都没留下**；
+落盘的链接文件 `0600`，父目录 `0700`。
 
 ## [2.10.0] - 2026-10-24
 

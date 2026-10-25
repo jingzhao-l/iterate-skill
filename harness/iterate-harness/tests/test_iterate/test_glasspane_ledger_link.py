@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from typer.testing import CliRunner
 
+from iterate_harness import cli as cli_module
 from iterate_harness.commands.iterate import iterate_command_handler
 from iterate_harness.commands.registry import CommandContext
 from iterate_harness.defensive.kernel import DEFENSIVE_KERNEL_KEY, DefensiveKernel
@@ -365,6 +368,119 @@ def test_the_new_subcommands_are_in_the_usage_text(tmp_path: Path) -> None:
     source = Path(str(module.__file__)).read_text(encoding="utf-8")
     assert "gate|glasspane-ledger" in source
     assert "recipe-gate answer" in source
+    # And the terminal twin is named where the file's own convention puts it (see the `personalize`
+    # line): an operator reading `/iterate`'s usage must be able to type what they just read.
+    assert "ih iterate gate" in source
+    assert "ih iterate glasspane-ledger" in source
+
+
+# ---------------------------------------------------------------------- the same answer, two doors
+
+def _slash(command: str, cwd: Path) -> str:
+    context = CommandContext(engine=None, cwd=str(cwd))  # type: ignore[arg-type]
+    return asyncio.run(iterate_command_handler(command, context)).message or ""
+
+
+def _terminal(args: list[str], cwd: Path) -> Any:
+    import os
+
+    previous = os.getcwd()
+    os.chdir(cwd)
+    try:
+        return CliRunner().invoke(cli_module.app, ["iterate", *args])
+    finally:
+        os.chdir(previous)
+
+
+def _without_stamp(text: str) -> str:
+    """The link's `linkedAt` is wall-clock, so two calls two milliseconds apart are not a wording drift.
+
+    Everything else in the two surfaces' answers is compared character for character; the timestamp
+    is the one field that is *supposed* to differ between two separate link operations.
+    """
+    return re.sub(r"\d{2}:\d{2}:\d{2}\.\d{3}Z", "<stamp>", text)
+
+
+@pytest.mark.parametrize("command, args", [("gate", ["gate"]), ("glasspane-ledger", ["glasspane-ledger"])])
+def test_the_terminal_surface_and_the_slash_surface_answer_the_same_thing(
+    tmp_path: Path, command: str, args: list[str]
+) -> None:
+    """Two doors into one reader, pinned to the same words — including the absence sentence.
+
+    The alternative (each surface calling the same module but formatting on its own) is how a
+    command drifts: the operator's terminal and the agent's session start telling different stories
+    about the same project, and nobody can tell which one a remedy refers to.
+    """
+    before = _terminal(args, tmp_path)
+    assert before.exit_code == 0, before.output
+    assert _without_stamp(before.output).strip() == _without_stamp(_slash(command, tmp_path)).strip()
+
+    if command == "glasspane-ledger":
+        linked = _terminal([*args, str(FOREIGN_LEDGER)], tmp_path)
+        assert linked.exit_code == 0, linked.output
+        assert _without_stamp(linked.output).strip() == _without_stamp(
+            _slash(f"glasspane-ledger {FOREIGN_LEDGER}", tmp_path)
+        ).strip()
+        assert GENESIS in linked.output
+    else:
+        assert "no recipe gate recorded yet" in before.output
+
+
+def test_a_refused_link_fails_the_shell_with_the_code_a_terminal_reader_needs(tmp_path: Path) -> None:
+    """Exit 1 here, an answer there: the *decision* is surface-specific, the wording is not.
+
+    A terminal reader groups failures by exit code; an agent reading the slash result has no exit
+    code to look at. Both must still see the same `LEDGER_LINK_E_LEDGER_CHAIN` sentence, or the
+    remedy printed in one place points at a file the other place never mentioned.
+    """
+    lines = FOREIGN_LEDGER.read_text(encoding="utf-8").splitlines()
+    broken = tmp_path / "broken.jsonl"
+    broken.write_text("\n".join([lines[0].replace('"outcome":"pass"', '"outcome":"fail"'), *lines[1:]]) + "\n", encoding="utf-8")
+
+    refused = _terminal(["glasspane-ledger", str(broken)], tmp_path)
+    assert refused.exit_code == 1, refused.output
+    assert LINK_E_CHAIN in refused.output
+    assert "remedy:" in refused.output
+    assert refused.output.strip() == _slash(f"glasspane-ledger {broken}", tmp_path).strip()
+    assert read_ledger_link(tmp_path) is None, "a refusal on either door still writes nothing"
+
+
+def test_the_link_stamp_is_formatted_where_the_link_shape_lives() -> None:
+    """One `linkedAt` format, defined by the module that owns the link's schema.
+
+    This batch moved it out of `commands/iterate.py` (where it was written as `datetime.UTC`,
+    3.11-only, and caught by `tests/test_py310_compat.py`) and the terminal command was about to
+    copy it a second time. The guard is on the *count*: a second call site is invisible to a
+    type check and to every test that only ever reads one of them.
+    """
+    from iterate_harness.commands import iterate as iterate_module
+    from iterate_harness.iterate import glasspane_recipe as recipe_module
+
+    recipe_source = Path(str(recipe_module.__file__)).read_text(encoding="utf-8")
+    assert recipe_source.count('isoformat(timespec="milliseconds")') == 1
+    for module in (cli_module, iterate_module):
+        source = Path(str(module.__file__)).read_text(encoding="utf-8")
+        assert 'isoformat(timespec="milliseconds")' not in source, f"{module.__name__} reformats the link stamp"
+
+
+def test_the_refusal_sentence_has_one_definition_not_three() -> None:
+    """`format_recipe_error` is the only place a refusal is spelled out.
+
+    Asserted against the call sites rather than the helper, because the drift this prevents is a
+    second `f"{error.code}: …"` appearing in a command module and quietly diverging in wording.
+    """
+    from iterate_harness.commands import iterate as iterate_module
+
+    for module in (cli_module, iterate_module):
+        source = Path(str(module.__file__)).read_text(encoding="utf-8")
+        assert 'f"{error.code}: {error.message}' not in source, (
+            f"{module.__name__} formats a refusal by hand instead of calling format_recipe_error"
+        )
+    recipe_source = Path(
+        str(Path(__file__).resolve().parents[2] / "src" / "iterate_harness" / "iterate" / "glasspane_recipe.py")
+    ).read_text(encoding="utf-8")
+    assert "def format_recipe_error(" in recipe_source
+    assert recipe_source.count('f"{error.code}: {error.message}') == 1
 
 
 @pytest.mark.asyncio
