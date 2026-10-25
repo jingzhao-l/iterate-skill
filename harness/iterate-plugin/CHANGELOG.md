@@ -5,9 +5,9 @@ All notable changes to iterate-plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.10.0] - 2026-10-25
 
-写侧翻转（双向集成场景③的 TS 半边）。取号留给发布线：这一批改了**落盘格式**并新增一个运行时依赖，
+写侧翻转（双向集成场景③的 TS 半边）。这一批改了**落盘格式**并新增一个运行时依赖，
 按语义化版本是一次 minor，不是补丁。
 
 ### Changed
@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **contested**，由 `archive` 走人工选择的归档重启（重命名为 `…contested-<stamp>.jsonl`，0600）。
 - 新增运行时依赖 `iterate-kernel@0.1.9`（精确版本，与 `js-yaml` 同一条纪律），`package-lock.json`
   随之；`dist/` 与 `src/` 同步重建。
+- **peer 兼容性追到 `@deepseek-ai/*@0.2.1-rc.3`**（上游 10-23 发布：新增左/右栏「更多」菜单、
+  会话切换不再丢未发送草稿、DeepSeek API Key 适配器对齐账号登录的模型列表更新方式）。
+  全部是宿主侧 UI 与流程修正，无插件面 API 变动；`dshReleases` 表同步登记 rc.3。
 
 ### Fixed
 
