@@ -2268,6 +2268,64 @@ stamp 不匹配会自动重装到新 tag。
 >         `210e7d82580dfc8a9a360b527c31c5b506f39a2e`，92 文件 / 585.3 kB / 解包
 >         2.2 MB）；发布后约 3 分钟复查 `dist-tags.latest=3.9.2` 生效。
 
+>         **3.10.0 发布记录（2026-10-25）**：双向集成场景③ TS 半边——插件写出去
+>         的就是内核那条哈希链；取号按 CHANGELOG `[Unreleased]` 明文指示"改了落盘
+>         格式并新增运行时依赖，按语义化版本是一次 minor，不是补丁"落到 3.10.0，
+>         独立版本线仅动 `package.json` + `package-lock.json`。
+>         **上游 dsh**：`dsh-v0.2.1-rc.3`（2026-10-23）为本轮新发布——左/右栏「更多」
+>         菜单、会话切换不再丢未发送草稿、DeepSeek API Key 适配器对齐账号登录的模型
+>         列表更新方式，全部为宿主侧 UI 与流程修正，无插件面 API 变动；`dshReleases`
+>         表登记 rc.3，peerDeps 尾段追加 `0.2.1-rc.3`（累计 25 个版本），两份 README
+>         同步镜像；构建期 devDependencies 追到 rc.3。rc.3 把 `dsh-tools` 的一批
+>         内部依赖从直接依赖改为 peer 依赖（`dsh-llm` / `dsh-scope` / `dsh-sandbox` /
+>         `dsh-sandbox-policy` / `dsh-ptc-runtime` / `dsh-user-approval` /
+>         `dsh-working-directory` / `dsh-system-prompt`），本地安装时 npm 不再顺带装
+>         齐，测试运行时逐个抛 `ERR_MODULE_NOT_FOUND`（`ctx.systemPrompt` 类型也因此
+>         丢失）；把这 8 个包显式钉进 devDependencies 后 typecheck 与全套件立即绿。
+>         **写侧翻转（步骤 6 新功能 C 类：dsh 生态内核共享）**：
+>         `.iterate/decision-log.jsonl` 现在写内核的规范哈希链条目——每行的字节即条目
+>         的规范形式、`prevEntryHash = sha256(上一行)`、创世空串、可选字段**缺席而不是
+>         null**（一个 `"dimension": null` 会改字节、改摘要，两个生态会把同一段历史迁
+>         成两条不同的链）；`kind` 的合法性改成内核的语法（`DECISION_KIND_PATTERN` 从
+>         `iterate-kernel/decision-log-entry` 导入而不是本地重述），本插件的 10 项固定
+>         清单与 Python 侧的 8 项清单之争到此结束，`KNOWN_DECISION_KINDS` 只留在说明
+>         文字里、不再裁决任何一次写入；`prune` 不再重编号——一条哈希链不能"整理"，
+>         删一行或改 `sequence` 会作废其后每一行的 `prevEntryHash`，链开始之后混进
+>         legacy 行判定为 **contested**、拒绝并点名两条合法动作，人工选择的归档重启
+>         走 `archiveContestedDecisionLog`（重命名为 `…contested-<stamp>.jsonl`，0600）；
+>         读侧 `readDecisionLogDetailed` 对两种形状都投影成 record view，`last_state` /
+>         `ci_report` / `html_report` / `replay` / history / checkpoint 与 Web client
+>         一律不变。运行时依赖 `iterate-kernel@0.1.9`（精确版本，与 `js-yaml` 同一条
+>         纪律）。**变异电池**（每条都必须让具名用例变红，之后按 sha256 核回源文件）：
+>         创世 prevHash 改成常量、contested 判定恒 null、kind 截到 32、pattern 本地
+>         重述成 `{0,63}`、归档不 chmod、备份写成 0644、`.iterate` 建成 0755、draft
+>         带显式 null。
+>         **测试**：`test/decision-log.test.ts` 45 条 + `test/prune.test.ts` 全量；
+>         主仓 `npm run typecheck`（三程序 server/test/client）0 错误、`npm test`
+>         **1314 passed / 0 failed / 0 skipped**（此前 1281，+33 条围绕哈希链写入、
+>         创世边界、contested 判定与归档重启）；`npm run build && npm run build:client`
+>         干净、`dist/` 与 `lib/client.js` digest 与 `src/` 齐步（`package-contract`
+>         强制）。**主仓**：8 文件全在 `harness/iterate-plugin/` 内
+>         （`package.json` / `package-lock.json` / `CHANGELOG.md` / `README.md` /
+>         `README.zh-CN.md` / `dist/tools/decision-log.js` / `dist/tools/prune.js` /
+>         `dist/tools/history.js` / `dist/types.js` / `src/tools/*.ts` / `test/*.ts`
+>         / `lib/client.js` 等），提交 `87fdd404` 快进推送 `e3cb801f..87fdd404`。
+>         **独立仓**：`git merge-base plugin-origin/main HEAD` 为空（独立历史无公共
+>         祖先）→ 照例走 `.release/iterate-plugin` 替代路径：`git pull --ff-only`
+>         对齐 `e783412` → `rsync --exclude node_modules --exclude .git
+>         --exclude .release`（`.github/workflows/npm-publish.yml` 由
+>         `git checkout HEAD --` 恢复，独立仓自带 OIDC 发布 workflow 仍保留）→
+>         `npm install --legacy-peer-deps` 同步 dsh rc.3 全套 → `npm run typecheck`
+>         0 错误、`npm test` **1314 / 0 fail** → 提交 `24e1ff9` 快进推送
+>         `e783412..24e1ff9`。tag `v3.10.0` + GitHub Release 已创建。
+>         **npm**：`iterate-plugin@3.10.0` 已发布（shasum
+>         `2902c1d75a6d8ba89aa53e30dc10d5dec542f59d`，92 文件 / 604.3 kB /
+>         解包 2.2 MB）；`npm publish` 返回 202，发布后约 2 分钟复查
+>         `dist-tags.latest=3.10.0` 生效，`dependencies` 含 `iterate-kernel@0.1.9`，
+>         `peerDependencies` 尾段含 `0.2.1-rc.3`，tarball 抽查
+>         `dist/tools/decision-log.js` 首行 import 含 `iterate-kernel/decision-log`
+>         与 `iterate-kernel/decision-log-entry`。**遗留**：无。
+
 ---
 
 ## 常见遗漏点（Checklist 之外）
