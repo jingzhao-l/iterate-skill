@@ -4,6 +4,19 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+（空。2.11.0 收口后没有未归号的条目。）
+
+## [2.11.0] - 2026-10-25
+
+**版本判断：minor。** 判据是加法语义那一条：本版**只新增用户可见能力、不动任何已有形状**——
+④ 第一次可执行（配方交接 + 判定闸 + 闸随它那一轮的账本行落盘）、③ 的跨账本链接（对面那本可被
+项目记为默认）、两条读门（`/iterate gate` 与 `ih iterate gate`、`ih iterate glasspane-ledger`）、
+`requires-python >= 3.10` 未动、CLI 既有参数与退出码集合未动、内核仍是 `iterate-kernel@0.1.10`
+（语料清单的 pin 从 0.1.9 追到 0.1.10，10 份文件逐字节实测一致，两模式各跑一遍）。所以不是
+patch（有新能力），也不是 major（没有破坏任何东西）。
+
+
+
 ### Added — 场景④ 第一次可执行：配方交接、判定闸、跨账本佐证
 
 综述 §8.5 row 4（"GlassPane 修复完成 → 配方下一步挂接 iterate invariant 复核，通过后才进入重验"）
