@@ -4,6 +4,12 @@ All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
 
+（空。2.11.1 收口后没有未归号的条目。）
+
+## [2.11.1] - 2026-10-25
+
+**版本判断：patch。** 这一版没有新增任何用户可见能力，它做的是一件更早的事：2.11.0 的 README 与注册表描述宣称「判定闸的答案随那一轮的账本行落盘，两扇门都读得回来」，而落账的只有「发出去了」那一支——通过轮把答案留在瞬时 payload 里，读台账的两扇门永远读不到。这一版把那条宣称变成事实 (`record_gate_without_send`)，改掉四句与代码不符的文档，并补两把此前不存在的闸（懒加载表可达性、README 清单与 handler 一致）。既有形状一个都没动：`requires-python >= 3.10` 未变、CLI 参数与退出码集合未变、内核仍是 `iterate-kernel@0.1.10`、`.iterate/decision-log.jsonl` 的行格式未变（新增的是一行 `kind: recipe-gate` 的记录，而 `fix_proof` 不会把它当成修复证据——它缺 `fix_proof` 要的两样）。所以不是 minor（没有新能力），也不是 major（没有破坏）。
+
 - **判定闸的答案在"通过所以什么都没发"的那一轮也会落账了——在此之前两扇门永远读不到它。**
   `_prepare` 每条分支都算 ④ 的闸（通过的、契约拒绝的、发出去的），但落账的只有"发出去"那一条，
   而 `/iterate gate` 与 `ih iterate gate` 读的是**台账**。于是一个项目跑十轮通过的轮次，终端门
