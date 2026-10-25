@@ -1245,6 +1245,96 @@ stamp 不匹配会自动重装到新 tag。
       > 提交（本提交零删除，工作区未动）；其过期 badges/downloads.json 快照（10-10 数据，落后于
       > 已推送的 10-15）在 rebase autostash 冲突中解析为远端新值，原始字节保留在 `stash@{0}`。
       >
+      > **2.11.1 发布记录（2026-10-25，同日补丁）**：把 2.11.0 的 README 已经宣称过的一件事变成事实，
+       > 并把四句与代码不符的句子按代码改写。**版本判断：patch**——不加能力、不动既有形状
+       > （`requires-python`、CLI 参数与退出码集合、内核 `iterate-kernel@0.1.10`、账本行格式全未变），
+       > 判据写在 CHANGELOG `[2.11.1]` 那段里。四个版本位点由取号脚本自己断言四处相等后同步 2.11.1
+       > （`src/iterate_harness/__init__.py` / `npm/package.json` / `frontend/web/package.json` /
+       > 其 lock 两处），CHANGELOG 的 `[Unreleased]` 整段归号（7 条 bullet + `### Documentation`
+       > 一起搬，归号脚本数过 heading 与 bullet 计数，脚本对"已经有 [2.11.1]"与"bullet 数变了"都会拒）。
+       > **这一版的正文来自一次全新眼界复审**：两条泳道各自只读代码，对着两边 README 逐句核，
+       > 判出四句假、两句半真、一句夸大——其中一条是 P0 的形状（能力有、读者读不到）：
+       > ④ 的闸每条分支都算，但只有"发出去了"那一支写台账，而两扇门（`/iterate gate`、
+       > `ih iterate gate`）读的是台账，所以一个跑过十轮通过轮的项目，终端门永远回
+       > "no recipe gate recorded yet"。修法 `record_gate_without_send` 只给"判定通过、因此什么都没发"
+       > 的轮次落一行（`kind: recipe-gate`），**契约拒绝分支照旧零字节**（Requirement C 由
+       > `test_a_refusal_path_writes_zero_ledger_bytes` 钉着：一个从未做成的决定不该变成审计记录），
+       > 这行也不是修复证据（缺 passing outcome 与 operationId，用例把形状钉住，加 operationId 就红）。
+       > 另两条新闸也是当场抓出真缺陷的：懒加载表可达性（第一次跑就抓出我自己留下的
+       > `MAX_REQUESTED_RECIPE_STEPS` 未跟着改名、`recipe_steps_not_requested` 实现已删而表与
+       > `__all__` 没跟，两者实测 `AttributeError`——数静态 import 永远看不见这类名字）；
+       > README 那份 16 项子命令清单与 handler 分支条件逐字相等（顺带把"不带参数打印清单"这句
+       > **我自己上一版写错的**话按实测改成"打印这个项目状态，不认识的子命令才打印清单"）。
+       > 变异电池两组：④ 那笔 3 组 7 条具名红、`/iterate` 那笔 3 组 4 条具名红，全部逐文件 sha256 核回。
+       >
+       > 发布前本地闸（无争用复跑，完整日志 `/var/tmp/ih-2111-pytest-full.log`，退出码取命令自身）：
+       > `pytest tests` **3077 passed / 6 failed / 6 skipped，4m20s**——那 6 条是本机环境的已知恒红组
+       > （`query_engine::test_subagent_stop_hook…`、`tasks/test_manager.py` 三条、`bash_tool` 一条、
+       > `integration_flows` 一条）。同一棵树在 load 71-93 下先量到 **12 failed / 36m27s**、又量到
+       > **7 failed**：多出来的 6 条与第 7 条**单跑全部通过**（`2 passed in 8.38s`），判为负载假红并
+       > 记录，不改判据也不掩盖。**这里我自己犯了一次本仓记过的错**：那一轮闸脚本写成
+       > `pytest -q tests | tail -6`，`tail` 吞掉两条具名、`pytest_exit=0` 是 `tail` 的状态而不是
+       > pytest 的——所以那次数字可信而名单不可信，只能整跑重来（完整日志才是这次引用的那份）。
+       > `ruff check src tests scripts` 0；`mypy src` 269 文件 0；`scripts/check_kernel_fixtures.py`
+       > 10 份逐字节对上 `iterate-kernel@0.1.10`；npm 包装器 `npm test` **89 passed / 0 fail**；
+       > 前端 `npx tsc --noEmit` 0。
+       >
+       > 推送与替代路径：主仓 `52c79227`（修复＋文案＋两把闸）→ `e97f11ec`（release 取号），均已推
+       > origin/main；`.release/iterate-harness` 同内容 `3a336a9a` 快进推送，同步前后各做一次逐文件
+       > blob 比对：**621 个路径两侧逐字节相等、无单边文件**（比上一版多 1 个文件＝新增的那份测试）。
+       > tag `v2.11.1` = commit `3a336a9a`（tag 对象 `29b2cc2c…`），推 tag 触发 release.yml
+       > （run 40179786536，success）：GitHub Release **v2.11.1** 非 draft、3 件资产，wheel
+       > **1,052,100 字节**。三条通道的同一份字节这次是**互相之间也对上的**：
+       > PyPI `/pypi/iterate-harness/2.11.1/json` 的 `urls[0].digests.sha256` =
+       > GitHub `assets[].digest` = 本机 `curl` 下来那份的 `shasum -a 256` =
+       > **`cbfc86ccfac52dbdaf04ba2e4e4b3a89109954fbb42b576d3f3405c24f009944`**，尺寸同为 1,052,100
+       > （本机这次下载没被截断，所以三条能逐字相等；以往用 API digest 是因为本机重下不可信）。
+       > PyPI latest=**2.11.1**（files 只有 wheel）。npm `iterate-harness@2.11.1`：9 文件 /
+       > 75,697 unpacked 字节 / `dist.shasum` = `6507222cf2c3ef6043d01d10b2a45655c7f398b1`，
+       > **与 `npm publish --dry-run` 打出来的那个 shasum 逐字相等**（2.11.0 那次两者不同，所以这次
+       > 把等式记下来：同一版本两次打包不保证等，等是运气不是规矩，判存在性用版本号＋文件数＋字节）。
+       >
+       > 包装器 bootstrap 在本机的三条候选（这次同时暴露两个环境事实）：`~/.pip/pip.conf` 指的 tuna
+       > 镜像**还没收录 2.11.1**（实测那句 "from versions: … 2.11.0" 列表末端就是 2.11.0），
+       > GitHub 两条候选照旧被 TLS 拦（`unable to verify the first certificate`），所以三条全失败时
+       > 包装器**如实 fail-closed**而不是装个旧的。改指官方索引 `PIP_INDEX_URL=https://pypi.org/simple/`
+       > 之后依赖解析**成功开始下载**（以往"pypi.org 超时"是这条代理的另一种失效，不是恒真），但这条
+       > 代理对官方索引只有 ~17 kB/s，1.9 MB 的 `pydantic_core` 还没下完就撞上包装器自己的
+       > **15 分钟 bootstrap 上限**：`bootstrap timed out after 15 minutes; the install hung or
+       > stalled — check your network access to the index and retry`——这句是产品写的实话，不是失败伪装。
+       > 收口用的是那条已被验证过的路径：把**digest 对上的**那份 wheel（`cbfc86cc…`，尺寸 1,052,100，
+       > 与 PyPI/GitHub 两处 digest 逐字相等，所以完整性比 sidecar 那一步更强）交给包装器自己的 venv
+       > 安装（依赖从镜像取，镜像有全部依赖），`ih --version` 回
+       > `ℹ iterate-harness 2.11.1 was installed by another process; reusing it.` +
+       > `iterate_harness 2.11.1`——那句"别的进程装的，复用它"正是并发守卫该有的读数，不是异常。
+       > 全局 `ih` 因此已在 2.11.1，下面那两条交付证据都跑在**这个**入口上。
+       > 交付形状的直接证据是把 digest 对上的那份 wheel 装进隔离 venv 后真跑：
+       > `ih --version` = `iterate_harness 2.11.1`；一轮真通过的项目里
+       > `invariant report: InvariantReport(passed=True, checks_run=1, violations=[])` →
+       > `spawned=False reason='the invariant report passed…'` → 账本 1 行 `kind: recipe-gate` →
+       > **`ih iterate gate` 读回**（2.11.0 之前这句必然是"no recipe gate recorded yet"）：
+       > `round 1: recipe gate — not allowed` / `invariant verdict: pass` /
+       > `refused: RECIPE_E_NOT_ASKED` 带 remedy 原文。同一本账再用链接那条读一次：
+       > `resolved from: project` + `chain: verified, 1 entries, 0 of them a passing outcome
+       > carrying an operation id`——这行既是"新行在链里且验得过"，也是"它不算修复证据"的读数。
+       > 跨仓三条实测在**这份交付物**上各再跑一遍，全 rc=0：
+       > `check_run_plan_channel.py`（env 与 project 两条通道各自 source 正确、9 维度、
+       > digest `rp_68049dadeff6c85c…2380e` 两侧相等）、`check_glasspane_channel.py`
+       > （16 个 `gp_*` 工具经产品自己的 `McpClientManager` 可见）、
+       > `check_glasspane_reverification.py`（`failing=2 of 3` → `iv_4dc9d87d…` →
+       > **2/2 回包正确分类**：1 evidence/diagnosis + 1 具名拒绝 `GP_E_NOT_ATTACHED`）。
+       >
+       > **仍未收口的一格，如实挂着**：main CI 的 `Python tests (3.10/3.11)`。本轮在它上面做了第二次
+       > 仪表（第一次只有 `faulthandler_timeout=300 + exit_on_timeout`，带上它的 run 40171467085
+       > 仍以 45 分钟整、无日志的方式死掉——原因测出来了：`faulthandler` 只在**跑用例期间**才 dump，
+       > 而 `-q` 期间没有任何日志输出，沉默本身就触发 runner 死亡并把日志一起带走）。第二次做三处：
+       > 独立一步 `pytest --collect-only -q`（收集期卡住正是 `faulthandler` 看不见的地方）、
+       > 跑测试改 `-v`（逐条打一行：慢的套会跑完并报告，真挂的会留下最后那个名字）、
+       > job 级 `timeout-minutes: 90`（有上限才会**带着日志**结束）。90 是按本机实测留的余量
+       > （同一套 4m20s～36m27s 之间浮动，取决于负载）。带第二版仪表的 run 是 40179763746，
+       > 它到底跑完、还是在某个具名用例上留下栈，是这一格下一次才有答案的事——**在它跑出来之前，
+       > 本版的"CI 绿"不成立**，其余四格（tag／Release／PyPI／npm）都成立。
+       >
       > **2.11.0 发布记录（2026-10-25）**：与 GlassPane 的双向集成第一次「两头都能跑」（minor）。
        > **判据**：只加不减——④ 第一次可执行（配方交接 + 判定闸 + 闸随它那一轮的账本行落盘）、
        > ③ 的跨账本链接（`.iterate/glasspane-ledger.json`，对面那本可被项目记为默认）、两条读门
