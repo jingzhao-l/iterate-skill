@@ -1301,13 +1301,20 @@ stamp 不匹配会自动重装到新 tag。
        > 近期报告，**2/2 回包被 relay 正确分类**：1 条 evidence/diagnosis + 1 条码具名拒绝
        > `GP_E_NOT_ATTACHED`。`gp_diagnose` 回的是多 item 包，这正是 #20 那条 item 边界修好之后
        > 第一次在真壳上有读者。
+       > ②③ 两条随后在全局升到 `glasspane-mcp@1.21.0` 之后**各再跑一遍，读数一字不差**
+       > （16 tools、`outcome=fail failing=2 of 3`、`2/2 relayed`），所以记的是发布壳上的读数，
+       > 不是旧壳上的。
        > **未收口的两格，如实记不进绿灯**：(a) main CI 的 `Python tests (3.10/3.11)` 两条 lane
        > 近期没通过过——run `40167475388`（本版）与 `40103418285`（v2.10.0）同点位
        > （`Run test suite` 步骤起、后续步骤全 None）、同时长（约 45 分钟）、同 annotation
        > 「The hosted runner lost communication with the server」，而 `--log-failed` 报
        > `log not found`、`runs/{id}/logs` 的归档里只有三条成功 job 的日志——runner 死了没上传，
        > 所以挂在哪条具名用例上目前**无证据**。本机无 docker/podman/colima，无法在 Linux 复现；
-       > 已单独立项，不算进本版。(b) 本机 daemon 自报 `1.6.2` 而壳是 `1.20.2`/`1.21.0`，
+       > 已单独立项，不算进本版。同轮把 `Run test suite` 换成带 `faulthandler` 的形状
+       > （`-o faulthandler_timeout=300 -o faulthandler_exit_on_timeout=true`，pytest 自带、零新依赖：
+       > 5 分钟不动就打印 `Timeout` + 卡住的用例文件/行/名 + 全线程栈再退出；对一条故意
+       > `sleep(60)` 的用例实测 rc=1 并报出用例名），下一次运行会自己说出名字。
+       > (b) 本机 daemon 自报 `1.6.2`，壳升到 `1.21.0` 后这条不匹配照旧打印，
        > 壳的能力对账据此预告 `attach` 一类调用会被 methodNotFound 答回——这是本机 daemon 落后，
        > 不是集成缺陷；换 daemon 要重启正在运行的进程，另一个会话在用它，没做。
        >
