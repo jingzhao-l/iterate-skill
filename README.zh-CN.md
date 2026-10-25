@@ -71,8 +71,10 @@
 **相关项目：[GlassPane](https://github.com/jingzhao-l/GlassPane)。** [`kernel/`](kernel) 里的 JSON Schema 契约层（`iterate-kernel`）同时也是 GlassPane 所讲的方言——它是 macOS 上面向 AI 代理的运行时验证引擎：代理经 MCP 动手，GlassPane 返回"界面到底变了没有"的证据（无障碍树与像素差异、归因结论、可回滚检查点）。iterate 回答"这段代码对不对"，GlassPane 回答"那次操作真的生效了吗"。它刻意保持独立：不读 `iterate.config.yaml`，也走自己的发布线。
 
 独立不等于不往来：2026-10-25 起两边交换的是**可核验的记录**——GlassPane 的证据账本与审查回路的
-决定日志是同一种哈希链格式，各自整链验通对方那本；`dimension` 声明跟着验证调用走，与已有见证矛盾的
-决定会被拒；回路把"修复完成了"钉在一条链可验的账本行上，而不是代理的自述。命令是
+决定日志是同一种哈希链格式，从对方那本引来的主张要先整链验通才被使用。这个读者今天长在回路这一侧：
+fork 带着同一个校验器，也有一条固定点测试证明这边写出的链在那边验得过，但它自己的生产路径只写自己的
+账本、不读回路的。`dimension` 声明跟着验证调用走，与已有见证矛盾的决定会被拒；回路把"修复完成了"
+钉在一条链可验的账本行上，而不是代理的自述。命令是
 `ih iterate gate` / `ih iterate glasspane-ledger <路径>`（session 里是 `/iterate` 那两条同名子命令），
 整套交换的细节写在[那份 harness 的 README](https://github.com/jingzhao-l/iterate-harness#-glasspane-integration)。
 
