@@ -190,6 +190,91 @@ class TestMarkdownOutput:
         assert r"line one \| line two line three" in text
         assert text.count("\n|") >= 1
 
+    def test_backticks_in_values_are_escaped(self) -> None:
+        """A stray backtick must not open a code span and swallow the table."""
+        report = {
+            "language": "en",
+            "skill_version": "9.9.9",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "project": "/tmp/a`b",
+            "onboarded": False,
+            "onboarding": {},
+            "config": {},
+            "scan": {},
+            "features": [],
+            "summary": {
+                "passed": 0,
+                "warnings": 0,
+                "errors": 1,
+                "blocking": True,
+                "health": "errors",
+            },
+            "doctor": {
+                "findings": [
+                    {
+                        "severity": "error",
+                        "check": "x`y",
+                        "message": "open ` tick",
+                        "detail": "",
+                    }
+                ]
+            },
+            "drift": "unknown",
+            "drift_advice": None,
+            "next_actions": ["iterate doctor"],
+            "personalization_rules": 0,
+        }
+
+        text = render_markdown(report)
+
+        assert r"x\`y" in text
+        assert r"open \` tick" in text
+        assert r"/tmp/a\`b" in text
+        assert "x`y" not in text
+
+    def test_html_markup_in_values_is_escaped(self) -> None:
+        """Project-controlled values must not inject raw HTML into the report."""
+        report = {
+            "language": "en",
+            "skill_version": "9.9.9",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "project": "/tmp/<project>",
+            "onboarded": False,
+            "onboarding": {},
+            "config": {},
+            "scan": {},
+            "features": [],
+            "summary": {
+                "passed": 0,
+                "warnings": 0,
+                "errors": 1,
+                "blocking": True,
+                "health": "errors",
+            },
+            "doctor": {
+                "findings": [
+                    {
+                        "severity": "error",
+                        "check": "<script>check</script>",
+                        "message": "<img src=x onerror=alert(1)>",
+                        "detail": "",
+                    }
+                ]
+            },
+            "drift": "unknown",
+            "drift_advice": None,
+            "next_actions": ["iterate doctor"],
+            "personalization_rules": 0,
+        }
+
+        text = render_markdown(report)
+
+        assert "&lt;img src=x onerror=alert(1)&gt;" in text
+        assert "&lt;script&gt;check&lt;/script&gt;" in text
+        assert "&lt;project&gt;" in text
+        assert "<img" not in text
+        assert "<script>" not in text
+
 
 class TestJsonOutput:
     def test_json_is_one_document_with_stable_keys(

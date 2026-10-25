@@ -143,16 +143,33 @@ def _language(show: dict[str, Any]) -> str:
 
 
 def _cell(value: Any) -> str:
-    """Make a value safe for a GFM table cell (pipes/newlines/backticks)."""
+    """Make a value safe for a GFM table cell (pipes/newlines/markup)."""
     text = "—" if value is None or value == "" else str(value)
     text = text.replace("\\", "\\\\").replace("|", "\\|")
+    # A stray backtick in a finding/config value would otherwise open a code
+    # span that swallows the rest of the document (or the next table rows).
+    text = text.replace("`", "\\`")
+    # GFM allows raw inline HTML, so a project-controlled value such as
+    # `<img src=x onerror=...>` must not be able to inject markup into a
+    # report pasted into an issue or rendered by a non-sanitising viewer.
+    text = (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
     text = text.replace("\r", " ").replace("\n", " ").strip()
     return text
 
 
 def _code(value: Any) -> str:
     """Render a table cell as inline code when it is a simple scalar."""
-    text = _cell(value)
+    raw = "—" if value is None or value == "" else str(value)
+    # Inline code cannot contain a literal backtick without a longer fence, and
+    # wrapping an escaped one would display the backslash. Raw HTML is literal
+    # inside a code span but would be escaped by _cell, so fall back for both.
+    if "`" in raw or "\n" in raw or "\r" in raw or "<" in raw or ">" in raw:
+        return _cell(value)
+    text = raw.replace("\\", "\\\\").replace("|", "\\|")
     return f"`{text}`" if text != "—" else text
 
 
@@ -338,7 +355,7 @@ def _drift_line(report: dict[str, Any], labels: dict[str, str]) -> str:
         return labels["drift_disabled"]
     if drift in (None, "unknown"):
         return labels["drift_unknown"]
-    return str(drift)
+    return _cell(str(drift))
 
 
 def render_markdown(report: dict[str, Any]) -> str:
@@ -385,7 +402,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"· {_cell(report.get('generated_at'))}"
         ),
         "",
-        f"- **{labels['project']}**: `{_cell(report.get('project'))}`",
+        f"- **{labels['project']}**: {_code(report.get('project'))}",
         f"- **{labels['onboarding']}**: {onboarding_value}",
         f"- **{labels['health']}**: {_status_line(report, labels)}",
         f"- **{labels['drift']}**: {_drift_line(report, labels)}",
