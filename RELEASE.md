@@ -292,11 +292,19 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > `dist-tags.latest` → **3.9.0**，
       > `npx -y iterate-skill-installer@3.9.0 --version` →
       > **iterate-skill-installer 3.9.0**。
-      > ✅ **ClawHub**：`.dist_tmp/clawhub_publish.py --concurrency 16` 发布
-      > 72 文件 / 2,104,031 字节，`ok:true`，versionId
-      > `k97d4jqk87ehsqryvc03wzw3f58gy8jj`，`publicationStatus=pending`；
-      > 平台异步审核后 `GET /api/v1/skills/iterate-skill` 的
-      > `latestVersion.version = 3.9.0`，`/versions/3.9.0` → **200**。
+      > ✅ **ClawHub**（发布已受理，审核未回）：`.dist_tmp/clawhub_publish.py
+      > --concurrency 16` 发布 72 文件 / 2,104,031 字节，`ok:true`，versionId
+      > `k97d4jqk87ehsqryvc03wzw3f58gy8jj`，`publicationStatus=pending`。
+      > ⚠️ **公共 `latest` 截至 2026-10-25T03:40Z 仍为 3.8.2**：连续轮询
+      > `GET /api/v1/skills/iterate-skill`（`latestVersion.version`）与
+      > `/versions/3.9.0`（HTTP 404）约 3.5 小时未翻转，且
+      > `moderation.updatedAt` 仍停在 3.8.2 审核时（`1792721207148`）。
+      > **版本确实在服务端存在**：同参数重跑 publish 返回
+      > `http 400 — Version 3.9.0 already exists. Increment the version number
+      > and try again.`，故不是丢单，是卡在平台异步审核队列（本轮
+      > `moderation.reasonCodes=['review.llm_review']`）。**下轮需补验**
+      > `latestVersion.version == 3.9.0` 与 `/versions/3.9.0` → 200；
+      > 若仍卡住，按 2.3.17 的先例升版本覆盖重发。
       > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：3.9.0 精简包
       > 74 文件 / 738,069 字节（< 5MiB、`harness/|kernel/|tests/` 0 条），
       > `upload_file_to_openapi` → `update_skill_settings` 成功
@@ -309,6 +317,25 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 735,686 字节，`ok:true`，versionId `459647`，`tags.latest = 3.9.0`；
       > `reviewStatus/securityScanStatus/contentAuditStatus=pending` 为平台
       > 异步审核。
+      > **✅ 清洁门禁（2026-10-25T03:40Z，除两项外部阻塞外全部通过）**：
+      > `main == origin/main == b130541f`（含本轮 4 个提交 `560348de`/
+      > `ca526128`/`aa279b68`/`c4bfb22a`，其后被并发 harness lane 叠加 6 个
+      > harness 提交；tag `v3.9.0` 仍指向 `aa279b68`）；Dependabot open
+      > **0 × 3 仓**（本轮 dismiss 5 条：4 × `fast-uri` @
+      > `kernel/package-lock.json`、1 × `zod` @
+      > `harness/iterate-plugin/package-lock.json`，均以
+      > `tolerable_risk` + ≤280 字符说明关闭，理由是 kernel/plugin 独立 lane
+      > 且不在任何 skill 发布包内）；open issue **0 × 3 仓**；open PR
+      > **0 × 3 仓**；`git worktree prune --dry-run` 为空；merged 远端分支
+      > `origin/sc2-echo-witness` 已删除（对应本地分支挂在 `it-echo-witness`
+      > worktree 上，未动）；`Dependency Graph` workflow 仍 failure（与本仓
+      > skill 内容无关的既有状态，非门禁项）。
+      > ⚠️ **工作区未清干净（外部阻塞，未处理）**：共享主工作区在 11:29–
+      > 11:33 间被并发 harness lane 写入 6 个 `harness/iterate-harness/**`
+      > 文件（mtime 持续前进），属另一 lane 的进行中 WIP；本轮**未**备份也
+      > 未还原，避免与对方编辑器缓冲打架。待该 lane 落定后再复核。
+      > ⚠️ **ClawHub 公共 latest 未翻转**（见上），为本轮唯一未闭环的
+      > 平台项。
       >
       > **3.6.0 状态（2026-10-20）**：minor（三个新能力 + 同轮全量复审修复）。测试套件
       > **1563 → 1738**（实测 `pytest tests/ -q` → 1738 passed, 2 warnings；
