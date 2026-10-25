@@ -1378,7 +1378,10 @@ stamp 不匹配会自动重装到新 tag。
       > `gh repo view --json visibility` = PUBLIC）。
       > **六把表实测都不能让那一步结束**：`timeout --kill-after=60 1200`；把输出从 Actions 管道挪到文件；
       > `setsid` 完全脱离 + 600 s 有界轮询 + `kill -9 -- -$pid` 打整组；`gh run cancel`；
-      > `pytest-timeout` 的 240 s 逐条表（它从不响 ⇒ 等待不在任何一条用例里，而在最后一条之后）；
+      > `pytest-timeout` 的 240 s 逐条表（它从不响）；**这一句当时写的"等待在最后一条之后"已被本会话自己的
+      > 记录器推翻**：run 40244447182 的 `diagnostics/40244447182-3.11-06` 里那份 `pytest-ci.log`
+      > 停在 `collecting ...`（605 字节，之后 11 分钟零字节）⇒ 等待在**收集阶段**，而收集阶段没有条目，
+      > 所以逐条表结构上就看不见它；
       > 以及进程级 `faulthandler.dump_traceback_later(420, exit=True)`。最后动刀的只有 GitHub 的
       > job 超时（实测 30 分钟那一档 cut 在整 35 分钟＝上限 + 约 5 分钟宽限），而它不上传 artifact、
       > 日志端点持续 HTTP 404 ⇒ 另一条被量出来的事实是 **job 的日志只在 job 结束之后才存在**
