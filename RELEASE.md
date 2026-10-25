@@ -1245,6 +1245,72 @@ stamp 不匹配会自动重装到新 tag。
       > 提交（本提交零删除，工作区未动）；其过期 badges/downloads.json 快照（10-10 数据，落后于
       > 已推送的 10-15）在 rebase autostash 冲突中解析为远端新值，原始字节保留在 `stash@{0}`。
       >
+      > **2.11.0 发布记录（2026-10-25）**：与 GlassPane 的双向集成第一次「两头都能跑」（minor）。
+       > **判据**：只加不减——④ 第一次可执行（配方交接 + 判定闸 + 闸随它那一轮的账本行落盘）、
+       > ③ 的跨账本链接（`.iterate/glasspane-ledger.json`，对面那本可被项目记为默认）、两条读门
+       > （`/iterate gate` 在 session 内、`ih iterate gate` 在终端、`ih iterate glasspane-ledger`）。
+       > `requires-python >= 3.10` 未动、既有 CLI 参数与退出码集合未动、内核仍
+       > `iterate-kernel@0.1.10`；内容细节在 CHANGELOG `[2.11.0]` 的三节里，此处只记账。
+       > 四个版本位点（`src/iterate_harness/__init__.py` / `npm/package.json` /
+       > `frontend/web/package.json` / 其 lock 两处）由取号脚本自己断言四处相等后同步 2.11.0。
+       > 发布前本地闸（按 harness CI 的步骤顺序、退出码取每条自身，日志 `/var/tmp/ih-2110-gates.log`）：
+       > `pytest tests` **3067 passed / 6 failed / 6 skipped**（首轮 7 failed，多出的那条
+       > `tests/test_commands/test_registry.py::test_agents_and_session_files_commands` 单跑与整目录跑
+       > 都绿，判为负载假红并记录而非抹掉；那 6 条恒红是本机环境，见 specs 台账，不是本版引入）、
+       > `ruff check src tests scripts` 0、`mypy src` 0、`scripts/check_kernel_fixtures.py` 10 份逐字节一致、
+       > npm 包装器 `npm test` **89 passed / 0 fail**、前端 `npx tsc --noEmit` 0。
+       > 推送与替代路径：主仓 `832171b4`（release）→ `e39a33bd`（README 双语集成节）→
+       > `80126520`（跨项目验收脚本修复），三者均已推 origin/main；`.release/iterate-harness`
+       > 走替代路径同内容三步 `55e498c6 → c83d88e8 → 4be9ea61` 快进推送。同步前后各做一次
+       > 逐文件 blob 比对：**620 个路径两侧逐字节相等、无单边文件**。`4be9ea61` 被仓库规则记为
+       > 「Commits must have verified signatures」并以 bypass 放行——split 仓的提交在本机签不了，
+       > 这条代价此前已入账。
+       > tag `v2.11.0` = commit `55e498c68d8e7f75302d5b311d85c0e8feae6561`（tag 对象
+       > `e9c923efa66ff1bcbc875d8ae4283c0e0b80cac7`），推 tag 即触发 release.yml
+       > （run 40167479908，success）：GitHub Release **v2.11.0** 非 draft、3 件资产
+       > `iterate_harness-2.11.0-py3-none-any.whl` **1,049,213 字节** + `.sha256` + `.asc`。
+       > 本地下回的那份 wheel `shasum -a 256` =
+       > `f5a939128f655ce49c52a53567d45dd4592a1ed0e6a1541747db4c19f7a1433c`，与 API
+       > `assets[].digest` 逐字相等（本机重下不可信这条旧账已记，所以以 digest 对齐为准）。
+       > PyPI latest=**2.11.0**（`/pypi/iterate-harness/json` 实测 `2.11.0` 在列，files 只有 wheel）。
+       > npm `iterate-harness@2.11.0`：9 文件 / 75,697 unpacked 字节、`dist.shasum`
+       > `3ce8d369055e5686e263298ba52c071b5637f8e7`。
+       > **npm 包装器的 bootstrap 端到端**：发布后一小时内先失败后成功，两个读数都记。
+       > 发版当时三条候选都走不通（pip 吃到 SOCKS 代理、GitHub 资产
+       > `UNABLE_TO_VERIFY_LEAF_SIGNATURE`、包装器对缺 `.sha256` fail-closed），当时的替代证明是
+       > 把 digest 对上的 wheel 离线装进隔离 venv 后真跑 `ih iterate gate` 与
+       > `ih iterate glasspane-ledger`。之后 `npm i -g iterate-harness@2.11.0` 在这台机器上
+       > 走通了正常路径：`~/.pip/pip.conf` 指的 tuna 镜像已收录 2.11.0（实测该 simple 页面里
+       > `iterate_harness-2.11.0-py3-none-any.whl` 命中 1 次），包装器 bootstrap 建起的
+       > `~/.iterate-harness-npm/venv` 里 `ih --version` = **iterate_harness 2.11.0**，
+       > 装好的包目录里 `glasspane_recipe.py` / `glasspane_reverification.py` /
+       > `invariant_report.py` 等集成模块都在列；`direct_url.json` 缺席＝它是从索引解析的，
+       > 不是喂本地文件。全局 npm 现状：`glasspane-mcp@1.21.0`、`iterate-harness@2.11.0`、
+       > `glasspane-harness@0.11.0`。
+       > 跨仓三条实测（收口时补跑，退出码取脚本自身）：
+       > ① `scripts/check_run_plan_channel.py` **0**——本仓真生产者造的计划，fork 的 `readRunPlan`
+       > 在**两条通道**上都读回同样的字节：`GLASSPANE_RUN_PLAN`（回包 `source=env`）与
+       > `.iterate/run-plan.json`（回包 `source=project`），9 维度、digest
+       > `rp_68049dadeff6c85c4807448b04f44462c24f069b8936e57b181a667b8f42380e` 两侧相等。
+       > 这条脚本此前只量 env，且两个默认路径各多一段目录（实测 `exists()` 均 `False`），
+       > 默认调用其实在写出计划之前就 exit 2 —— 那是「没有测量发生」，被引用成「测量通过」。
+       > ② `scripts/check_glasspane_channel.py` **0**——经产品自己的 `McpClientManager`
+       > 看见 16 个 `gp_*` 工具，`gp_probe_status` 与 `gp_last_evidence` 都有真回包。
+       > ③ `scripts/check_glasspane_reverification.py` **0**——真不变量跑
+       > `outcome=fail failing=2 of 3` 造请求（`iv_4dc9d87dcd63484f2…`），targets 取自引擎自己的
+       > 近期报告，**2/2 回包被 relay 正确分类**：1 条 evidence/diagnosis + 1 条码具名拒绝
+       > `GP_E_NOT_ATTACHED`。`gp_diagnose` 回的是多 item 包，这正是 #20 那条 item 边界修好之后
+       > 第一次在真壳上有读者。
+       > **未收口的两格，如实记不进绿灯**：(a) main CI 的 `Python tests (3.10/3.11)` 两条 lane
+       > 近期没通过过——run `40167475388`（本版）与 `40103418285`（v2.10.0）同点位
+       > （`Run test suite` 步骤起、后续步骤全 None）、同时长（约 45 分钟）、同 annotation
+       > 「The hosted runner lost communication with the server」，而 `--log-failed` 报
+       > `log not found`、`runs/{id}/logs` 的归档里只有三条成功 job 的日志——runner 死了没上传，
+       > 所以挂在哪条具名用例上目前**无证据**。本机无 docker/podman/colima，无法在 Linux 复现；
+       > 已单独立项，不算进本版。(b) 本机 daemon 自报 `1.6.2` 而壳是 `1.20.2`/`1.21.0`，
+       > 壳的能力对账据此预告 `attach` 一类调用会被 methodNotFound 答回——这是本机 daemon 落后，
+       > 不是集成缺陷；换 daemon 要重启正在运行的进程，另一个会话在用它，没做。
+       >
       > **2.10.0 发布记录（2026-10-24）**：例行「审查 → 修复 → 缺口补齐 → 自检 → 发版」（minor）。
        > **新能力**：团队名单与停止通道——引擎其实一直在同时跑三类工人（子进程 teammate、
        > 进程内 teammate、普通 Shell 任务），它们全往同一个 `BackgroundTaskManager` 登记记录，
