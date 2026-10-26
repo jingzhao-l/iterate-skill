@@ -298,3 +298,21 @@ class TestInstall:
 
         assert code == 0
         assert "Completion installed" in capsys.readouterr().out
+
+
+class TestInstallHints:
+    """The generated header and the runtime hint must agree on --install."""
+
+    @pytest.mark.parametrize("shell", SHELLS)
+    def test_script_header_points_at_install_flag(self, shell: str) -> None:
+        head = "\n".join(_render(shell).splitlines()[:3])
+        assert "--install" in head
+
+    def test_reload_hint_quotes_paths_with_spaces(self) -> None:
+        from iterate_cli.completion import reload_hint
+
+        zsh_hint = reload_hint("zsh", Path("/tmp/a b/.zfunc/_iterate"))
+        assert "fpath=('/tmp/a b/.zfunc' $fpath)" in zsh_hint
+
+        bash_hint = reload_hint("bash", Path("/tmp/a b/iterate"))
+        assert "source '/tmp/a b/iterate'" in bash_hint

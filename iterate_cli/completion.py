@@ -345,7 +345,8 @@ def _render_fish(parser: argparse.ArgumentParser) -> str:
     names = [name for name, _, _ in commands]
     lines = [
         "# fish completion for iterate",
-        "# Install: iterate completion fish > ~/.config/fish/completions/iterate.fish",
+        "# Install: `iterate completion fish --install` (or redirect to",
+        "# ~/.config/fish/completions/iterate.fish).",
         "",
         "# Subcommands (only at the first positional argument; -f suppresses",
         "# filename completion where a command name is expected).",
