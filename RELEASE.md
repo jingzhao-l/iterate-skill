@@ -299,9 +299,10 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > `k9744y6xhm38gx6ypt7hnwm0cx8h11dn`，attemptId
       > `zx78p51wrz4xb5fesqpb362g8n8h026s`，`publicationStatus=pending`），
       > 公共 latest 待平台审核翻转后复核。
-      > **✅ 清洁门禁（2026-10-26T00:20Z 左右）**：`git status` 干净、
-      > `main == origin/main == 25135912`（随后并发 lane 继续在 main 上叠加
-      > harness 提交，属其 lane）；Dependabot open **0 × 3 仓**（本轮 dismiss
+      > **✅ 清洁门禁（2026-10-26T00:30Z 左右）**：`git status` 干净、
+      > `main == origin/main == 55e824ff`（本轮 3 个提交 `8e77456c`/`25135912`/
+      > `55e824ff` 均已推送；并发 harness lane 之后仍可能继续在 main 上叠加
+      > 其自己的提交）；Dependabot open **0 × 3 仓**（本轮 dismiss
       > plugin #3 `zod` high，`tolerable_risk` + 271 字符说明：独立 plugin
       > lane、不在任何 skill 包内）；open issue **0 × 3 仓**；open PR
       > **0 × 3 仓**；`git worktree prune --dry-run` 为空；merged 远端分支仅
