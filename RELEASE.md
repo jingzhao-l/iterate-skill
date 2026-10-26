@@ -1458,6 +1458,65 @@ stamp 不匹配会自动重装到新 tag。
       > 都在这份交付物上重跑过；对面那半 **glasspane-harness 0.11.1 已发**（tag/Release 6 件资产/
       > npm 三包，父仓 CI 的 `The released artifact and the split branch are trunk's bytes` 绿）。
       >
+      > **2.11.2 发布记录（2026-10-26 凌晨，跨夜的最后一格）**：这一版的正文不是新功能，是**一个信号打错了
+      > 对象**——`cron_scheduler` 过去只问 pid 文件里那个号"活着吗"，从不问"是不是写凭证的那个进程"，
+      > 而 `_kill_process_group()` 无条件 `os.killpg(os.getpgid(process.pid), SIGKILL)`。本机对照实验把两半
+      > 都量了下来：把一个从没见过这个 daemon 的活 `sleep` 子进程写进 pid 文件，修前 `stop_scheduler()`
+      > 13.5 s 内先 SIGTERM 再 SIGKILL 把它打死（退出码 `-15`）、事后还报它"扛住了 SIGKILL"（僵尸也答
+      > signal 0）、并对**真** daemon 同样返回 False（那 daemon 其实已退 0）；修前陌生进程 0.0 s 被拒且毫发
+      > 无损、真 daemon 0.2 s 停住并如实返回 True。`AsyncMock().pid.__index__()` 实测回 **1**，所以
+      > `test_timeout_job` 那一步在每个 ubuntu runner 上都把 `killpg(1, SIGKILL)` 写成 `kill(-1, SIGKILL)`
+      > ——kill(2) 写明它是"发给调用者有权发给的每一个进程"，本步骤自己的宿主就在其中，且打中任意一个就
+      > 返回 0，旧代码的 `except PermissionError` 因此什么都接不到；本机（macOS）实测 `killpg(1, 0)` 回
+      > EPERM，这就是它只在 ubuntu 上发生、两天里从没在我眼前炸过的理由。
+      > **CI 那一格因此落地**：`suite-bisect.yml`（一个模块一条腿，模块清单由 CI 自己的 plan 现算）在
+      > run 40249882415 给的名字是 `tests/test_services/test_cron_scheduler.py`——32 条腿 31 条绿，它是唯一
+      > 没结束、也是唯一没留下日志 artifact 的那条。修后 run 40252896348 与发布 head 上的 run 40255060841
+      > 都是 **`Python tests` 12/12 success、artifacts=13**，`bucket 06` 那条腿自己打出
+      > `pytest_exit=0 stopped=finished elapsed=38s` 并删掉自己的诊断 ref。**本仓的"CI 绿"从这一笔起才写。**
+      >
+      > 同时把这一格先前两次自我收回再收一次，都是我这轮写下的：① "等待在收集阶段"**不成立**——同 run 的
+      > 那条 per-bucket 收集步 `Collect this bucket…` 在完全相同的路径上 completed success
+      > （23:23:04→23:23:12，8 秒），而这条事实其实在 10-25 早一段记录里就写过一次（"同一 run 里
+      > `Collect the suite` 13 秒通过"），是我在 README 里重新又犯了一遍；② "job 的日志只在 job 结束之后
+      > 才存在"**要说得更狠**：由服务端超时结束的那种结束**根本没有日志**——两条被取消的 bucket-06 腿
+      > `gh run view --log` 都回 `log not found`，所以"上限那一刀"不是最后的仪器，是证据的销毁。
+      > ③ 记录器 8 份快照里 `pytest-watchdog.log` 全部只有那句 armed（76/118 字节），**没有一份带 dump**
+      > ⇒ 与"进程是被杀而不是在等"一致；④ bucket 成员是**某一次 plan 的属性**而不是仓的属性：同一棵树
+      > 本机 plan 的 bucket 06 与 CI plan 的 bucket 06 都是 521 tests / 32 modules 但**名单不同**
+      > （逐条 import 计数随环境变，FFD 就重新分桶），所以任何手抄的"具名模块清单"都会过期——这就是那条
+      > 诊断线的矩阵必须由 plan 现算的原因。
+      >
+      > **取号与发布（五格）**：判断 patch——不加能力、不动既有形状（`requires-python >= 3.10`、CLI 参数与
+      > 退出码集合、内核 `iterate-kernel@0.1.10`、两类账本行格式全未变）。四个版本位点由取号脚本先断言
+      > 四处相等（全为 2.11.1）再同步 2.11.2；`[Unreleased]` 整段归号 19 条 bullet + 1 个 `### ` 子标题，
+      > 脚本对"已存在 [2.11.2]"与"条数变了"都会拒。**格式变更写在这里而不是藏在注释里**：pid 文件从裸整数
+      > 变成 `{"pid", "cmdline"}`；新 CLI 读旧文件靠 `_DAEMON_ENTRY_CODE` 兜底（实测停得住旧 daemon），
+      > **旧 CLI 读新文件会把 daemon 当成不存在**（`int()` 失败→None）——同一包里两侧同源，正常升级碰不到，
+      > 降级会碰到。发布前闸（每条单独取 rc，日志 `/var/tmp/ih-2112-gates/`）：前端 build 0＋`tsc --noEmit` 0；
+      > `ruff check src tests scripts` 0（CI 钉的 0.16.8，走父仓 venv——harness venv 是 0.16.3）；
+      > `mypy src` 0（269 文件）；`check_kernel_fixtures.py` 10 份逐字节对上 0.1.10；npm 包装器
+      > `node --test` **89/89/0**；`pytest tests` rc=1＝**3126 passed / 6 skipped / 6 failed**，那 6 条在
+      > **未改动的树上同名同序、单跑也红**（本机已知环境组），Linux 侧由 CI 判定（已 12/12 绿）。
+      > 主仓 `e2bfef57`（台账修复）→ `eacf3d39`（修复＋测试）→ `b56db8d6`（README/ci.yml 按实测改写）→
+      > 取号 `af64d4e9`；发布仓走 `.release/iterate-harness` 替代路径逐文件 `cmp` 后快进推送，同步前后各做一次
+      > 逐 blob 比对：**628 个路径两侧逐字节相等、无单边文件**。
+      > tag `v2.11.2`＝commit `544f851a`（tag 对象 `40522610…`），先核可达再打；release.yml run
+      > **40255305036 success**：GitHub Release v2.11.2 非 draft、3 件资产；PyPI latest=**2.11.2**。
+      > **三条通道的同一份字节再次互相对上**：本机 `uv build` 的 wheel、GitHub 资产 `digest`、PyPI
+      > `digests.sha256` 同为 **`8fce4c4914931205d94ced7d44ac961b13adbe4898b7a28c107a34bdd15ae048`**，
+      > 尺寸同为 1,057,470 字节；METADATA `Version: 2.11.2`、7 条 `; extra == 'dev'` 行（就是 2.11.2
+      > 之所以必须存在的那条读数）。npm 包装器 `npm publish` rc=0、9 文件 / 75.7 kB、dry-run shasum
+      > `c63f3191e62710f3bae9574e4bb8a0a0e5df6ef1`；registry 读副本按既往 12–20 分钟传播，落笔时仍是
+      > `2.11.1`，**所以那一格下面单独复量，不在这里当作已成**。
+      > **复量（同一夜，publish 之后约 8 分钟）**：`npm view iterate-harness version` = **2.11.2**，`npm view iterate-harness@2.11.2 dist.shasum` = **`c63f3191e62710f3bae9574e4bb8a0a0e5df6ef1`**——与上面那个 dry-run 值逐字相等，这一格由「待复量」改为**已成**。五格齐：主仓 `af64d4e9` / 发布仓 main `544f851a` / tag `v2.11.2`(`40522610`→`544f851a`) / GitHub Release 3 件资产 / PyPI latest 2.11.2 / npm latest 2.11.2，wheel 字节在四处（本机 build、GitHub digest、PyPI digest、Release 尺寸）互相对上。
+      > 本批我自己制造并被记录下来的两处失效：`3676343e` 那笔把 CHANGELOG 里 **整个已发布的
+      > `## [2.11.1]` 段落（标题＋版本判断段＋7 条 bullet）连带一条操作者验收 bullet 删掉了**（+19/-50，
+      > 我本意只是改一句措辞），修复按父提交逐字节取回、只插入不重组（+91/-0，事后断言"插入文本与父提交
+      > 相等／每个标题恰好一行／bullet 数不变／删除列为 0"）；同夜第一次同步发布仓时我又用了一条被行连接
+      > 符吃掉的 `cp`，导致 `544f851a` 那次推送**带上了修复却没带上判它的 8 条用例**——是逐 blob 比对把它
+      > 抓出来的，之后每个 `cp` 都单独 `cmp`。两处都是"用 shell 的退出状态冒充内容的完整"。
+      >
       > **2.11.0 发布记录（2026-10-25）**：与 GlassPane 的双向集成第一次「两头都能跑」（minor）。
        > **判据**：只加不减——④ 第一次可执行（配方交接 + 判定闸 + 闸随它那一轮的账本行落盘）、
        > ③ 的跨账本链接（`.iterate/glasspane-ledger.json`，对面那本可被项目记为默认）、两条读门
