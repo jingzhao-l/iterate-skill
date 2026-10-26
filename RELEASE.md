@@ -251,6 +251,62 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 新增 `backup/2026-10-23-harness-wip` 保存主工作区里一条 harness
       > docstring WIP 后恢复干净。
       >
+      > **3.9.1 状态（2026-10-26）**：patch 重发（能力与 3.9.0 完全一致，只为绕过
+      > ClawHub 卡死的 3.9.0 版本）。3.9.0 发布接口当时返回 `ok:true` +
+      > versionId `k97d4jqk87ehsqryvc03wzw3f58gy8jj`，服务端也确认版本行存在
+      > （同版本重发 → `http 400 — Version 3.9.0 already exists`），但约一天后
+      > 公共 `latestVersion.version` 仍为 3.8.2、`/versions/3.9.0` 仍 404、
+      > `moderation.updatedAt` 自 3.8.2 审核后（`1792721207148`）未再前进；
+      > 平台无删除/重试/状态 API（`/attempts`、`/publication`、`/status`、
+      > `/moderation?version=` 均 404）。按 2.3.17 先例升 patch 覆盖重发。
+      > 唯一内容变化：补全脚本头部安装提示统一指向 `--install`（fish 之前仍只
+      > 给重定向写法，与 bash/zsh 不一致）；新增 2 条回归（三 shell 头部必须
+      > 提到 `--install`、zsh/bash reload 提示对含空格路径必须加引号）。
+      > 测试 **1866 → 1870 passed**（1 skipped：本机未安装 fish），
+      > `ruff check .` 通过，npm installer 测试全绿。3.9.0 的
+      > `completion --install` 与 `report` 转义修复原样保留。
+      > 提交 `8e77456c`（fix）+ `25135912`（release），均 GPG 签名；
+      > signed annotated tag `v3.9.1`（tag 对象 `8af6a422`）→ `25135912`，
+      > `git verify-tag` 完好，指纹 `0929EA31DF4F7429F63FC53189D88B1D043A1298`。
+      > ⚠️ **本地 tag 撞名（第 6 次）**：本地 `refs/tags/v3.9.1` 原为
+      > iterate-plugin 的轻量 tag（→ `1a28b1a5`），已用
+      > `git tag -f -s v3.9.1 25135912` 覆盖；plugin tag 可从 `plugin-origin`
+      > 找回（`git fetch plugin-origin v3.9.1`）。origin 此前无 v3.9.1，
+      > 故为 `[new tag]` 而非强推。
+      > ✅ **GitHub Release**（run `40247653881` success）：6 资产；
+      > `shasum -a 256 -c SHA256SUMS.txt` → OK；三份 `.asc` 均 `完好的签名`；
+      > tar **95 条目**、qoder zip **80 文件**，`harness/|kernel/|tests/`
+      > 均 **0**；包内 `SKILL.md`/`pyproject.toml`/`npm-installer/package.json`
+      > 三处均为 3.9.1。
+      > ✅ **npm**（run `40247653949` success）：`npm view` → **3.9.1**，
+      > `dist-tags.latest` → 3.9.1，`npx -y iterate-skill-installer@3.9.1
+      > --version` → `iterate-skill-installer 3.9.1`。
+      > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：3.9.1 精简包 74 文件 /
+      > 754,868 字节，`update_skill_settings` 成功（file_id
+      > `ee4fc794-fa82-4629-8f20-34d7b905beca`，`UPDATE_OK`）；消费端
+      > `download_skill()` 实测 74 文件、banned 0、三处版本 3.9.1、
+      > 含 `install_completion`。
+      > ✅ **SkillHub**（skillId `104490`）：70 文件 / 752,485 字节，
+      > `ok:true`，versionId `461946`，`tags.latest = 3.9.1`；
+      > `reviewStatus/securityScanStatus/contentAuditStatus=pending` 为平台异步审核。
+      > ⚠️ **SkillHub 发布首次遇 SSL 失败并修复**：`skillhub publish` 报
+      > `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate
+      > chain`。根因不是代理 MITM（`openssl s_client -proxy` 看到的是正常
+      > DigiCert 链），而是 `/Library/Frameworks/Python.framework/.../3.11`
+      > 自带的 `etc/openssl/cert.pem` 太旧、缺新根；用
+      > `SSL_CERT_FILE=<certifi>/cacert.pem` 复跑即成功。后续若复现，先查这个。
+      > ⏳ **ClawHub**：3.9.1 发布受理（`ok:true`，versionId
+      > `k9744y6xhm38gx6ypt7hnwm0cx8h11dn`，attemptId
+      > `zx78p51wrz4xb5fesqpb362g8n8h026s`，`publicationStatus=pending`），
+      > 公共 latest 待平台审核翻转后复核。
+      > **✅ 清洁门禁（2026-10-26T00:20Z 左右）**：`git status` 干净、
+      > `main == origin/main == 25135912`（随后并发 lane 继续在 main 上叠加
+      > harness 提交，属其 lane）；Dependabot open **0 × 3 仓**（本轮 dismiss
+      > plugin #3 `zod` high，`tolerable_risk` + 271 字符说明：独立 plugin
+      > lane、不在任何 skill 包内）；open issue **0 × 3 仓**；open PR
+      > **0 × 3 仓**；`git worktree prune --dry-run` 为空；merged 远端分支仅
+      > `origin/main`；5 个 lane worktree 保留未动。
+      >
       > **3.9.0 状态（2026-10-25）**：minor（一个净新增能力 + 同轮全量复审修复）。
       > 测试套件 **1856 → 1866 passed**（1 skipped：本机未安装 fish；
       > `python -m pytest tests/ -q` 与 `python -m ruff check .` 均通过，
