@@ -3,6 +3,13 @@
 All notable changes to iterate-harness should be recorded in this file.
 
 ## [Unreleased]
+
+（空。2.11.2 收口后没有未归号的条目。）
+
+## [2.11.2] - 2026-10-26
+
+**版本判断：patch。** 这一版不加任何用户可见能力，也不动既有形状：`requires-python >= 3.10` 未变、CLI 参数与退出码集合未变、内核仍是 `iterate-kernel@0.1.10`、`.iterate/decision-log.jsonl` 与 `recipe-gate` 行的格式未变。变的是两件「已经宣称过、但今天才成立」的事：① `cron_scheduler` 不再对「pid 文件里的号」开枪——它现在要求那个号仍是写凭证的进程，且 `killpg` 只准打本任务用 `start_new_session` 自己造的组；② `Python tests` 那条 lane 从「12 条里 10 条绿、2 条永不结束」变成 **12/12 绿**。附带一条形状变化要说清：pid 文件从裸整数变成 `{"pid", "cmdline"}`。新 CLI 读旧文件（`_DAEMON_ENTRY_CODE` 兜底，实测停得住旧 daemon）；**旧 CLI 读新文件会把它当成「没有 daemon」**（`int()` 解析失败→ None），也就是先升级 daemon、再退回旧 CLI 的组合下 stop 会失灵——同一个包里两边同源，正常升级路径碰不到，降级会碰到，因此记在这里而不是藏在代码注释里。既有形状零破坏 → 不是 major；新增能力零 → 不是 minor。
+
 - **`bucket 06` 那条挂了两天的腿，名字量出来了，而且名字后面跟着一条真缺陷：一段测试代码让 SIGKILL
   走进了 `kill(-1, SIGKILL)` 那条广播语义。**
   判据不是再加仪器，而是把可疑那一桶拆成"一个模块一条腿"（新的 `suite-bisect.yml`：只能手动派发、
@@ -333,6 +340,22 @@ All notable changes to iterate-harness should be recorded in this file.
   sha256 核回（`d931658b…`），不走 `git checkout`。它是操作者命令、不进 CI——与另外三条
   `check_glasspane_*` / `check_run_plan_channel` 同一待遇，理由也相同：需要对面在场或需要装好的 CLI 的
   检查，写成会 skip 的测试就是又一次"没人跑的绿灯"。
+
+- **我自己上一批把 CHANGELOG 里一个已发布版本的整段正文删掉了，修复这一笔只插入、不重组。**
+  事故在 `3676343e`：本意是改一条 bullet 的措辞，diff 却是 +19/-50，被切走的一刀连带删掉
+  `## [2.11.1] - 2026-10-25` 这个标题、它的版本判断段与 7 条 bullet，以及 [Unreleased] 里记
+  `scripts/check_gate_answer_reader.py` 的那条。也就是说 2.11.1 早已发出去了（tag / Release / PyPI / npm
+  四格齐），而它的台账在这份文件里一度不存在。本仓对这类错有写过的教训（合并解析时不许拿
+  head+theirs+mine 重组文件），当时的防线就是"改完数一遍 section 与 bullet 条数，跟父提交比"——
+  这次没执行那条防线，所以它是来第二次。修复不搬动任何文字：从父提交 `3676343e^` 按字节取出那段区域
+  （91 行 / 8 条 bullet / 10,141 字节），插回它原来的位置（当前 `## [2.11.0] - 2026-10-25` 之前），
+  事后四条断言各跑一遍：插入文本与父提交逐字节相等、每个版本标题恰好一次、恢复后的 [2.11.1]
+  bullet 数 = 7、`git diff --numstat` 删除列 = 0。
+  同一批还留下第二个自己的错，形状小但同类：那条修复的提交信息（`e2bfef57`）是用未加引号的
+  `printf` 写的，于是我写进信息里的反引号被 shell 当成命令替换执行了一遍——`3676343e`、
+  `scripts/check_gate_answer_reader.py`、`record_gate_without_send`、`3676343e^` 四个名字从信息里被吃掉
+  （四条命令都是 command not found，没有任何副作用，但它们也不该被运行）。内容无损、全过程在本条里，
+  不改写已提交的历史；从这里起所有提交信息一律写进文件再 `git commit -F`，不在命令行里拼。
 
 ## [2.11.1] - 2026-10-25
 
