@@ -5,6 +5,25 @@
 
 ---
 
+## [3.9.1] — 2026-10-26
+
+patch 重发：3.9.0 在 ClawHub 的版本卡在平台审核队列，无法从本地恢复。发布接口
+当时返回 `ok:true` + versionId，服务端也确认版本行存在（同版本重发返回
+`http 400 — Version 3.9.0 already exists`），但约一天后公共
+`latestVersion.version` 仍是 3.8.2、`/versions/3.9.0` 仍 404、
+`moderation.updatedAt` 自 3.8.2 审核后未再前进；平台没有删除/重试/状态 API。
+按 2.3.17 的先例升 patch 覆盖重发**同一份能力**，不改任何 CLI 行为。
+
+唯一内容变化：补全脚本头部安装提示统一指向 `--install`（fish 之前仍只给
+`iterate completion fish > ~/.config/fish/completions/iterate.fish` 的重定向
+写法，与 bash/zsh 头部不一致）。另补 2 条回归：三种 shell 的脚本头部必须提到
+`--install`；zsh/bash 的 reload 提示对含空格路径必须正确加引号（此前
+`fpath=(...)` 在空格路径下引号不闭合，是 3.9.0 内联修掉但缺专门用例的点）。
+
+测试 **1866 → 1870 passed**（1 skipped：本机未安装 fish，跳过其语法校验），
+`ruff check .` 通过，npm installer 测试全绿。3.9.0 的
+`iterate completion --install` 与 `report` 反引号/HTML 转义修复原样保留。
+
 ## [3.9.0] — 2026-10-25
 
 本轮为无人值守每日例行的「全量评审 + 修复 + 功能/体验增长」版本。新增
