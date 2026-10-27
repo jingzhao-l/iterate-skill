@@ -82,8 +82,9 @@ The harness and plugin can also be installed and used independently of this repo
 # iterate-harness: one-command install (npm wrapper, simplest)
 npm install -g iterate-harness
 
-# or script install (oh / ohmo have fully migrated to ih)
-curl -fsSL https://raw.githubusercontent.com/jingzhao-l/iterate-harness/main/scripts/install.sh | bash
+# The harness repo also ships a shell installer. Pin a release tag and verify the
+# checksum instead of piping `main` straight into a shell:
+#   https://github.com/jingzhao-l/iterate-harness/releases
 ih iterate init && ih iterate review
 
 # iterate-plugin: GitHub install for the dsh desktop plugin

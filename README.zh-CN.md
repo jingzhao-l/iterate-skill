@@ -84,8 +84,9 @@ fork 带着同一个校验器，也有一条固定点测试证明这边写出的
 # iterate-harness：一键安装（npm 包装器，最简）
 npm install -g iterate-harness
 
-# 或脚本安装（oh / ohmo 已全面迁移为 ih）
-curl -fsSL https://raw.githubusercontent.com/jingzhao-l/iterate-harness/main/scripts/install.sh | bash
+# 或脚本安装（oh / ohmo 已全面迁移为 ih）。harness 仓库也提供 shell 安装器：
+# 请固定 release tag 并校验 checksum，不要把 main 分支直接管道进 shell：
+#   https://github.com/jingzhao-l/iterate-harness/releases
 ih iterate init && ih iterate review
 
 # iterate-plugin：dsh 桌面插件的 GitHub 安装
