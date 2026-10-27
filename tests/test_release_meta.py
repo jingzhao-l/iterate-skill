@@ -328,3 +328,57 @@ def test_allow_unsigned_value_sets_agree_across_all_paths() -> None:
         assert forbidden not in canonical, (
             f"{forbidden!r} must not enable the unsigned-install override"
         )
+
+
+class TestSkillPublishingConsent:
+    """SKILL.md must describe push as opt-in everywhere, not just in one place.
+
+    A platform security review flagged the contradiction: the config table and
+    the guardrails promise ``push_per_round: false`` means "never push", while
+    Phase 5, the per-session flow example and the resume checklist all ordered
+    an unconditional push. Those three spots are what an agent actually follows,
+    so a promise only in the table is not a promise.
+    """
+
+    @staticmethod
+    def _text() -> str:
+        return (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_phase5_false_branch_does_not_order_a_push(self) -> None:
+        text = self._text()
+        assert "在最后一轮或会话结束时，一次性 `git push" not in text
+        assert "**会话结束时不自动 push**" in text
+        assert "仅在用户于会话结束时明确要求推送后" in text
+
+    def test_risk_notice_does_not_recommend_a_session_end_push(self) -> None:
+        text = self._text()
+        assert "仅在会话结束时一次性 push" not in text
+        assert "由用户在会话结束时决定是否推送" in text
+
+    def test_per_session_flow_marks_merge_and_push_opt_in(self) -> None:
+        text = self._text()
+        assert "merge / push 均为 opt-in" in text
+        assert "git push origin <target-branch>                     # 仅 opt-in 时" in text
+
+    def test_resume_asks_before_pushing(self) -> None:
+        text = self._text()
+        assert "在 resume 时先完成 push" not in text
+        assert "先询问用户**是否推送" in text
+
+
+class TestSupplyChainHygiene:
+    """Build pins and install docs must not re-introduce known-bad shapes."""
+
+    def test_build_requirements_are_not_the_flagged_pins(self) -> None:
+        text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        # GHSA-5rjg-fvgr-3xxf (setuptools) and GHSA-8rrh-rw8j-w5fx (wheel).
+        assert "setuptools==68.0.0" not in text
+        assert "wheel==0.42.0" not in text
+        assert "setuptools>=84.1.0" in text
+        assert "wheel>=0.46.2" in text
+
+    def test_readmes_do_not_pipe_mutable_main_into_a_shell(self) -> None:
+        needle = "raw.githubusercontent.com/jingzhao-l/iterate-harness/main/scripts/install.sh | bash"
+        for name in ("README.md", "README.zh-CN.md"):
+            text = (REPO_ROOT / name).read_text(encoding="utf-8")
+            assert needle not in text, f"{name} still recommends piping main into bash"

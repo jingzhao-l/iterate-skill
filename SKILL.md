@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.9.1
+version: 3.9.2
 permissions:
   file_read: true
   file_write: true
@@ -896,7 +896,7 @@ if empty AND deferredArchitectural is empty:
 
 4. **Push / 推送** ⚠️ **高风险动作 / High-risk action**
    - **默认安全 / Secure by default**：`git.push_per_round` 默认为 `false`，即不自动 push。
-   - **风险提示 / Risk notice**：若启用自动 push，会立即对外可见，且后续轮次会基于已 push 的状态继续迭代。建议保持 `push_per_round: false`，仅在会话结束时一次性 push。
+   - **风险提示 / Risk notice**：若启用自动 push，会立即对外可见，且后续轮次会基于已 push 的状态继续迭代。建议保持 `push_per_round: false`，由用户在会话结束时决定是否推送。
    - 若 `git.push_per_round` 为 `true`：
      - `git push origin {target_branch}`
      - 若被拒绝，先 `git pull --rebase`，解决冲突，重新验证，再 push。
@@ -904,7 +904,7 @@ if empty AND deferredArchitectural is empty:
      - **绝不 force-push 到 main/master**。
    - 若 `git.push_per_round` 为 `false`（默认）：
      - 本轮回不 push，只保留本地 merge（若 `auto_merge` 也为 false，则仅保留在迭代分支）。
-     - 在最后一轮或会话结束时，一次性 `git push origin {target_branch}`；同样遵循 3 次循环限制。
+     - **会话结束时不自动 push**。仅在用户于会话结束时明确要求推送后，才执行一次 `git push origin {target_branch}`；同样遵循 3 次循环限制。未得到明确要求时，把改动留在本地分支并告知用户。
 
 5. **切回迭代分支 / Switch back**
    - `git checkout iterate/<goal-slug>-<timestamp>`
@@ -954,7 +954,7 @@ round += 1
 **Why**：
 - 保持主工作区稳定。
 - 每轮都是独立可审查、可回滚的 commit。
-- 远程始终保存最新验证状态。
+- 启用 `push_per_round` 时，远程保存最新验证状态；未启用时，改动只留在本地分支，等用户决定。
 
 ### 每会话流程 / Per-Session Flow
 
@@ -965,13 +965,16 @@ git checkout -b iterate/<goal>-<date>               # 或 git worktree add ../<n
 
 # 2. Each round (after validation passes)
 git add <changed files> && git commit -m "fix: iterate round {N} — ..."
+# merge / push 均为 opt-in：仅在 auto_merge / push_per_round 为 true，
+# 或用户在会话结束时明确要求时，才执行下面两行
 git checkout <target-branch>
 git merge iterate/<goal>-<date>                     # 解决冲突，重新验证
-git push origin <target-branch>
+git push origin <target-branch>                     # 仅 opt-in 时
 git checkout iterate/<goal>-<date>                  # 继续下一轮
 
 # 3. Session end
-# 确保所有改动已合并推送
+# 未启用 auto_merge / push_per_round 时：改动留在本地分支，告知用户位置；
+# 是否合并/推送由用户决定，不要自动执行。
 # 可询问用户是否删除已合并的迭代分支
 ```
 
@@ -989,7 +992,7 @@ git checkout iterate/<goal>-<date>                  # 继续下一轮
    - **继续上次会话（resume）**：切回迭代分支，从下一轮继续。
    - **重新开始（restart）**：创建新迭代分支，`deferredArchitectural` 可继承或清空。
    - **仅查看报告**：只输出上次汇总，不继续迭代。
-4. 若上一轮已合并到 main/master 但未 push，在 resume 时先完成 push。
+4. 若上一轮已合并到 main/master 但未 push，在 resume 时**先询问用户**是否推送；得到明确同意后再 push，不要自动补推。
 
 ### 护栏 / Guardrails
 
