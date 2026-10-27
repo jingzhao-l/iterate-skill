@@ -5,6 +5,29 @@
 
 ---
 
+## [3.9.2] — 2026-10-27
+
+patch：修复 SKILL.md 里**发布同意书自相矛盾**的真实缺陷，并顺手收掉两处
+供应链卫生问题；同时用官方 `clawhub` CLI 重发，绕开 3.9.0/3.9.1 在 ClawHub
+上卡死的发布队列（两个版本发布接口都返回 `ok:true`，但一天后公共
+`latestVersion` 仍是 3.8.2、`/versions/<v>` 仍 404）。
+
+- **发布同意书 / Publishing consent**：SKILL.md 在配置表与护栏里承诺
+  `git.push_per_round: false`（默认）表示"绝不自动 push"，但 Phase 5 的
+  false 分支、Per-Session Flow 示例、会话恢复清单三处都直接命令
+  "会话结束时一次性 push"。按字面执行这三处的 agent 会绕过用户的 opt-in。
+  现在三处都改为"不自动 push；仅在用户明确要求时才推"，风险提示与
+  "远程始终保存最新验证状态"也一并改成条件式。新增 4 条文档契约回归。
+- **安装文档 / Install docs**：README 与 README.zh-CN 不再推荐
+  `curl .../main/scripts/install.sh | bash`（可变上游直接进 shell），改为
+  指向 harness 的 release 资产并要求固定 tag + 校验 checksum。新增回归。
+- **构建 pin / Build pins**：`pyproject.toml` 的 `setuptools==68.0.0` /
+  `wheel==0.42.0` 落在 GHSA-5rjg-fvgr-3xxf 与 GHSA-8rrh-rw8j-w5fx 的受影响
+  区间，改为 `setuptools>=84.1.0` / `wheel>=0.46.2`。新增回归。
+- 测试 **1870 → 1876 passed**（1 skipped：本机未安装 fish），
+  `ruff check .` 通过，npm installer 测试全绿。3.9.0/3.9.1 的
+  `completion --install` 与 `report` 转义能力原样保留。
+
 ## [3.9.1] — 2026-10-26
 
 patch 重发：3.9.0 在 ClawHub 的版本卡在平台审核队列，无法从本地恢复。发布接口
