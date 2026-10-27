@@ -251,6 +251,62 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 新增 `backup/2026-10-23-harness-wip` 保存主工作区里一条 harness
       > docstring WIP 后恢复干净。
       >
+      > **3.9.2 状态（2026-10-27）**：patch。触发点是 ClawHub 平台侧安全审查给出的
+      > 一条真实缺陷：SKILL.md 的配置表与护栏承诺 `git.push_per_round: false`
+      > （默认）表示"绝不自动 push"，但 Phase 5 的 false 分支、Per-Session Flow
+      > 示例、会话恢复清单三处都直接命令"会话结束时一次性 push"——按字面执行这三处
+      > 的 agent 会绕过用户的 opt-in。三处（连同风险提示与"远程始终保存最新验证
+      > 状态"）已改为"不自动 push；仅在用户明确要求时才推"，并新增 4 条文档契约回归
+      > （`tests/test_release_meta.py::TestSkillPublishingConsent`）。
+      > 同批收掉两处供应链卫生问题：README/README.zh-CN 不再推荐
+      > `curl .../main/scripts/install.sh | bash`（可变上游直接进 shell），改指
+      > release 资产并要求固定 tag + checksum（2 条回归）；`pyproject.toml` 的
+      > `setuptools==68.0.0`/`wheel==0.42.0` 落在 GHSA-5rjg-fvgr-3xxf 与
+      > GHSA-8rrh-rw8j-w5fx 受影响区间，改为 `>=84.1.0`/`>=0.46.2`（2 条回归）。
+      > 另修仓库级缺陷：`.awesome-claude-skills` submodule 钉的 `85fc57b1` 已被
+      > 上游 force-push 抹掉，Dependabot 依赖图任务（`1656727179`）因此报
+      > `upload-pack: not our ref`；re-pin 到上游 head `be2a4069`（不进任何包）。
+      > 测试 **1870 → 1876 passed**（1 skipped：本机未安装 fish），
+      > `ruff check .` 通过，npm installer 测试全绿。
+      > 提交 `08e81ced`（fix consent）/`9f4a1019`（fix docs）/`811b6009`
+      > （fix build）/`cc1893e4`（release），均 GPG 签名；signed annotated tag
+      > `v3.9.2` → `cc1893e4`（本地原为 iterate-plugin 的轻量 tag → `e7834126`，
+      > 已覆盖；plugin tag 可从 `plugin-origin` 找回）。
+      > ✅ **GitHub Release**（run `40425559468` success）：6 资产；
+      > `shasum -a 256 -c SHA256SUMS.txt` → OK；tar/zip 两份 `.asc` 均
+      > `完好的签名`；tar **95 条目**、qoder zip **80 文件**，`harness/|kernel/|tests/`
+      > 均 **0**；包内 `SKILL.md`/`pyproject.toml`/`iterate_cli/__init__.py`/
+      > `npm-installer/package.json` 四处均为 3.9.2。
+      > ✅ **npm**（run `40425559549` success）：`npm view` → **3.9.2**，
+      > `npx -y iterate-skill-installer@3.9.2 --version` →
+      > `iterate-skill-installer 3.9.2`，dist 带 SLSA provenance attestation。
+      > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：3.9.2 精简包 74 文件 /
+      > 760,333 字节，`update_skill_settings` 成功（file_id
+      > `ecea9d64-1f68-4c4f-9123-74108bed5382`，`UPDATE_OK`）；消费端
+      > `download_skill()` 实测 74 文件、banned 0、`SKILL.md version: 3.9.2`。
+      > ✅ **SkillHub**（skillId `104490`）：70 文件 / 757,950 字节，
+      > `ok:true`，versionId `465208`，`tags.latest = 3.9.2`；
+      > 搜索索引异步（发布瞬间仍读到 3.9.1）。
+      > ⛔ **ClawHub**：平台侧 `clawscan`（Codex 安全 worker）对本次全部提交
+      > 确定性失败，发布接口仍受理（`ok:true` + versionId，`publicationStatus=pending`），
+      > 但公共 `latestVersion` 停在 3.8.2、`/versions/3.9.2` 404。
+      > 根因排查（2026-10-27）：发布即受理但永不晋升，是因为发布时入队的
+      > 安全扫描从未成功；手动 `POST /api/v1/skills/-/scan` 可入队，但
+      > `clawscan` worker 一律以 `lastError = "clawscan exited 1"` 失败
+      > （3.9.2 实测 36 分钟、3.9.3 实测 41 分钟、3.9.0/3.9.1 亦同）。
+      > 已排除的路径：非大小/超时（新建**瘦身** slug `iterate-skill-slimtest`
+      > @0.0.1，67 文件 / 1.5MB，去 RELEASE/CHANGELOG/DESIGN，扫描同样失败
+      > 51 分钟）；非版本占用（全新 slug 全新版本仍失败）；非
+      > harness/kernel/tests 污染（banned 0）；非内容差异（3.9.2 与 3.8.2
+      > 文件集完全一致、仅 +4% 体积，而 3.8.2 于 10-23 扫描成功
+      > `status=suspicious`/`confidence=high`/`gpt-6.1-sol`，其
+      > `instruction_scope` 关注点正是本轮已修的发布同意书）。结论：平台
+      > clawscan worker 当前对任何新提交都失败（无任何 skill 于 10-27 完成
+      > 审核；最后成功是 10-26 的 emoji-today/trump-brain-room），属平台侧
+      > 故障，非仓库可修。`/versions/3.9.3` 为本会话诊断探针所占用（同因
+      > 失败、已被平台 moderation 隐藏），3.9.0/3.9.1/3.9.2/3.9.3 版本号
+      > 均已保留，下次发布须用 ≥3.9.4。
+      >
       > **3.9.1 状态（2026-10-26）**：patch 重发（能力与 3.9.0 完全一致，只为绕过
       > ClawHub 卡死的 3.9.0 版本）。3.9.0 发布接口当时返回 `ok:true` +
       > versionId `k97d4jqk87ehsqryvc03wzw3f58gy8jj`，服务端也确认版本行存在
