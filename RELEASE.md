@@ -2536,6 +2536,50 @@ stamp 不匹配会自动重装到新 tag。
 >         `peerDependencies` 尾段含 `0.2.1-rc.3`，tarball 抽查
 >         `dist/tools/decision-log.js` 首行 import 含 `iterate-kernel/decision-log`
 >         与 `iterate-kernel/decision-log-entry`。**遗留**：无。
+>
+>         **3.11.0 发布记录（2026-10-28）**：无损报告 JSON + 上游兼容追到
+>         `0.2.2-alpha.2`。取号按 CHANGELOG `[3.11.0]` 明文指示"新增一个用户可感知的
+>         导出格式，按语义化版本是一次 minor"。
+>         **上游 dsh**：`dsh-v0.2.1-rc.4` 与 `dsh-v0.2.2-alpha.2`（均为 2026-10-28）
+>         为本轮新发布。rc.4 只修 ACP 模式下诊断输出混入 stdout（bug fix，无插件面
+>         API 变动）；`0.2.2-alpha.2` 是 0.2.2 系列首个 alpha，含若干**插件面破坏性
+>         变更**（`tools.resolve/executable` 与提示词组装接口迁移、会话投影句柄改
+>         异步、`agent/request` 不再允许改路由、Cordis Timer 返回值适配、DSH 最低
+>         Node 提升至 24.9），但本插件只从 `dsh-tools` 导入 `defineTool`、从
+>         `dsh-jobs` 导入类型，**不触及其任何被迁移的接口**，故按现状声明
+>         `compatible` 并在构建期 devDependencies 钉到 `0.2.2-alpha.2` 实测。
+>         `dshReleases` 表 25 → 27 个版本（登记 rc.4 + `0.2.2-alpha.2`），两份 README
+>         同步镜像（`0.2.2-alpha.2` 为 build target）；`@deepseek-ai/cordis` peer 扩为
+>         `^4.0.5-alpha.2 || ~4.0.6-alpha.1`（`0.2.2-alpha.2` 要求 `~4.0.6-alpha.1`），
+>         devDependencies 的 8 个 `dsh-*` 包全部追到 `0.2.2-alpha.2`（rc.3 引入的
+>         peer 依赖教训：本地 npm install 不再顺带装齐，故显式钉齐）。
+>         **无损报告 JSON（步骤 6 新功能 C 类：新导出格式）**：
+>         `iterate_report` 新增 `format:"json"`，产出**完整归一化运行模型**
+>         （`RunReportJson`，`$schema: "iterate-run-report/1"`）——项目、目标、模式、
+>         轮次、收敛率、严重度分布、发现、修复、验证、质量门禁、经验银行、防御事件
+>         全部是结构化数据。这是**唯一无损格式**：Markdown 是给人看的投影，SARIF
+>         只携带发现（作为 code-scanning 结果），JSON 把人类报告展示的每条事实原样
+>         交给 CI 仪表盘 / PR 机器人，无需反解析人类报告；缺失或中断的运行依然产出
+>         合法文档（空数组、null 存储），导出永不因运行中断而失败。观测台 F8 报告区
+>         新增「导出 JSON 报告」按钮（与导出报告 / 导出 SARIF 并列），与工具共用同一
+>         份数据模型（`src/report-render.ts` 的 `renderRunReportJson`，server 与 client
+>         共用，优先下载、失败回退复制）。
+>         **测试**：`test/report.test.ts` 新增 5 条 JSON 用例（完整归一化模型 + 发现
+>         证据字段 + junk 输入容错 + 工具层 `json` 渲染 + `.iterate/report.json`
+>         持久化）；主仓 `npm run typecheck`（三程序 server/test/client）0 错误、
+>         `npm test` **1319 passed / 0 failed / 0 skipped**（此前 1314，+5 条）；
+>         `npm run build && npm run build:client` 干净、`dist/report-render.js` /
+>         `dist/tools/report.js` / `lib/client.js` digest 与 `src/` 齐步
+>         （`package-contract` 强制，client-i18n 键/条目对齐测试亦过）。
+>         **主仓**：13 文件全在 `harness/iterate-plugin/` 内（`package.json` /
+>         `package-lock.json` / `CHANGELOG.md` / `README.md` / `README.zh-CN.md` /
+>         `dist/report-render.js` / `dist/tools/report.js` / `lib/client.js` /
+>         `src/report-render.ts` / `src/tools/report.ts` / `src/client/index.ts` /
+>         `src/client/i18n.ts` / `test/report.test.ts`）。**独立仓**：照例走
+>         `.release/iterate-plugin` 替代路径（与公开仓 main 共享历史）→ rsync →
+>         `npm install --legacy-peer-deps` → `npm run typecheck` + `npm test` →
+>         提交快进推送 → tag `v3.11.0` + GitHub Release。**npm**：
+>         `iterate-plugin@3.11.0` 已发布（`dist-tags.latest=3.11.0` 生效）。**遗留**：无。
 
 ---
 
