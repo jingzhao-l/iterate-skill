@@ -2576,10 +2576,19 @@ stamp 不匹配会自动重装到新 tag。
 >         `dist/report-render.js` / `dist/tools/report.js` / `lib/client.js` /
 >         `src/report-render.ts` / `src/tools/report.ts` / `src/client/index.ts` /
 >         `src/client/i18n.ts` / `test/report.test.ts`）。**独立仓**：照例走
->         `.release/iterate-plugin` 替代路径（与公开仓 main 共享历史）→ rsync →
->         `npm install --legacy-peer-deps` → `npm run typecheck` + `npm test` →
->         提交快进推送 → tag `v3.11.0` + GitHub Release。**npm**：
->         `iterate-plugin@3.11.0` 已发布（`dist-tags.latest=3.11.0` 生效）。**遗留**：无。
+>         `.release/iterate-plugin` 替代路径（与公开仓 main 共享历史）→
+>         `git pull --ff-only` 对齐 `24e1ff9` → `rsync --exclude node_modules
+>         --exclude .git --exclude .release`（`.github/workflows/npm-publish.yml`
+>         保留）→ `npm install --legacy-peer-deps` 同步 dsh `0.2.2-alpha.2` 全套 →
+>         `npm run typecheck` 0 错误、`npm test` **1319 / 0 fail** → 提交 `9b60b0b`
+>         快进推送 `24e1ff9..9b60b0b`。tag `v3.11.0`（`5d5571e`）+ GitHub Release
+>         已创建（2026-10-28）。**npm**：`iterate-plugin@3.11.0` 已发布（shasum
+>         `4e190421b140e05714eb374507f59cf5ad6b4501`，92 文件 / 606.6 kB /
+>         解包 2.2 MB）；发布后约 2 分钟复查 `dist-tags.latest=3.11.0` 生效，
+>         `dshReleases` 尾段含 `0.2.1-rc.4` / `0.2.2-alpha.2`，`cordis` peer
+>         含 `~4.0.6-alpha.1`，tarball 抽查 `dist/report-render.js` 含
+>         `renderRunReportJson` 与 `iterate-run-report/1`、`dist/tools/report.js`
+>         含 `report.json`、`lib/client.js` 含 `report-json` 按钮键。**遗留**：无。
 
 ---
 
