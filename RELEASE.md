@@ -2589,6 +2589,59 @@ stamp 不匹配会自动重装到新 tag。
 >         含 `~4.0.6-alpha.1`，tarball 抽查 `dist/report-render.js` 含
 >         `renderRunReportJson` 与 `iterate-run-report/1`、`dist/tools/report.js`
 >         含 `report.json`、`lib/client.js` 含 `report-json` 按钮键。**遗留**：无。
+>
+>         **3.12.0 发布记录（2026-10-29）**：开跑预检（Preflight）。取号按
+>         CHANGELOG `[3.12.0]` 明文指示"新增一个用户可感知的净功能：开始一轮迭代
+>         之前就把环境问题摆到桌面上并给出精确修复指令"，按语义化版本是一次 minor。
+>         **上游 dsh**：检查 releases 与 tags（`deepseek-ai/deepseek-harness`），最新
+>         仍为 `dsh-v0.2.2-alpha.2`（2026-10-28 发布，与 3.11.0 已声明 compatible），
+>         无新版本 → 跳过第 2 步，本轮无 dsh 新能力可转化（C 类 dsh 转化项记录"无新
+>         能力"，插件自有能力仍满足每日净新增要求）。
+>         **开跑预检（步骤 6 新功能 C 类：新的失败模式防御 + 与主流程更细粒度接入点）**：
+>         新增第 19 个工具 `iterate_preflight`——只读开跑前预检，返回结构化清单：
+>         `validation`（**阻断项**，`validation.commands` 为空意味着本轮无法证明修复，
+>         与 fail-closed 哲学一致）、`git`（是否 Git 仓库）、`dirty-tree`（未提交/
+>         未跟踪文件数，git 不可用时降级为"未知"而非误报警告）、`stale-gate`（磁盘上
+>         残留 FAIL 门禁）、`interrupted-checkpoint`（中断断点）。每项都携带结构化事实
+>         `{ id, status: pass|warn|fail, detail }`，`render` 只产出 model 面向英文文本，
+>         绝不修改配置/文件/产物。观测台新增 **F11「开跑预检」页签**（第 12 页，仅点击
+>         进入，数字键 1-9/0/- 映射不变）：扫描会话流中最近一次 `iterate_preflight`
+>         结果并渲染真实数据（就绪/未就绪徽章 + 阻断/警告计数 + 每项 PASS/WARN/FAIL
+>         芯片），每个 warn/fail 行都给出精确修复指令（配置 `validation.commands`、
+>         清除陈旧门禁、恢复断点）复制即用；空态区分"尚未拉取"与"已拉取为空"；
+>         `ok:false` 渲染失败信息而非误导性的"就绪"摘要。**修复**：`buildCompletionSummary`
+>         此前把一切未收敛运行描述为"已达最大轮数"，现读取真实 `stoppedReason`
+>         （验证失败回滚/验证命令未白名单/轮次结论不明/schema 失败/无可用审查输出
+>         分别给出准确措辞，未知原因降级为原值）。
+>         **测试**：`test/preflight.test.ts` 新增 12 例（纯函数决策 + 工具注册 +
+>         真实临时目录 execute，含 git init / 脏工作区 / 陈旧门禁 / 中断断点 /
+>         git 不可用降级）；`test/parse.test.ts` 新增 `scanSessionForPreflight` /
+>         `normalizePreflightReport` / `isPreflightReport` 5 例 + `buildCompletionSummary`
+>         stoppedReason 修正 1 例；`test/client-render.test.ts` 新增 F11 渲染 3 例
+>         （真实清单、空态指令、失败态）；`test/index.test.ts` /
+>         `test/package-contract.test.ts` 工具计数 18 → 19。主仓 `npm run typecheck`
+>         （三程序 server/test/client）0 错误、`npm test` **1340 passed / 0 failed /
+>         0 skipped**（此前 1319，+21）；`npm run build && npm run build:client` 干净、
+>         `dist/tools/preflight.js` / `dist/index.js` / `lib/client.js` 与 `src/` 齐步
+>         （`package-contract` 强制，client-i18n 键/条目对齐测试亦过）。
+>         **主仓**：17 文件全在 `harness/iterate-plugin/` 内（`package.json` /
+>         `package-lock.json` / `CHANGELOG.md` / `README.md` / `README.zh-CN.md` /
+>         `dist/index.js` / `dist/tools/preflight.js` / `lib/client.js` / `lib/parse.js` /
+>         `src/tools/preflight.ts` / `src/client/index.ts` / `src/client/i18n.ts` /
+>         `src/index.ts` / `test/preflight.test.ts` / `test/parse.test.ts` /
+>         `test/client-render.test.ts` / `test/index.test.ts`）。**独立仓**：照例走
+>         `.release/iterate-plugin` 替代路径 → `git pull --ff-only` 对齐 `9b60b0b` →
+>         `rsync --exclude node_modules --exclude .git --exclude .release`
+>         （`.github/workflows/npm-publish.yml` 保留，rsync 后 `git checkout` 还原）→
+>         `npm install --legacy-peer-deps` → `npm run typecheck` 0 错误、`npm test`
+>         **1340 / 0 fail** → 提交 `cff0c23` 快进推送 `9b60b0b..cff0c23`。tag
+>         `v3.12.0`（`f48e4b1`）+ GitHub Release 已创建（2026-10-29）。**npm**：
+>         `iterate-plugin@3.12.0` 已发布（shasum `291f75d6867df92326364cb655b5e88d59e5cd72`，
+>         94 文件 / 621.9 kB / 解包 2.3 MB）；发布后约 4 分钟复查
+>         `dist-tags.latest=3.12.0` 生效，`dshReleases` 仍 27（尾段 `0.2.2-alpha.2`，
+>         本轮无上游变更），tarball 抽查 `dist/tools/preflight.js` 含
+>         `iterate_preflight` / `registerPreflightTool`、`lib/client.js` 含
+>         `开跑预检` F11 按钮键。**遗留**：无。
 
 ---
 
