@@ -2643,6 +2643,57 @@ stamp 不匹配会自动重装到新 tag。
 >         `iterate_preflight` / `registerPreflightTool`、`lib/client.js` 含
 >         `开跑预检` F11 按钮键。**遗留**：无。
 
+>         **3.13.0 发布记录（2026-10-31，跨 10-30 轮次）**：验证命令自动检测
+>         （Validation-command auto-detection）。取号按 CHANGELOG `[3.13.0]` 明文指示
+>         "开跑预检的阻断项此前只能手写 YAML——错误嵌套、错误模块键、写了项目根本不存在的
+>         命令；现在可自动识别项目并一键应用"，按语义化版本是一次 minor。
+>         **上游 dsh**：检查 releases 与 tags（`deepseek-ai/deepseek-harness`），发现新版本
+>         `dsh-v0.2.1-rc.5`（2026-10-30 发布，仅「优化对话中思考内容展示」，无插件面 API
+>         变动）→ 第 2 步：声明 compatible（`dshReleases` 27 → 28，三个 peer 范围加
+>         `|| 0.2.1-rc.5`，devDeps 保持更高线 `0.2.2-alpha.2` 作为构建目标）；无破坏性变更，
+>         不阻断。该版本无新增插件面 API → C 类「dsh 新能力转化」记录：无新能力可转化，
+>         本轮净新增为插件自有能力。
+>         **验证命令自动检测（步骤 6 新功能 C 类：新的失败模式防御 + 与主流程更细粒度接入点）**：
+>         新增 `src/validation-detect.ts`——`detectValidationCommands` 只读检查项目 manifest
+>         （node：`test`/`typecheck`/`lint`/`build` 四个脚本；python：`pytest -q` + 配置过的
+>         `ruff check .`/`mypy .`（含 `tests/` 目录兜底）；rust：`cargo test` + 配置过的
+>         `cargo clippy`/`cargo fmt --check`；go：`go test ./...` + `go vet ./...`；make：
+>         `make test`/`make check` 兜底，仅当无任何生态专属命令时），按序去重、上限 6、
+>         坏 JSON / 不可读 / 非对象 manifest 一律降级为"未检测到"而不抛错；
+>         `buildValidationUpdates` 生成可深合并的部分配置。`iterate_config` 新增
+>         `operation:"detect"`（可 `apply:true` 一键写入，走与 `write` 相同的备份 + 校验 +
+>         回滚 + 项目锁路径；已配置时拒绝，`force:true` 才覆盖）；`iterate_preflight` 阻断项
+>         携带 `suggestedCommands`/`ecosystem`/`detectedFrom`，`render` 输出「检测到
+>         {ecosystem} 项目，建议：…」；观测台 F11 阻断的验证命令行显示「应用建议」按钮
+>         （复制 `iterate_config` 的 `operation:"write"` 指令，携带完整
+>         `validation.commands.default` 载荷），无建议时保留原「配置验证命令」。
+>         **测试**：`test/validation-detect.test.ts` 新增（node/python/rust/go/make、空项目、
+>         坏 JSON 容错、非对象 manifest、去重、上限 6、`buildValidationUpdates` 深合并形状与
+>         防御拷贝）；`test/config-tool.test.ts` 新增 detect 用例（只读提出、空项目 `ok:false`、
+>         apply 写入并回读、无配置文件时创建、已配置拒绝、force 覆盖）；
+>         `test/preflight.test.ts` 新增建议用例（纯函数 detail 附着/省略/过滤 + execute 真实
+>         检测与「已配置不检测」）；`test/parse.test.ts` 新增
+>         `buildValidationApplyInstruction` 用例；`test/client-render.test.ts` 新增 F11 建议
+>         渲染 + 「应用建议」按钮用例。主仓 `npm run typecheck`（三程序 server/test/client）
+>         0 错误、`npm test` **1374 passed / 0 failed / 0 skipped**（此前 1340，+34）；
+>         `npm run build && npm run build:client` 干净、`dist/` 与 `lib/client.js` 与 `src/`
+>         齐步（`package-contract` 强制，client-i18n 键/条目对齐测试亦过）。
+>         **主仓**：变更文件全部在 `harness/iterate-plugin/` 内（`package.json` /
+>         `package-lock.json` / `CHANGELOG.md` / `README.md` / `README.zh-CN.md` /
+>         `src/validation-detect.ts`（新）/ `src/tools/config.ts` / `src/tools/preflight.ts` /
+>         `lib/parse.js` / `src/client/index.ts` / `src/client/i18n.ts` / `dist/**` /
+>         `lib/client.js` / `test/validation-detect.test.ts`（新）/ `test/config-tool.test.ts` /
+>         `test/preflight.test.ts` / `test/parse.test.ts` / `test/client-render.test.ts`）。
+>         **独立仓**：照例走 `.release/iterate-plugin` 替代路径 → `git pull --ff-only` 对齐
+>         基线 → `rsync --exclude node_modules --exclude .git --exclude .release`
+>         （`.github/workflows/npm-publish.yml` 保留，rsync 后 `git checkout` 还原）→
+>         `npm install --legacy-peer-deps` → `npm run typecheck` 0 错误、`npm test`
+>         **1374 / 0 fail** → 提交推送 `plugin-origin/main`。tag `v3.13.0` + GitHub Release
+>         已创建（2026-10-31）。**npm**：`iterate-plugin@3.13.0` 已发布；发布后复查
+>         `dist-tags.latest=3.13.0` 生效，`dshReleases` 仍 28（尾段 `0.2.1-rc.5`），tarball
+>         抽查 `dist/validation-detect.js` 含 `detectValidationCommands`、`dist/tools/config.js`
+>         含 `detect` 分支、`lib/client.js` 含 `应用建议` 按钮键。**遗留**：无。
+
 ---
 
 ## 常见遗漏点（Checklist 之外）
