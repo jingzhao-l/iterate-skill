@@ -251,6 +251,40 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 新增 `backup/2026-10-23-harness-wip` 保存主工作区里一条 harness
       > docstring WIP 后恢复干净。
       >
+      > **3.9.4 状态（2026-10-31）**：patch 重发。内容与 3.9.2 完全一致（能力
+      > 不变），唯一目的：在 ClawHub `clawscan` worker 于 10-31 恢复后，用
+      > **全新发布**打通发布链路。3.9.0/3.9.1/3.9.2 在平台扫描故障期间发布
+      > 接口均受理（`ok:true`+versionId）但永不晋升，手动重扫成功（10-31
+      > `status=succeeded`、verdict `suspicious`、`gpt-6.1-sol`）也不触发晋升
+      > ——版本行已钉死为 pending，只有新发布会重新入队发布时扫描。
+      > 3.9.4 是平台首个空闲版本号（3.9.0–3.9.3 均已保留，3.9.3 为本会话
+      > 诊断探针、未发到其它平台，CHANGELOG 已如实记录）。
+      > 提交 `e7e0d551`→rebase 后 `ff01b0f5`（release），GPG 签名；
+      > signed annotated tag `v3.9.4` → `ff01b0f5`，`git verify-tag` 完好。
+      > ✅ **GitHub Release**（run `41216949577` success）：6 资产；
+      > `shasum -a 256 -c SHA256SUMS.txt` → OK；tar `.asc` 完好；
+      > tar **95 条目**、qoder zip **80 文件**，`harness/|kernel/|tests/` 均 **0**；
+      > 包内 `SKILL.md`/`pyproject.toml`/`__init__.py`/`package.json` 四处均 3.9.4。
+      > ✅ **npm**（run `41216949580` success）：`npm view` → **3.9.4**，
+      > `npx -y iterate-skill-installer@3.9.4 --version` → `3.9.4`。
+      > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：74 文件 / 769,020 字节，
+      > `update_skill_settings` 成功（file_id `75853b61-edc7-4053-b8d5-39ecddcf3f2a`，
+      > `UPDATE_OK`）；消费端 `download_skill()` 实测 74 文件、banned 0、
+      > `SKILL.md version: 3.9.4`。
+      > ✅ **SkillHub**（skillId `104490`）：70 文件 / 766,637 字节，`ok:true`，
+      > versionId `478204`，`tags.latest=3.9.4`，索引已显示 3.9.4。
+      > ✅ **ClawHub**：10-31 用并发脚本（`--owner jingzhao-l`，72 文件 /
+      > 2,183,955 字节）发布 → `ok:true`，versionId
+      > `k97d85gmq67gjwfk6chtd9982d8hbqaf`，`publicationStatus=pending`；
+      > 发布时扫描自动入队并成功，**00:07:42Z 晋升为公共 latest**：
+      > `GET /api/v1/skills/iterate-skill` → `latestVersion.version=3.9.4`，
+      > `/versions/3.9.4` → 200，`/versions` 首项 3.9.4；安全扫描 verdict
+      > `suspicious`（`gpt-6.1-sol`，与已批准的 3.8.2 同档），下载实测 73 文件、
+      > `harness/|kernel/|tests/` 0 条、`SKILL.md version: 3.9.4`。
+      > **5 平台版本一致 = 3.9.4**（GitHub/npm/ModelScope/SkillHub/ClawHub）。
+      > 测试 **1876 passed, 1 skipped**（1 skipped：本机未安装 fish），
+      > `ruff check .` 通过，npm installer 测试全绿，CI on main success。
+      >
       > **3.9.2 状态（2026-10-27）**：patch。触发点是 ClawHub 平台侧安全审查给出的
       > 一条真实缺陷：SKILL.md 的配置表与护栏承诺 `git.push_per_round: false`
       > （默认）表示"绝不自动 push"，但 Phase 5 的 false 分支、Per-Session Flow
