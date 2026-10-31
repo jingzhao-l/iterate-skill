@@ -5,6 +5,26 @@
 
 ---
 
+## [3.9.4] — 2026-10-31
+
+patch：内容与 3.9.2 完全一致（能力不变），仅为在 ClawHub 扫描 worker 恢复后
+通过**全新发布**打通发布链路——3.9.0/3.9.1/3.9.2 三个版本在平台扫描故障期间
+发布接口均受理（`ok:true`+versionId）但永不晋升，手动重扫成功也不触发晋升
+（版本行已钉死为 pending），只有新发布会重新入队发布时扫描。
+
+- 与 3.9.2 相同的修复：发布同意书三处改为 opt-in（+4 条回归）、README 移除
+  `curl|bash`（+回归）、build pins 升到 `setuptools>=84.1.0`/`wheel>=0.46.2`
+  （+回归）。
+- 测试 **1876 passed, 1 skipped**（1 skipped：本机未安装 fish），`ruff check .`
+  通过，npm installer 测试全绿。
+
+## [3.9.3] — 2026-10-31
+
+> 平台诊断版本，**未发布到 GitHub/npm/ModelScope/SkillHub**。2026-10-26 在
+> ClawHub 平台 `clawscan` 扫描 worker 故障期间作为诊断探针发布（内容 = 3.9.2），
+> 平台受理（`ok:true`+versionId）但永不晋升，随后被平台 moderation 隐藏。
+> 该版本号因平台规则保留，故 3.9.4 起重新计数。
+
 ## [3.9.2] — 2026-10-27
 
 patch：修复 SKILL.md 里**发布同意书自相矛盾**的真实缺陷，并顺手收掉两处
