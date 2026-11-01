@@ -251,6 +251,41 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 新增 `backup/2026-10-23-harness-wip` 保存主工作区里一条 harness
       > docstring WIP 后恢复干净。
       >
+      > **3.10.0 状态（2026-11-01）**：minor。本轮全面审查（review-bugbot）
+      > 未发现 high 缺陷，确认 2 处中/低缺陷并全部修复；增长产出为净新增
+      > 能力 `iterate completion <shell> --uninstall`（此前只能装不能卸）。
+      > 提交 `a678511c`（feat）、`321e7fa0`（fix 签名）、`466247ad`（fix 报告）、
+      > `a4288949`（release），全部 GPG 签名并推送；signed annotated tag
+      > `v3.10.0` → `a4288949`，`git verify-tag` 完好（plugin 的轻量 `v3.10.0`
+      > 已按惯例 force 替换，plugin-origin 保留自己的 tag）。
+      > ✅ **GitHub Release**（run `41261409856` success）：6 资产；
+      > `shasum -a 256 -c SHA256SUMS.txt` → OK；tar `.asc` 完好；
+      > tar **95 条目**、qoder zip **80 文件**，`harness/|kernel/|tests/` 均 **0**；
+      > 包内 `SKILL.md`/`pyproject.toml`/`__init__.py`/`package.json` 四处均 3.10.0。
+      > ✅ **npm**（run `41261409810` success）：`npm view` → **3.10.0**，
+      > `npx -y iterate-skill-installer@3.10.0 --version` → `3.10.0`。
+      > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：74 文件 / 772,319 字节，
+      > `update_skill_settings` 成功（file_id `5f941b7e-ff1a-4360-ace5-4ab355e59ab9`，
+      > `UPDATE_OK`）；消费端 `download_skill()` 实测 74 文件、banned 0、
+      > `SKILL.md version: 3.10.0`。
+      > ✅ **SkillHub**（skillId `104490`）：70 文件 / 769,936 字节，`ok:true`，
+      > versionId `478558`，`tags.latest=3.10.0`；搜索索引已追平（查询返回
+      > iterate-skill @ 3.10.0）。
+      > ✅ **ClawHub**（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）：发布
+      > 成功（`ok:true`，versionId `k9778dqcymyapjqfkqx01ne9yh8hc8yr`，
+      > attemptId `zx7e8raq6vkgyn5v3hv431hr0h8hc861`，72 文件 / 2,196,061 字节）。
+      > 平台 Convex 存储当日**限流 + 偶发 500**（非内容问题）：单次 200、
+      > 突发 400/500。修复 = 并发脚本加 **重试+退避**（12 次、封顶 45s）与
+      > **全局 2.5s 串行节拍锁**，并用 `--concurrency 8` 跑通；中途两次因
+      > 持久 500 中断，靠**增量恢复**（`--state` JSON 记录已上传文件，
+      > 断点续传）完成。手动 `POST /api/v1/skills/-/scan`（scanId
+      > `w17e49z1vqs6r3251zekdys2t18hc6gx`）→ 15:35 晋升，`latest=3.10.0`；
+      > 下载实测 **73 文件 / 794,799 字节**，`harness/|kernel/|tests/` 均 **0**，
+      > `SKILL.md version: 3.10.0`，`cli.py` 含 `--uninstall`；安全评审
+      > `suspicious`（`gpt-6.1-sol`，同 3.8.2/3.9.4 一贯结论，不阻塞晋升）。
+      > 测试 **1892 passed, 1 skipped**（1 skipped：本机未安装 fish），
+      > `ruff check .` 通过，npm installer 测试全绿，CI on main success。
+      >
       > **3.9.4 状态（2026-10-31）**：patch 重发。内容与 3.9.2 完全一致（能力
       > 不变），唯一目的：在 ClawHub `clawscan` worker 于 10-31 恢复后，用
       > **全新发布**打通发布链路。3.9.0/3.9.1/3.9.2 在平台扫描故障期间发布
