@@ -1,10 +1,7 @@
 {
   "clawhub": 3150,
-  "skillhub": 1390,
+  "skillhub": 1393,
   "npm": 9128,
-  "total": 13668,
-  "updatedAt": "2026-11-01T08:22:50+00:00",
-  "warnings": [
-    "clawhub: upstream unavailable/invalid, reused previous value 3150"
-  ]
+  "total": 13671,
+  "updatedAt": "2026-11-01T15:34:44+00:00"
 }
