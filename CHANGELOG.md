@@ -5,6 +5,38 @@
 
 ---
 
+## [3.10.0] — 2026-11-01
+
+minor：补全子系统新增 `--uninstall`，补齐「装了就能卸」的对称能力；并修复
+本轮全面审查发现的两处真实缺陷。
+
+### 新增功能
+- **`iterate completion <shell> --uninstall`**（+9 回归）：只删除安装时写入的
+  那一个文件（默认常规用户补全目录或 `--dir`，绝不触碰任意路径），幂等——
+  第二次运行、或从未安装就卸载，仍退出 0 且 `removed:false`，可安全放进
+  卸载/回滚脚本；`--json` 输出单个 `{shell, path, removed, reload_hint}` 文档；
+  `--install` 与 `--uninstall` 互斥，`--force` 在卸载下被拒绝；按 shell 打印
+  停用提示（zsh 提示移除 `--install` 时要求添加的 `.zfunc` fpath 行）。
+  此前只能装不能卸——装了补全的用户必须手敲 `--install` 提示里那串路径去删。
+
+### 修复（全面审查发现）
+- **gpg 超时在独立安装器中改为 fail-closed**（`scripts/install.py`、
+  `npm-installer/lib/installer.js`，+2 回归 +1 JS 断言修正）：三个「保持同步」的
+  签名器在同一个 `subprocess.TimeoutExpired` 上执行不一致——CLI 更新器
+  （`signing.py`）把它判为 `invalid`（不可被 `ITERATE_ALLOW_UNSIGNED` 绕过），
+  而两个独立安装器把它判为 `unavailable`（可绕过）。现在安装器的 import 与
+  verify 超时都返回 `invalid`；只有真正缺失/无法启动的 gpg 才保持
+  `unavailable`（文档化的显式逃生口）。
+- **`report` 的 `next_actions` 不再重复或推荐必失败命令**（`report.py`，+6 回归）：
+  (1) 有 error 时不再同时建议 `iterate doctor` 与 `iterate doctor --strict`
+  （后者是前者的严格超集，重复了同一条诊断命令）——`--strict` 只在 warnings
+  单独阻断时追加；(2) 未 onboarding + 配置损坏时，先建议 `doctor --fix`
+  （修复 `_cmd_init` 拒绝解析的配置），再建议 `init --yes`，而非相反。
+
+### 验证
+- 测试 **1892 passed, 1 skipped**（1 skipped：本机未安装 fish），`ruff check .`
+  通过，npm installer 测试全绿。
+
 ## [3.9.4] — 2026-10-31
 
 patch：内容与 3.9.2 完全一致（能力不变），仅为在 ClawHub 扫描 worker 恢复后

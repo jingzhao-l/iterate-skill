@@ -1,3 +1,3 @@
 """iterate CLI — onboarding and project knowledge management for iterate skill."""
 
-__version__ = "3.9.4"
+__version__ = "3.10.0"
