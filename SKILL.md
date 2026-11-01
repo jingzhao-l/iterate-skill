@@ -320,6 +320,7 @@ iterate scan --json  # 同上，结构化输出，供脚本/CI 消费
 iterate report       # 聚合 status/scan/doctor 为单份 Markdown 健康报告（可直接贴 PR / 存 CI artifact；--out PATH 落盘（已存在需 --force）；--strict 警告也判失败；--json 输出结构化报告）
 iterate completion bash|zsh|fish  # 输出该 shell 的补全脚本（补全命令、参数、固定取值与路径；从同一 parser 生成，永不与 --help 漂移）
 iterate completion bash|zsh|fish --install [--dir DIR] [--force]  # 直接装到该 shell 的常规用户补全目录（bash/fish 自动加载；zsh 写入 ~/.zfunc 或 ~/.oh-my-zsh/completions 并打印 fpath 提示；--json 输出安装结果）
+iterate completion bash|zsh|fish --uninstall [--dir DIR]  # 只删掉安装时写入的那一个文件（幂等：没装过也退出 0 且 removed:false；--json 输出 {shell,path,removed,reload_hint}；与 --install 互斥）
 iterate export       # 把 iterate.config.yaml + ITERATE.md 导出为单个可移植 JSON bundle（只写 bundle，不改项目；--out / --json / --force）
 iterate import FILE  # 校验 bundle（含 schema）→ 时间戳备份 → 写回配置与 ITERATE.md（--dry-run / --yes / --reset-fingerprints / --json；FILE 为 - 时读 stdin）
 iterate guard pre-check [targets...]   # 编辑前静态校验（目标存在/工作区干净/manifest 就绪；只读，从不执行命令；--json）
@@ -338,7 +339,7 @@ iterate help doctor  # 打印单个命令的详细帮助
 
 CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适合希望手动控制 onboarding 过程的用户；AI 通道则完全由 AI 自动扫描生成。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。
 
-**命令发现与容错 / Discoverability**：`iterate help [command]` 打印总览或单命令帮助（无需记住 `--help` 的位置）；命令拼错时会给出最近的可用命令（如 `iterate statu` → `did you mean 'status'?`），子命令动作同样适用（如 `iterate fingerprint verfy` → `did you mean 'verify'?`）。所有用法错误退出码为 2；带 `--json` 时 stdout 仍是恰好一个 JSON 文档（其中 `did_you_mean` 给出同样的建议）。`iterate completion bash|zsh|fish` 输出可直接安装的补全脚本（命令、参数、固定取值、路径参数），补全内容由 `--help` 同一个 parser 生成，新增/改名命令不会漏补；加 `--install` 可一步写入常规用户补全目录（`--dir` 自定义目录、`--force` 覆盖旧文件、`--json` 输出单个结果文档），不再需要自己记路径和重定向。
+**命令发现与容错 / Discoverability**：`iterate help [command]` 打印总览或单命令帮助（无需记住 `--help` 的位置）；命令拼错时会给出最近的可用命令（如 `iterate statu` → `did you mean 'status'?`），子命令动作同样适用（如 `iterate fingerprint verfy` → `did you mean 'verify'?`）。所有用法错误退出码为 2；带 `--json` 时 stdout 仍是恰好一个 JSON 文档（其中 `did_you_mean` 给出同样的建议）。`iterate completion bash|zsh|fish` 输出可直接安装的补全脚本（命令、参数、固定取值、路径参数），补全内容由 `--help` 同一个 parser 生成，新增/改名命令不会漏补；加 `--install` 可一步写入常规用户补全目录（`--dir` 自定义目录、`--force` 覆盖旧文件、`--json` 输出单个结果文档），不再需要自己记路径和重定向；加 `--uninstall` 只删除安装时写入的那一个文件（幂等、可脚本化、绝不触碰任意路径）。
 
 **多路引导 / Multi-Path Flow**：
 - **首次 onboarding**（无 ITERATE.md）：确认手动配置 → 基础 onboarding → 询问是否需要个性化配置。

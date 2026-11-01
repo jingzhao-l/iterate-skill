@@ -302,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
             parser,
             json_output=getattr(args, "json", False),
             install=getattr(args, "install", False),
+            uninstall=getattr(args, "uninstall", False),
             directory=getattr(args, "dir", None),
             force=getattr(args, "force", False),
         )
@@ -1133,7 +1134,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "from the real command/option list. Completes commands, flags, fixed "
         "value choices and path arguments. The script is printed to stdout: "
         "`iterate completion zsh > \"${fpath[1]}/_iterate\"`. With --install, "
-        "write it to the shell's conventional per-user completion path instead.",
+        "write it to the shell's conventional per-user completion path instead; "
+        "with --uninstall, remove it again.",
     )
     completion_parser.add_argument(
         "shell",
@@ -1148,10 +1150,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "instead of printing it.",
     )
     completion_parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Remove the installed completion file (idempotent; safe to re-run).",
+    )
+    completion_parser.add_argument(
         "--dir",
         metavar="DIR",
         default=argparse.SUPPRESS,
-        help="With --install, write into DIR instead of the default path.",
+        help="With --install/--uninstall, use DIR instead of the default path.",
     )
     completion_parser.add_argument(
         "--force",
@@ -2365,6 +2373,7 @@ def _cmd_completion(
     parser: argparse.ArgumentParser,
     json_output: bool = False,
     install: bool = False,
+    uninstall: bool = False,
     directory: str | None = None,
     force: bool = False,
 ) -> int:
@@ -2374,33 +2383,45 @@ def _cmd_completion(
     the shell's completion directory. Installation hints go to stderr only on
     an interactive terminal, so ``iterate completion zsh > _iterate`` never
     mixes prose into the generated file. With ``--install`` the script is
-    written to the shell's conventional per-user path (or ``--dir``) instead.
+    written to the shell's conventional per-user path (or ``--dir``); with
+    ``--uninstall`` that file is removed again.
 
     Args:
         shell: ``bash`` / ``zsh`` / ``fish`` (validated by argparse, re-checked
             here for programmatic callers).
         parser: Top-level parser to introspect.
-        json_output: True when ``--json`` was passed. Without ``--install``
-            completion output is a shell script, not data, so that combination
-            is a usage error; with ``--install`` it emits one result document.
+        json_output: True when ``--json`` was passed. Without ``--install`` or
+            ``--uninstall`` completion output is a shell script, not data, so
+            that combination is a usage error; with either install flag it
+            emits one result document.
         install: Write the script to disk instead of stdout.
-        directory: Optional ``--dir`` override for ``--install``.
+        uninstall: Remove the installed script from disk instead of stdout.
+        directory: Optional ``--dir`` override for ``--install``/``--uninstall``.
         force: Replace an existing completion file when true.
 
     Returns:
         Exit code: 0 on success, 2 for a usage error or unsupported shell,
-        1 when an install write fails.
+        1 when an install/uninstall write fails.
     """
     from iterate_cli.completion import (
         SHELLS,
         install_completion,
         install_hint,
         render_completion,
+        uninstall_completion,
     )
 
-    if not install and (directory is not None or force):
+    if install and uninstall:
         return _bundle_failure(
-            "--dir and --force only make sense with --install.",
+            "--install and --uninstall are mutually exclusive.",
+            json_output,
+            code=2,
+        )
+
+    if not install and not uninstall and (directory is not None or force):
+        return _bundle_failure(
+            "--dir only makes sense with --install/--uninstall, and "
+            "--force only with --install.",
             json_output,
             code=2,
         )
@@ -2432,11 +2453,45 @@ def _cmd_completion(
             tui.hint(result["reload_hint"])
         return 0
 
+    if uninstall:
+        if force:
+            return _bundle_failure(
+                "--force only makes sense with --install.",
+                json_output,
+                code=2,
+            )
+        if directory is not None and not directory.strip():
+            return _bundle_failure(
+                "--dir must not be empty (omit it to use the default path).",
+                json_output,
+                code=2,
+            )
+        try:
+            result = uninstall_completion(shell, directory=directory)
+        except ValueError as exc:
+            return _bundle_failure(str(exc), json_output, code=2)
+        except OSError as exc:
+            return _bundle_failure(
+                f"cannot remove completion: {exc}", json_output
+            )
+        if json_output:
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            if result["removed"]:
+                tui.success(f"Completion removed: {result['path']}")
+            else:
+                tui.hint(
+                    f"No completion file at {result['path']}; nothing to remove."
+                )
+            tui.hint(result["reload_hint"])
+        return 0
+
     if json_output:
         message = (
-            "--json is not supported for 'completion' (it prints a shell "
-            "script). Use `iterate report --json` for structured project data, "
-            "or add --install to get one JSON result document."
+            "--json is not supported for 'completion' without --install or "
+            "--uninstall (it prints a shell script). Use `iterate report "
+            "--json` for structured project data, or add --install/--uninstall "
+            "to get one JSON result document."
         )
         print(json.dumps({"error": message}, ensure_ascii=False))
         tui.error(message)

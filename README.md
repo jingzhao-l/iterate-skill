@@ -546,10 +546,11 @@ iterate completion bash --install      # write to the conventional user path
 iterate completion zsh --install       # ~/.zfunc or ~/.oh-my-zsh/completions
 iterate completion fish --install      # ~/.config/fish/completions/iterate.fish
 iterate completion bash --install --dir ./completions --force  # explicit path
+iterate completion bash --uninstall    # remove the installed file (idempotent)
 source <(iterate completion bash)      # or source it directly
 ```
 
-It completes subcommands, per-command flags (hidden options are excluded), fixed values such as `init --language zh|en`, directories for `-p/--project`, file arguments for `import` / `--out`, and command names after `iterate help`. `--install` picks the shell's conventional per-user file (honouring `XDG_DATA_HOME` / `XDG_CONFIG_HOME`), creates parent directories, refuses to replace an existing file without `--force`, and prints the reload/fpath hint; `--json` returns one `{shell, path, bytes, reload_hint}` document for scripts.
+It completes subcommands, per-command flags (hidden options are excluded), fixed values such as `init --language zh|en`, directories for `-p/--project`, file arguments for `import` / `--out`, and command names after `iterate help`. `--install` picks the shell's conventional per-user file (honouring `XDG_DATA_HOME` / `XDG_CONFIG_HOME`), creates parent directories, refuses to replace an existing file without `--force`, and prints the reload/fpath hint; `--uninstall` removes exactly that file (never an arbitrary path) and is idempotent — a second run, or a run before ever installing, is still exit 0 and reports `removed: false`, so it is safe in teardown scripts. `--json` returns one `{shell, path, bytes, reload_hint}` document for `--install` and `{shell, path, removed, reload_hint}` for `--uninstall`.
 
 ---
 

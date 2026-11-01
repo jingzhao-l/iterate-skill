@@ -530,6 +530,73 @@ def install_completion(
     }
 
 
+def unload_hint(shell: str, target: Path) -> str:
+    """Return a shell-specific instruction for deactivating a removed file."""
+    if shell == "bash":
+        return (
+            "Open a new shell (or remove any manual `source` line you added); "
+            "the completion is no longer loaded."
+        )
+    if shell == "fish":
+        return "Open a new fish shell; the completion is no longer loaded."
+    if target.parent.name == ".zfunc":
+        parent = shlex.quote(str(target.parent))
+        return (
+            "Remove `fpath=(" + parent + " $fpath)` from ~/.zshrc, then "
+            "open a new shell; the completion is no longer loaded."
+        )
+    return "Open a new shell; the completion is no longer loaded."
+
+
+def uninstall_completion(
+    shell: str,
+    *,
+    directory: str | None = None,
+) -> dict[str, Any]:
+    """Remove the completion script from the shell's per-user path.
+
+    This is the inverse of :func:`install_completion`: it deletes exactly the
+    file that install would have written (the shell's conventional per-user
+    path, or ``directory`` when given), never an arbitrary path. It is
+    idempotent — removing an already-absent file is a success, reported by
+    ``removed=False`` — so ``iterate completion bash --uninstall`` is safe to
+    re-run, and safe to run before ever installing.
+
+    Args:
+        shell: ``bash`` / ``zsh`` / ``fish``.
+        directory: Optional directory override; the shell's conventional
+            filename is still used inside it.
+
+    Returns:
+        A JSON-serialisable summary (``shell``, ``path``, ``removed``,
+        ``reload_hint``).
+
+    Raises:
+        ValueError: Unsupported shell.
+        OSError: The file cannot be removed.
+    """
+    if shell not in INSTALL_FILENAMES:
+        raise ValueError(
+            f"unsupported shell {shell!r}; choose one of: {', '.join(SHELLS)}"
+        )
+    if directory:
+        target = Path(directory).expanduser() / INSTALL_FILENAMES[shell]
+    else:
+        target = default_install_path(shell)
+    existed = target.exists()
+    if existed:
+        try:
+            target.unlink()
+        except OSError as exc:
+            raise OSError(f"cannot remove completion file {target}: {exc}") from exc
+    return {
+        "shell": shell,
+        "path": str(target),
+        "removed": existed,
+        "reload_hint": unload_hint(shell, target),
+    }
+
+
 def validate_script_syntax(shell: str, script: str) -> str | None:
     """Best-effort syntax check used by tests; returns an error or ``None``.
 

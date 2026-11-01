@@ -567,10 +567,11 @@ Markdown 包含技术栈、生效的审查配置（目标分支、范围、维�
 iterate completion bash                # 打印脚本
 iterate completion zsh > "${fpath[1]}/_iterate"
 iterate completion fish > ~/.config/fish/completions/iterate.fish
+iterate completion bash --uninstall    # 删除已安装文件（幂等）
 source <(iterate completion bash)      # 或直接 source
 ```
 
-补全命令、各命令参数（隐藏参数不会出现）、固定取值（如 `init --language zh|en`）、`-p/--project` 目录、`import`/`--out` 文件路径，以及 `iterate help <command>` 的命令名。加 `--install` 会按 shell 惯例写入用户补全目录（遵循 `XDG_DATA_HOME` / `XDG_CONFIG_HOME`），自动创建父目录；已有文件默认拒绝覆盖，需 `--force`；`--json` 输出单个 `{shell, path, bytes, reload_hint}` 结果文档。
+补全命令、各命令参数（隐藏参数不会出现）、固定取值（如 `init --language zh|en`）、`-p/--project` 目录、`import`/`--out` 文件路径，以及 `iterate help <command>` 的命令名。加 `--install` 会按 shell 惯例写入用户补全目录（遵循 `XDG_DATA_HOME` / `XDG_CONFIG_HOME`），自动创建父目录；已有文件默认拒绝覆盖，需 `--force`；`--json` 输出单个 `{shell, path, bytes, reload_hint}` 结果文档。加 `--uninstall` 只删除安装时写入的那一个文件（绝不触碰任意路径），且幂等——没装过也退出 0 并返回 `removed:false`，可安全放进卸载脚本；`--json` 输出 `{shell, path, removed, reload_hint}`。
 
 ---
 

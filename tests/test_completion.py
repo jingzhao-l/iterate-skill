@@ -316,3 +316,145 @@ class TestInstallHints:
 
         bash_hint = reload_hint("bash", Path("/tmp/a b/iterate"))
         assert "source '/tmp/a b/iterate'" in bash_hint
+
+
+class TestUninstall:
+    """`iterate completion <shell> --uninstall` removes what --install wrote.
+
+    Uninstall is the inverse of install and is deliberately idempotent: a
+    second run (or a run before ever installing) is still exit 0 and reports
+    ``removed=False``, so the operation can be wired into a teardown without
+    tripping over an already-clean shell.
+    """
+
+    def _isolate_home(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    def test_uninstall_removes_installed_file(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        assert cli_main(["completion", "bash", "--install"]) == 0
+        target = tmp_path / ".local/share/bash-completion/completions/iterate"
+        assert target.is_file()
+
+        capsys.readouterr()
+        code = cli_main(["completion", "bash", "--uninstall"])
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert not target.exists()
+        assert "Completion removed" in captured.out
+        assert "no longer loaded" in captured.out
+
+    def test_uninstall_is_idempotent(self, tmp_path, monkeypatch, capsys) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        capsys.readouterr()
+
+        code = cli_main(["completion", "bash", "--uninstall"])
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "nothing to remove" in captured.out
+
+    def test_uninstall_custom_dir(self, tmp_path, monkeypatch, capsys) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        target_dir = tmp_path / "completions"
+        assert cli_main(
+            ["completion", "zsh", "--install", "--dir", str(target_dir)]
+        ) == 0
+        target = target_dir / "_iterate"
+        assert target.is_file()
+
+        capsys.readouterr()
+        assert cli_main(
+            ["completion", "zsh", "--uninstall", "--dir", str(target_dir)]
+        ) == 0
+        assert not target.exists()
+
+    def test_uninstall_removes_only_its_own_file(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        target_dir = tmp_path / "completions"
+        target_dir.mkdir(parents=True)
+        (target_dir / "iterate").write_text("# bash completion for iterate\n")
+        (target_dir / "unrelated").write_text("keep me\n")
+
+        assert cli_main(
+            ["completion", "bash", "--uninstall", "--dir", str(target_dir)]
+        ) == 0
+        assert not (target_dir / "iterate").exists()
+        assert (target_dir / "unrelated").is_file(), (
+            "--uninstall must remove only the completion file it owns"
+        )
+
+    def test_uninstall_json_is_one_document(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        assert cli_main(["completion", "bash", "--install"]) == 0
+        target = tmp_path / ".local/share/bash-completion/completions/iterate"
+
+        capsys.readouterr()
+        code = cli_main(["--json", "completion", "bash", "--uninstall"])
+
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        assert code == 0
+        assert payload["shell"] == "bash"
+        assert payload["removed"] is True
+        assert Path(payload["path"]) == target
+        assert not target.exists()
+        assert "no longer loaded" in payload["reload_hint"]
+
+    def test_install_and_uninstall_are_mutually_exclusive(
+        self, tmp_path, capsys
+    ) -> None:
+        capsys.readouterr()
+
+        code = cli_main(["completion", "bash", "--install", "--uninstall"])
+
+        captured = capsys.readouterr()
+        assert code == 2
+        assert "mutually exclusive" in captured.err
+        assert "bash completion" not in captured.out
+
+    def test_force_without_install_is_a_usage_error(
+        self, tmp_path, capsys
+    ) -> None:
+        capsys.readouterr()
+
+        code = cli_main(["completion", "bash", "--uninstall", "--force"])
+
+        captured = capsys.readouterr()
+        assert code == 2
+        assert "--force" in captured.err
+
+    def test_uninstall_works_outside_a_project(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        self._isolate_home(monkeypatch, tmp_path)
+        capsys.readouterr()
+
+        code = cli_main(
+            [
+                "completion",
+                "bash",
+                "--uninstall",
+                "-p",
+                str(tmp_path / "missing-project"),
+            ]
+        )
+
+        assert code == 0
+        assert "nothing to remove" in capsys.readouterr().out
+
+    def test_unload_hint_mentions_zsh_fpath(self) -> None:
+        from iterate_cli.completion import unload_hint
+
+        hint = unload_hint("zsh", Path("/tmp/a b/.zfunc/_iterate"))
+        assert "fpath=('/tmp/a b/.zfunc' $fpath)" in hint
+        assert "Remove" in hint
