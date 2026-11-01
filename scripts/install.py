@@ -556,6 +556,15 @@ def _verify_detached_signature(
                  "--status-fd", "1", "--verify", str(signature_path), str(artifact_path)],
                 capture_output=True, text=True, timeout=timeout, check=False,
             )
+    except subprocess.TimeoutExpired as exc:
+        # A hung gpg is not a missing dependency: classify it as 'invalid' so
+        # ITERATE_ALLOW_UNSIGNED cannot bypass authenticity. Only a genuinely
+        # absent/unlaunchable gpg may take the explicit unsigned escape hatch.
+        # Mirrors iterate_cli/signing.py (keep in sync).
+        return "invalid", (
+            f"gpg timed out while verifying (treated as invalid): {exc}. "
+            "Retry, or inspect the gpg agent/keyring."
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         return "unavailable", f"gpg could not run: {exc}"
     if verified.returncode == 0 and "GOODSIG" in verified.stdout:

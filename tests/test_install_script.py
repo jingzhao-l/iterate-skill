@@ -3011,3 +3011,75 @@ class TestAllowUnsignedEnv:
         gate. Only explicit truthy values count."""
         monkeypatch.setenv(install.ALLOW_UNSIGNED_ENV, value)
         assert install._allow_unsigned() is False, f"{value!r} must not enable the override"
+
+
+# The module's autouse fixture stubs `_enforce_signature_policy` for install-path
+# tests (their synthetic payloads cannot carry a valid pinned signature). This
+# class needs the REAL gate to prove a gpg timeout is fail-closed, so capture it
+# at import time (before any autouse fixture runs).
+_REAL_ENFORCE_SIGNATURE_POLICY = install._enforce_signature_policy
+
+
+class TestGpgTimeoutIsInvalid:
+    """A hung gpg must be fail-closed in the standalone installer.
+
+    Regression: `_verify_detached_signature` caught `(OSError,
+    subprocess.SubprocessError)` — of which `TimeoutExpired` is a subclass — and
+    returned "unavailable", so ITERATE_ALLOW_UNSIGNED=1 accepted the
+    unauthenticated artifact. The CLI updater (signing.py) treats the same
+    condition as "invalid" (never bypassable); the standalone installer must
+    agree, otherwise the three "kept in sync" signers enforce different
+    authenticity policies on the same hung-gpg condition.
+    """
+
+    def _make_paths(self, tmp_path):
+        artifact = tmp_path / "iterate-skill.tar.gz"
+        signature = tmp_path / "iterate-skill.tar.gz.asc"
+        artifact.write_bytes(b"artifact")
+        signature.write_bytes(b"signature")
+        return artifact, signature
+
+    def _stub_gpg(self, monkeypatch, *, verify_raises):
+        monkeypatch.setattr(install.shutil, "which", lambda _: "/usr/bin/gpg")
+
+        def fake_run(argv, **kwargs):
+            if "--verify" in argv:
+                if verify_raises:
+                    raise install.subprocess.TimeoutExpired(
+                        cmd=argv, timeout=kwargs.get("timeout", 1)
+                    )
+                return install.subprocess.CompletedProcess(argv, 1, b"", b"BAD signature")
+            # --import succeeds so execution reaches the verify step.
+            return install.subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    def test_verify_timeout_is_invalid_not_unavailable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        artifact, signature = self._make_paths(tmp_path)
+        self._stub_gpg(monkeypatch, verify_raises=True)
+
+        status, detail = install._verify_detached_signature(artifact, signature)
+
+        assert status == "invalid", (
+            "a hung gpg is not missing evidence: ITERATE_ALLOW_UNSIGNED must "
+            "not be able to bypass authenticity"
+        )
+        assert "timed out" in detail.lower()
+
+    def test_verify_timeout_cannot_be_bypassed_by_allow_unsigned(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        artifact, signature = self._make_paths(tmp_path)
+        self._stub_gpg(monkeypatch, verify_raises=True)
+        monkeypatch.setenv(install.ALLOW_UNSIGNED_ENV, "1")
+        # Restore the REAL gate (the module autouse fixture stubs it).
+        monkeypatch.setattr(
+            install, "_enforce_signature_policy", _REAL_ENFORCE_SIGNATURE_POLICY
+        )
+
+        ok, detail = install._enforce_signature_policy(artifact, signature)
+
+        assert ok is False, "ITERATE_ALLOW_UNSIGNED must not bypass a gpg timeout"
+        assert "does NOT bypass" in detail

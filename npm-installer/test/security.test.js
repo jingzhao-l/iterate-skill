@@ -180,7 +180,10 @@ function testGpgClassification() {
     const started = Date.now();
     const result = runGpg({ timeoutMs: 100 });
     const elapsed = Date.now() - started;
-    assert.strictEqual(result.status, 'unavailable', JSON.stringify(result));
+    // A hung gpg is not missing evidence: classify it 'invalid' so the
+    // ITERATE_ALLOW_UNSIGNED override cannot bypass authenticity (fail closed,
+    // mirroring iterate_cli/signing.py and scripts/install.py).
+    assert.strictEqual(result.status, 'invalid', JSON.stringify(result));
     assert.match(result.detail, /timed out/);
     // The whole point of the bound: return, don't wait for the sleeping gpg.
     assert.ok(elapsed < 5000, `gpg timeout took ${elapsed} ms`);

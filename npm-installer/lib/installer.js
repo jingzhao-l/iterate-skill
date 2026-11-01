@@ -593,7 +593,13 @@ function verifyGpgDetachedSignature(artifactPath, signaturePath, publicKeyArmor,
       return { status: 'unavailable', detail: 'gpg binary not found' };
     }
     if (importResult.error.code === 'ETIMEDOUT' || importResult.signal === 'SIGKILL') {
-      return { status: 'unavailable', detail: `gpg import timed out after ${timeout} ms` };
+      // A hung gpg is not missing evidence: classify it 'invalid' so the
+      // ITERATE_ALLOW_UNSIGNED override cannot bypass authenticity (fail closed,
+      // mirroring the verify-timeout branch below and scripts/install.py).
+      return {
+        status: 'invalid',
+        detail: `gpg import timed out after ${timeout} ms (treated as invalid)`,
+      };
     }
     return { status: 'unavailable', detail: importResult.error.message };
   }
@@ -615,7 +621,13 @@ function verifyGpgDetachedSignature(artifactPath, signaturePath, publicKeyArmor,
   );
   if (verifyResult.error) {
     if (verifyResult.error.code === 'ETIMEDOUT' || verifyResult.signal === 'SIGKILL') {
-      return { status: 'unavailable', detail: `gpg verify timed out after ${timeout} ms` };
+      // A hung gpg is not a missing dependency: classify it as 'invalid' so the
+      // ITERATE_ALLOW_UNSIGNED override cannot bypass authenticity. Mirrors
+      // iterate_cli/signing.py and scripts/install.py (keep in sync).
+      return {
+        status: 'invalid',
+        detail: `gpg verify timed out after ${timeout} ms (treated as invalid)`,
+      };
     }
     return { status: 'unavailable', detail: `gpg launch failed: ${verifyResult.error.message}` };
   }
