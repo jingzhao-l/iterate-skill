@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from iterate_cli.cli import main as cli_main
-from iterate_cli.report import build_report, render_markdown
+from iterate_cli.report import _next_actions, build_report, render_markdown
 
 CONFIG = "iterate.config.yaml"
 MD = "ITERATE.md"
@@ -462,3 +462,78 @@ class TestProjectResolution:
         json.dumps(report)  # must not raise
         assert report["command"] == "report"
         assert report["config"]["dimension_sets"]
+
+
+class TestNextActions:
+    """`_next_actions` must suggest the minimal, actually-working command set.
+
+    Regression: a failing report suggested BOTH `iterate doctor` and
+    `iterate doctor --strict` (a strict superset of the same command), and in
+    the not-onboarded + corrupt-config state it led with `init --yes`, which
+    `_cmd_init` refuses to run when the config exists but cannot be parsed.
+    """
+
+    def _report(self, *, onboarded=True, config_error=None, drift="none",
+                errors=0, warnings=0, blocking=False):
+        return {
+            "onboarded": onboarded,
+            "config_error": config_error,
+            "drift": drift,
+            "summary": {
+                "errors": errors,
+                "warnings": warnings,
+                "blocking": blocking,
+            },
+        }
+
+    def test_blocking_errors_suggest_doctor_once(self) -> None:
+        actions = _next_actions(
+            self._report(errors=2, warnings=1, blocking=True)
+        )
+        assert actions.count("iterate doctor") == 1
+        assert "iterate doctor --strict" not in actions, (
+            "--strict is a strict superset of the plain form; a failing report "
+            "must not suggest the same diagnosis command twice"
+        )
+
+    def test_warnings_only_strict_suggests_strict(self) -> None:
+        actions = _next_actions(
+            self._report(errors=0, warnings=2, blocking=True)
+        )
+        assert "iterate doctor" in actions
+        assert "iterate doctor --strict" in actions
+
+    def test_corrupt_config_puts_doctor_fix_before_init(self) -> None:
+        actions = _next_actions(
+            self._report(onboarded=False, config_error="could not parse")
+        )
+        assert "iterate doctor --fix" in actions
+        assert "iterate init --yes" in actions
+        assert actions.index("iterate doctor --fix") < actions.index(
+            "iterate init --yes"
+        ), "doctor --fix repairs the config _cmd_init refuses; it must be suggested first"
+
+    def test_healthy_project_offers_status_and_scan(self) -> None:
+        assert _next_actions(self._report()) == ["iterate status", "iterate scan --json"]
+
+    def test_drift_offers_refresh(self) -> None:
+        actions = _next_actions(self._report(drift="manifest-changed"))
+        assert "iterate refresh" in actions
+
+    def test_build_report_emits_the_fixed_next_actions(self, tmp_path, capsys) -> None:
+        """Drive the real builder: an errors-present report suggests ONE diagnosis.
+
+        Regression: a report with errors appended BOTH `iterate doctor` and
+        `iterate doctor --strict` (a strict superset), duplicating the same
+        command for every failing project.
+        """
+        _initialized(tmp_path, capsys)
+        (tmp_path / CONFIG).write_text("goal: [unterminated\n", encoding="utf-8")
+        report = build_report(tmp_path)
+        assert report["summary"]["blocking"] is True
+        assert report["summary"]["errors"] > 0
+        assert report["next_actions"].count("iterate doctor") == 1
+        assert "iterate doctor --strict" not in report["next_actions"], (
+            "--strict is a strict superset; errors already make plain doctor "
+            "the complete fix, so a failing report must not repeat it"
+        )

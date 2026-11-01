@@ -232,16 +232,22 @@ def _feature_names(scan: dict[str, Any]) -> list[str]:
 def _next_actions(report: dict[str, Any]) -> list[str]:
     """Actionable commands for the state the report describes."""
     actions: list[str] = []
-    if not report["onboarded"]:
-        actions.append("iterate init --yes")
+    # `_cmd_init` refuses to run when iterate.config.yaml exists but cannot be
+    # parsed, so `doctor --fix` (which repairs the config) must be suggested
+    # before `init --yes` in the corrupt-config + not-onboarded state.
     if report.get("config_error"):
         actions.append("iterate doctor --fix")
+    if not report["onboarded"]:
+        actions.append("iterate init --yes")
     drift = report.get("drift")
     if drift not in (None, "none", "unknown", "disabled"):
         actions.append("iterate refresh")
     if report["summary"]["errors"] or report["summary"]["warnings"]:
         actions.append("iterate doctor")
-    if report["summary"]["blocking"]:
+    # --strict only adds value when warnings (not errors) are the blocker: with
+    # errors present plain `doctor` already gates on every non-clean state, so
+    # suggesting both would be a redundant duplicate of the same command.
+    if report["summary"]["blocking"] and not report["summary"]["errors"]:
         actions.append("iterate doctor --strict")
     if not actions:
         actions.extend(["iterate status", "iterate scan --json"])
