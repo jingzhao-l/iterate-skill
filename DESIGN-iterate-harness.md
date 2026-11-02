@@ -1064,8 +1064,11 @@ harness/iterate-plugin/
 | GET | `/api/v1/config` | 配置只读视图（key 脱敏） | `ConfigView` |
 | PUT | `/api/v1/config` | 校验后写回（备份 + 回滚） | `SaveResult` |
 | GET | `/api/v1/events?stream=status` | SSE 实时推送 | `text/event-stream` |
+| POST | `/api/v1/schedules` | 登记/更新 canonical 定时快审（审计 + 确认，跨目录迁移需 `replace=true`，否则 409） | `OperationResult` |
+| POST | `/api/v1/schedules/enabled` | 启用/停用一条已登记计划（审计 + 确认） | `OperationResult` |
+| DELETE | `/api/v1/schedules` | 删除一条已登记计划（审计 + 确认） | `OperationResult` |
 
-**错误码约定**：`400` 参数非法 / `401` 未授权（非本机）/ `404` 资源不存在 / `409` 冲突（如恢复中再操作）/ `422` 校验失败 / `500` 内部错误（含日志 trace）。
+**错误码约定**：`400` 参数非法 / `401` 未授权（非本机）/ `404` 资源不存在 / `409` 冲突（如恢复中再操作、把已有计划迁到另一目录未带 `replace`）/ `422` 校验失败 / `500` 内部错误（含日志 trace）。
 
 **实时性**：采用 **SSE（Server-Sent Events）**——比 WebSocket 简单、单向推送足够；由 `events.py` 定时尾部读取 decision log 增量 + 轮询 cost meter，推送收敛更新。不新增消息总线，保持极简。
 
