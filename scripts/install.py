@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import hmac
 import http.client
@@ -519,6 +520,23 @@ def _allow_unsigned() -> bool:
     return value in _ALLOW_UNSIGNED_TRUE_VALUES
 
 
+def _validsig_fingerprints(status_output: str) -> list[str]:
+    """Extract the fingerprints gpg reported as ``VALIDSIG`` in ``--status-fd``.
+
+    A status line looks like ``[GNUPG:] VALIDSIG <fpr> <date> …``; the
+    fingerprint is the token right after the ``VALIDSIG`` keyword. Mirrors
+    ``iterate_cli.signing._validsig_fingerprints`` (keep in sync).
+    """
+    fingerprints: list[str] = []
+    for line in status_output.splitlines():
+        if not line.startswith("[GNUPG:] VALIDSIG "):
+            continue
+        parts = line.split()
+        if len(parts) >= 3 and parts[2]:
+            fingerprints.append(parts[2].upper())
+    return fingerprints
+
+
 def _verify_detached_signature(
     artifact_path: Path,
     signature_path: Path,
@@ -553,6 +571,7 @@ def _verify_detached_signature(
                 )
             verified = subprocess.run(
                 [gpg, "--homedir", str(home), "--batch",
+                 "--no-auto-key-retrieve",
                  "--status-fd", "1", "--verify", str(signature_path), str(artifact_path)],
                 capture_output=True, text=True, timeout=timeout, check=False,
             )
@@ -567,7 +586,17 @@ def _verify_detached_signature(
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return "unavailable", f"gpg could not run: {exc}"
-    if verified.returncode == 0 and "GOODSIG" in verified.stdout:
+    # A GOODSIG alone does not prove the signer is the pinned key: a substituted
+    # signer whose key is auto-retrieved (or pre-seeded) would pass. Require a
+    # VALIDSIG fingerprint that belongs to the pinned key, mirroring
+    # iterate_cli/signing.py (keep in sync). --no-auto-key-retrieve above stops
+    # gpg fetching an arbitrary signer's key over the network.
+    signer_fingerprints = _validsig_fingerprints(verified.stdout)
+    if (
+        verified.returncode == 0
+        and signer_fingerprints
+        and any(fpr in (SIGNING_KEY_FINGERPRINT,) for fpr in signer_fingerprints)
+    ):
         return "verified", f"signature matches the pinned key ({SIGNING_KEY_FINGERPRINT})"
     lines = [ln for ln in verified.stderr.strip().splitlines() if ln.strip()]
     return "invalid", (lines[-1][:200] if lines else "gpg reported a bad signature")
@@ -1487,10 +1516,14 @@ def install_command(
 
         # Some assistants share the identical target directory (e.g. "claude"
         # and "claude-code" both map to ".claude/skills/iterate"), so a run can
-        # collide on the same destination. Install it once to avoid re-prompting.
+        # collide on the same destination. Mark it seen the moment we reach it —
+        # not only after a successful copy — so the second alias is skipped even
+        # when the first was declined, auto-skipped or failed, instead of being
+        # re-prompted for the very same directory.
         if destination in seen_destinations:
-            _hint(f"Skipped {assistant}: target {destination} already installed in this run.")
+            _hint(f"Skipped {assistant}: target {destination} already handled in this run.")
             continue
+        seen_destinations.add(destination)
 
         if dry_run:
             _hint(f"[dry-run] Would install for {assistant}{mode_label} into {destination}")
@@ -1527,7 +1560,6 @@ def install_command(
             continue
         for item in copied:
             _hint(item)
-        seen_destinations.add(destination)
 
         if copied or dry_run:
             installed.append((assistant, display_name, destination))
@@ -2387,8 +2419,24 @@ def update_command(
     # partially-updated state behind (and never printing a false "complete").
     updated: list[str] = []
     failed: list[tuple[str, str]] = []
+    # Some assistants share one destination (claude/claude-code →
+    # .claude/skills/iterate). Update it once; the second alias would otherwise
+    # trigger a redundant full copy of the tree.
+    seen_destinations: set[Path] = set()
     try:
         for assistant in assistants:
+            effective_target, _ = _effective_target_and_mode_label(
+                target, global_install
+            )
+            relative_dir = SUPPORTED_AI[assistant]
+            destination = effective_target / relative_dir
+            if destination in seen_destinations:
+                _hint(
+                    f"Skipped {assistant}: target {destination} already updated in this run."
+                )
+                updated.append(assistant)  # count it as handled, not a failure
+                continue
+            seen_destinations.add(destination)
             try:
                 code = _update_one_assistant(
                     assistant, target, update_source, global_install, input_func
@@ -2559,6 +2607,16 @@ def parse_value(raw: str) -> object:
             parsed = stripped
 
     if isinstance(parsed, bool) and stripped not in YAML_BOOLEAN_ALIASES:
+        return stripped
+
+    # YAML 1.1 parses an unquoted date-like string (``2024-01-01``) as a
+    # datetime.date object. A string field such as ``git.target_branch`` that a
+    # user legitimately sets to a date-shaped value (a tag/branch/version named
+    # after a date) would then be stored as a date and fail schema validation
+    # with a confusing "changes have been reverted" — instead of keeping the
+    # literal string the user typed. Convert temporal scalars back to the raw
+    # text; JSON-first values (numbers/bools/lists) are unaffected.
+    if isinstance(parsed, (datetime.datetime, datetime.date, datetime.time)):
         return stripped
 
     return parsed
@@ -2923,20 +2981,28 @@ def interactive_config(
     config["dimensions"] = prompt_dimensions(
         config.get("dimensions", DIMENSION_CHOICES), input_func=input_func
     )
-    config["review"] = config.get("review", {})
+    # A hand-edited config may hold a scalar for a section the schema declares
+    # as object (e.g. `atomic: 5`). load_config only requires the top level to
+    # be a mapping, so these would crash the wizard with AttributeError before
+    # schema validation ever runs. Coerce non-mapping sections to {} first,
+    # matching the sibling CLI wizard's isinstance(section, dict) guard.
+    if not isinstance(config.get("review"), dict):
+        config["review"] = {}
     config["review"]["scope"] = prompt_choice(
         "Review scope",
         SCOPE_CHOICES,
         config["review"].get("scope", "full"),
         input_func=input_func,
     )
-    config["atomic"] = config.get("atomic", {})
+    if not isinstance(config.get("atomic"), dict):
+        config["atomic"] = {}
     config["atomic"]["max_lines"] = prompt_int(
         "Atomic issue max lines",
         config["atomic"].get("max_lines", 20),
         input_func=input_func,
     )
-    config["git"] = config.get("git", {})
+    if not isinstance(config.get("git"), dict):
+        config["git"] = {}
     config["git"]["push_per_round"] = prompt_bool(
         "Push after each round",
         config["git"].get("push_per_round", False),

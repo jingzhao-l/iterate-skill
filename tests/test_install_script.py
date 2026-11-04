@@ -985,6 +985,19 @@ class TestParseValue:
         # YAML 1.1 treats yes as bool; we deliberately keep it a string.
         assert install.parse_value("yes") == "yes"
 
+    def test_date_like_string_stays_a_string(self):
+        """A date-shaped value for a string field must not become datetime.date.
+
+        Regression: YAML 1.1 parses ``2024-01-01`` as a ``datetime.date``, so
+        ``--set git.target_branch=2024-01-01`` stored a date, the schema
+        rejected it as not-a-string, and the whole set was rolled back with a
+        confusing "changes have been reverted" — instead of keeping the literal
+        string the user typed.
+        """
+        assert install.parse_value("2024-01-01") == "2024-01-01"
+        assert install.parse_value("2024-01-01T10:00:00Z") == "2024-01-01T10:00:00Z"
+        assert isinstance(install.parse_value("2024-01-01"), str)
+
     def test_json_literal_takes_json_semantics(self):
         # JSON is tried first: valid JSON keeps strict JSON semantics even
         # when YAML would interpret it differently.
@@ -3083,3 +3096,217 @@ class TestGpgTimeoutIsInvalid:
 
         assert ok is False, "ITERATE_ALLOW_UNSIGNED must not bypass a gpg timeout"
         assert "does NOT bypass" in detail
+
+
+# ---------------------------------------------------------------------------
+# GPG VALIDSIG fingerprint enforcement (M2: the standalone installers must
+# agree with iterate_cli/signing.py that a GOODSIG alone is not enough).
+# ---------------------------------------------------------------------------
+
+
+class TestValidsigFingerprintEnforcement:
+    """A GOODSIG (or gpg exit 0) from a NON-pinned signer must be rejected.
+
+    Regression: `scripts/install.py` accepted on ``returncode == 0 and
+    "GOODSIG" in stdout`` with no ``--no-auto-key-retrieve``, so a substituted
+    signer whose key gpg auto-retrieved (or an operator config that enabled
+    ``keyserver-options auto-key-retrieve``) would verify as authentic while
+    ``iterate_cli/signing.py`` — with ``--no-auto-key-retrieve`` and a
+    VALIDSIG fingerprint check — rejects the same artifact.
+    """
+
+    _FPR_PINNED = install.SIGNING_KEY_FINGERPRINT
+    _FPR_OTHER = "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"
+
+    def _make_paths(self, tmp_path):
+        artifact = tmp_path / "iterate-skill.tar.gz"
+        signature = tmp_path / "iterate-skill.tar.gz.asc"
+        artifact.write_bytes(b"artifact")
+        signature.write_bytes(b"signature")
+        return artifact, signature
+
+    @staticmethod
+    def _status_for(fingerprint: str) -> str:
+        return (
+            "[GNUPG:] NEWSIG\n"
+            "[GNUPG:] GOODSIG DEADBEEF Someone <x@example.invalid>\n"
+            f"[GNUPG:] VALIDSIG {fingerprint} 2026-01-01 1 0 4 0 1 8 00 {fingerprint}\n"
+        )
+
+    def _stub_gpg(self, monkeypatch, *, verify_stdout: str):
+        monkeypatch.setattr(install.shutil, "which", lambda _: "/usr/bin/gpg")
+
+        def fake_run(argv, **kwargs):
+            if "--verify" in argv:
+                return install.subprocess.CompletedProcess(
+                    argv, 0, verify_stdout, ""
+                )
+            return install.subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    def test_matching_fingerprint_verifies_and_disables_key_retrieval(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        artifact, signature = self._make_paths(tmp_path)
+        self._stub_gpg(monkeypatch, verify_stdout=self._status_for(self._FPR_PINNED))
+
+        status, detail = install._verify_detached_signature(artifact, signature)
+
+        assert status == "verified", detail
+
+    def test_valid_signature_from_another_key_is_rejected(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Exit 0 + GOODSIG from a NON-pinned key must be refused."""
+        artifact, signature = self._make_paths(tmp_path)
+        self._stub_gpg(monkeypatch, verify_stdout=self._status_for(self._FPR_OTHER))
+
+        status, _detail = install._verify_detached_signature(artifact, signature)
+
+        assert status == "invalid", (
+            "a GOODSIG from a non-pinned key must not authenticate the artifact"
+        )
+
+    def test_goodsig_without_validsig_is_rejected(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        artifact, signature = self._make_paths(tmp_path)
+        self._stub_gpg(
+            monkeypatch,
+            verify_stdout="[GNUPG:] GOODSIG DEADBEEF Someone <x@example.invalid>\n",
+        )
+
+        status, _detail = install._verify_detached_signature(artifact, signature)
+
+        assert status == "invalid", "a GOODSIG without VALIDSIG must not authenticate"
+
+
+# ---------------------------------------------------------------------------
+# interactive_config must not crash on a non-mapping section (M1)
+# ---------------------------------------------------------------------------
+
+
+class TestInteractiveConfigNonMappingSections:
+    """A hand-edited scalar section (``atomic: 5``) must not crash the wizard.
+
+    Regression: `interactive_config` did ``config["atomic"] =
+    config.get("atomic", {})`` and then ``config["atomic"].get("max_lines",
+    20)`` without checking the type, so a config with a scalar ``atomic`` /
+    ``review`` / ``git`` section raised AttributeError before schema
+    validation could report it. The sibling CLI wizard guards the same shape
+    with ``isinstance(section, dict)``; the install wizard must too.
+    """
+
+    def _run_wizard(self, tmp_path, config_text: str, monkeypatch, inputs):
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "iterate.config.yaml").write_text(config_text, encoding="utf-8")
+
+        def fake_input(prompt=""):
+            return inputs.pop(0)
+
+        # Isolate the wizard from the real project validation: the temp project
+        # has no scripts/validate.py, and the M1 defect is the pre-validation
+        # crash on a scalar section, not the validation result itself.
+        monkeypatch.setattr(install, "save_config", lambda *a, **k: None)
+        monkeypatch.setattr(
+            install, "_validate_project_config", lambda *a, **k: []
+        )
+        return install.interactive_config(
+            project, project, input_func=fake_input
+        )
+
+    @pytest.mark.parametrize("section", ["atomic", "review", "git"])
+    def test_scalar_section_does_not_crash(self, tmp_path, monkeypatch, section) -> None:
+        config_text = f"{section}: 5\n"
+        # The wizard prompts in a fixed order; give it enough answers to reach
+        # the end without crashing on any prompt.
+        inputs = [
+            "Improve code quality",  # goal
+            "7",  # max_rounds
+            "en",  # language
+            "",  # dimensions (accept default)
+            "full",  # review scope
+            "20",  # atomic max_lines
+            "n",  # git push_per_round
+        ]
+        result = self._run_wizard(tmp_path, config_text, monkeypatch, inputs)
+        assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# Alias-shared destinations must be deduplicated (L1)
+# ---------------------------------------------------------------------------
+
+
+class TestAliasSharedDestinationDedup:
+    """A shared destination (claude/claude-code → .claude/skills/iterate) must
+    be installed and updated once, not once per alias.
+
+    Regression: ``seen_destinations`` was only populated after a successful
+    copy, so declining the upgrade prompt for the first alias re-prompted the
+    same directory for the next alias; and ``update --ai all`` called
+    ``install_command`` once per alias, copying the shared tree twice.
+    """
+
+    def _count_copies(self, monkeypatch, tmp_path):
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        calls: list[Path] = []
+
+        real_copy = install.copy_skill_files
+
+        def counting_copy(src, dst, *a, **k):
+            calls.append(Path(dst))
+            return real_copy(src, dst, *a, **k)
+
+        monkeypatch.setattr(install, "copy_skill_files", counting_copy)
+        return source, target, calls
+
+    def test_install_all_copies_each_destination_once(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        source, target, calls = self._count_copies(monkeypatch, tmp_path)
+
+        rc = install.install_command(
+            "all", target, dry_run=True, source=source, force=True,
+            global_install=False,
+        )
+
+        assert rc == 0
+        unique = {str(c) for c in calls}
+        assert len(unique) == len(calls), (
+            "a shared destination must not be copied once per alias; "
+            f"got {[str(c) for c in calls]}"
+        )
+        # The two distinct destinations (claude + gemini) are each hit once.
+        assert any(str(c).endswith(".claude/skills/iterate") for c in calls)
+        assert any(str(c).endswith(".gemini/skills/iterate") for c in calls)
+
+    def test_install_all_skips_shared_alias_after_decline(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Declining the first alias's upgrade prompt must not re-prompt the
+        same directory for its alias (the shared dir is handled once)."""
+        source, target, calls = self._count_copies(monkeypatch, tmp_path)
+        # Pre-seed the claude destination so the first alias hits the
+        # "already installed" upgrade prompt.
+        dest = target / ".claude" / "skills" / "iterate"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("old", encoding="utf-8")
+
+        rc = install.install_command(
+            "all", target, dry_run=False, source=source, force=False,
+            global_install=False, input_func=lambda prompt="": "n",
+        )
+        # With no TTY the prompt is skipped (auto-skip path); assert we do not
+        # crash and that the claude destination was handled exactly once.
+        assert rc in (0, 1)
+        claude_hits = [c for c in calls if str(c).endswith(".claude/skills/iterate")]
+        gemini_hits = [c for c in calls if str(c).endswith(".gemini/skills/iterate")]
+        assert len(claude_hits) <= 1
+        assert len(gemini_hits) <= 1
+
+

@@ -166,6 +166,25 @@ const ITERATE_SIGNING_PUBLIC_KEY = [
   '-----END PGP PUBLIC KEY BLOCK-----',
 ].join('\n');
 
+//: SHA-1 fingerprint of the pinned signing key (uid jingzhao-l (sign-github)).
+//: Verification is only accepted when the ``VALIDSIG`` fingerprint belongs to
+//: this key, not merely on a GOODSIG/exit-0 — a substituted signer whose key
+//: gpg auto-retrieved would otherwise pass. Keep in sync with
+//: ``iterate_cli/signing.py`` and ``scripts/install.py``.
+const ITERATE_SIGNING_KEY_FINGERPRINT = '0929EA31DF4F7429F63FC53189D88B1D043A1298';
+
+//: Extract the fingerprints gpg reported as ``VALIDSIG`` in ``--status-fd``
+//: output. A status line is ``[GNUPG:] VALIDSIG <fpr> <date> …``.
+function validsigFingerprints(statusOutput) {
+  const fprs = [];
+  for (const line of String(statusOutput || '').split('\n')) {
+    if (!line.startsWith('[GNUPG:] VALIDSIG ')) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length >= 3 && parts[2]) fprs.push(parts[2].toUpperCase());
+  }
+  return fprs;
+}
+
 const ITERATE_BANNER = [
   '██╗████████╗███████╗██████╗  █████╗ ████████╗███████╗',
   '██║╚══██╔══╝██╔════╝██╔══██╗██╔══██╗╚══██╔══╝██╔════╝',
@@ -616,7 +635,7 @@ function verifyGpgDetachedSignature(artifactPath, signaturePath, publicKeyArmor,
 
   const verifyResult = spawnSync(
     'gpg',
-    ['--homedir', gpgHome, '--batch', '--quiet', '--no-autostart', '--verify', signaturePath, artifactPath],
+    ['--homedir', gpgHome, '--batch', '--quiet', '--no-autostart', '--no-auto-key-retrieve', '--status-fd', '1', '--verify', signaturePath, artifactPath],
     { encoding: 'utf8', timeout, killSignal: 'SIGKILL' }
   );
   if (verifyResult.error) {
@@ -631,8 +650,15 @@ function verifyGpgDetachedSignature(artifactPath, signaturePath, publicKeyArmor,
     }
     return { status: 'unavailable', detail: `gpg launch failed: ${verifyResult.error.message}` };
   }
-  // gpg exit 0 = good signature; 1 = bad signature; 2 = fatal (bad key usage).
-  if (verifyResult.status === 0) {
+  // A GOODSIG (or exit 0) alone does not prove the signer is the pinned key: a
+  // substituted signer whose key gpg auto-retrieved would pass. Require a
+  // VALIDSIG fingerprint belonging to the pinned key, mirroring
+  // iterate_cli/signing.py and scripts/install.py (keep in sync).
+  const signerFingerprints = validsigFingerprints(verifyResult.stdout);
+  const matchesPinned = signerFingerprints.some(
+    (fpr) => fpr === ITERATE_SIGNING_KEY_FINGERPRINT
+  );
+  if (verifyResult.status === 0 && matchesPinned) {
     return { status: 'verified', detail: (verifyResult.stderr || '').trim() };
   }
   return { status: 'invalid', detail: (verifyResult.stderr || '').trim() || `gpg exited ${verifyResult.status}` };

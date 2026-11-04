@@ -45,6 +45,18 @@ case " $* " in
   *" --verify "*)
     case "$mode" in
       verify-bad) printf 'gpg: BAD signature\\n' >&2; exit 1 ;;
+      # A GOODSIG from a NON-pinned key: exit 0 but VALIDSIG names another key.
+      verify-other-key)
+        printf '[GNUPG:] GOODSIG DEADBEEF Other <x@example.invalid>\\n'
+        printf '[GNUPG:] VALIDSIG DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF 2026-01-01 1 0 4 0 1 8 00 DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF\\n'
+        exit 0 ;;
+      verify-no-validsig)
+        printf '[GNUPG:] GOODSIG DEADBEEF Other <x@example.invalid>\\n'
+        exit 0 ;;
+      ok)
+        printf '[GNUPG:] GOODSIG DEADBEEF jingzhao-l <ET_lin@outlook.com>\\n'
+        printf '[GNUPG:] VALIDSIG 0929EA31DF4F7429F63FC53189D88B1D043A1298 2026-01-01 1 0 4 0 1 8 00 0929EA31DF4F7429F63FC53189D88B1D043A1298\\n'
+        exit 0 ;;
     esac
     exit 0
     ;;
@@ -167,6 +179,19 @@ function testGpgClassification() {
     const result = runGpg();
     assert.strictEqual(result.status, 'invalid', JSON.stringify(result));
     assert.match(result.detail, /BAD signature/);
+  });
+
+  withFakeGpg('verify-other-key', () => {
+    // A GOODSIG from a NON-pinned signer must NOT authenticate: exit 0 is not
+    // enough, the VALIDSIG fingerprint must belong to the pinned key.
+    const result = runGpg();
+    assert.strictEqual(result.status, 'invalid', JSON.stringify(result));
+  });
+
+  withFakeGpg('verify-no-validsig', () => {
+    // A GOODSIG with no VALIDSIG line is likewise not proof of the pinned key.
+    const result = runGpg();
+    assert.strictEqual(result.status, 'invalid', JSON.stringify(result));
   });
 
   withFakeGpg('import-fail', () => {
