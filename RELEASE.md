@@ -674,6 +674,18 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 属 kernel lane 的 WIP，删了就是删别人的活；其余 7 个 worktree 虽已 ≥6 天
       > 无改动，但全部挂在 harness/kernel 分支上，同属并发 lane，未动。
       >
+      > **2026-11-04 更正（kernel WIP 已核实全部落 main，遗留物已清）**：以上「删除即丢
+      > 历史 / 删了就是删别人的活」的判断经逐哈希与 `git cherry`（patch-id）核实已过时——
+      > `kernel/decision-log-chain` 的 7 条提交与 `kernel/npm-canonical`（本地 `c8f2e146`
+      > + 远端唯一超前 `2603f94c`）的提交**全部**与 `origin/main` 已有提交内容等价
+      > （`git cherry main <branch>` 全为 `-`）；`it-kernel-rebase` 的未提交文件逐字节等于
+      > main（evidence-pack 空串判据 = kernel 0.1.7 `ff249dec`，Python decision-log 三文件、
+      > installer tomllib 回退 `_version_from_text` 均已提交 main；仅 package.json/CHANGELOG/
+      > manifest/install.py 为 main 的更旧子集）。据此于 2026-11-04 删除 `kernel/decision-log-chain`、
+      > `kernel/npm-canonical`（本地+远端 `origin`）、`zod4-migration` 三分支与
+      > `/Volumes/Eng-Dev/.worktrees/it-kernel`、`it-kernel-rebase`、`it-zod4` 三 worktree，
+      > **无独特内容/历史丢失**（重复提交对象可被 GC，信息无损）。kernel lane 无搁置 WIP。
+      >
       > **备注**：CHANGELOG 的 `## [3.5.3]` 条目日期为 2026-10-17（复审完成、
       > 条目落笔当日），实际发版执行于 2026-10-18；不为此重写已推送的
       > release 提交与 tag。
