@@ -5,6 +5,60 @@
 
 ---
 
+## [3.11.0] — 2026-11-04
+
+minor：新增 `iterate backup` 子命令（list/restore），补齐「写了备份却无法回读」
+的断链——此前 `config set/unset`、`doctor --fix`、`refresh`、`personalize`、
+`onboard`、`import`、`reonboard` 都会在改写文件前写一个时间戳备份
+（`*.configset-*`、`*.configunset-*`、`*.doctorfix-*`、`*.refresh-*`、
+`*.personalize-*`、`*.onboard-*`、`*.import-*`、`*.bak-*`），但用户想撤销时
+只能手动 `ls` 项目目录去猜哪个是改动前的副本（`cli.py` 的 Ctrl+C 提示原话就是
+「请检查项目目录」）。本轮全面审查（review）确认 2 处中 + 2 处低缺陷并全部修复。
+
+### 新增功能
+- **`iterate backup list`**（+10 回归）：只读列出项目根下所有可识别的时间戳
+  备份，最新在前，逐条显示 `原始文件名 · 操作 · UTC 时间 · 大小`；恒退出 0
+  （空结果也是信息性，与 `fingerprint list` 一致）；`--json` 输出单个
+  `{project, count, backups:[{name, base, tag, operation, timestamp, size}]}`
+  文档；无需解析 config，损坏配置不阻塞。
+- **`iterate backup restore FILE`**（+16 回归）：把某一个备份恢复到其原始文件名。
+  恢复前先把**当前**文件再备份为 `*.restore-*`（恢复本身可逆，撤销同一命令即可）；
+  用 `atomic_write` 原子写回；`--dry-run` 只预览不写；`--yes` 供非交互 stdin；
+  `--json` 输出单个结果文档。安全护栏：拒绝任何不是 iterate 备份形状的文件
+  （`<file>.<tag>-<UTC>-<salt>`，绝不容忍手滑覆盖任意文件）、拒绝项目目录外的
+  路径（含绝对路径/`../`/symlink）、拒绝目录目标、拒绝不存在的备份；恢复后提示
+  用 `iterate doctor`（可加 `--fix`）验证。
+
+### 修复（全面审查发现）
+- **gpg 验证器只认 GOODSIG/exit 0、不验证签名者指纹**（`scripts/install.py`、
+  `npm-installer/lib/installer.js`，+3 回归 +2 JS 回归）：两个独立安装器的
+  `--verify` 没加 `--no-auto-key-retrieve`，且只凭 `GOODSIG`（或 exit 0）就判定
+  verified——若系统 gpg 配置/部署启用 `keyserver-options auto-key-retrieve`，
+  一个被替换的签名者密钥会被自动拉取并通过验证，而 `iterate update`（
+  `signing.py`，用 `--no-auto-key-retrieve` + VALIDSIG 指纹核对）拒绝同一产物。
+  现两者都加 `--no-auto-key-retrieve` 并要求 VALIDSIG 指纹属于钉死的
+  `0929EA31…1298`；三处签名器重新一致。
+- **`scripts/install.py config --interactive` 遇非 mapping 分节崩溃**（
+  `scripts/install.py`，+3 回归）：`atomic: 5`（或标量 `review:`/`git:`）会让
+  wizard 在 schema 校验之前就抛 `AttributeError`。现按 `configcmd.py` 的
+  `isinstance(section, dict)` 先矫正为空 mapping。
+- **`--set` 的日期形字符串被 YAML 解析成 `datetime.date`**（
+  `scripts/install.py`，+1 回归）：`--set git.target_branch=2024-01-01` 存成
+  date，schema 类型不匹配导致整次 `--set` 回滚并报令人困惑的 "changes have
+  been reverted"。现日期形标量保持字面字符串。
+- **别名共享目录被重复提示/重复拷贝**（`scripts/install.py`，+2 回归）：
+  `claude`/`claude-code` 共享 `.claude/skills/iterate`——拒绝第一个别名的升级
+  提示后同一目录会对下一个别名再次提问；`update --ai all` 则对每个别名各拷
+  一遍共享树。现 `seen_destinations` 在到达目标时即标记（而非拷贝成功后），
+  `update` 也按目标目录去重。
+
+### 验证
+- 测试 **33 项新增**（`tests/test_backup_command.py` 26 项 +
+  `tests/test_install_script.py` 7 项），覆盖正常恢复、可逆撤销、目标缺失时重建、
+  dry-run 零写入、非 iterate 文件拒绝、目录外路径拒绝、目录目标拒绝、缺失备份
+  拒绝、`--json` 单文档契约、非交互无 `--yes` 拒绝、三处 gpg 指纹一致、标量分节
+  不崩溃、日期字符串保字面、别名共享目录去重。
+
 ## [3.10.0] — 2026-11-01
 
 minor：补全子系统新增 `--uninstall`，补齐「装了就能卸」的对称能力；并修复

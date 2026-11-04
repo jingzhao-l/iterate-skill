@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.10.0
+version: 3.11.0
 permissions:
   file_read: true
   file_write: true
@@ -328,6 +328,8 @@ iterate guard post-check [targets...]  # 编辑后执行 validation.commands 并
 iterate invariant      # 项目级不变量校验（--dry-run 预览；--json）
 iterate fingerprint verify  # 校验 manifest 指纹漂移（--json，退出码 0=无漂移 / 1=有漂移）
 iterate fingerprint list    # 只读列出上次记录的指纹基线（path + sha256，不重扫；--json）
+iterate backup list         # 只读列出项目根下所有时间戳备份（config set/unset、doctor --fix、refresh、personalize、onboard、import、reonboard 写入的 *.configset-* / *.doctorfix-* / *.refresh-* / *.bak-* 等），最新在前；退出码恒 0（空结果也是信息性）；--json
+iterate backup restore FILE # 把某一备份恢复到其原始文件名（先对当前文件再备份为 *.restore-*，使恢复本身可逆；拒绝非 iterate 备份、项目目录外路径与目录目标；--dry-run / --yes / --json）
 iterate config       # 非交互式查看全部可设配置值（支持 --json）
 iterate config get <key>   # 读取单个配置项的解析值（支持 --json，输出 {"key": value}）
 iterate config set <key> <value>  # 校验并写回单个配置项（自动备份；--json 输出确认对象）
@@ -1081,6 +1083,7 @@ iterate/
 │   ├── cli.py                        # argparse 子命令（onboard/refresh/reonboard/status/doctor/…）
 │   ├── tui.py                        # 轻量 TUI 助手（skills.sh 风格输出、banner）
 │   ├── fingerprint.py                # manifest 哈希与漂移检测
+│   ├── backup.py                     # 时间戳备份的列出与恢复（backup 子命令）
 │   ├── scan.py                       # 项目扫描（技术栈/目录/特性检测）
 │   ├── wizard.py                     # CLI 交互式 onboarding 向导
 │   ├── generator.py                  # ITERATE.md + iterate.config.yaml 生成器
