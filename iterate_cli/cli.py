@@ -15,6 +15,7 @@ Provides subcommands for onboarding and personalization management:
     iterate doctor      — Project health diagnostics (--json / --json-out / --fix)
     iterate guard       — Defensive-programming pre/post-edit checks (v3.0)
     iterate invariant   — Project-level invariant check (v3.0, defensive mode)
+    iterate backup      — List or restore timestamped backups written by write commands
     iterate update      — Self-update the CLI + installed assistant skill dirs
     iterate completion  — Print a bash/zsh/fish completion script
     iterate help        — Print help for iterate or for one command
@@ -534,6 +535,17 @@ def _dispatch_command(
             json_output=getattr(args, "json", False),
             action=getattr(args, "fingerprint_action", None) or "verify",
         )
+    if args.command == "backup":
+        if show_banner:
+            tui.banner()
+        return _cmd_backup(
+            project_root,
+            action=getattr(args, "backup_action", None) or "list",
+            backup_file=getattr(args, "backup_file", None),
+            yes=getattr(args, "yes", False),
+            dry_run=getattr(args, "dry_run", False),
+            json_output=getattr(args, "json", False),
+        )
     if args.command == "update":
         if show_banner:
             tui.banner()
@@ -600,7 +612,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Emit structured JSON instead of TUI output for status, scan, "
         "init, report, export, import, show, doctor, refresh, config, guard, "
-        "invariant, fingerprint and update "
+        "invariant, fingerprint, backup and update "
         "(and for --version). Interactive commands (onboard/personalize/"
         "reonboard) reject it; on every other path stdout holds exactly one "
         "JSON document, including on failure.",
@@ -1066,6 +1078,53 @@ def _build_parser() -> argparse.ArgumentParser:
         "at the last onboarding/refresh without rescanning.",
     )
     fingerprint_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit a structured JSON object instead of TUI output.",
+    )
+
+    backup_parser = subparsers.add_parser(
+        "backup",
+        parents=[parent],
+        help="List or restore timestamped backups written by write commands.",
+        description="List or restore the timestamped backups other iterate "
+        "commands write before mutating project state (config set/unset, "
+        "doctor --fix, refresh, personalize, onboard, import, reonboard). "
+        "'list' (default) enumerates every recognisable backup in the project "
+        "root, newest first; 'restore FILE' puts one back, taking a fresh "
+        "backup of the current file first so the restore is itself reversible. "
+        "Restore never touches a file that does not look like an iterate "
+        "backup.",
+    )
+    backup_parser.add_argument(
+        "backup_action",
+        nargs="?",
+        choices=["list", "restore"],
+        default="list",
+        help="Action to perform: 'list' (default) enumerates backups; "
+        "'restore FILE' restores one backup file to its original name.",
+    )
+    backup_parser.add_argument(
+        "backup_file",
+        nargs="?",
+        default=None,
+        help="Backup file to restore (required with 'restore').",
+    )
+    backup_parser.add_argument(
+        "--yes",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Restore without a confirmation prompt (required when stdin is "
+        "not a terminal).",
+    )
+    backup_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Show what would be restored without writing anything.",
+    )
+    backup_parser.add_argument(
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -3496,6 +3555,154 @@ def _report_update_outcome(
         outcome.cli_result is not None and not outcome.cli_result.success
     ) or bool(outcome.assistants_failed) or bool(outcome.download_error)
     return 1 if any_failure else 0
+
+
+def _cmd_backup(
+    project_root: Path,
+    *,
+    action: str = "list",
+    backup_file: str | None = None,
+    yes: bool = False,
+    dry_run: bool = False,
+    json_output: bool = False,
+) -> int:
+    """Handle ``iterate backup`` — list or restore timestamped backups.
+
+    ``list`` (the default) is a pure read: it enumerates every recognisable
+    backup in the project root and always exits 0, even when there are none
+    (an empty result is informational, matching ``fingerprint list``). A
+    corrupt config is not a barrier because a backup listing does not need to
+    parse the config at all.
+
+    ``restore`` is a write: it backs up the current target (tag ``restore``)
+    first, then writes the backup content to the original path. It requires
+    ``--yes`` when stdin is not a terminal, and refuses anything that does not
+    look like an iterate backup so an arbitrary path can never be clobbered.
+    """
+    from iterate_cli.backup import (
+        BackupError,
+        backups_json,
+        list_backups,
+        restore_backup,
+    )
+
+    if action == "list":
+        try:
+            entries = list_backups(project_root)
+        except BackupError as exc:
+            if json_output:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": str(exc)}, ensure_ascii=False
+                    )
+                )
+            else:
+                tui.error(str(exc))
+            return 1
+        if json_output:
+            print(backups_json(project_root, entries))
+            return 0
+        tui.intro(f"Iterate Skill — Backups / {project_root.name}")
+        if not entries:
+            tui.info(
+                "No iterate backups found in this project directory.", indent=2
+            )
+            tui.hint(
+                "Backups appear when a write command runs (config set/unset, "
+                "doctor --fix, refresh, personalize, onboard, import, "
+                "reonboard).",
+                indent=4,
+            )
+            return 0
+        tui.hint(
+            f"{len(entries)} backup(s), newest first. Restore one with "
+            "'iterate backup restore <file>'.",
+            indent=2,
+        )
+        for entry in entries:
+            tui.key_value(
+                entry.path.name,
+                f"{entry.label} · {entry.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                f" · {entry.size} B → {entry.base}",
+                indent=2,
+            )
+        return 0
+
+    # action == "restore"
+    if not backup_file:
+        message = "no backup file given; usage: iterate backup restore <file>"
+        if json_output:
+            print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+        else:
+            tui.error(message)
+        return 2
+
+    if not yes and not dry_run:
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "--json implies a write, so it requires --yes "
+                        "(like `iterate update --json`).",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        if not _stdin_is_interactive():
+            tui.error(
+                "Non-interactive stdin detected; pass --yes to restore this "
+                "backup (or --dry-run to preview it)."
+            )
+            return 2
+        if not _confirm(
+            f"Restore {backup_file} to its original name? The current file is "
+            "backed up first.",
+            default=False,
+        ):
+            tui.info("已取消 / Cancelled; nothing was written.")
+            return 1
+
+    try:
+        outcome = restore_backup(
+            project_root, backup_file, dry_run=dry_run
+        )
+    except BackupError as exc:
+        if json_output:
+            print(
+                json.dumps(
+                    {"ok": False, "error": str(exc)}, ensure_ascii=False
+                )
+            )
+        else:
+            tui.error(str(exc))
+        return 1
+
+    if json_output:
+        print(json.dumps(outcome, ensure_ascii=False))
+        return 0
+
+    if dry_run:
+        tui.intro("Iterate Skill — Backup restore preview")
+        tui.key_value("Backup", outcome["backup"])
+        tui.key_value("Restores", outcome["target"])
+        tui.hint("Dry run: nothing was written. Re-run without --dry-run to restore.")
+        return 0
+
+    tui.empty_line()
+    tui.success(f"Restored {outcome['backup']} → {outcome['target']}.")
+    if outcome["pre_restore_backup"]:
+        tui.hint(
+            f"The previous file was backed up as {outcome['pre_restore_backup']} "
+            "(restore it the same way to undo).",
+            indent=2,
+        )
+    tui.hint(
+        "Verify the result with `iterate doctor` (add --fix to repair).",
+        indent=2,
+    )
+    return 0
 
 
 def _cmd_update(

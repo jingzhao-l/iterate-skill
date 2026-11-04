@@ -324,6 +324,10 @@ iterate config set goal "..."      # validate + write one value (auto timestampe
 iterate guard pre-check src/        # before editing: target exists / worktree clean / manifests ready
 iterate guard post-check python     # after editing: run exactly validation.commands.<module>
 iterate invariant                   # at delivery: file-assertions + exact commands (degrades to validation.commands)
+
+# List or restore the timestamped backups write commands leave behind
+iterate backup list                 # enumerate *.configset-* / *.doctorfix-* / *.refresh-* / *.bak-* etc.
+iterate backup restore <file>       # restore one backup (backs up the current file first; reversible)
 ```
 
 > **Recommended new-user path**: `npx iterate-skill-installer` (install) → `iterate onboard` (init) → `iterate doctor` (optional health check) → `iterate personalize` (optional constraints) → `/iterate "your goal"` in your AI assistant, or `iterate status` / `iterate refresh` / `iterate personalize` on the CLI.

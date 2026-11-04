@@ -339,6 +339,10 @@ iterate config set goal "..."      # 校验并写回单个值（写前自动生�
 iterate guard pre-check src/        # 动手前：目标存在 / worktree 干净 / manifest 就绪
 iterate guard post-check python     # 每次改动后：精确执行 validation.commands.<module>
 iterate invariant                   # 交付时：文件断言 + 精确命令（缺省退化为 validation.commands）
+
+# 列出 / 恢复写命令留下的时间戳备份
+iterate backup list                 # 枚举 *.configset-* / *.doctorfix-* / *.refresh-* / *.bak-* 等
+iterate backup restore <file>       # 恢复某个备份（先备份当前文件；可逆）
 ```
 
 ### 常见边界场景 / Edge Cases
