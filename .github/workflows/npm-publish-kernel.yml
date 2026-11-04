@@ -1,0 +1,106 @@
+name: npm publish (iterate-kernel)
+
+# Publishes the iterate-kernel npm package from the skill monorepo.
+#
+# iterate-kernel (kernel/) is a sibling of iterate-skill-installer: it has no
+# separate distribution repository and is published from the main repo's
+# `kernel/` directory. Before this workflow existed the kernel was published
+# locally (`cd kernel && npm publish`), which is neither provenance-capable nor
+# auditable. This workflow mirrors the installer one and adds `--provenance`,
+# so npm attaches a cryptographically verifiable build origin (repo + workflow
+# + tag) via a Trusted Publisher mapping:
+#
+#   package         -> repo(workflow file)
+#   iterate-kernel  -> jingzhao-l/iterate-skill(.github/workflows/npm-publish-kernel.yml)
+#
+# Kernel versions are 0.1.x, so the release gate is `v0.1.*` tags; manual
+# dispatch (with an optional `tag` input) is the other entry point.
+#
+# Precondition for OIDC trusted publishing: connect this workflow as a Trusted
+# Publisher on npm for `iterate-kernel` (npmjs.com -> package -> Settings ->
+# Trusted Publishing -> Connect a Publisher, values:
+#   Package: iterate-kernel
+#   GitHub owner/repo: jingzhao-l/iterate-skill
+#   Workflow: .github/workflows/npm-publish-kernel.yml
+#   Environment: <none>).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to publish from (optional; defaults to tagged event or default branch)
+        required: false
+        type: string
+
+permissions:
+  contents: read    # read the tagged tree; the workflow writes nothing back
+  id-token: write   # mint an OIDC token so `npm publish --provenance` can sign the package
+
+concurrency:
+  group: npm-publish-iterate-kernel
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v0.1.') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Node 20 ships npm 10, which predates OIDC trusted publishing
+          # (added in npm 11.5.1). Node 24 keeps us on a non-EOL runtime.
+          node-version: "24"
+
+      - name: Install dependencies
+        working-directory: kernel
+        run: npm ci
+
+      - name: Verify package version matches the release tag
+        working-directory: kernel
+        # A forgotten version bump used to publish the PREVIOUS version under a
+        # new tag (npm rejects a duplicate version only once it is too late).
+        # Fail before publishing instead.
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          TAG="${TAG#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ -n "$TAG" ] && [ "$TAG" != "$PKG" ]; then
+            echo "::error::package.json version $PKG does not match release tag $TAG"
+            exit 1
+          fi
+          echo "package.json version $PKG (tag: ${TAG:-<none>})"
+
+      - name: Run kernel tests
+        working-directory: kernel
+        # Guards the contract/build surface (build + node --test) before it
+        # reaches npm.
+        run: npm test
+
+      - name: Publish with provenance
+        working-directory: kernel
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # setup-node's `registry-url` writes
+        # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` unconditionally.
+        # When the secret is unset that resolves to an *empty* token, and npm
+        # raises ENEEDAUTH before it ever attempts the OIDC exchange. Emit the
+        # auth line ourselves: only when a token actually exists, and leave it
+        # absent otherwise so npm falls back to OIDC trusted publishing.
+        run: |
+          npm install -g npm@^11.5.1
+          echo "npm $(npm --version) on node $(node --version)"
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN present; authenticating with the token."
+            npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
+          else
+            echo "NPM_TOKEN unset; relying on OIDC trusted publishing."
+          fi
+          npm publish --provenance --access public
