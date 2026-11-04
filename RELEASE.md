@@ -251,6 +251,35 @@ iterate 生态目前有 **三个** 会独立对外发布的项目。本手册把
       > 新增 `backup/2026-10-23-harness-wip` 保存主工作区里一条 harness
       > docstring WIP 后恢复干净。
       >
+      > **3.11.0 状态（2026-11-04）**：minor。本轮全面审查确认 2 处中 + 2 处低
+      > 缺陷并全部修复；增长产出为净新增能力 `iterate backup list` /
+      > `iterate backup restore`（此前写了时间戳备份却无命令可列/可恢复，用户
+      > 只能手动 `ls` 项目目录去猜，属「能生成但不能回读」断链）。提交
+      > `0a62686c`（feat backup）、`f7851f45`（fix install 四项）、
+      > `c9490aee`（release），全部 GPG 签名并推送；signed annotated tag
+      > `v3.11.0` → `c9490aee`，`git verify-tag` 完好（plugin 的轻量 `v3.11.0`
+      > 已按惯例 force 替换，plugin-origin 保留自己的 tag；origin 此前无
+      > `v3.11.0`，推送为 `[new tag]`）。
+      > ✅ **GitHub Release**（id `434031768`）：6 资产；tar **97 条目**、
+      > `harness/|kernel/|tests/` 均 **0**；`shasum -a 256 -c SHA256SUMS.txt` OK；
+      > 包内 `SKILL.md version: 3.11.0`，`iterate_cli/backup.py` 已入包。
+      > ✅ **npm**（run `41847710445` success）：`npm view iterate-skill-installer
+      > version` → **3.11.0**（`latest` 同步）。
+      > ✅ **ModelScope**（`jingzhao0/iterate-skill`）：75 文件 / 784,176 字节，
+      > `update_skill_settings` 成功（file_id `f4d2d0ab-7881-4908-bcf3-7a8215f359f4`，
+      > `UPDATE_OK`）；消费端 `download_skill()` 实测 75 文件、banned 0、
+      > `SKILL.md version: 3.11.0`、`backup.py` 在包内。
+      > ✅ **SkillHub**（skillId `104490`）：71 文件 / 781,793 字节，`ok:true`，
+      > versionId `488779`，`tags.latest=3.11.0`；`reviewStatus/securityScanStatus/
+      > contentAuditStatus=pending` 为平台异步审核。
+      > ✅ **ClawHub**（skillId `kd73s950z2gathsjtaenp987cx8ax0mm`）：73 文件 /
+      > 2,232,742 字节发布成功（`ok:true`，versionId
+      > `k97d6yk4h168jgtdzt6ajrhtgs8hjhaq`，attemptId
+      > `zx749sdwmb2zc7x844n7atp4698hkr4m`）；平台异步扫描入队（
+      > `publicationStatus=pending`），晋升为公共 latest 后回填。
+      > 测试 **1922 passed, 7 skipped**（1 skipped：本机未安装 fish），
+      > `ruff check .` 通过，npm installer JS 测试全绿。
+      >
       > **3.10.0 状态（2026-11-01）**：minor。本轮全面审查（review-bugbot）
       > 未发现 high 缺陷，确认 2 处中/低缺陷并全部修复；增长产出为净新增
       > 能力 `iterate completion <shell> --uninstall`（此前只能装不能卸）。
