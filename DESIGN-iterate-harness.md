@@ -1035,6 +1035,10 @@ harness/iterate-plugin/
 | P6 | Config | iterate.config.yaml 只读预览 + 受控编辑（校验后写回、备份回滚）；provider / BYOK 管理（key 脱敏） | config/settings.py / auth/manager.py |
 | P7 | Reports | 报告列表、HTML 报告内嵌预览、回放页入口 | report 目录 / html_report |
 | P8 | Trend 趋势 | 逐轮 new / fixed / regressed / unchanged 历史、最新一轮变化明细、未解决与顽固（3+ 轮）问题、按维度汇总；随 SSE 决策条目实时刷新 | decision log（report 条目）+ trend-library |
+| P9 | Gate 判定闸 | 最近一次配方闸回答、拒绝码与可执行补救、每一轮发布过的答案；缺失时明确写「尚未记录」而非通过 | decision log（`recipe-gate` 条目）+ 内核 gate |
+| P10 | Schedules 定时任务 | 本机 cron 注册表、调度器存活、下次运行与最近执行（退出码/耗时/输出尾部）；登记/更新/暂停/删除计划 | cron registry / history |
+| P11 | Doctor 自检 | 确定性、无网络的机器就绪度报告；失败/告警优先，每项带可复制 remedy | `doctor` 模块 |
+| P12 | Capabilities 能力清单 | 工具/斜杠命令/技能/插件/MCP 配置的实际加载清单；静态 MCP 问题与可复制修复；类别筛选 + 搜索；永不启动服务器或模型 | `capabilities` 模块（与 `ih capabilities` 同源） |
 
 **操作边界（安全默认）**：P2/P3/P6 涉及写操作（启动/停止/恢复 checkpoint/保存配置）一律「只读默认 + 显式确认 + 写入前备份 + 失败回滚」，与 CLI 既有语义一致。
 
@@ -1063,6 +1067,7 @@ harness/iterate-plugin/
 | POST | `/api/v1/checkpoints/{id}/restore` | 恢复断点（审计 + 确认） | `OperationResult` |
 | GET | `/api/v1/config` | 配置只读视图（key 脱敏） | `ConfigView` |
 | PUT | `/api/v1/config` | 校验后写回（备份 + 回滚） | `SaveResult` |
+| GET | `/api/v1/capabilities` | 工具/命令/技能/插件/MCP 实际加载清单 + 静态配置问题；只读、无网络 | `CapabilitiesView` |
 | GET | `/api/v1/events?stream=status` | SSE 实时推送 | `text/event-stream` |
 | POST | `/api/v1/schedules` | 登记/更新 canonical 定时快审（审计 + 确认，跨目录迁移需 `replace=true`，否则 409） | `OperationResult` |
 | POST | `/api/v1/schedules/enabled` | 启用/停用一条已登记计划（审计 + 确认） | `OperationResult` |
@@ -1099,6 +1104,12 @@ harness/iterate-plugin/
 | `/budget` | Budget & Rate |
 | `/config` | Config |
 | `/reports` | Reports |
+| `/trend` | Trend（`g t`） |
+| `/diff` | Run diff（`g v`） |
+| `/gate` | Gate（`g j`） |
+| `/schedules` | Schedules（`g s`） |
+| `/capabilities` | Capabilities（`g n`） |
+| `/doctor` | Doctor（`g k`） |
 
 **组件拆分**（示例）：`ConvergenceChart`（复用现有 SVG 曲线思路）、`TimelinePanel`、`FindingsTable`、`DiffViewer`、`BudgetMeter`、`ConfirmDialog`（受控操作二次确认）。
 
