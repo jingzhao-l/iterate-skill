@@ -853,6 +853,41 @@ class TestWriteOutputs:
             write_onboarding_outputs(data, fake_project, existing_md=existing_md)
         assert config_path.read_text(encoding="utf-8") == before
 
+    def test_rollback_restores_backed_up_md_even_when_existing_md_is_none(
+        self, fake_project: Path, monkeypatch
+    ) -> None:
+        """Regression: a TOCTOU where ``existing_md`` is None but ITERATE.md
+        exists on disk (a concurrent scaffold between the caller's existence
+        check and the write) must restore the just-backed-up file — not unlink
+        the freshly written one and orphan the snapshot."""
+        from iterate_cli import generator
+
+        data = _build_onboarding_data(fake_project)
+        # Pre-existing ITERATE.md: a backup WILL be taken by the write path.
+        (fake_project / "ITERATE.md").write_text(
+            "ORIGINAL USER CONTENT\n", encoding="utf-8"
+        )
+
+        real_atomic = generator.atomic_write
+        calls: list[str] = []
+
+        def failing_atomic(path, content, encoding="utf-8"):
+            calls.append(Path(path).name)
+            if Path(path).name == "iterate.config.yaml":
+                raise OSError("disk full")
+            return real_atomic(path, content, encoding=encoding)
+
+        monkeypatch.setattr(generator, "atomic_write", failing_atomic)
+        with pytest.raises(OSError, match="disk full"):
+            write_onboarding_outputs(data, fake_project, existing_md=None)
+
+        # The pre-existing content is restored from the snapshot, not deleted.
+        md = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
+        assert "ORIGINAL USER CONTENT" in md
+        # The fresh ITERATE.md write happened first, then the config write
+        # failed, then the rollback restored the original.
+        assert "ITERATE.md" in calls and "iterate.config.yaml" in calls
+
 
 class TestExtractUserOwnedSection:
     def test_extracts_content(self) -> None:
@@ -6129,6 +6164,23 @@ class TestPersonalizeClear:
         iterate_md = (fake_project / "ITERATE.md").read_text(encoding="utf-8")
         assert "legacy/**" not in iterate_md
         assert "Use snake_case" not in iterate_md
+
+    def test_clear_takes_a_timestamped_backup(self, fake_project: Path) -> None:
+        """clear must snapshot both files before mutating (like save), so a
+        failed/crashed clear is recoverable via `iterate backup restore`."""
+        from iterate_cli.personalize import clear_personalization, save_personalization
+
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+        save_personalization(
+            fake_project, PersonalizationData(protected_paths=["legacy/**"])
+        )
+
+        clear_personalization(fake_project)
+
+        backups = sorted(p.name for p in fake_project.glob("*.personalize-*"))
+        assert any(p.startswith("iterate.config.yaml.personalize-") for p in backups)
+        assert any(p.startswith("ITERATE.md.personalize-") for p in backups)
 
     def test_clear_cancel_does_nothing(self, fake_project: Path, monkeypatch, capsys) -> None:
         from iterate_cli.personalize import save_personalization

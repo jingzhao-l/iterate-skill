@@ -412,6 +412,34 @@ class TestApplyBundle:
         second = apply_bundle(tmp_path, _valid_payload(), now=FIXED_NOW)
         assert set(first["backups"]).isdisjoint(second["backups"])
 
+    def test_symlinked_destination_is_written_through_not_detached(
+        self, tmp_path: Path
+    ) -> None:
+        """import must preserve a dotfile symlink, like every other writer.
+
+        Regression: apply_bundle committed with a raw os.replace, which on a
+        symlinked destination swaps the *link* for a regular file and leaves
+        the real target stale (the shared ~/dotfiles config never updates).
+        """
+        real = tmp_path / "dotfiles"
+        real.mkdir()
+        real_config = real / "iterate.config.yaml"
+        real_config.write_text("goal: old\n", encoding="utf-8")
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        link = project / "iterate.config.yaml"
+        link.symlink_to(real_config)
+
+        report = apply_bundle(project, _valid_payload(), now=FIXED_NOW)
+
+        # The symlink survives and the REAL target got the imported content.
+        assert link.is_symlink()
+        assert link.resolve() == real_config
+        written = yaml.safe_load(real_config.read_text(encoding="utf-8"))
+        assert written["goal"] == CONFIG["goal"]
+        assert report["written"] == ["iterate.config.yaml", "ITERATE.md"]
+
     def test_absent_iterate_md_leaves_existing_markdown_alone(
         self, tmp_path: Path
     ) -> None:

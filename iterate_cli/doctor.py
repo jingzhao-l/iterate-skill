@@ -1015,7 +1015,11 @@ def _check_dimension_sets(report: DoctorReport, config: dict[str, Any]) -> None:
                 problems.append(f"{name}: focus must be a mapping")
             else:
                 for dim in focus:
-                    if dim not in seen:
+                    # Coerce to str before the set membership test: a
+                    # hand-edited config can put an unhashable YAML key (a
+                    # sequence) under focus, and `dim not in seen` on a list
+                    # would raise TypeError instead of a clean finding.
+                    if str(dim) not in seen:
                         problems.append(f"{name}: focus[{dim!r}] not in this set's dimensions")
 
     if problems:

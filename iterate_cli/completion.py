@@ -610,10 +610,10 @@ def validate_script_syntax(shell: str, script: str) -> str | None:
     binary = shutil.which(shell)
     if binary is None:
         return None
-    if shell == "fish":
-        cmd = [binary, "-n"]
-    else:
-        cmd = [binary, "-n"]
+    # bash, zsh and fish all accept `-n` to syntax-check a script without
+    # executing it (the completion script is shell-agnostic enough that the
+    # same check works for every supported shell).
+    cmd = [binary, "-n"]
     try:
         result = subprocess.run(
             cmd,

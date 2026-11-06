@@ -121,7 +121,10 @@ def _normalize_set(
     focus: dict[str, str] = {}
     if isinstance(focus_raw, dict):
         for dim, text in focus_raw.items():
-            if dim in seen and isinstance(text, str) and text.strip():
+            # Guard `isinstance(dim, str)` first: `dim in seen` on an
+            # unhashable YAML key (e.g. a sequence) would raise TypeError
+            # instead of dropping the malformed entry.
+            if isinstance(dim, str) and dim in seen and isinstance(text, str) and text.strip():
                 focus[dim] = text.strip()
 
     return {"dimensions": dims_out, **({"focus": focus} if focus else {})}

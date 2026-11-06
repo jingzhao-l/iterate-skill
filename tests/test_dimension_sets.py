@@ -102,6 +102,19 @@ class TestNormalizeDimensionSets:
         out = normalize_dimension_sets(raw)
         assert out == {"x": {"dimensions": ["correctness"]}}
 
+    def test_non_string_focus_key_does_not_crash(self) -> None:
+        """A non-string focus key (int/bool, or a programmatically built dict
+        that YAML would reject) must not raise on the set membership test; it
+        is dropped instead of crashing normalize."""
+        raw = {
+            "x": {
+                "dimensions": ["correctness"],
+                "focus": {1: "numeric key", "correctness": "valid"},
+            }
+        }
+        out = normalize_dimension_sets(raw)
+        assert out == {"x": {"dimensions": ["correctness"], "focus": {"correctness": "valid"}}}
+
 
 class TestSuggestDimensionSets:
     def test_pure_python_project_offers_cross_cutting_sets(self) -> None:

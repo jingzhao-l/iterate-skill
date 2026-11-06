@@ -485,12 +485,23 @@ def parse_checksums(data: bytes) -> dict[str, str]:
 
     Accepts coreutils ``sha256sum`` output (``<digest>  <name>``) and the
     ``*name`` binary marker used by ``shasum -a 256``.
+
+    Raises:
+        ValueError: When the file carries two **conflicting** digests for the
+            same filename. A self-contradictory checksum file is never
+            trustworthy — the npx installer and ``scripts/install.py`` both
+            reject it outright, and the updater must not silently trust
+            whichever line parses last.
     """
     text = data.decode("utf-8", errors="replace")
     result: dict[str, str] = {}
     for match in _CHECKSUM_LINE.finditer(text):
         digest, name = match.groups()
-        result[name.strip()] = digest.lower()
+        name = name.strip()
+        digest = digest.lower()
+        if name in result and result[name] != digest:
+            raise ValueError(f"conflicting checksum entries for {name!r}")
+        result[name] = digest
     return result
 
 
@@ -522,7 +533,13 @@ def _download_bytes(
 
 def _verify(tarball: bytes, checksums: bytes) -> str | None:
     """Return None on match, else the human-readable rejection reason."""
-    expected = parse_checksums(checksums).get(TARBALL_ASSET_NAME)
+    try:
+        expected = parse_checksums(checksums).get(TARBALL_ASSET_NAME)
+    except ValueError as exc:
+        # A self-contradictory checksum file (conflicting duplicate digest) is
+        # never trustworthy: refuse the release with a clean reason instead of
+        # raising past the "never raises" verification contract.
+        return f"checksum file is untrustworthy: {exc}"
     if expected is None:
         return f"checksum file has no {TARBALL_ASSET_NAME} entry"
     actual = _sha256_of(tarball)
@@ -640,7 +657,12 @@ def download_verified_release(
         return None, reason
 
     # GPG authenticity check (mandatory — see enforce_signature_policy).
-    temp_parent = Path(tempfile.mkdtemp(prefix="iterate-update-"))
+    try:
+        temp_parent = Path(tempfile.mkdtemp(prefix="iterate-update-"))
+    except OSError as exc:
+        # mkdtemp failure must not escape as a raw traceback past
+        # run_update's never-raise contract; return a clean reason.
+        return None, f"could not create a temporary directory: {exc}"
     # The extracted source root is handed back to the caller, which owns
     # cleanup of ``temp_parent``; every FAILURE path below must remove it, else
     # a failed signature check / archive load leaks a temp tree. ``keep`` is set
@@ -777,6 +799,18 @@ def _copy_release_path(source: Path, destination: Path, relative: str) -> None:
         raise ValueError(f"refusing to copy through symlinked directory: {relative!r}")
 
     dst.parent.mkdir(parents=True, exist_ok=True)
+    # Re-verify the resolved parent immediately before the destructive
+    # copy/replace: between the guard above and here a concurrent writer could
+    # swap an intermediate directory for a symlink, routing the write outside
+    # the selected destination (TOCTOU). Re-resolving after mkdir closes that
+    # window — the parent now exists, so realpath reflects the true path the
+    # copy/replace below will operate on.
+    real_dst_parent = Path(os.path.realpath(dst.parent))
+    if not (
+        real_dst_parent == destination or real_dst_parent.is_relative_to(destination)
+    ):
+        raise ValueError(f"refusing to copy through symlinked directory: {relative!r}")
+
     if src.is_dir():
         # Atomic-ish replace: build the new tree in a temp SIBLING first, then
         # swap it in with os.replace. A failure mid-copy (disk full, permission

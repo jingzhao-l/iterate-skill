@@ -155,3 +155,44 @@ class TestBasicUpdatePreservesTunedValues:
         assert config["dimension_sets"]["api"]["focus"]["security"] == (
             "authz boundaries only"
         )
+
+    def test_unsafe_hand_edited_command_is_dropped_not_persisted(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Re-onboard must not persist a hand-edited, non-safe validation
+        command (the runtime guard would refuse it anyway, so keeping it only
+        produces a config that reports success but can never run)."""
+        from iterate_cli.generator import OnboardingData, write_onboarding_outputs
+        from iterate_cli.scan import scan_project, suggest_dimensions
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n', encoding="utf-8"
+        )
+        (project / "tests").mkdir()
+        scan = scan_project(project)
+        data = OnboardingData(
+            project_root=project,
+            channel="cli",
+            scan=scan,
+            dimensions=suggest_dimensions(scan),
+            validation_commands={
+                "python": [
+                    "pytest -q tests/",
+                    "rm -rf .",  # metachar-free but NOT a known-safe prefix
+                ]
+            },
+        )
+        write_onboarding_outputs(data, project)
+
+        responses = _update_basic_responses()
+        result = run_wizard(project, input_func=lambda _: next(responses))
+
+        assert result is not None
+        assert result.validation_commands == {"python": ["pytest -q tests/"]}
+        assert "rm -rf ." not in str(result.validation_commands)
+        # tui.warning goes to stderr; rich wraps at word boundaries, so
+        # normalize whitespace before asserting the phrase.
+        normalized = " ".join(capsys.readouterr().err.split())
+        assert "not known-safe" in normalized and "rm -rf ." in normalized

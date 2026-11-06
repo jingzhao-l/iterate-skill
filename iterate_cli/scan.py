@@ -138,7 +138,18 @@ def _scan_top_level_dirs(project_root: Path, result: ScanResult) -> None:
     """List top-level directories, skipping common non-source dirs."""
     try:
         for entry in sorted(project_root.iterdir(), key=lambda e: e.name):
-            if entry.is_dir() and entry.name not in SKIP_DIRS and not entry.name.startswith("."):
+            # A symlinked directory pointing outside the project (e.g.
+            # `vendor -> /srv/shared`) is not part of the project and would
+            # leak an out-of-tree name into ITERATE.md / scan --json. Count a
+            # top-level entry as a source dir only when it is a REAL directory
+            # (not a symlink): is_symlink() works on every supported Python
+            # (is_dir(follow_symlinks=False) is 3.13+).
+            if (
+                entry.is_dir()
+                and not entry.is_symlink()
+                and entry.name not in SKIP_DIRS
+                and not entry.name.startswith(".")
+            ):
                 result.top_level_dirs.append(entry.name)
     except OSError as exc:
         # 目录列表失败（如权限不足、目录在扫描过程中被删除、挂载点出错）

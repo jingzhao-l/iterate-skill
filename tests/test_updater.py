@@ -449,6 +449,29 @@ def test_parse_checksums_lowercases_digest() -> None:
     assert parsed[TARBALL_ASSET_NAME] == "a" * 64
 
 
+def test_parse_checksums_rejects_conflicting_duplicates() -> None:
+    """A self-contradictory checksum file is never trustworthy.
+
+    The npx installer and scripts/install.py both reject a conflicting
+    duplicate digest outright; the updater must not silently trust whichever
+    line parses last (parity with the installer contract).
+    """
+    with pytest.raises(ValueError, match="conflicting checksum"):
+        parse_checksums(
+            f"{'a' * 64}  {TARBALL_ASSET_NAME}\n"
+            f"{'b' * 64}  {TARBALL_ASSET_NAME}\n".encode()
+        )
+
+
+def test_parse_checksums_accepts_identical_duplicates() -> None:
+    """Two identical digests for the same name are not a contradiction."""
+    parsed = parse_checksums(
+        f"{'a' * 64}  {TARBALL_ASSET_NAME}\n"
+        f"{'a' * 64}  {TARBALL_ASSET_NAME}\n".encode()
+    )
+    assert parsed[TARBALL_ASSET_NAME] == "a" * 64
+
+
 def test_download_verified_release_success(tmp_path) -> None:
     fetch = make_ok_fetch(tmp_path)
     release, _ = fetch_latest_release(fetch=fetch)
@@ -464,6 +487,37 @@ def test_download_verified_release_success(tmp_path) -> None:
     import shutil
 
     shutil.rmtree(cleanup, ignore_errors=True)
+
+
+def test_verify_rejects_conflicting_checksum_file() -> None:
+    """A conflicting-duplicate checksum file fails closed (not last-wins)."""
+    checksums = (
+        f"{'a' * 64}  {TARBALL_ASSET_NAME}\n"
+        f"{'b' * 64}  {TARBALL_ASSET_NAME}\n"
+    ).encode()
+    tarball = hashlib.sha256(b"release").digest()
+    reason = updater._verify(tarball, checksums)
+    assert reason is not None
+    assert "untrustworthy" in reason
+
+
+def test_mkdtemp_failure_is_a_clean_error(tmp_path, monkeypatch) -> None:
+    """A mkdtemp failure must not escape as a raw traceback past the
+    never-raise contract; download_verified_release returns a clean reason."""
+    import tempfile
+
+    fetch = make_ok_fetch(tmp_path)
+    release, _ = fetch_latest_release(fetch=fetch)
+    assert release is not None
+
+    def _boom(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", _boom)
+    source, error = download_verified_release(release, fetch=fetch)
+    assert source is None
+    assert error is not None
+    assert "could not create a temporary directory" in error
 
 
 def test_download_verified_release_missing_checksum_asset() -> None:

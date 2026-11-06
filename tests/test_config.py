@@ -1022,3 +1022,87 @@ class TestSettableKeysDocumentedInReadmes:
         assert set(flat) == self._EXPECTED_FLAT
         assert set(dotted) == self._EXPECTED_DOTTED
         assert "invariants.*" in text and "不支持" in text
+
+
+# ---------------------------------------------------------------------------
+# `iterate config schema` — canonical JSON Schema emission (net-new capability)
+# ---------------------------------------------------------------------------
+class TestConfigSchema:
+    """`iterate config schema` emits the canonical config JSON Schema."""
+
+    def test_schema_emits_valid_json(self, capsys) -> None:
+        from iterate_cli.configcmd import run_config_schema
+
+        assert run_config_schema() == 0
+        parsed = json.loads(capsys.readouterr().out)
+        assert parsed["title"] == "Iterate Skill Configuration"
+        assert "max_rounds" in parsed["properties"]
+        # The schema must be the same document doctor validates against.
+        from iterate_cli.doctor import SCHEMA_PATH
+
+        on_disk = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        assert parsed == on_disk
+
+    def test_schema_out_writes_file(self, tmp_path, capsys) -> None:
+        from iterate_cli.configcmd import run_config_schema
+
+        target = tmp_path / "config.schema.json"
+        assert run_config_schema(out=str(target)) == 0
+        parsed = json.loads(target.read_text(encoding="utf-8"))
+        assert parsed["title"] == "Iterate Skill Configuration"
+        # stdout stays clean (confirmation goes to stderr).
+        assert capsys.readouterr().out == ""
+
+    def test_schema_out_refuses_existing_without_force(self, tmp_path, capsys) -> None:
+        from iterate_cli.configcmd import run_config_schema
+
+        target = tmp_path / "config.schema.json"
+        target.write_text("old", encoding="utf-8")
+        assert run_config_schema(out=str(target)) == 1
+        assert target.read_text(encoding="utf-8") == "old"  # untouched
+
+    def test_schema_out_force_overwrites(self, tmp_path) -> None:
+        from iterate_cli.configcmd import run_config_schema
+
+        target = tmp_path / "config.schema.json"
+        target.write_text("old", encoding="utf-8")
+        assert run_config_schema(out=str(target), force=True) == 0
+        parsed = json.loads(target.read_text(encoding="utf-8"))
+        assert parsed["title"] == "Iterate Skill Configuration"
+
+    def test_schema_compact_is_single_line(self, capsys) -> None:
+        from iterate_cli.configcmd import run_config_schema
+
+        assert run_config_schema(compact=True) == 0
+        out = capsys.readouterr().out.strip()
+        assert "\n" not in out
+        assert json.loads(out)["title"] == "Iterate Skill Configuration"
+
+    def test_cli_schema_rejects_key_and_value(self, tmp_path, capsys) -> None:
+        code = cli_main(["config", "schema", "extra", "-p", str(tmp_path), "--no-banner"])
+        assert code == 2
+        assert "schema takes no KEY/VALUE" in capsys.readouterr().err
+
+    def test_cli_schema_flags_rejected_for_get(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        code = cli_main(
+            ["config", "get", "goal", "--out", "/tmp/x.json", "-p", str(project), "--no-banner"]
+        )
+        assert code == 2
+        assert "--out/--compact/--force are only valid" in capsys.readouterr().err
+
+    def test_cli_schema_works_outside_project(self, tmp_path, capsys) -> None:
+        # schema describes the CLI config contract, not a project, so it must
+        # work from a directory with no iterate.config.yaml.
+        code = cli_main(["config", "schema", "-p", str(tmp_path), "--no-banner"])
+        assert code == 0
+        parsed = json.loads(capsys.readouterr().out)
+        assert parsed["title"] == "Iterate Skill Configuration"
+
+    def test_cli_help_mentions_schema(self, capsys) -> None:
+        code = cli_main(["help", "config"])
+        assert code == 0
+        captured = capsys.readouterr()
+        text = captured.out + captured.err
+        assert "schema" in text and "canonical config JSON Schema" in text

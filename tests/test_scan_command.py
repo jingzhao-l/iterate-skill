@@ -91,6 +91,20 @@ class TestCollectScanData:
         assert data["has_specs"] is False
         assert data["has_tests"] is False
         assert data["has_ci"] is False
+
+    def test_symlinked_directory_is_not_counted_as_top_level(
+        self, tmp_path: Path
+    ) -> None:
+        """A symlinked dir pointing outside the project must not leak into the
+        scan's top_level_dirs (it is not part of the project)."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (tmp_path / "vendor").symlink_to(outside, target_is_directory=True)
+        (tmp_path / "src").mkdir()
+
+        data = collect_scan_data(tmp_path)
+        assert "src" in data["top_level_dirs"]
+        assert "vendor" not in data["top_level_dirs"]
         assert data["has_frontend"] is False
         assert data["suggested_validation_commands"] == {}
 

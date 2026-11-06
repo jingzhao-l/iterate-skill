@@ -1564,6 +1564,22 @@ class TestDownloadReleaseSource:
         with pytest.raises(install.ReleaseStructureError, match="found 2"):
             self._run(monkeypatch, data)
 
+    def test_mkdtemp_failure_is_a_clean_structure_error(self, monkeypatch) -> None:
+        """mkdtemp failure must not escape as a raw traceback past the
+        ReleaseIntegrityError/ReleaseStructureError handlers in update_command."""
+        import tempfile as _tf
+
+        data = self._tar_bytes({"srcdir": ["SKILL.md"]})
+
+        def _boom(*args, **kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(_tf, "mkdtemp", _boom)
+        with pytest.raises(
+            install.ReleaseStructureError, match="could not create a temporary directory"
+        ):
+            self._run(monkeypatch, data)
+
     def _patched_run(
         self,
         monkeypatch: pytest.MonkeyPatch,

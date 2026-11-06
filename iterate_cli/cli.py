@@ -353,6 +353,12 @@ def main(argv: list[str] | None = None) -> int:
         and not (
             args.command == "export" and getattr(args, "out", None) == "-"
         )
+        # `config schema` emits the JSON Schema on stdout (the whole point of
+        # the command is a clean machine document), so never banner it.
+        and not (
+            args.command == "config"
+            and getattr(args, "config_action", None) == "schema"
+        )
     )
 
     try:
@@ -508,6 +514,9 @@ def _dispatch_command(
             key=getattr(args, "key", None),
             value=getattr(args, "value", None),
             json_output=getattr(args, "json", False),
+            out=getattr(args, "out", None),
+            compact=getattr(args, "compact", False),
+            force=getattr(args, "force", False),
         )
     if args.command == "guard":
         if show_banner:
@@ -965,7 +974,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "action, prints every settable value; 'get KEY' prints one resolved "
         "value; 'set KEY VALUE' validates and writes one value with a "
         "timestamped backup; 'unset KEY' removes one value so it falls back "
-        "to its documented default.",
+        "to its documented default; 'schema' emits the canonical JSON Schema "
+        "for iterate.config.yaml (editor/CI tooling).",
     )
     # NOTE: no `choices=` here on purpose. The help promises `get` is the
     # default action ("`iterate config get [KEY]`... get is the default when
@@ -977,8 +987,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "config_action",
         nargs="?",
         default=None,
-        help="Action to perform: 'get' (default when omitted), 'set', or "
-        "'unset' (restore the documented default).",
+        help="Action to perform: 'get' (default when omitted), 'set', "
+        "'unset' (restore the documented default), or 'schema' (emit the "
+        "canonical config JSON Schema).",
     )
     config_parser.add_argument(
         "key",
@@ -997,6 +1008,25 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Emit a structured JSON object instead of TUI output.",
+    )
+    # Schema-only flags. Accepted here (not on a dedicated subparser) so the
+    # action stays a plain positional, exactly like get/set/unset.
+    config_parser.add_argument(
+        "--out",
+        default=None,
+        help="Write the schema to PATH instead of stdout (schema action only).",
+    )
+    config_parser.add_argument(
+        "--compact",
+        action="store_true",
+        default=False,
+        help="Emit single-line JSON (schema action only).",
+    )
+    config_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Overwrite an existing --out file (schema action only).",
     )
 
     guard_parser = subparsers.add_parser(
@@ -2978,6 +3008,9 @@ def _cmd_config(
     key: str | None,
     value: str | None,
     json_output: bool = False,
+    out: str | None = None,
+    compact: bool = False,
+    force: bool = False,
 ) -> int:
     """Handle the 'config' subcommand — non-interactive config inspection/edit.
 
@@ -2988,12 +3021,21 @@ def _cmd_config(
     documented default. With ``--json``, read/get/set/unset emit a structured
     JSON object on stdout (for scripts/CI) instead of TUI lines.
 
+    ``iterate config schema`` emits the canonical JSON Schema for
+    ``iterate.config.yaml`` (``--out``/``--compact``/``--force`` apply only to
+    this action) so editors, CI validators and other tooling can enforce the
+    same config contract the CLI itself enforces.
+
     Args:
         project_root: Project root directory.
-        action: The config action ("get", "set", "unset", or None to list all).
+        action: The config action ("get", "set", "unset", "schema", or None
+            to list all).
         key: Flat config key to read or write (None to list all keys).
         value: Raw CLI value to write (only used with "set").
         json_output: When True, emit JSON objects instead of TUI output.
+        out: Schema output path (schema action only; None = stdout).
+        compact: Emit single-line schema JSON (schema action only).
+        force: Overwrite an existing ``out`` file (schema action only).
 
     Returns:
         Exit code: 0 on success, 1 on unknown key / invalid value / write
@@ -3001,20 +3043,31 @@ def _cmd_config(
     """
     from iterate_cli.configcmd import (
         run_config_get,
+        run_config_schema,
         run_config_set,
         run_config_unset,
     )
 
+    # The implicit-get reinterpretation below happens before the schema branch,
+    # so flags meant for schema must not be silently swallowed by get/set/unset.
+    if action != "schema" and (out is not None or compact or force):
+        _config_usage_error(
+            "--out/--compact/--force are only valid with "
+            "'iterate config schema'",
+            json_output,
+        )
+        return 2
+
     # Implicit `get`: `iterate config KEY` ≡ `iterate config get KEY`. The
     # first positional is normally the action, so when it is not one of the
-    # three known verbs (and is therefore a config key like `language`), shift
+    # known verbs (and is therefore a config key like `language`), shift
     # it into `key` and treat the action as "get".
-    if action is not None and action not in ("get", "set", "unset"):
+    if action is not None and action not in ("get", "set", "unset", "schema"):
         if key is not None:
             # `config sett key value` used to be read as an implicit get and
             # answered "get takes no VALUE" — a message about a verb the user
             # never typed. Name the likely intended verb instead.
-            suggestion = _did_you_mean(action, ("get", "set", "unset"))
+            suggestion = _did_you_mean(action, ("get", "set", "unset", "schema"))
             if suggestion:
                 message = (
                     f"unknown config action {action!r} — did you mean "
@@ -3023,14 +3076,23 @@ def _cmd_config(
                 )
             else:
                 message = (
-                    f"unknown config action {action!r}; expected get/set/unset. "
-                    "Usage: iterate config set KEY VALUE, or "
-                    "`iterate config KEY` to read one value."
+                    f"unknown config action {action!r}; expected "
+                    "get/set/unset/schema. Usage: iterate config set KEY VALUE, "
+                    "or `iterate config KEY` to read one value."
                 )
             _config_usage_error(message, json_output)
             return 2
         key = action
         action = "get"
+
+    if action == "schema":
+        if key is not None or value is not None:
+            _config_usage_error(
+                "Usage: iterate config schema  (schema takes no KEY/VALUE)",
+                json_output,
+            )
+            return 2
+        return run_config_schema(out=out, compact=compact, force=force)
 
     if action == "set":
         # Usage errors must be exit 2 everywhere (bare `iterate`, `--json` on

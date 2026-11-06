@@ -408,6 +408,19 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
     refused without being executed, so a hand-edited or drift-polluted config
     can never execute chained shell.
 
+    Defense-in-depth note (documented tradeoff): the metacharacter gate rejects
+    ``; | & $ ` < > ( )`` and backslashes, so command substitution, piping,
+    redirection and chaining are impossible — but the gate is *tool-name based*
+    (see ``_is_known_safe_command``), so a metachar-free command whose first
+    token is an allowlisted recipe-driven tool (``make``, ``cmake --build``,
+    ``npm run``, ``gradle``, …) still runs whatever recipe the project's own
+    Makefile/package.json declares. That is the intended purpose of a project
+    validation command; it is not injection. It does mean a project's
+    ``iterate.config.yaml`` (and its build scripts) is a **code-execution
+    vector on that checkout**: only run ``guard``/``doctor``/``invariant`` on a
+    tree whose config and build scripts you have reviewed, and never on an
+    untrusted PR checkout without review.
+
     Output is drained through a bounded line buffer (last ``_OUTPUT_LINE_CAP``
     lines / ``_OUTPUT_BYTE_CAP`` bytes), so a chatty build or test command
     cannot drive the host process into unbounded memory growth; only a

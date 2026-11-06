@@ -611,12 +611,37 @@ def _load_existing_onboarding_data(project_root: Path) -> OnboardingData | None:
         # requires minItems: 1, and doctor reports an empty module as an error.
         # refresh._resolve_validation_config drops them too, so persisting them
         # here would leave the wizard writing a config it immediately flags.
-        validation_commands = {
-            str(module): [str(c) for c in cmds if isinstance(c, str)]
-            for module, cmds in raw_commands.items()
-            if isinstance(cmds, list)
-            and any(isinstance(c, str) for c in cmds)
-        }
+        # Re-validate preserved validation.commands against the known-safe
+        # prefix allowlist. A hand-edited config can carry a command that is
+        # silently non-functional until guard/doctor rejects it; the runtime
+        # guard would refuse it, but the wizard would persist it and report a
+        # "successful" onboard for a command that can never run. Drop it here
+        # and say so. Imported lazily: guard -> personalize -> wizard is a
+        # module cycle, so a top-level import would deadlock.
+        from iterate_cli.guard import _command_is_safe
+
+        validation_commands: dict[str, list[str]] = {}
+        unsafe: list[str] = []
+        for module, cmds in raw_commands.items():
+            if not isinstance(cmds, list):
+                continue
+            kept: list[str] = []
+            for c in cmds:
+                if not isinstance(c, str):
+                    continue
+                if _command_is_safe(c):
+                    kept.append(c)
+                else:
+                    unsafe.append(f"{module}: {c!r}")
+            if kept:
+                validation_commands[str(module)] = kept
+        if unsafe:
+            tui.warning(
+                "Dropped validation command(s) that are not known-safe: "
+                + "; ".join(unsafe)
+                + ". Fix iterate.config.yaml, or add them to "
+                "validation.command_whitelist after an explicit review."
+            )
         # Normalize validation.command_whitelist: a hand-edited scalar string
         # (`command_whitelist: pytest`) would otherwise be iterated per
         # CHARACTER (each char passes `isinstance(w, str)`), producing

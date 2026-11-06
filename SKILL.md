@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.11.0
+version: 3.12.0
 permissions:
   file_read: true
   file_write: true
@@ -334,6 +334,7 @@ iterate config       # 非交互式查看全部可设配置值（支持 --json�
 iterate config get <key>   # 读取单个配置项的解析值（支持 --json，输出 {"key": value}）
 iterate config set <key> <value>  # 校验并写回单个配置项（自动备份；--json 输出确认对象）
 iterate config unset <key> # 删除该配置项并逐级剪掉空祖先节点（自动备份；key 不存在时退出码 1；--json）
+iterate config schema      # 输出 iterate.config.yaml 的规范 JSON Schema（--out PATH 写文件、--force 覆盖、--compact 单行；供 yaml-language-server / CI / 工具链与 CLI 强制同一套配置契约）
 iterate update       # 自更新：SHA-256 校验后刷新助手技能目录 + 重装 CLI（--check 只对比版本；--yes 跳过确认；--assistants 限定刷新范围，未知助手名报错而非静默跳过）
 iterate help         # 打印总览帮助（等价 `iterate --help`）
 iterate help doctor  # 打印单个命令的详细帮助
@@ -348,6 +349,8 @@ CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适
 - **非首次 onboarding**（已有 ITERATE.md）：询问是否更新基础配置（不建议手动改）→ 询问是否进行个性化配置。
 
 `iterate config set <key> <value>` 的 `<key>`（扁平键，与 `iterate show` 输出的键一致）与点号路径别名（如 `git.use_worktree`、`reviewer.coverage_validation`）均可使用。`iterate config unset <key>` 反向操作：删除该键，若其父节点因此变空（如 `personalization` 下所有子项都被删）则连父节点一并剪掉，恢复到 schema 的默认语义；每次写入前自动备份为同目录下的 `iterate.config.yaml.configunset-<UTC 时间戳>-<随机后缀>`。若该键不存在（或父节缺失/不是 mapping），`unset` 以退出码 1 结束并提示 `nothing to unset`，不会静默成功。若该键带注释（`# ...`），删除会一并移除注释并在 stderr 给出 warning，避免留下悬空注释。
+
+`iterate config schema` 把 `iterate.config.yaml` 的规范 JSON Schema 以纯 JSON 输出到 stdout（该命令恒不被 ASCII banner 污染，且不需要存在 `iterate.config.yaml`——它描述的是 CLI 的配置契约）。`--out PATH` 写入文件（默认拒绝覆盖已存在、`--force` 覆盖，确认信息走 stderr 保持 stdout 纯净），`--compact` 输出单行 JSON。这样编辑器（yaml-language-server 的 `yaml.schemas`）、CI 校验器与其它工具就能对 `iterate.config.yaml` 自动补全/校验，并与 `doctor`/`scripts/validate.py` 强制的是同一套规则。
 
 ### 退出码约定 / Exit-Code Contract
 

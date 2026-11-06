@@ -1400,7 +1400,7 @@ def clear_personalization(project_root: Path) -> tuple[Path, Path]:
         FileNotFoundError: If iterate.config.yaml does not exist.
         OSError: If a write (or a rollback) fails.
     """
-    from iterate_cli.generator import atomic_write
+    from iterate_cli.generator import atomic_write, backup_file
 
     config_path = project_root / "iterate.config.yaml"
     if not config_path.is_file():
@@ -1419,6 +1419,19 @@ def clear_personalization(project_root: Path) -> tuple[Path, Path]:
 
     old_config = config_path.read_text(encoding="utf-8")
     iterate_md_path = project_root / "ITERATE.md"
+
+    # Snapshot both files before mutating, matching save_personalization: a
+    # clear that fails partway (or a crash between the two writes) must be
+    # recoverable via `iterate backup list/restore`, not just the in-memory
+    # old_config text held only by this call.
+    try:
+        backup_file(config_path, "personalize")
+        if iterate_md_path.is_file():
+            backup_file(iterate_md_path, "personalize")
+    except OSError as exc:
+        raise OSError(
+            f"failed to back up before clearing personalization: {exc}"
+        ) from exc
 
     atomic_write(config_path, config_yaml)
     if iterate_md_content is not None:

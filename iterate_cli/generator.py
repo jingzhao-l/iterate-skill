@@ -697,10 +697,13 @@ def write_onboarding_outputs(
     # always be recoverable; ``reonboard`` already did this explicitly, but
     # plain ``onboard``/``init`` reaching an existing file did not. A failed
     # backup aborts the write (no unrecoverable rewrite).
+    md_backup: Path | None = None
     for destination in (iterate_md_path, config_path):
         if destination.is_file():
             try:
-                backup_file(destination, "onboard")
+                backup_path = backup_file(destination, "onboard")
+                if destination == iterate_md_path:
+                    md_backup = backup_path
             except OSError as exc:
                 raise OSError(
                     f"failed to back up {destination} before onboarding: {exc}"
@@ -712,11 +715,14 @@ def write_onboarding_outputs(
     except OSError as write_err:
         # Roll back the already-written ITERATE.md so the two files stay
         # consistent (best effort; the error is re-raised for the caller).
-        # Restore the exact pre-existing content, or remove the artifact when
-        # it did not exist before (fresh onboarding), instead of re-rendering.
+        # Restore the exact pre-existing content from the snapshot actually
+        # taken above — the authoritative "file existed before" signal. Branch
+        # on the backup (not on ``existing_md``, which a TOCTOU between the
+        # caller's existence check and this write can leave stale) so a
+        # just-backed-up file is never deleted instead of restored.
         try:
-            if existing_md is not None:
-                atomic_write(iterate_md_path, existing_md)
+            if md_backup is not None:
+                shutil.copy2(md_backup, iterate_md_path)
             elif iterate_md_path.exists():
                 iterate_md_path.unlink()
         except OSError:

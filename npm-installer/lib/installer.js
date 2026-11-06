@@ -56,6 +56,16 @@ const CHECKSUMS_ASSET_NAME = 'SHA256SUMS.txt';
 // verifies authenticity (not just integrity) against the embedded signing key.
 const TARBALL_SIGNATURE_ASSET_NAME = 'iterate-skill.tar.gz.asc';
 
+/**
+ * Find a release asset by name, tolerating a malformed payload.
+ * Guards each element (a malformed GitHub API response can contain a null /
+ * non-object entry before the matching asset; `a.name` on null would throw a
+ * TypeError instead of the intended clean "release is missing …" error path).
+ */
+function findReleaseAsset(assets, name) {
+  return Array.isArray(assets) ? assets.find((a) => a && a.name === name) : undefined;
+}
+
 // Hard cap on a single curl download: a misbehaving CDN or a corrupt release
 // must never hang the installer forever.
 const CURL_MAX_TIME_SECONDS = '120';
@@ -1637,11 +1647,11 @@ async function main(options = {}) {
   }
   success(`Latest release: ${tag}`);
 
-  const tarballAsset = release.assets?.find((a) => a.name === TARBALL_ASSET_NAME);
-  const checksumAsset = release.assets?.find((a) => a.name === CHECKSUMS_ASSET_NAME);
+  const tarballAsset = findReleaseAsset(release.assets, TARBALL_ASSET_NAME);
+  const checksumAsset = findReleaseAsset(release.assets, CHECKSUMS_ASSET_NAME);
   // Optional `.asc` signature; its absence only downgrades authenticity to
   // integrity (see the best-effort verify below), never fails the install.
-  const signatureAsset = release.assets?.find((a) => a.name === TARBALL_SIGNATURE_ASSET_NAME);
+  const signatureAsset = findReleaseAsset(release.assets, TARBALL_SIGNATURE_ASSET_NAME);
 
   if (!tarballAsset) {
     error(`Release is missing the ${TARBALL_ASSET_NAME} asset.`);
@@ -1820,6 +1830,7 @@ module.exports = {
   parseChecksums,
   constantTimeHashEqual,
   enforceDownloadedSize,
+  findReleaseAsset,
   extractTarball,
   rejectLinkEntries,
   sumDeclaredSizes,

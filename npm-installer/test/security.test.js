@@ -22,6 +22,7 @@ const path = require('node:path');
 const {
   assertDeclaredSizesKnown,
   buildAuthFlags,
+  findReleaseAsset,
   GPG_TIMEOUT_MS,
   InstallerError,
   normalizeToken,
@@ -258,11 +259,26 @@ function testDeclaredSizesFailClosed() {
   console.log('security.test.js: declared-size fail-closed tests passed');
 }
 
+function testFindReleaseAssetNullElements() {
+  // A malformed GitHub API payload may contain a null / non-object entry
+  // before the matching asset; findReleaseAsset must skip it instead of
+  // throwing `TypeError: Cannot read properties of null (reading 'name')`.
+  const assets = [null, undefined, {name: 'other'}, {name: 'iterate-skill.tar.gz'}];
+  const found = findReleaseAsset(assets, 'iterate-skill.tar.gz');
+  assert.strictEqual(found.name, 'iterate-skill.tar.gz');
+  // No matching asset (and a null element) -> undefined, no throw.
+  assert.strictEqual(findReleaseAsset([null, {name: 'x'}], 'SHA256SUMS.txt'), undefined);
+  // Not an array -> undefined.
+  assert.strictEqual(findReleaseAsset(undefined, 'iterate-skill.tar.gz'), undefined);
+  console.log('security.test.js: findReleaseAsset null-element tests passed');
+}
+
 function run() {
   testTokenNormalization();
   testEqualsSyntax();
   testGpgClassification();
   testDeclaredSizesFailClosed();
+  testFindReleaseAssetNullElements();
   console.log('security.test.js: all security tests passed');
 }
 

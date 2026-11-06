@@ -483,9 +483,13 @@ iterate config --json          # JSON object of all settable values (stdout stay
 iterate config get max_rounds  # print one resolved value; --json -> {"max_rounds": ...}
 iterate config set language zh # validate + write one value (auto timestamped backup before write)
 iterate config set reasoning_effort high --json  # confirm object {"key": ..., "value": ...}
+iterate config schema                # emit the canonical JSON Schema for iterate.config.yaml (editor/CI tooling)
+iterate config schema --out schema.json --force  # write it to a file (yaml-language-server / CI)
 ```
 
 Supports flat keys (`goal`, `max_rounds`, `reasoning_effort`, `language`, `mode`, `dimensions`) and every nested key in its dotted form (`atomic.max_lines`, `atomic.max_adjacent_methods`, `git.target_branch`, `git.use_worktree`, `git.push_per_round`, `git.auto_merge`, `review.scope`, `reviewer.output_schema_validation`, `reviewer.evidence_validation`, `reviewer.coverage_validation`, `reviewer.scope_chunk_size`). `validation.commands` / `command_whitelist` and `invariants.*` are **not** settable here — edit them in `iterate.config.yaml` (or let `iterate onboard` write them) and re-check with `python scripts/validate.py config`. A corrupted config is never overwritten — `set` aborts with a clear error.
+
+`iterate config schema` emits the canonical JSON Schema (the exact document `doctor` and `scripts/validate.py` validate against) as pure JSON on stdout, so an editor (`yaml-language-server` `yaml.schemas`), a CI validator, or any other tool enforces the same contract the CLI does. `--out PATH` writes it to a file (refuses to overwrite unless `--force`; confirmation goes to stderr so stdout stays clean), `--compact` emits single-line JSON, and it needs no `iterate.config.yaml` (the schema describes the CLI's config contract, not one project).
 
 ### iterate guard (defensive-mode pre/post-edit checks, v3.0)
 

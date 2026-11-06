@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 from typing import Any
 from uuid import uuid4
 
@@ -685,4 +686,81 @@ def run_config_unset(
         return 0
     tui.success(f"{key} unset — now falls back to its default.")
     tui.hint(f"Backup written to {backup_path.name}.", indent=2)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `iterate config schema` — emit the canonical JSON Schema for tooling
+# ---------------------------------------------------------------------------
+
+#: The canonical schema file, resolved the same way doctor resolves it: the
+#: bundled copy shipped inside the package when present, else the repo copy.
+#: Imported lazily (inside the function) so module import never touches the
+#: filesystem; doctor resolves both paths at import time already.
+def _schema_path() -> Path:
+    from iterate_cli.doctor import SCHEMA_PATH
+
+    return SCHEMA_PATH
+
+
+def run_config_schema(
+    *,
+    out: str | None = None,
+    compact: bool = False,
+    force: bool = False,
+) -> int:
+    """Emit the canonical JSON Schema for ``iterate.config.yaml``.
+
+    The schema is the single source of truth ``doctor`` (and ``scripts/
+    validate.py``) validate a project's config against. Emitting it as a
+    machine-readable document lets editors (yaml-language-server ``$schema``),
+    CI validators and other tooling enforce exactly the same contract the CLI
+    itself enforces, instead of duplicating the rules by hand.
+
+    Args:
+        out: Optional path to write the schema to (stdout when omitted).
+        compact: When True, emit single-line JSON instead of pretty-printed.
+        force: When True, overwrite an existing ``out`` file (refused by
+            default, matching ``report --force`` / ``export --force``).
+
+    Returns:
+        Exit code: 0 on success, 1 when the schema file is missing/malformed
+        or the ``out`` path cannot be written.
+    """
+    path = _schema_path()
+    if not path.is_file():
+        tui.error(f"config schema not found at {path}")
+        return 1
+    try:
+        schema = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        tui.error(f"cannot read config schema at {path}: {exc}")
+        return 1
+    if not isinstance(schema, dict):
+        tui.error("config schema is not a JSON object; refusing to emit it")
+        return 1
+
+    payload = (
+        json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        if compact
+        else json.dumps(schema, ensure_ascii=False, indent=2)
+    ) + "\n"
+
+    if out:
+        out_path = Path(out)
+        if out_path.exists() and not force:
+            tui.error(f"{out_path} already exists (use --force to overwrite)")
+            return 1
+        try:
+            out_path.write_text(payload, encoding="utf-8")
+        except OSError as exc:
+            tui.error(f"cannot write {out_path}: {exc}")
+            return 1
+        # Confirmation goes to stderr so stdout stays clean for scripts that
+        # only care about the file artifact.
+        print(f"Config schema written to {out_path}", file=sys.stderr)
+        return 0
+
+    # Schema JSON is the stdout document; emit it verbatim with no decoration.
+    sys.stdout.write(payload)
     return 0

@@ -622,7 +622,14 @@ def apply_bundle(
 
     try:
         for path, staged_path in staged:
-            os.replace(staged_path, path)
+            # Preserve a symlinked destination (dotfile setups): os.replace on
+            # a symlink swaps the *link* for a regular file, silently detaching
+            # e.g. iterate.config.yaml -> ~/dotfiles and leaving the real file
+            # stale. Resolve to the target so the replace happens at the real
+            # path and the symlink survives — matching generator.atomic_write
+            # and every other writer of the same paths.
+            target = Path(os.path.realpath(path)) if path.is_symlink() else path
+            os.replace(staged_path, target)
             written.append(path)
         # Publish durability: fsync the file's directory so the renames (not
         # just the staged bytes) survive a crash. Best-effort by design.

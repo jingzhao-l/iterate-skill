@@ -2216,7 +2216,15 @@ def _download_release_source(
         )
     _success("Release tarball checksum verified.")
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="iterate-release-"))
+    try:
+        temp_dir = Path(tempfile.mkdtemp(prefix="iterate-release-"))
+    except OSError as exc:
+        # mkdtemp failure (TMPDIR unwritable / disk full) must not escape as a
+        # raw traceback past the ReleaseStructureError/ReleaseIntegrityError
+        # handlers in update_command; surface it as a clean structure error.
+        raise ReleaseStructureError(
+            f"could not create a temporary directory: {exc}"
+        ) from exc
     # The extracted tree is returned to the caller, who owns it and removes its
     # parent afterwards — so it must survive this function on SUCCESS only. On
     # every failure path (including ``ReleaseIntegrityError`` from the signature

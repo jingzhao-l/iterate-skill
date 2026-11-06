@@ -5,6 +5,76 @@
 
 ---
 
+## [3.12.0] — 2026-11-06
+
+minor：新增 `iterate config schema` 子命令（把规范 JSON Schema 暴露给编辑器 /
+CI / 工具链），补齐「iterate 用一套 schema 校验 config，用户却无法拿到它」的
+断链——此前 `config/config.schema.json` 只存在于仓库与包内数据里，没有任何 CLI
+入口可以消费它，编辑器（yaml-language-server）无法对 `iterate.config.yaml`
+做自动补全/校验，CI 也无从对齐 iterate 自己强制的那套规则。本轮全面审查
+（review-bugbot）确认 2 处中 + 9 处低缺陷并全部修复（含 21 个新增回归）。
+
+### 新增功能
+- **`iterate config schema`**（+9 回归）：把 `iterate.config.yaml` 的规范 JSON
+  Schema 以纯 JSON 输出到 stdout（`--json` 同义、恒不被 ASCII banner 污染），
+  让编辑器、CI 校验器、其它工具与 CLI 自身强制同一套配置契约；`--out PATH`
+  写文件（默认拒绝覆盖已存在，`--force` 覆盖），`--compact` 输出单行 JSON，
+  确认信息走 stderr 保持 stdout 纯净；schema 是 `doctor`/`scripts/validate.py`
+  校验所依据的同一文档（测试断言与 `doctor.SCHEMA_PATH` 逐字节一致）。`schema`
+  描述的是 CLI 配置契约而非某个项目，因此不需要 `iterate.config.yaml` 也能用；
+  该命令不受 `get/set/unset` 的隐式 `get` 重解释影响，传 `KEY`/`VALUE` 与
+  `--out`/`--compact`/`--force` 配错动作均为 usage error（exit 2）。
+
+### 修复（全面审查发现）
+- **`import` 静默切断 dotfile 符号链接**（`portable.py` apply_bundle，+1 回归）：
+  提交阶段用裸 `os.replace`，目标若是指向 `~/dotfiles` 的符号链接，会把*链接本身*
+  换成普通文件、真实文件保持陈旧——其它所有写入器（`config set`/`refresh`/
+  `personalize`/`doctor --fix`）都走 `atomic_write` 保留符号链接，唯独 `import`
+  不一致。现改为解析 realpath 后替换，符号链接保留、真实目标被更新。
+- **updater 与安装器对重复 checksum 判定不一致**（`updater.parse_checksums`，
+  +3 回归）：`iterate update` 对同一文件名两条冲突 digest 采用 last-wins，而
+  `scripts/install.py` 与 npx 安装器都整体拒绝。现 `parse_checksums` 对冲突
+  重复抛 `ValueError`，`_verify` 以「untrustworthy」干净拒绝（fail-closed，
+  与安装器一致）。
+- **onboarding 回滚可能删除刚备份的文件**（`generator.py`，+1 回归）：回滚以
+  `existing_md is not None` 作为「文件之前存在」的代理，TOCTOU 下（调用方读到
+  不存在、写入时文件出现）会把刚写的新 ITERATE.md 删除而非恢复快照。现改为
+  依据实际写入前拍的 `md_backup` 恢复。
+- **npx 安装器 assets.find 空元素崩溃**（`installer.js`，+1 JS 回归）：提取为
+  `findReleaseAsset`，对 null/非对象元素做 `a &&` 守卫（与上方 `some` 一致），
+  畸形 GitHub 负载不再以 `TypeError` 崩溃而是走干净的「缺少 asset」错误路径。
+- **dimension_sets 非字符串 focus 键崩溃**（`doctor.py`/`dimension_sets.py`，
+  +1 回归）：`dim in seen` 对不可哈希键抛 `TypeError`；现以 `isinstance(str)`
+  守卫（或 `str(dim)` 参与成员测试），malformed 项被丢弃/降级为 finding 而非崩溃。
+- **`personalize --clear` 改写前不拍快照**（`personalize.py`，+1 回归）：与
+  `save_personalization` 一致，clear 前对 `iterate.config.yaml` 与 `ITERATE.md`
+  各拍 `*.personalize-*` 备份，失败/中断可用 `iterate backup restore` 恢复。
+- **非 UTF-8 备份永不可恢复**（`backup.py`，+1 回归）：`restore_backup` 以
+  `read_text("utf-8")` 读备份，非 UTF-8 文件抛泛化解码错且无法恢复；现先读字节
+  再解码，失败给出可执行的「手动恢复该备份」提示。
+- **`tempfile.mkdtemp` 逃逸受保护 try**（`scripts/install.py`/`updater.py`，
+  +2 回归）：`TMPDIR` 不可写/磁盘满时 mkdtemp 的 `OSError` 越过
+  `ReleaseIntegrityError`/`ReleaseStructureError` 处理器抛裸 traceback；现包在
+  try 内并转为干净的 structure 错误/拒绝原因。
+- **scan 把指向项目外的符号链接目录计为顶层目录**（`scan.py`，+1 回归）：
+  用 `is_symlink()` 排除指向外部（`vendor -> /srv/shared`）的符号链接，避免
+  越界路径泄漏进 `ITERATE.md`/`scan --json`。
+- **reonboard 保留未再校验的 validation.commands**（`wizard.py`，+1 回归）：
+  加载既有配置时对 `validation.commands` 用 `_command_is_safe` 再过滤，非 known-safe
+  项丢弃并提示（此前会持久化一个运行时 guard 必然拒绝的命令，报成功却永远跑不了）。
+- **completion 死分支**（`completion.py`）：`if shell == "fish"` 两臂相同，收敛为
+  `[binary, "-n"]`。
+- **guard 执行 shell=True 的 defense-in-depth 说明**（`guard.py` 文档）：元字符门
+  已拒绝命令替换/管道/重定向/链式，`shell=True` 保留 glob 展开；文档明确说明
+  项目 `iterate.config.yaml` 及其构建脚本在该检出上是代码执行向量，只在审查过
+  的树上运行 `guard`/`doctor`/`invariant`（tradeoff，不改变行为以免破坏
+  `pytest tests/*.py` 这类合法 glob 用法）。
+- **guard 符号链接祖先 TOCTOU 加固**（`updater._copy_release_path`）：在
+  `mkdir` 之后、破坏性 copy/replace 之前重新 `realpath` 校验并中止，缩小并发
+  换链接的窗口。
+
+---
+
 ## [3.11.0] — 2026-11-04
 
 minor：新增 `iterate backup` 子命令（list/restore），补齐「写了备份却无法回读」

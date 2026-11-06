@@ -156,6 +156,18 @@ class TestRestoreBackup:
         assert (tmp_path / CONFIG_YAML).read_text(encoding="utf-8") == "goal: fix\n"
         assert outcome["pre_restore_backup"] is None
 
+    def test_non_utf8_backup_is_refused_with_actionable_message(
+        self, tmp_path
+    ) -> None:
+        """A backup that is not UTF-8 text cannot be restored; the operator
+        must get an actionable message (restore manually), not a generic
+        decode failure that hides the real cause."""
+        backup = tmp_path / _make_backup_name(CONFIG_YAML, "configset")
+        backup.write_bytes(b"\xff\xfe invalid utf-8 \x80")
+        with pytest.raises(BackupError, match="not UTF-8 text") as exc_info:
+            restore_backup(tmp_path, backup.name)
+        assert "manually" in str(exc_info.value)
+
     def test_dry_run_writes_nothing(self, tmp_path) -> None:
         backup = _write_backup(tmp_path, CONFIG_YAML, "goal: fix\n", "configset")
         (tmp_path / CONFIG_YAML).write_text("goal: changed\n", encoding="utf-8")

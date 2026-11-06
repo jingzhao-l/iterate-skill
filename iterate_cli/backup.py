@@ -264,7 +264,20 @@ def restore_backup(
         }
 
     try:
-        content = backup_resolved.read_text(encoding="utf-8")
+        # Read as bytes first: a backup of a non-UTF-8 file (binary, or a
+        # config saved in a legacy code page) would make read_text("utf-8")
+        # raise UnicodeDecodeError — a generic "failed to restore" that never
+        # tells the operator the backup itself is the problem, and leaves it
+        # permanently unrestorable. Detect that case and say what to do.
+        content_bytes = backup_resolved.read_bytes()
+        try:
+            content = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raise BackupError(
+                f"{backup_resolved.name} is not UTF-8 text, so it cannot be "
+                "restored with `iterate backup restore`. Restore the file "
+                "manually from that backup path."
+            ) from None
         # Back up the current target so the restore can be undone. If the
         # target does not exist there is nothing to preserve; the restore
         # simply recreates it.

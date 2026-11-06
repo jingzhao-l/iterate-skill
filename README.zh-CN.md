@@ -506,9 +506,13 @@ iterate config --json          # 输出全部可设值的 JSON 对象（stdout �
 iterate config get max_rounds  # 打印单个解析值；--json -> {"max_rounds": ...}
 iterate config set language zh # 校验并写回单个值（写入前自动生成时间戳备份）
 iterate config set goal "..."  # 成功时输出确认对象 {"key": ..., "value": ...}
+iterate config schema          # 输出 iterate.config.yaml 的规范 JSON Schema（供编辑器 / CI / 工具链）
+iterate config schema --out schema.json --force  # 写入文件（yaml-language-server / CI）
 ```
 
 支持扁平键（`goal`、`max_rounds`、`reasoning_effort`、`language`、`mode`、`dimensions`）以及每个嵌套键的点分形式（`atomic.max_lines`、`atomic.max_adjacent_methods`、`git.target_branch`、`git.use_worktree`、`git.push_per_round`、`git.auto_merge`、`review.scope`、`reviewer.output_schema_validation`、`reviewer.evidence_validation`、`reviewer.coverage_validation`、`reviewer.scope_chunk_size`）。`validation.commands` / `command_whitelist` 与 `invariants.*` **不支持**在此设置——请在 `iterate.config.yaml` 中编辑（或由 `iterate onboard` 写入），并用 `python scripts/validate.py config` 重新校验。损坏配置**不会被覆写**——`set` 会中止并报清晰错误。
+
+`iterate config schema` 把规范 JSON Schema（`doctor` 与 `scripts/validate.py` 校验所依据的同一份文档）以纯 JSON 输出到 stdout，这样编辑器（yaml-language-server 的 `yaml.schemas`）、CI 校验器或其它工具就能与 CLI 强制同一套配置契约。`--out PATH` 写入文件（默认拒绝覆盖已存在、`--force` 覆盖；确认信息走 stderr 保持 stdout 纯净），`--compact` 输出单行 JSON，且不需要存在 `iterate.config.yaml`（schema 描述的是 CLI 配置契约而非某个项目）。
 
 ### iterate guard（防御式模式动手前/后校验，v3.0）
 
