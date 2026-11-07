@@ -78,6 +78,18 @@ jobs:
         # of quietly leaving the two implementations asserting different bytes.
         run: python3 harness/iterate-harness/scripts/check_kernel_fixtures.py --source kernel/fixtures
 
+      - name: Compare the two implementations case by case
+        # The step above pins the *bytes*; this pins the *behaviour*: it drives the
+        # built TypeScript dist and the Python modules over the same fixture corpus
+        # and refuses when a verdict, a digest, or a registry rule disagrees.
+        # `npm test` above already built kernel/dist, and the relative --kernel is
+        # resolved by the script because the node driver it writes lives in /tmp.
+        # This gate was not in CI at all until 2026-11-07, and it had silently
+        # stopped comparing anything (its candidate roots were one directory level
+        # short), so a cross-language divergence could land green.
+        run: |
+          PYTHONPATH=harness/iterate-harness/src python3 harness/iterate-harness/scripts/diff_kernel_implementations.py --kernel kernel
+
   npm-installer-test:
     runs-on: ubuntu-latest
     steps:
