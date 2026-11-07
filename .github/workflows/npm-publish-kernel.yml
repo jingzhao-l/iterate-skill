@@ -136,5 +136,21 @@ jobs:
           else
             echo "OIDC token request URL: ABSENT — this runner was not given id-token, so npm cannot authenticate"
           fi
-          npm config delete //registry.npmjs.org/:_authToken 2>/dev/null || true
-          npm publish --provenance --access public
+          # ENEEDAUTH has two very different causes and the remedy is not the same:
+          # either an npmrc somewhere still resolves an (empty or rejected) auth
+          # token, which npm honors before it ever attempts OIDC, or the registry
+          # refused the minted OIDC token because this workflow is not registered
+          # as one of the package's Trusted Publishers. Print which one it is.
+          echo "--- npm config sources for the registry auth key ---"
+          npm config list -l 2>/dev/null | grep -iE "_authToken|registry|userconfig|globalconfig|\\(builtin\\)" || echo "(none)"
+          echo "--- publishing ---"
+          if ! npm publish --provenance --access public; then
+            latest="$(ls -t "$HOME/.npm/_logs"/*.log 2>/dev/null | head -1)"
+            echo "--- npm debug log: requests and statuses ---"
+            if [ -n "$latest" ]; then
+              grep -iE "PUT |POST |http fetch|401|403|404|E[0-9]{3,}|trusted|provenance" "$latest" || echo "(no matching lines)"
+            else
+              echo "(no npm debug log found)"
+            fi
+            exit 1
+          fi
