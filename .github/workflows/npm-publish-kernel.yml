@@ -26,6 +26,17 @@ name: npm publish (iterate-kernel)
 #   GitHub owner/repo: jingzhao-l/iterate-skill
 #   Workflow: .github/workflows/npm-publish-kernel.yml
 #   Environment: <none>).
+#
+# STATUS 2026-11-07: that precondition is UNMET, and this workflow has therefore
+# never published anything. Run 42358734692 (ref v0.1.11) mints the OIDC token —
+# `GET …/idtoken?audience=npm:registry.npmjs.org 200` — and npm's exchange for the
+# package then answers `POST …/-/npm/v1/oidc/token/exchange/package/iterate-kernel
+# 404`, which is how npm reports "no trusted publisher matches this workflow".
+# The alternative credential is dead too: publishing with the `NPM_TOKEN` secret
+# answers 404 because npm no longer lets bypass-2FA tokens publish at all, and
+# `iterate-kernel@0.1.10` carries no attestations, i.e. every version so far was
+# published by hand from a laptop. Configuring the publisher needs an authenticated
+# npm web session, so it is an owner action, not something a run can do.
 
 on:
   release:
@@ -36,6 +47,11 @@ on:
         description: Git tag to publish from (optional; defaults to tagged event or default branch)
         required: false
         type: string
+      use_npm_token:
+        description: Publish with the NPM_TOKEN secret instead of OIDC trusted publishing
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read    # read the tagged tree; the workflow writes nothing back
@@ -113,42 +129,42 @@ jobs:
         working-directory: kernel
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        # Trusted publishing is the mechanism this workflow exists for: npm
-        # restricted tokens that bypass 2FA for direct publishing, and the
-        # `NPM_TOKEN` on this repo is one of those — the PUT comes back
-        # `404 … or you do not have permission to access it`, which npm returns
-        # for a rejected credential as well as for a missing package. Provenance
-        # needs the OIDC identity anyway (`id-token: write` above), so no token is
-        # configured here; any auth line a previous step or image default left
-        # behind is removed so the OIDC exchange is unambiguously what authenticates.
+          USE_NPM_TOKEN: ${{ github.event.inputs.use_npm_token }}
+        # OIDC trusted publishing is the default and the point of this workflow:
+        # npm restricted tokens that bypass 2FA for direct publishing, so a
+        # long-lived secret is a liability that expires on npm's schedule, while
+        # provenance needs the OIDC identity anyway (`id-token: write` above).
+        # `use_npm_token` exists for the case where the owner rotates NPM_TOKEN to
+        # a 2FA-requiring granular token; it is opt-in per run, never implicit.
+        # If publishing fails with ENEEDAUTH, read the two lines this step prints
+        # before touching anything: the registry-side cause (this workflow is not
+        # one of the package's Trusted Publishers — npm answers 404 on
+        # /-/npm/v1/oidc/token/exchange/package/<name>) and the client-side cause
+        # (no id-token granted to the runner) need different fixes.
         run: |
           npm install -g npm@^11.5.1
           echo "npm $(npm --version) on node $(node --version)"
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
-            echo "NPM_TOKEN is set but deliberately unused: a bypass-2FA token cannot publish any more."
-          fi
-          # npm's ambient trusted-publisher auth is only attempted when the runner
-          # was handed an OIDC token request; without these two env vars npm falls
-          # straight to ENEEDAUTH. Repo/org "allow OIDC" settings can withhold it,
-          # so say which case this is instead of leaving the next reader to guess.
           if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
             echo "OIDC token request URL: present (ambient trusted publishing is available to this job)"
           else
             echo "OIDC token request URL: ABSENT — this runner was not given id-token, so npm cannot authenticate"
           fi
-          # ENEEDAUTH has two very different causes and the remedy is not the same:
-          # either an npmrc somewhere still resolves an (empty or rejected) auth
-          # token, which npm honors before it ever attempts OIDC, or the registry
-          # refused the minted OIDC token because this workflow is not registered
-          # as one of the package's Trusted Publishers. Print which one it is.
-          echo "--- npm config sources for the registry auth key ---"
-          npm config list -l 2>/dev/null | grep -iE "_authToken|registry|userconfig|globalconfig|\\(builtin\\)" || echo "(none)"
-          echo "--- publishing ---"
+          npm config delete //registry.npmjs.org/:_authToken 2>/dev/null || true
+          if [ "$USE_NPM_TOKEN" = "true" ]; then
+            if [ -z "$NODE_AUTH_TOKEN" ]; then
+              echo "::error::use_npm_token was set but the NPM_TOKEN secret is empty"
+              exit 1
+            fi
+            echo "Authenticating with NPM_TOKEN as requested."
+            npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
+          else
+            echo "Publishing with OIDC trusted publishing (no token configured)."
+          fi
           if ! npm publish --provenance --access public; then
             latest="$(ls -t "$HOME/.npm/_logs"/*.log 2>/dev/null | head -1)"
-            echo "--- npm debug log: requests and statuses ---"
+            echo "--- npm debug log: OIDC exchange and publish requests ---"
             if [ -n "$latest" ]; then
-              grep -iE "PUT |POST |http fetch|401|403|404|E[0-9]{3,}|trusted|provenance" "$latest" || echo "(no matching lines)"
+              grep -iE "idtoken|oidc/token|PUT |401|403|404|E[0-9]{3,}|trusted|provenance" "$latest" || echo "(no matching lines)"
             else
               echo "(no npm debug log found)"
             fi
