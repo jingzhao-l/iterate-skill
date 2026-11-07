@@ -113,19 +113,19 @@ jobs:
         working-directory: kernel
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        # setup-node's `registry-url` writes
-        # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` unconditionally.
-        # When the secret is unset that resolves to an *empty* token, and npm
-        # raises ENEEDAUTH before it ever attempts the OIDC exchange. Emit the
-        # auth line ourselves: only when a token actually exists, and leave it
-        # absent otherwise so npm falls back to OIDC trusted publishing.
+        # Trusted publishing is the mechanism this workflow exists for: npm
+        # restricted tokens that bypass 2FA for direct publishing, and the
+        # `NPM_TOKEN` on this repo is one of those — the PUT comes back
+        # `404 … or you do not have permission to access it`, which npm returns
+        # for a rejected credential as well as for a missing package. Provenance
+        # needs the OIDC identity anyway (`id-token: write` above), so no token is
+        # configured here; any auth line a previous step or image default left
+        # behind is removed so the OIDC exchange is unambiguously what authenticates.
         run: |
           npm install -g npm@^11.5.1
           echo "npm $(npm --version) on node $(node --version)"
           if [ -n "$NODE_AUTH_TOKEN" ]; then
-            echo "NPM_TOKEN present; authenticating with the token."
-            npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
-          else
-            echo "NPM_TOKEN unset; relying on OIDC trusted publishing."
+            echo "NPM_TOKEN is set but deliberately unused: a bypass-2FA token cannot publish any more."
           fi
+          npm config delete //registry.npmjs.org/:_authToken 2>/dev/null || true
           npm publish --provenance --access public
