@@ -127,5 +127,14 @@ jobs:
           if [ -n "$NODE_AUTH_TOKEN" ]; then
             echo "NPM_TOKEN is set but deliberately unused: a bypass-2FA token cannot publish any more."
           fi
+          # npm's ambient trusted-publisher auth is only attempted when the runner
+          # was handed an OIDC token request; without these two env vars npm falls
+          # straight to ENEEDAUTH. Repo/org "allow OIDC" settings can withhold it,
+          # so say which case this is instead of leaving the next reader to guess.
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "OIDC token request URL: present (ambient trusted publishing is available to this job)"
+          else
+            echo "OIDC token request URL: ABSENT — this runner was not given id-token, so npm cannot authenticate"
+          fi
           npm config delete //registry.npmjs.org/:_authToken 2>/dev/null || true
           npm publish --provenance --access public
