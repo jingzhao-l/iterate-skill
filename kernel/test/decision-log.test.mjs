@@ -8,6 +8,7 @@ import { after, test } from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 
 import {
+  CANONICAL_JSON_MAX_DEPTH,
   DECISION_LOG_CODES,
   DECISION_LOG_ENTRY_JSON_SCHEMA,
   KernelDecisionLogError,
@@ -380,4 +381,214 @@ function statExists(path) {
     return false;
   }
 }
+
+// ------------------------------------------------------- values the form cannot name
+
+/**
+ * `JSON.stringify` is total and invents tokens: `undefined`, a function and a
+ * symbol all print as the bare word `undefined`, and `NaN`/`Infinity` print as
+ * `null`. A ledger line containing the word `undefined` is not JSON, so the
+ * entry could never be verified again — and the append discovered that only
+ * after writing, which left every later append refusing a history it had just
+ * damaged. The refusal has to happen before the file is opened.
+ */
+test("a payload value with no JSON representation is refused before the ledger is opened", () => {
+  for (const [label, value] of [
+    ["undefined", undefined],
+    ["a function", () => 1],
+    ["a symbol", Symbol("s")],
+    ["NaN", NaN],
+    ["Infinity", Infinity],
+    ["a bigint", 10n],
+    ["a Date", new Date(0)]
+  ]) {
+    const path = ledgerPath();
+    expectRefusal(DECISION_LOG_CODES.draft, () =>
+      appendDecisionLogEntry(path, draft({ kind: "report", payload: { note: value } }))
+    );
+    assert.equal(statExists(path), false, `${label}: refusing after writing is not refusing`);
+  }
+});
+
+test("a payload nested value with no JSON representation is refused too", () => {
+  const path = ledgerPath();
+  expectRefusal(DECISION_LOG_CODES.draft, () =>
+    appendDecisionLogEntry(path, draft({ kind: "report", payload: { findings: [{ id: "a", detail: undefined }] } }))
+  );
+  assert.equal(statExists(path), false);
+});
+
+test("a payload nested past the canonical depth bound is a coded refusal, not a stack overflow", () => {
+  // Before the bound existed, a deep record reached `canonicalJson`'s own
+  // recursion and a bare `RangeError` came out of the validator — the one failure
+  // a caller catching coded errors would not see.
+  let deep = { end: 1 };
+  for (let i = 0; i < CANONICAL_JSON_MAX_DEPTH + 40; i += 1) {
+    deep = { nested: deep };
+  }
+  const path = ledgerPath();
+  expectRefusal(DECISION_LOG_CODES.draft, () => appendDecisionLogEntry(path, draft({ kind: "report", payload: deep })));
+  assert.equal(statExists(path), false);
+  assert.throws(
+    () => buildDecisionLogEntry(draft({ payload: { list: new Array(1000) } }), { sequence: 0, prevEntryHash: "" }),
+    (error) => {
+      assert.ok(error instanceof KernelDecisionLogError, `got ${error?.name}`);
+      assert.equal(error.code, DECISION_LOG_CODES.draft);
+      return true;
+    },
+    "a sparse array in a payload is refused, not printed with a hole"
+  );
+});
+
+test("NaN and null no longer share one digest because NaN cannot be recorded at all", () => {
+  const nullPath = ledgerPath();
+  const recorded = appendDecisionLogEntry(nullPath, draft({ kind: "report", payload: { measured: null } }));
+  const poisoned = ledgerPath();
+  expectRefusal(DECISION_LOG_CODES.draft, () =>
+    appendDecisionLogEntry(poisoned, draft({ kind: "report", payload: { measured: NaN } }))
+  );
+  assert.equal(statExists(poisoned), false);
+  assert.notEqual(
+    decisionLogEntryHash(recorded.entry),
+    undefined,
+    "the entry that could be recorded still hashes; the one that could not never reaches a digest"
+  );
+});
+
+test("a payload key JavaScript reinterprets instead of storing is refused, not dropped", () => {
+  const path = ledgerPath();
+  const payload = {};
+  // Built the way a JSON reader hands it over: as an own property, not an assignment.
+  Object.defineProperty(payload, "__proto__", { value: { polluted: 1 }, enumerable: true, writable: true, configurable: true });
+  payload.recorded = 2;
+  expectRefusal(DECISION_LOG_CODES.draft, () => appendDecisionLogEntry(path, draft({ kind: "report", payload })));
+  assert.equal(statExists(path), false, "refusing after writing is not refusing");
+});
+
+test("the keys that only look dangerous are carried as data, not refused", () => {
+  // A plain object has no inherited accessor named `prototype` or `constructor`,
+  // so those keys round-trip. Refusing them would be refusing real records.
+  for (const key of ["prototype", "constructor"]) {
+    const path = ledgerPath();
+    const appended = appendDecisionLogEntry(path, draft({ kind: "report", payload: { [key]: "a class name" } }));
+    assert.equal(appended.entry.payload[key], "a class name", key);
+    assert.ok(readFileSync(path, "utf8").includes(`"${key}":"a class name"`), key);
+    assert.equal(readDecisionLog(path).ok, true, key);
+  }
+});
+
+test("the same key on a stored line is refused by the validator rather than silently vanishing", () => {
+  const raw = {
+    entryId: "dl_0123456789ABCDEFGHJKMNPQRT",
+    sequence: 0,
+    prevEntryHash: "",
+    summary: "s",
+    outcome: "pass",
+    createdAt: "2026-11-07T00:00:00.000Z"
+  };
+  Object.defineProperty(raw.payload = {}, "__proto__", {
+    value: { p: 1 },
+    enumerable: true,
+    writable: true,
+    configurable: true
+  });
+  raw.payload.y = 2;
+  const line = canonicalJson(JSON.parse(JSON.stringify(raw)));
+  assert.ok(line.includes('"__proto__":'), "the canonicaliser itself keeps a key a JSON reader produced; it is the object model that loses it");
+  // A Python or Swift producer can legitimately write this line; reading it must
+  // not quietly drop the key and re-hash what is left, which would certify an
+  // entry that does not contain what was recorded.
+  const verified = verifyDecisionLogText(`${line}\n`);
+  assert.equal(verified.ok, false);
+  assert.equal(verified.firstBrokenLine, 1);
+  assert.match(verified.reason, /__proto__/);
+});
+
+// ------------------------------------------------------- line splitting of a valid entry
+
+/**
+ * U+2028 and U+2029 are legal *raw* inside a JSON string, and `JSON.stringify`
+ * leaves them raw (only lone surrogates get escaped). A line counter built from
+ * `/^.*$/gm` therefore reads one entry as two lines, reported a successful append
+ * as a foreign writer, and left the entry it complained about on disk — so every
+ * later append said the same false thing. Producers reach this constantly: a
+ * summary copied from a source file, or a note sliced out of an LLM answer.
+ */
+test("an entry whose text carries U+2028 or U+2029 appends, verifies, and counts as one line", () => {
+  for (const [label, text] of [
+    ["summary with U+2028", "line one\u2028line two"],
+    ["summary with U+2029", "paragraph one\u2029paragraph two"],
+    ["payload note with U+2028", "copied from a source file\u2028with a paragraph separator"]
+  ]) {
+    const path = ledgerPath();
+    const draft2 = label.startsWith("payload")
+      ? draft({ kind: "report", payload: { note: text } })
+      : draft({ summary: text });
+    const appended = appendDecisionLogEntry(path, draft2);
+    assert.equal(appended.line, 1, label);
+    assert.equal(readFileSync(path, "utf8").split("\n").filter((line) => line.length > 0).length, 1, label);
+    const verified = readDecisionLog(path);
+    assert.equal(verified.ok, true, `${label}: ${verified.reason}`);
+    const second = appendDecisionLogEntry(path, draft());
+    assert.equal(second.line, 2, `${label}: the next append must see one earlier entry, not two`);
+    assert.equal(readDecisionLog(path).ok, true, label);
+  }
+});
+
+// ------------------------------------------------------- the sequence guard, per branch
+
+/**
+ * The chain rule is "sequence equals the line index, starting at 0, rising by
+ * one". Deleting that check used to leave every existing test green: the forged
+ * tail in the suite carried `sequence: 1` on line 2, which satisfies it.
+ */
+function ledgerWith(lines) {
+  const path = ledgerPath();
+  writeFileSync(path, lines.join("\n") + "\n", { mode: 0o600 });
+  return path;
+}
+
+function entryLine(sequence, prevEntryHash, overrides = {}) {
+  return serializeDecisionLogEntry(
+    buildDecisionLogEntry(draft(overrides), { sequence, prevEntryHash })
+  );
+}
+
+test("a repeated sequence is reported as a chain break on the line that repeats it", () => {
+  const first = entryLine(0, "");
+  const duplicate = entryLine(0, decisionLogEntryHash(JSON.parse(first)), { outcome: "fail" });
+  const verified = verifyDecisionLogText(`${first}\n${duplicate}\n`);
+  assert.equal(verified.ok, false);
+  assert.equal(verified.firstBrokenLine, 2);
+  assert.equal(verified.brokenKind, "chain");
+  assert.match(verified.reason, /sequence 0, expected 1/);
+});
+
+test("a gap in the sequence is reported, not accepted as a longer chain", () => {
+  const first = entryLine(0, "");
+  const skipped = entryLine(2, decisionLogEntryHash(JSON.parse(first)), { outcome: "fail" });
+  const verified = verifyDecisionLogText(`${first}\n${skipped}\n`);
+  assert.equal(verified.ok, false);
+  assert.equal(verified.firstBrokenLine, 2);
+  assert.match(verified.reason, /sequence 2, expected 1/);
+});
+
+test("a non-genesis line with an empty prevEntryHash is refused by the link check", () => {
+  const first = entryLine(0, "");
+  const restarted = entryLine(1, "", { outcome: "fail" });
+  const verified = verifyDecisionLogText(`${first}\n${restarted}\n`);
+  assert.equal(verified.ok, false);
+  assert.equal(verified.firstBrokenLine, 2);
+  assert.match(verified.reason, /links to , but/);
+});
+
+test("an append onto a gapped ledger refuses and leaves the bytes as found", () => {
+  const first = entryLine(0, "");
+  const skipped = entryLine(2, decisionLogEntryHash(JSON.parse(first)), { outcome: "fail" });
+  const path = ledgerWith([first, skipped]);
+  const before = sha256hex(readFileSync(path));
+  expectRefusal(DECISION_LOG_CODES.chain, () => appendDecisionLogEntry(path, draft()));
+  assert.equal(sha256hex(readFileSync(path)), before, "a refused append must not mutate the ledger");
+});
+
 

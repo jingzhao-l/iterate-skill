@@ -1,4 +1,5 @@
-import type { EvidencePack } from "./evidence-pack.js";
+import { EvidencePackSchema, type EvidencePack } from "./evidence-pack.js";
+import { schemaErrorFrom } from "./errors.js";
 import type { DecisionOutcome } from "./decision-log-entry.js";
 
 /**
@@ -35,11 +36,29 @@ import type { DecisionOutcome } from "./decision-log-entry.js";
  * attributed — that is the failure mode the audit chain exists to catch.
  * Nothing here can upgrade a verdict.
  */
+/**
+ * The one gate both mappings pass through. Reading a field off whatever was handed
+ * in would turn a shape error into a `TypeError` at an arbitrary depth — the
+ * package's rule is that a refusal names the field and carries a code.
+ *
+ * The write-side schema is the one to check against, and `parseEvidencePackRead`
+ * folds a pack read off disk onto exactly that shape, so an archived pack still
+ * transcribes; a pack that never conformed cannot produce a verdict words.
+ */
+function checkedPack(evidence: unknown): EvidencePack {
+  const checked = EvidencePackSchema.safeParse(evidence);
+  if (!checked.success) {
+    throw schemaErrorFrom("evidence pack", checked.error);
+  }
+  return checked.data;
+}
+
 export function decisionOutcomeFromEvidence(evidence: EvidencePack): DecisionOutcome {
-  const base = baseOutcome(evidence);
+  const pack = checkedPack(evidence);
+  const base = baseOutcome(pack);
   if (base !== "pass") return base;
-  if (evidence.attribution.contaminated) return "inconclusive";
-  if (evidence.attribution.level === "weak") return "inconclusive";
+  if (pack.attribution.contaminated) return "inconclusive";
+  if (pack.attribution.level === "weak") return "inconclusive";
   return "pass";
 }
 
@@ -67,23 +86,24 @@ function baseOutcome(evidence: EvidencePack): DecisionOutcome {
  * same state; it is a *rendering* of the pack, never a new judgement.
  */
 export function decisionSummaryFromEvidence(evidence: EvidencePack): string {
+  const pack = checkedPack(evidence);
   const parts: string[] = [];
-  const assertion = evidence.assertion ?? null;
+  const assertion = pack.assertion ?? null;
   if (assertion !== null) {
     parts.push(
       `assertion ${assertion.property} ${assertion.passed ? "passed" : "failed"}: expected ${JSON.stringify(assertion.expected)}, actual ${JSON.stringify(assertion.actual)}`
     );
   }
-  const diagnosis = evidence.diagnosis ?? null;
+  const diagnosis = pack.diagnosis ?? null;
   if (diagnosis !== null) {
     parts.push(`diagnosis ${diagnosis.class}: ${diagnosis.report.anomaly}`);
   }
-  if (evidence.circuitBreaker.level > 0) {
+  if (pack.circuitBreaker.level > 0) {
     parts.push(
-      `circuitBreaker level ${evidence.circuitBreaker.level}${evidence.circuitBreaker.reason ? ` (${evidence.circuitBreaker.reason})` : ""}`
+      `circuitBreaker level ${pack.circuitBreaker.level}${pack.circuitBreaker.reason ? ` (${pack.circuitBreaker.reason})` : ""}`
     );
   }
-  parts.push(`attribution ${evidence.attribution.level}${evidence.attribution.contaminated ? ", contaminated" : ""}`);
+  parts.push(`attribution ${pack.attribution.level}${pack.attribution.contaminated ? ", contaminated" : ""}`);
   const summary = parts.join("; ");
   return summary.length > 2048 ? `${summary.slice(0, 2045)}...` : summary;
 }

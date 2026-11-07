@@ -35,6 +35,43 @@ export const DECISION_KIND_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
  */
 export const PAYLOAD_MAX_CANONICAL_LENGTH = 8192;
 
+/**
+ * Payload keys the JavaScript object model reinterprets instead of storing.
+ *
+ * `{"__proto__": …}` is a key a JSON reader can hand this package — Python's
+ * `json.loads` produces it as an own property, and a Swift decoder names it the
+ * same way — but `z.record` copies values with `out[k] = value`, which invokes
+ * the `Object.prototype.__proto__` accessor rather than defining the property:
+ * the key silently vanishes from the entry, and so from the bytes the digest
+ * covers. `prototype` and `constructor` are NOT in this list on purpose — a plain
+ * `{}` has no inherited accessor by either name, so assigning them defines an own
+ * property and they survive as data. Only the key that is actually lost is refused.
+ *
+ * Rule 3 of the transcription contract says the payload is carried in full, so the
+ * honest alternatives were to preserve the key or refuse it. Refusing is what this
+ * package does everywhere else with a field it cannot carry (`DecisionLogDraftSchema`
+ * refuses an unknown key rather than dropping it), and it is the only one of the two
+ * that does not put a key named `__proto__` back into an object another consumer
+ * will merge.
+ */
+export const PAYLOAD_RESERVED_KEYS = ["__proto__"] as const;
+
+/**
+ * Which keys of a RAW payload value this package cannot carry as data.
+ *
+ * The check has to see the input before `z.record` copies it: zod 4's record
+ * assigns with `out[key] = value` and, for `__proto__` specifically, does not even
+ * run the key schema — the key disappears from the parsed object, so a refinement
+ * placed after it can only ever see the two keys that assignment does store.
+ * `buildDecisionLogEntry` and `parseDecisionLogEntry` therefore check the raw
+ * value, and this module's schema keeps the refinement for the rest.
+ */
+export function reservedPayloadKeys(value: unknown): string[] {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return [];
+  const keys = Object.keys(value as Record<string, unknown>);
+  return keys.filter((key) => (PAYLOAD_RESERVED_KEYS as readonly string[]).includes(key));
+}
+
 export const DecisionOutcomeSchema = z.enum(["pass", "fail", "blocked", "inconclusive"]);
 export type DecisionOutcome = z.infer<typeof DecisionOutcomeSchema>;
 
@@ -63,10 +100,39 @@ export const DecisionLogEntrySchema = z.strictObject({
   payload: z
     .record(z.string(), z.unknown())
     .optional()
-    .refine(
-      (value) => value === undefined || canonicalJson(value).length <= PAYLOAD_MAX_CANONICAL_LENGTH,
-      { message: `payload must stay within ${PAYLOAD_MAX_CANONICAL_LENGTH} characters of canonical JSON` }
-    )
+    .superRefine((value, ctx) => {
+      if (value === undefined) return;
+      for (const key of Object.keys(value)) {
+        if ((PAYLOAD_RESERVED_KEYS as readonly string[]).includes(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["payload", key],
+            message: `\`payload\` cannot carry the key "${key}": assigning it in JavaScript rewrites the object instead of storing a value, so the key would disappear from the canonical bytes this entry is hashed over`
+          });
+        }
+      }
+      // The canonical form is partial, and a value it cannot name has to be
+      // refused here rather than at write time: `canonicalJson` would raise, but
+      // by then the ledger is what carries the news.
+      let canonical: string;
+      try {
+        canonical = canonicalJson(value);
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["payload"],
+          message: error instanceof Error ? error.message : "payload contains a value with no JSON representation"
+        });
+        return;
+      }
+      if (canonical.length > PAYLOAD_MAX_CANONICAL_LENGTH) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["payload"],
+          message: `payload must stay within ${PAYLOAD_MAX_CANONICAL_LENGTH} characters of canonical JSON`
+        });
+      }
+    })
 });
 export type DecisionLogEntry = z.infer<typeof DecisionLogEntrySchema>;
 

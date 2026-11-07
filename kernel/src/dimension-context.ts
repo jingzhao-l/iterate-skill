@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { KernelSchemaError, schemaErrorFrom } from "./errors.js";
+
 /**
  * Dimension context: what a run *said* it would review, set against what it
  * actually recorded.
@@ -177,8 +179,33 @@ export class KernelDimensionError extends Error {
  *      the class of quiet drift this whole structure exists to catch.
  */
 export function dimensionContext(input: DimensionContextInput): DimensionContext {
+  // A `recorded` key that the object model reinterprets rather than stores would
+  // silently drop a dimension out of the accounting — the one failure mode this
+  // structure exists to make visible. Checked on the raw input, before `z.record`
+  // copies it.
+  const recorded = (input as { recorded?: unknown } | null)?.recorded;
+  if (recorded !== null && typeof recorded === "object" && !Array.isArray(recorded)) {
+    const reserved = Object.keys(recorded as Record<string, unknown>).filter((key) => key === "__proto__");
+    if (reserved.length > 0) {
+      throw new KernelSchemaError("dimension context input", [
+        {
+          path: "recorded",
+          message: `carries ${reserved.map((key) => `"${key}"`).join(", ")}, a key JavaScript reinterprets instead of storing, so the dimension it names would disappear from the totals`
+        }
+      ]);
+    }
+  }
+  // Validated, not trusted: the counts this function returns are read as fact by
+  // reporters and compaction summaries, and an unvalidated `recorded` value can
+  // make the arithmetic produce something its own schema refuses. A `decisions`
+  // of -5 here is a coverage claim, not a number.
+  const checked = DimensionContextInputSchema.safeParse(input);
+  if (!checked.success) {
+    throw schemaErrorFrom("dimension context input", checked.error);
+  }
+  const plan = checked.data;
   const seen = new Set<string>();
-  for (const dimension of input.planned) {
+  for (const dimension of plan.planned) {
     if (seen.has(dimension.id)) {
       throw new KernelDimensionError(
         DIMENSION_CONTEXT_CODES.duplicate,
@@ -190,8 +217,14 @@ export function dimensionContext(input: DimensionContextInput): DimensionContext
     seen.add(dimension.id);
   }
 
-  const plannedEntries = input.planned.map((dimension) => {
-    const evidence = input.recorded[dimension.id] ?? { decisions: 0 };
+  const plannedEntries = plan.planned.map((dimension) => {
+    // Own property, not a lookup: a dimension id is lowercase-kebab, so "constructor"
+    // and "prototype" are *valid ids*, and `recorded["constructor"]` would otherwise
+    // answer with something off `Object.prototype` that nobody recorded — the entry
+    // then carries the function as its evidence and the totals go to NaN.
+    const evidence = Object.hasOwn(plan.recorded, dimension.id)
+      ? (plan.recorded[dimension.id] as DimensionEvidence)
+      : { decisions: 0 };
     return {
       id: dimension.id,
       status: evidence.decisions >= 1 ? ("verified" as const) : ("unverified" as const),
@@ -201,11 +234,11 @@ export function dimensionContext(input: DimensionContextInput): DimensionContext
     };
   });
 
-  const unplannedIds = Object.keys(input.recorded)
+  const unplannedIds = Object.keys(plan.recorded)
     .filter((id) => !seen.has(id))
     .sort();
   const unplannedEntries = unplannedIds.map((id) => {
-    const evidence = input.recorded[id];
+    const evidence = plan.recorded[id];
     if (evidence === undefined) {
       // Unreachable while `recorded`'s values are validated, but the alternative
       // is a non-null assertion on a value this function then hands to a

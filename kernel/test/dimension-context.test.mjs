@@ -213,3 +213,73 @@ test("unplanned ids are sorted so two implementations emit the same bytes", () =
   // Insertion order of the record must not change the result.
   assert.deepEqual(first, second);
 });
+
+/**
+ * Dimension ids are validated as *shape*, so `constructor`, `prototype` and
+ * `toString` are legal ids — and a lookup by bracket syntax answers those from
+ * `Object.prototype` when the run recorded nothing under them. The coverage
+ * line is read as fact by a compaction summary, so this is the one place where a
+ * prototype member has to be treated as absent rather than present.
+ */
+test("a planned id that names an Object.prototype member is accounted for as recorded nothing", () => {
+  // `constructor` is the prototype member that the kebab-case id pattern accepts,
+  // and that is what makes it a live hazard rather than a curiosity: an all-lowercase
+  // dimension name is a legal id, and `recorded["constructor"]` answers off
+  // `Object.prototype` when the run recorded nothing there.
+  const context = dimensionContext({ planned: plan("constructor"), recorded: {} });
+  assert.equal(context.planned[0].id, "constructor");
+  assert.equal(context.planned[0].status, "unverified");
+  assert.deepEqual(context.planned[0].evidence, { decisions: 0 });
+  assert.equal(context.totals.decisions, 0);
+  assert.doesNotThrow(() => parseDimensionContext(context), "the kernel's output must satisfy the kernel's own schema");
+  assert.equal(formatDimensionContext(context).includes("1 unverified"), true);
+
+  for (const id of ["toString", "valueOf", "__proto__", "hasOwnProperty"]) {
+    // Not legal ids, so they never reach the lookup — asserted here so the
+    // prototype-safe `constructor` case above is the whole hazard surface.
+    assert.throws(() => dimensionContext({ planned: plan(id), recorded: {} }), KernelSchemaError, id);
+  }
+});
+
+test("an own key that happens to name a prototype member is still a recorded dimension", () => {
+  // Refusing the prototype chain must not throw away data the caller actually put
+  // in the record — that is the difference between safe and useless.
+  const context = dimensionContext({ planned: plan("security"), recorded: { constructor: { decisions: 2 } } });
+  assert.deepEqual(
+    context.unplanned.map((entry) => [entry.id, entry.evidence.decisions]),
+    [["constructor", 2]]
+  );
+  assert.equal(context.totals.decisions, 2);
+  assert.equal(context.totals.unplanned, 1);
+});
+
+test("a recorded count the schema refuses is refused, not summed into a coverage claim", () => {
+  for (const bad of [{ security: { decisions: -5 } }, { security: { decisions: 1.5 } }, { "Not-Ke": { decisions: 1 } }]) {
+    assert.throws(
+      () => dimensionContext({ planned: plan("security"), recorded: bad }),
+      KernelSchemaError,
+      JSON.stringify(bad)
+    );
+  }
+});
+
+test("a recorded key the object model reinterprets is refused rather than dropped", () => {
+  const recorded = JSON.parse('{"__proto__": {"decisions": 3}, "security": {"decisions": 1}}');
+  assert.throws(
+    () => dimensionContext({ planned: plan("security"), recorded }),
+    (error) => {
+      assert.ok(error instanceof KernelSchemaError, `got ${error}`);
+      assert.match(error.message, /__proto__/);
+      return true;
+    }
+  );
+});
+
+test("planned entries outside the documented shape are refused", () => {
+  // An invented key on a planned entry would otherwise be carried into the
+  // output as if the contract knew it.
+  assert.throws(
+    () => dimensionContext({ planned: [{ id: "security", weight: 9 }], recorded: {} }),
+    KernelSchemaError
+  );
+});

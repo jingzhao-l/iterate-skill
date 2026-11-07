@@ -195,3 +195,54 @@ test("a provider wider than the contract refuses rather than truncating", () => 
   const atLimit = { ...wide, methods: wide.methods.slice(0, 32) };
   assert.equal(ProviderRegistrationSchema.parse(atLimit).methods.length, 32);
 });
+
+test("a prerequisite listed twice is refused on both sides, as the schema declares", () => {
+  // `uniqueItems` on `requires` is in the published schema; until now only ajv
+  // honoured it, so the two harnesses could cost the same method differently.
+  const duplicated = {
+    ...fixture.input,
+    methods: fixture.input.methods.map((method, index) =>
+      index === 0 ? { ...method, requires: [method.requires[0], "attribution", method.requires[0]] } : method
+    )
+  };
+  assert.equal(validate(duplicated), false, "ajv must refuse the duplicate the schema names");
+  assert.throws(
+    () => parseProviderRegistration(duplicated),
+    (error) => {
+      assert.ok(error instanceof KernelSchemaError, `got ${error}`);
+      assert.match(error.message, /listed twice/);
+      return true;
+    }
+  );
+  const unique = {
+    ...fixture.input,
+    methods: fixture.input.methods.map((method, index) =>
+      index === 0 ? { ...method, requires: [method.requires[0], "attribution"] } : method
+    )
+  };
+  assert.equal(validate(unique), true, JSON.stringify(validate.errors));
+  assert.equal(parseProviderRegistration(unique).methods[0].requires.length, 2);
+});
+
+test("resolution cannot answer with something off Object.prototype", () => {
+  // `registry[id]` on an empty registry is truthy for "constructor", "toString",
+  // "valueOf" and "__proto__": a caller asking for a provider nobody registered
+  // got one, and the two harnesses then believed they shared a judgement producer.
+  const registry = emptyProviderRegistry();
+  for (const id of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+    assert.throws(
+      () => resolveProvider(registry, id),
+      (error) => {
+        assert.ok(error instanceof KernelProviderError, `got ${error}`);
+        assert.equal(error.code, PROVIDER_CODES.unknown, id);
+        return true;
+      },
+      id
+    );
+  }
+  // The registry semantics still refuse a lookup that only *looks* populated.
+  assert.throws(() => requireMethod(registry, "constructor", "diagnose"), KernelProviderError);
+  const registered = registerProvider(registry, parseProviderRegistration(fixture.input));
+  assert.equal(resolveProvider(registered, fixture.input.id).id, fixture.input.id);
+  assert.deepEqual(providerIdsInCommon(registered, registered), [fixture.input.id]);
+});

@@ -5,6 +5,7 @@ import {
   DECISION_LOG_ENTRY_JSON_SCHEMA,
   EVIDENCE_PACK_JSON_SCHEMA,
   RECIPE_CONFIG_JSON_SCHEMA,
+  canonicalJson,
   parseDecisionLogEntry,
   parseEvidencePack,
   parseRecipeConfig
@@ -58,8 +59,11 @@ for (const { file, schema, parse } of FIXTURE_MATRIX) {
     assert.equal(validate(fixtureValue), true, `ajv: ${JSON.stringify(validate.errors)}`);
 
     const decoded = parse(fixtureValue);
+    // The shipped canonicaliser is what digests an entry and what lands on disk,
+    // so it is the side under test here. Asserting the test's local copy against
+    // itself would pass while the package's own form diverged.
     assert.equal(
-      canonical(decoded),
+      canonicalJson(decoded),
       canonical(fixtureValue),
       "canonical roundtrip mismatch"
     );
@@ -69,11 +73,19 @@ for (const { file, schema, parse } of FIXTURE_MATRIX) {
 test("canonical helper sorts keys and strips whitespace deterministically", () => {
   const a = { b: 1, a: { d: [3, 2], c: null } };
   const b = { a: { c: null, d: [3, 2] }, b: 1 };
+  const expected = '{"a":{"c":null,"d":[3,2]},"b":1}';
   assert.equal(canonical(a), canonical(b));
-  assert.equal(canonical(a), '{"a":{"c":null,"d":[3,2]},"b":1}');
+  assert.equal(canonical(a), expected);
+  assert.equal(canonicalJson(a), expected, "the shipped form must agree with the literal both sides are coded from");
 });
 
 test("canonical helper delegates numbers to shortest roundtrip form", () => {
-  assert.equal(canonical({ n: 0.023 }), '{"n":0.023}');
-  assert.equal(canonical({ n: 12 }), '{"n":12}');
+  for (const [value, form] of [
+    [{ n: 0.023 }, '{"n":0.023}'],
+    [{ n: 12 }, '{"n":12}'],
+    [{ n: -0 }, '{"n":0}']
+  ]) {
+    assert.equal(canonical(value), form);
+    assert.equal(canonicalJson(value), form, `${form} diverged in the shipped canonicaliser`);
+  }
 });

@@ -81,7 +81,8 @@ const SUMMARY_FIELDS = ["summary", "message", "reason"] as const;
  * transcriber that leaned on the host parser would produce two different ledgers from one
  * record, and a ledger whose dates depend on which runtime converted it is not evidence.
  */
-const ISO_8601_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+const ISO_8601_WITH_ZONE =
+  /^(?<y>\d{4})-(?<mo>\d{2})-(?<d>\d{2})T(?<h>\d{2}):(?<mi>\d{2}):(?<s>\d{2})(?<frac>\.\d{1,9})?(?<zone>Z|(?<sign>[+-])(?<oh>\d{2}):(?<om>\d{2}))$/;
 
 function refuse(code: DecisionTranscribeCode, message: string, remedy: string): never {
   throw new KernelDecisionTranscribeError(code, message, remedy);
@@ -89,6 +90,34 @@ function refuse(code: DecisionTranscribeCode, message: string, remedy: string): 
 
 function isOutcome(value: unknown): value is DecisionOutcome {
   return typeof value === "string" && (OUTCOMES as readonly string[]).includes(value);
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+
+/**
+ * Days from the civil calendar to the Unix epoch, proleptic Gregorian, for any
+ * year — the conversion `Date.UTC` cannot do for a four-digit year below 100,
+ * which it maps into the 1900s. Same arithmetic as the Python half's
+ * `datetime(...)`, and stated here so a third implementation can check it.
+ */
+function daysFromCivil(year: number, month: number, day: number): number {
+  const shifted = month <= 2 ? year - 1 : year;
+  const era = Math.floor(shifted / 400);
+  const yearOfEra = shifted - era * 400;
+  const dayOfYear = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1;
+  const dayOfEra =
+    yearOfEra * 365 +
+    Math.floor(yearOfEra / 4) -
+    Math.floor(yearOfEra / 100) +
+    dayOfYear;
+  return era * 146097 + dayOfEra - 719468;
 }
 
 /** Rule 4: normalize any ISO-8601-looking timestamp the legacy logs contain to UTC millis. */
@@ -100,21 +129,55 @@ function toIsoMillis(raw: unknown): string {
       "the producer must stamp the record itself; transcription will not substitute the current time, because that would date a decision to when someone converted the file"
     );
   }
-  if (!ISO_8601_WITH_ZONE.test(raw)) {
+  const parts = ISO_8601_WITH_ZONE.exec(raw)?.groups;
+  if (parts === undefined) {
     refuse(
       DECISION_TRANSCRIBE_CODES.timestamp,
       `\`${raw}\` is not ISO-8601 with an explicit zone (Z or ±HH:MM)`,
       "emit the offset the producer actually has; a spelling the host parser has to guess at (11/10/2026, a bare date, local time without an offset) parses differently in each runtime, and a ledger dated by guesswork cannot be audited"
     );
   }
-  const ms = Date.parse(raw);
-  if (!Number.isFinite(ms)) {
+  const year = Number(parts.y);
+  const month = Number(parts.mo);
+  const day = Number(parts.d);
+  const hour = Number(parts.h);
+  const minute = Number(parts.mi);
+  const second = Number(parts.s);
+  const offsetHour = parts.oh === undefined ? 0 : Number(parts.oh);
+  const offsetMinute = parts.om === undefined ? 0 : Number(parts.om);
+
+  // WHY THIS IS DONE HERE AND NOT LEFT TO `Date.parse`. V8 rolls an impossible
+  // calendar date over instead of refusing it — `2026-02-31` becomes `2026-03-03`
+  // — while the Python half constructs `datetime(year, month, day, …)` and raises.
+  // One record then becomes two different ledgers depending on which runtime read
+  // the file, which is the exact thing the pattern above exists to prevent; the
+  // pattern only bounds the *spelling*, so the calendar has to be checked too.
+  const calendar =
+    year >= 1 &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth(year, month) &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59;
+  if (!calendar) {
     refuse(
       DECISION_TRANSCRIBE_CODES.timestamp,
       `\`${raw}\` is not a real instant`,
       "check the producer's clock formatting: an ISO-shaped string that is not a valid date (month 13, day 32) is a bug worth stopping the migration for"
     );
   }
+
+  // Fractional seconds TRUNCATE toward zero: drop the tail, never round up.
+  const millis = Number(`${(parts.frac ?? ".0").slice(1, 4)}00`.slice(0, 3));
+  const offsetMinutes = (offsetHour * 60 + offsetMinute) * (parts.sign === "-" ? 1 : -1);
+  const ms =
+    ((daysFromCivil(year, month, day) * 24 + hour) * 60 + minute + offsetMinutes) * 60_000 +
+    second * 1_000 +
+    millis;
   const iso = new Date(ms).toISOString();
   if (!ISO_MILLIS_PATTERN.test(iso)) {
     refuse(

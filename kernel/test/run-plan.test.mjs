@@ -114,3 +114,35 @@ test("a plan wider than the contract refuses rather than truncating", () => {
   const atLimit = { schemaVersion: RUN_PLAN_SCHEMA_VERSION, dimensions: wide.dimensions.slice(0, 64) };
   assert.equal(parseRunPlan(atLimit).dimensions.length, 64);
 });
+
+test("an empty label is refused on both sides", () => {
+  // The schema's own note says the id/label/focus constraints are mirrored from
+  // `src/dimension-context.ts`, which is the definition. The mirror was missing
+  // `minLength`, so a plan that named a dimension with the empty string passed
+  // the published schema and failed the validator — and a renderer that only
+  // reads the schema would print a dimension with no name at all.
+  const blank = {
+    ...fixture.input,
+    dimensions: fixture.input.dimensions.map((dimension, index) =>
+      index === 0 ? { ...dimension, label: "" } : dimension
+    )
+  };
+  assert.equal(validate(blank), false, "ajv accepted an empty label the validator refuses");
+  assert.throws(() => parseRunPlan(blank), KernelSchemaError);
+
+  const named = {
+    ...fixture.input,
+    dimensions: fixture.input.dimensions.map((dimension, index) =>
+      index === 0 ? { ...dimension, label: "correctness" } : dimension
+    )
+  };
+  assert.equal(validate(named), true, JSON.stringify(validate.errors));
+  assert.equal(parseRunPlan(named).dimensions[0].label, "correctness");
+
+  const absent = {
+    ...fixture.input,
+    dimensions: fixture.input.dimensions.map(({ label, ...dimension }) => dimension)
+  };
+  assert.equal(validate(absent), true, "a label stays optional");
+  assert.equal("label" in parseRunPlan(absent).dimensions[0], false);
+});

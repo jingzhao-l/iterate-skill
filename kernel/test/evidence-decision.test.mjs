@@ -165,3 +165,44 @@ test("a pathological anomaly string is clamped to the schema's 2048 limit, not r
   assert.doesNotThrow(() => parseDecisionLogEntry(entryFor(evidence)), "the clamp must keep the entry loggable");
   assert.equal(decisionOutcomeFromEvidence(evidence), "fail");
 });
+
+/**
+ * The mapping reads verdicts, so it dereferences them — and an input that is not
+ * a pack used to raise whatever `TypeError` the JavaScript runtime chose, at an
+ * arbitrary depth, with no field named. Every other contract function in this
+ * package answers a bad input with a coded refusal; these two are the public
+ * face of the same contract and have to behave the same way.
+ */
+test("an input that is not an evidence pack is refused with a coded error, not a TypeError", () => {
+  for (const bad of [{}, null, undefined, "pack", 7, [], { operationId: "op_0" }]) {
+    for (const fn of [decisionOutcomeFromEvidence, decisionSummaryFromEvidence]) {
+      assert.throws(
+        () => fn(bad),
+        (error) => {
+          assert.equal(error?.name, "KernelSchemaError", `${fn.name}(${JSON.stringify(bad)}): got ${error?.name}`);
+          assert.equal(error.code, "KERNEL_E_SCHEMA");
+          assert.match(error.message, /evidence pack/);
+          return true;
+        },
+        `${fn.name} on ${JSON.stringify(bad)}`
+      );
+    }
+  }
+});
+
+test("the value the read path folds is exactly what this mapping now demands", () => {
+  // `parseEvidencePackRead` tolerates the two legacy shapes so an archive can be
+  // opened, and its documented promise is that the result matches the write-side
+  // contract. The mapping validates that contract, so a legacy archive must still
+  // transcribe — if the fold ever stopped landing on the write shape, this is the
+  // test that says so instead of a producer's TypeError at 03:00.
+  for (const file of ["evidence-pack.ok-04-legacy-draft.json", "evidence-pack.ok-05-pixelbounds-null.json"]) {
+    const archived = structuredClone(readFixture(file));
+    const folded = parseEvidencePackRead(archived);
+    assert.doesNotThrow(() => parseEvidencePack(folded), file);
+    const outcome = decisionOutcomeFromEvidence(folded);
+    assert.ok(OUTCOMES.has(outcome), `${file}: mapped to ${outcome}`);
+    assert.doesNotThrow(() => parseDecisionLogEntry(entryFor(folded)), file);
+    assert.throws(() => decisionOutcomeFromEvidence(archived), /evidence pack/, `${file}: the raw archive is not a pack`);
+  }
+});

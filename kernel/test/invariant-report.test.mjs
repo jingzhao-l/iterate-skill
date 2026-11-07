@@ -238,3 +238,35 @@ test("a report wider than the contract refuses rather than truncating", () => {
   const atLimit = { ...wide, checks: wide.checks.slice(0, INVARIANT_CHECK_MAX) };
   assert.equal(parseInvariantReport(atLimit).checks.length, INVARIANT_CHECK_MAX);
 });
+
+/**
+ * `uniqueItems` on `targets.dimensions` and `targets.operationIds` is declared in
+ * the published schema, and until now only ajv honoured it. A target listed twice
+ * is a schedule that one reader runs once and another runs twice, which is exactly
+ * the class of disagreement this contract exists to end — so the validator refuses
+ * it too, and the two sides are checked against each other here.
+ */
+test("a target listed twice is refused by the schema and the validator alike", () => {
+  const base = structuredClone(fixture.request);
+  const cases = [
+    ["dimensions", (targets) => ({ ...targets, dimensions: [...targets.dimensions, targets.dimensions[0]] })],
+    ["operationIds", (targets) => ({ operationIds: ["op_0123456789ABCDEFGHJKMNPQRT", "op_0123456789ABCDEFGHJKMNPQRT"] })]
+  ];
+  for (const [name, mutate] of cases) {
+    const duplicated = { ...base, targets: mutate(structuredClone(base.targets)) };
+    assert.equal(validateRequest(duplicated), false, `ajv accepted a doubled ${name}`);
+    assert.throws(
+      () => parseReverificationRequest(duplicated),
+      (error) => {
+        assert.ok(error instanceof KernelSchemaError, `${name}: got ${error}`);
+        assert.match(error.message, /listed twice/);
+        assert.ok(error.issues.some((issue) => issue.path.startsWith(`targets.${name}`)), `${name}: ${JSON.stringify(error.issues)}`);
+        return true;
+      },
+      name
+    );
+  }
+  const once = { ...base, targets: { dimensions: ["spec-compliance", "security"] } };
+  assert.equal(validateRequest(once), true, JSON.stringify(validateRequest.errors));
+  assert.equal(parseReverificationRequest(once).targets.dimensions.length, 2);
+});

@@ -108,6 +108,23 @@ export const ReverificationTargetsSchema = z
           "an empty target set is not a re-verification: state which recipe steps, dimensions, or operations to re-run"
       });
     }
+    // `uniqueItems` on these two lists is declared in
+    // `schemas/reverification-request.schema.json`. A target listed twice is a
+    // plan that says "re-run this once" and "re-run this twice" at the same time,
+    // and two consumers would cost it differently.
+    for (const field of ["dimensions", "operationIds"] as const) {
+      const list = targets[field];
+      if (list === undefined) continue;
+      list.forEach((name, index) => {
+        if (list.indexOf(name) !== index) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [field, index],
+            message: `"${name}" is listed twice in ${field}; a repeated target asks for the same work twice while the schedule reads the list as a set`
+          });
+        }
+      });
+    }
   });
 export type ReverificationTargets = z.infer<typeof ReverificationTargetsSchema>;
 

@@ -13,8 +13,11 @@ name: npm publish (iterate-kernel)
 #   package         -> repo(workflow file)
 #   iterate-kernel  -> jingzhao-l/iterate-skill(.github/workflows/npm-publish-kernel.yml)
 #
-# Kernel versions are 0.1.x, so the release gate is `v0.1.*` tags; manual
-# dispatch (with an optional `tag` input) is the other entry point.
+# Kernel versions are 0.1.x, so the release gate is `v0.1.*` tags. Manual
+# dispatch is the other entry point and it must also name a `v0.1.x` ref: the
+# version step compares package.json against the ref that was checked out and
+# refuses anything that is not a kernel tag, so a dispatch at `main` can no
+# longer publish whatever happens to sit on the branch.
 #
 # Precondition for OIDC trusted publishing: connect this workflow as a Trusted
 # Publisher on npm for `iterate-kernel` (npmjs.com -> package -> Settings ->
@@ -68,15 +71,37 @@ jobs:
         # A forgotten version bump used to publish the PREVIOUS version under a
         # new tag (npm rejects a duplicate version only once it is too late).
         # Fail before publishing instead.
+        #
+        # The ref used here must be the ref that was CHECKED OUT, which is
+        # `release.tag_name || inputs.tag || github.ref_name` (see the checkout
+        # step). Reading only the first two made a dispatch with `--ref` and no
+        # `tag` input — the documented way to publish — compute an empty TAG, skip
+        # the comparison entirely, and publish whatever version happened to sit at
+        # that ref. A release is also only publishable from a tag: provenance
+        # attested to `main` names a commit that has not moved yet, not one that
+        # never will.
+        #
+        # Event fields go through env, never into the script text: a git ref may
+        # contain quotes and backticks, so `"$TAG"` inline would be command
+        # injection by anyone able to push a tag or dispatch with a `tag` input.
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          WORKFLOW_REF: ${{ github.ref_name }}
         run: |
-          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          TAG="${RELEASE_TAG:-${INPUT_TAG:-$WORKFLOW_REF}}"
+          if ! [[ "$TAG" =~ ^v0\.1\.[0-9]+$ ]]; then
+            echo "::error::refusing to publish from '$TAG': iterate-kernel releases come from a v0.1.x tag"
+            echo "cut the tag on the commit that carries the version bump, then dispatch with --ref v0.1.<X>"
+            exit 1
+          fi
           TAG="${TAG#v}"
           PKG="$(node -p "require('./package.json').version")"
-          if [ -n "$TAG" ] && [ "$TAG" != "$PKG" ]; then
+          if [ "$TAG" != "$PKG" ]; then
             echo "::error::package.json version $PKG does not match release tag $TAG"
             exit 1
           fi
-          echo "package.json version $PKG (tag: ${TAG:-<none>})"
+          echo "package.json version $PKG (tag: $TAG)"
 
       - name: Run kernel tests
         working-directory: kernel

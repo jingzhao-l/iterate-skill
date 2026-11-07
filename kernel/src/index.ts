@@ -87,10 +87,12 @@ export {
   DECISION_ENTRY_ID_PATTERN,
   DECISION_KIND_PATTERN,
   PAYLOAD_MAX_CANONICAL_LENGTH,
+  PAYLOAD_RESERVED_KEYS,
   PREV_ENTRY_HASH_PATTERN,
   SUMMARY_MAX_LENGTH,
   DecisionOutcomeSchema,
   DecisionLogEntrySchema,
+  reservedPayloadKeys,
   type DecisionOutcome,
   type DecisionLogEntry
 } from "./decision-log-entry.js";
@@ -157,7 +159,14 @@ export {
   parseProviderRegistration
 } from "./parse.js";
 
-export { canonicalJson } from "./canonical-json.js";
+export {
+  CANONICAL_JSON_CODES,
+  CANONICAL_JSON_MAX_DEPTH,
+  KERNEL_SAFE_INTEGER_MAX,
+  KERNEL_SAFE_INTEGER_MIN,
+  KernelCanonicalJsonError,
+  canonicalJson
+} from "./canonical-json.js";
 
 export {
   RUN_PLAN_SCHEMA_VERSION,

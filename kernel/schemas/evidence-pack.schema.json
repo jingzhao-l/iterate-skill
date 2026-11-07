@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.iterate.dev/evidence-pack-0.1.json",
   "title": "EvidencePack",
-  "description": "GlassPane P0 evidence package (schema v0.1-draft). C35 dual-language contract: this JSON Schema is the single source of truth; Swift Codable and TS zod bindings must stay in sync via the shared truth fixtures.",
+  "description": "GlassPane P0 evidence package (schema v0.1-draft). C35 dual-language contract: this JSON Schema is the single source of truth; Swift Codable and TS zod bindings must stay in sync via the shared truth fixtures. INTEGERS ARE BOUNDED: every integer field carries both `minimum` and `maximum` inside ±2^53−1, which is the range every runtime prints identically (ECMAScript renders 1e21 as `1e+21` where Python prints 1000000000000000000000). NON-FINITE NUMBERS ARE REFUSED by the validators and this schema cannot say so: `NaN` and ±Infinity are `type: number` to a schema-only reader, while `JSON.stringify` prints all three as `null` — a pack that did that would be indistinguishable from one that measured nothing.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -101,7 +101,8 @@
             },
             "nodeCount": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 9007199254740991
             },
             "axChanged": {
               "type": "boolean"
@@ -142,7 +143,8 @@
             },
             "windowId": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 9007199254740991
             }
           }
         },
@@ -229,7 +231,8 @@
         },
         "hitCount": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "handlers": {
           "type": "array",
@@ -240,13 +243,14 @@
             "required": ["file", "line"],
             "properties": {
               "file": { "type": "string", "minLength": 1, "maxLength": 512 },
-              "line": { "type": "integer", "minimum": 0 }
+              "line": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
             }
           }
         },
         "lateCount": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     },

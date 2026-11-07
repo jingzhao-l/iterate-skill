@@ -1,11 +1,11 @@
 import type { z } from "zod";
-import { schemaErrorFrom } from "./errors.js";
+import { KernelSchemaError, schemaErrorFrom } from "./errors.js";
 import {
   EvidencePackReadSchema,
   EvidencePackSchema,
   type EvidencePack
 } from "./evidence-pack.js";
-import { DecisionLogEntrySchema, type DecisionLogEntry } from "./decision-log-entry.js";
+import { DecisionLogEntrySchema, reservedPayloadKeys, type DecisionLogEntry } from "./decision-log-entry.js";
 import {
   DimensionContextInputSchema,
   DimensionContextSchema,
@@ -58,6 +58,16 @@ export function parseEvidencePackRead(input: unknown): EvidencePack {
 }
 
 export function parseDecisionLogEntry(input: unknown): DecisionLogEntry {
+  // The raw value, before `z.record` copies it: see `reservedPayloadKeys`.
+  const reserved = reservedPayloadKeys((input as { payload?: unknown } | null)?.payload);
+  if (reserved.length > 0) {
+    throw new KernelSchemaError("decision log entry", [
+      {
+        path: "payload",
+        message: `carries ${reserved.map((key) => `"${key}"`).join(", ")}, a key JavaScript reinterprets instead of storing, so it would be missing from the canonical bytes the chain hashes`
+      }
+    ]);
+  }
   return parseOrThrow(DecisionLogEntrySchema, input, "decision log entry");
 }
 

@@ -27,8 +27,25 @@ export const ProviderMethodSchema = z.strictObject({
    * What this method needs to run: capability names, not booleans per capability,
    * so adding one does not require widening a schema on both sides. An empty list
    * means "no prerequisites", which is a claim the provider has to make.
+   *
+   * `uniqueItems` is declared in `schemas/provider-registration.schema.json`, and
+   * a declared rule the validator does not enforce is a rule one consumer can
+   * break while every reader believes it.
    */
-  requires: z.array(z.string().regex(PROVIDER_ID_PATTERN).max(PROVIDER_ID_MAX_LENGTH)).max(16)
+  requires: z
+    .array(z.string().regex(PROVIDER_ID_PATTERN).max(PROVIDER_ID_MAX_LENGTH))
+    .max(16)
+    .superRefine((names, ctx) => {
+      names.forEach((name, index) => {
+        if (names.indexOf(name) !== index) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [index],
+            message: `"${name}" is listed twice; a repeated prerequisite changes nothing about what the method needs, so the repetition is either a mistake or an attempt to make a list mean two things at once`
+          });
+        }
+      });
+    })
 });
 export type ProviderMethod = z.infer<typeof ProviderMethodSchema>;
 
@@ -120,7 +137,10 @@ export function registerProvider(
 
 /** Look a provider up. No default, no fuzzy match, no "the only one registered". */
 export function resolveProvider(registry: ProviderRegistry, id: string): ProviderRegistration {
-  const provider = registry[id];
+  // Own property, not `registry[id]`: an empty registry is `{}`, so a lookup of
+  // "constructor" or "__proto__" answers with something off `Object.prototype` and
+  // the caller believes a provider is registered when nobody registered it.
+  const provider = Object.hasOwn(registry, id) ? registry[id] : undefined;
   if (!provider) {
     throw new KernelProviderError(
       PROVIDER_CODES.unknown,

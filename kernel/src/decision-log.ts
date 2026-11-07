@@ -3,7 +3,7 @@ import { closeSync, fchmodSync, fsyncSync, openSync, readFileSync, statSync, wri
 import { dirname } from "node:path";
 
 import { canonicalJson } from "./canonical-json.js";
-import { DecisionLogEntrySchema, type DecisionLogEntry, type DecisionOutcome } from "./decision-log-entry.js";
+import { DecisionLogEntrySchema, reservedPayloadKeys, type DecisionLogEntry, type DecisionOutcome } from "./decision-log-entry.js";
 import { parseDecisionLogEntry } from "./parse.js";
 
 /**
@@ -155,17 +155,31 @@ function broken(
 }
 
 /**
+ * The one line rule for a ledger: entries are separated by "\n", and a trailing
+ * newline terminates the last one rather than starting an empty entry.
+ *
+ * Deliberately not `/^.*$/gm`: `.` and `$` also break at U+2028 and U+2029, both
+ * of which `JSON.stringify` leaves raw because both are legal inside a JSON
+ * string. A counter that disagreed with this split would tell a caller their
+ * valid append was a foreign writer's interleaving — and keep the entry it was
+ * complaining about, so every later append reports the same false collision.
+ */
+function ledgerLines(text: string): string[] {
+  const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return body.length === 0 ? [] : body.split("\n");
+}
+
+/**
  * Parse and verify ledger *text* — the pure half, so a reader can verify a string
  * obtained anywhere (a CI artifact, a pasted excerpt, a Swift-written file).
  * Never throws: a broken chain is a result, because the auditor's job is to say
  * where it broke.
  */
 export function verifyDecisionLogText(text: string): DecisionLogVerification {
-  const body = text.endsWith("\n") ? text.slice(0, -1) : text;
-  if (body.length === 0) {
+  const lines = ledgerLines(text);
+  if (lines.length === 0) {
     return { ok: true, entries: [] };
   }
-  const lines = body.split("\n");
   const entries: DecisionLogEntry[] = [];
   for (let i = 0; i < lines.length; i++) {
     const lineNumber = i + 1;
@@ -287,6 +301,17 @@ export function buildDecisionLogEntry(
   draft: DecisionLogDraft,
   chain: { sequence: number; prevEntryHash: string }
 ): DecisionLogEntry {
+  // Before the schema: a `__proto__` key is not stored by an object assignment, so
+  // the value a producer recorded would vanish from the bytes the digest covers.
+  const reserved = reservedPayloadKeys((draft as { payload?: unknown }).payload);
+  if (reserved.length > 0) {
+    throw new KernelDecisionLogError(
+      DECISION_LOG_CODES.draft,
+      "",
+      `refusing to log a decision whose payload carries a key JavaScript cannot store as data: ${reserved.map((key) => `"${key}"`).join(", ")}`,
+      "rename the field at the producer (a `proto` or `ctor` key says the same thing and survives the trip); a payload key that is reinterpreted instead of stored would be missing from the canonical bytes this entry is hashed over, and the ledger would certify an entry that does not contain what was decided"
+    );
+  }
   const checked = DecisionLogDraftSchema.safeParse(draft);
   if (!checked.success) {
     const detail = checked.error.issues
@@ -407,9 +432,12 @@ export function appendDecisionLogEntry(
 
   // 4. Read back and verify. A ledger that lies about having been written is
   //    worse than one that refuses; so on mismatch we keep the bytes and shout.
-  const after = (readFileSync(logPath, "utf8").match(/^.*$/gm) ?? []).filter(
-    (value, index, all) => !(index === all.length - 1 && value === "")
-  );
+  //    The line count uses the same rule `verifyDecisionLogText` uses — split on
+  //    "\n" — because U+2028 and U+2029 are legal *raw* inside a JSON string, and
+  //    a `/^.*$/gm` counter reads one entry as two lines and reports a valid
+  //    append as a foreign writer.
+  const afterText = readFileSync(logPath, "utf8");
+  const after = ledgerLines(afterText);
   const lineNumber = after.length;
   const tailLine = after[lineNumber - 1] ?? "";
   if (tailLine !== line) {

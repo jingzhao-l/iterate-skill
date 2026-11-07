@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.iterate.dev/decision-log-entry-0.1-draft.json",
   "title": "DecisionLogEntry",
-  "description": "Entry-level contract of the opID-to-decision one-way hash chain (audit chain, Phase A part). Each entry links to the previous entry via SHA-256 of its canonical form; the genesis entry uses an empty prevEntryHash.",
+  "description": "Entry-level contract of the opID-to-decision one-way hash chain (audit chain, Phase A part). Each entry links to the previous entry via SHA-256 of its canonical form; the genesis entry uses an empty prevEntryHash. INTEGERS ARE BOUNDED: `sequence` and `round` carry both `minimum` and `maximum` inside ±2^53−1, because that is the range every runtime prints identically — ECMAScript renders 1e21 as `1e+21` where Python prints 1000000000000000000000 — and a line outside it would hash to different bytes in each implementation. Two rules are validator-only because JSON Schema cannot state them: a `payload` value must have a JSON representation (an `undefined`, a function, a symbol, a `NaN` or an `Infinity` would be printed as a token this form does not have), and a `payload` key must not be `__proto__` — the one key the JavaScript object model reinterprets instead of storing, so it would disappear from the canonical bytes the chain hashes (`prototype` and `constructor` are ordinary own properties and are carried like any other) — see `src/decision-log-entry.ts`.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,7 +20,8 @@
     },
     "sequence": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "maximum": 9007199254740991
     },
     "prevEntryHash": {
       "type": "string",
@@ -49,6 +50,7 @@
     "round": {
       "type": "integer",
       "minimum": 0,
+      "maximum": 9007199254740991,
       "description": "Loop position the decision belongs to, when the producer counts rounds. Optional because a one-off tool execution is not part of a round."
     },
     "dimension": {

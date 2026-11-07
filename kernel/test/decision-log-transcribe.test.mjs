@@ -108,4 +108,58 @@ test("every documented refusal has a named code", () => {
   // both ordinary producer mistakes, and a stack trace gives the caller nothing to act on.
   assert.ok(used.includes(DECISION_TRANSCRIBE_CODES.payload));
   assert.ok(used.includes(DECISION_TRANSCRIBE_CODES.summary));
+  assert.ok(used.includes(DECISION_TRANSCRIBE_CODES.timestamp));
 });
+
+/**
+ * The pattern in rule 4 bounds the SPELLING; the calendar is the other half, and
+ * `Date.parse` silently rolls an impossible date over instead of refusing it
+ * (2026-02-31 becomes 2026-03-03) while the Python half constructs the date and
+ * raises. The two implementations then transcribe one record into two different
+ * instants — which is the exact failure the pattern was written to prevent.
+ */
+function transcribeTimestamp(timestamp) {
+  return decisionLogDraftFromRecord(
+    { timestamp, round: 1, type: "validation", data: { passed: true } },
+    "dl_0123456789ABCDEFGHJKMNPQRT"
+  ).createdAt;
+}
+
+test("the calendar is checked: day counts, leap years, and offsets convert instead of rolling over", () => {
+  for (const [timestamp, expected] of [
+    ["2026-02-28T23:59:59.999Z", "2026-02-28T23:59:59.999Z"],
+    ["2028-02-29T00:00:00Z", "2028-02-29T00:00:00.000Z"],
+    ["2100-02-28T00:00:00Z", "2100-02-28T00:00:00.000Z"],
+    ["2026-04-30T00:00:00Z", "2026-04-30T00:00:00.000Z"],
+    ["2026-01-31T00:00:00Z", "2026-01-31T00:00:00.000Z"],
+    // West of UTC: the +08:00 case in the fixture is only one direction, and an
+    // implementation that accepted a literal "+-" sign would pass it and fail here.
+    ["2026-10-11T02:28:11.042-05:00", "2026-10-11T07:28:11.042Z"],
+    ["2026-10-11T02:28:11.0425+05:45", "2026-10-10T20:43:11.042Z"],
+    ["2026-10-11T00:00:00+00:00", "2026-10-11T00:00:00.000Z"]
+  ]) {
+    assert.equal(transcribeTimestamp(timestamp), expected, timestamp);
+  }
+
+  for (const impossible of [
+    "2026-02-29T00:00:00Z", // 2026 is not a leap year
+    "2100-02-29T00:00:00Z", // century rule: 2100 is divisible by 100 and not 400
+    "2026-02-31T00:00:00Z",
+    "2026-04-31T00:00:00Z",
+    "2026-06-31T00:00:00Z",
+    "2026-00-01T00:00:00Z",
+    "2026-13-01T00:00:00Z",
+    "2026-01-00T00:00:00Z",
+    "0000-01-01T00:00:00Z", // the year the Python half cannot construct either
+    "2026-10-11T24:00:00Z",
+    "2026-10-11T00:60:00Z",
+    "2026-10-11T00:00:60Z",
+    "2026-10-11T00:00:00+24:00",
+    "2026-10-11T00:00:00+00:60"
+  ]) {
+    const error = captureError(() => transcribeTimestamp(impossible));
+    assert.ok(error instanceof KernelDecisionTranscribeError, `${impossible}: expected a refusal, got ${error}`);
+    assert.equal(error.code, DECISION_TRANSCRIBE_CODES.timestamp, impossible);
+  }
+});
+
