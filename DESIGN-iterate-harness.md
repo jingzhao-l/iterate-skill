@@ -1040,6 +1040,7 @@ harness/iterate-plugin/
 | P11 | Doctor 自检 | 确定性、无网络的机器就绪度报告；失败/告警优先，每项带可复制 remedy | `doctor` 模块 |
 | P12 | Capabilities 能力清单 | 工具/斜杠命令/技能/插件/MCP 配置的实际加载清单；静态 MCP 问题与可复制修复；类别筛选 + 搜索；永不启动服务器或模型 | `capabilities` 模块（与 `ih capabilities` 同源） |
 | P13 | Audit 审计 | 控制台每一次写操作的完整台账（时间/操作/目标/参数摘要）：操作前缀 + 目标子串 + 起始时间筛选，分页，导出 Markdown / CSV / JSON；只读、与 `ih audit` 同源 | `audit` 模块（web-audit.jsonl） |
+| P14 | Memory 记忆 | 项目记忆库：条目/大小/修改时间/描述，引擎相关度搜索排名，注入预览（与提示词同一条代码路径，点名截断），失效索引链接问题；新增/覆盖/删除（二次确认 + 审计）；只读面绝不创建记忆目录 | `memory` 模块（`ih memory` 同源） |
 
 **操作边界（安全默认）**：P2/P3/P6 涉及写操作（启动/停止/恢复 checkpoint/保存配置）一律「只读默认 + 显式确认 + 写入前备份 + 失败回滚」，与 CLI 既有语义一致。
 
@@ -1058,6 +1059,9 @@ harness/iterate-plugin/
 | `web/events.py` | SSE 实时推送（尾部读取 decision log 增量 + cost meter 增量） |
 | `web/security.py` | 本机回环校验 / 路径白名单 / 操作审计日志（写入侧） |
 | `web/routes/audit.py` | 审计台账读取：分页 / 筛选 / 导出（与 `ih audit` 共用 `audit` 模块） |
+| `web/routes/memory.py` | 项目记忆库读取 / 注入预览 / 新增 / 删除（与 `ih memory` 共用 `memory` 模块，写路径审计 + 确认） |
+| `memory/inject.py` | 运行时提示词与注入预览共用的记忆段落构造器（单一实现，二者不可漂移） |
+| `memory/inventory.py` | 记忆库只读清单 + 相关度排名 + 注入预览 + 单文件读取（`ih memory` / `GET /api/v1/memory`） |
 
 **关键路由契约（示例）**：
 
@@ -1076,6 +1080,10 @@ harness/iterate-plugin/
 | DELETE | `/api/v1/schedules` | 删除一条已登记计划（审计 + 确认） | `OperationResult` |
 | GET | `/api/v1/audit` | 审计台账分页 + 操作/目标/时间筛选 + 操作类别清单；只读 | `AuditView` |
 | GET | `/api/v1/audit/export` | 审计台账导出（Markdown / CSV / JSON，沿用筛选） | 下载（`X-Audit-Total`） |
+| GET | `/api/v1/memory` | 项目记忆库：条目 + 相关度搜索排名 + 注入预览（`query`/`prompt`）；只读、绝不创建记忆目录 | `MemoryView` |
+| GET | `/api/v1/memory/entry` | 单条记忆全文（越界名拒绝 404） | `MemoryEntryDetail` |
+| POST | `/api/v1/memory` | 新增/覆盖记忆（审计 + 确认；覆盖已存在需 `overwrite=true`，否则 409） | `OperationResult` |
+| DELETE | `/api/v1/memory` | 删除记忆并解除索引链接（审计 + 确认；`prune_index` 修失效链接） | `OperationResult` |
 
 **错误码约定**：`400` 参数非法 / `401` 未授权（非本机）/ `404` 资源不存在 / `409` 冲突（如恢复中再操作、把已有计划迁到另一目录未带 `replace`）/ `422` 校验失败 / `500` 内部错误（含日志 trace）。
 
