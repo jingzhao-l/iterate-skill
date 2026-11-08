@@ -116,7 +116,7 @@
 
 ## 9. 跨会话趋势（从质量账本读取）
 
-> **实现状态（plugin 3.6.0）：部分实现**——单会话内跨轮对比已落地（观测台 F2 页签渲染跨轮对比表：每轮 findings / fixed / 严重度分布 / 验证结果，数据来自 report + `iterate_transcript` 的 `validations`）；跨会话对比经"磁盘快照拉取"指令通道可用（复制指令让模型调用 `iterate_history` 等只读工具并回显，再用导出 JSON 并排比较两次运行）。harness 趋势库（`trend_store`）直连仍未接入。
+> **实现状态（plugin 3.16.0）：部分实现**——单会话内跨轮对比已落地（观测台 F2 页签渲染跨轮对比表：每轮 findings / fixed / 严重度分布 / 验证结果，数据来自 report + `iterate_transcript` 的 `validations`）；**跨会话对比在 3.16.0 升级为一等交互**：F2 的「存为对比基准 / 与基准对比」把当前运行摘要（轮次/发现/critical+high/修复/验证通过率/门禁得分）持久化到 localStorage，下次运行一键并排对比（含方向着色差值），取代「导出 JSON 并排比较两次运行」的手工路径；损坏/过期的已存基准读作「无基准」而非幽灵运行。harness 趋势库（`trend_store`）直连仍未接入。
 
 - **功能**：从质量账本读取长期趋势——顽固问题、回归检测、收敛速度变化、经验命中率。
 - **数据来源**：harness 趋势库（`trend_store`）+ skill 3.0 质量账本；现有 StatsCard 趋势图升级为跨会话维度。
