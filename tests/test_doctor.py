@@ -1836,6 +1836,95 @@ class TestKnownSafeGateChecksEveryCommand:
         assert not report.has_errors()
 
 
+class TestDoctorCheckFilter:
+    """``doctor --check <name>`` isolates a single diagnostic check and
+    ``--list-checks`` exposes every available name."""
+
+    def test_list_checks_exposes_every_name(self, capsys) -> None:
+        capsys.readouterr()
+        code = cli_main(["doctor", "--list-checks"])
+        out = capsys.readouterr().out
+        assert code == 0
+        for name in ("config.schema", "max_rounds", "iterate.md.markers"):
+            assert name in out
+
+    def test_list_checks_json(self, capsys) -> None:
+        capsys.readouterr()
+        code = cli_main(["doctor", "--list-checks", "--json"])
+        out = capsys.readouterr().out
+        assert code == 0
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert "config.schema" in payload["checks"]
+
+    def test_run_one_check_runs_only_it(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["dimensions"] = ["correctness", "not_a_real_dim"]  # a warning
+        config["max_rounds"] = "not-a-number"  # an error
+        _write_config(project, config)
+        report = run_doctor(project, checks={"max_rounds"})
+        checks = {f.check for f in report.findings}
+        # Only max_rounds runs (plus silent-preamble errors); dimensions is not
+        # evaluated at all.
+        assert "max_rounds" in checks
+        assert "dimensions" not in checks
+        assert report.has_errors()
+
+    def test_run_one_check_still_explains_a_preamble_error(self, tmp_path) -> None:
+        # Requesting a config-dependent check on a project whose config is
+        # corrupt must surface the parse error so the blocker is explained.
+        project = _make_project(tmp_path)
+        (project / CONFIG_YAML).write_text("dimensions: [broken", encoding="utf-8")
+        report = run_doctor(project, checks={"max_rounds"})
+        assert report.has_errors()
+        assert any(f.check == "config.parse" and f.severity == "error"
+                   for f in report.findings)
+
+    def test_request_only_onboarding(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        report = run_doctor(project, checks={"onboarding"})
+        checks = {f.check for f in report.findings}
+        assert checks == {"onboarding"}
+
+    def test_unknown_check_name_raises(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError, match="unknown doctor check"):
+            run_doctor(project, checks={"not-a-check"})
+
+    def test_empty_filter_runs_nothing(self, tmp_path) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        report = run_doctor(project, checks=set())
+        assert report.findings == []
+
+    def test_cli_unknown_check_exits_two(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        capsys.readouterr()
+        code = cli_main(["doctor", "-p", str(project), "--check", "bogus"])
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "unknown doctor check" in err
+
+    def test_cli_check_json_contract(self, tmp_path, capsys) -> None:
+        project = _make_project(tmp_path)
+        config = _base_config()
+        config["max_rounds"] = 5  # a valid value so the check records an "ok"
+        _write_config(project, config)
+        capsys.readouterr()
+        code = cli_main(["doctor", "-p", str(project), "--check", "max_rounds", "--json"])
+        out = capsys.readouterr().out
+        assert code == 0
+        payload = json.loads(out)
+        checks = {f["check"] for f in payload["findings"]}
+        assert "max_rounds" in checks
+        assert payload["has_errors"] is False
+
+
 class TestExportReportJsonLeavesNoTempFiles:
     def test_unique_tmp_is_cleaned_up(self, tmp_path: Path) -> None:
         from iterate_cli.doctor import export_report_json

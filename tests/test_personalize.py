@@ -362,5 +362,49 @@ class TestLoadPersonalizationFromConfig:
         assert data.known_intentional[0].line == 0
 
 
+class TestParseDimensionNumbers:
+    """`_parse_dimension_numbers` must drop only malformed tokens, not the whole
+    selection (a single typo must not discard every valid dimension entered)."""
+
+    def test_valid_selection_parses_in_order(self) -> None:
+        from iterate_cli.personalize import _parse_dimension_numbers
+        from iterate_cli.wizard import ALL_DIMENSIONS
+
+        assert _parse_dimension_numbers("1,2") == [
+            ALL_DIMENSIONS[0],
+            ALL_DIMENSIONS[1],
+        ]
+
+    def test_malformed_token_keeps_valid_ones(self) -> None:
+        from iterate_cli.personalize import _parse_dimension_numbers
+        from iterate_cli.wizard import ALL_DIMENSIONS
+
+        # "1, x" keeps dimension 1 and only drops the malformed token.
+        assert _parse_dimension_numbers("1, x") == [ALL_DIMENSIONS[0]]
+
+    def test_out_of_range_token_keeps_valid_ones(self) -> None:
+        from iterate_cli.personalize import _parse_dimension_numbers
+        from iterate_cli.wizard import ALL_DIMENSIONS
+
+        # "1, 99" keeps dimension 1 and drops the out-of-range 99.
+        assert _parse_dimension_numbers("1, 99") == [ALL_DIMENSIONS[0]]
+
+    def test_all_invalid_returns_empty(self) -> None:
+        from iterate_cli.personalize import _parse_dimension_numbers
+
+        assert _parse_dimension_numbers("x") == []
+        assert _parse_dimension_numbers("99") == []
+        assert _parse_dimension_numbers("") == []
+
+    def test_duplicates_are_deduped_preserving_order(self) -> None:
+        from iterate_cli.personalize import _parse_dimension_numbers
+        from iterate_cli.wizard import ALL_DIMENSIONS
+
+        assert _parse_dimension_numbers("1,1,2") == [
+            ALL_DIMENSIONS[0],
+            ALL_DIMENSIONS[1],
+        ]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

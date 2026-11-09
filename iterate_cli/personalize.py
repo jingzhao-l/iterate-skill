@@ -1927,7 +1927,13 @@ def _read_index(
 
 
 def _parse_dimension_numbers(raw: str) -> list[str]:
-    """Parse comma-separated dimension numbers into a list of dimension keys."""
+    """Parse comma-separated dimension numbers into a list of dimension keys.
+
+    Invalid or out-of-range tokens are dropped individually instead of
+    discarding the whole selection, mirroring ``wizard._parse_dimension_selection``:
+    an input like ``"1, x"`` keeps dimension 1 and ignores only the malformed
+    token. The result is empty only when no valid number was entered at all.
+    """
     result: list[str] = []
     for part in raw.split(","):
         part = part.strip()
@@ -1936,9 +1942,9 @@ def _parse_dimension_numbers(raw: str) -> list[str]:
         try:
             num = int(part)
         except ValueError:
-            return []
+            continue
         if num < 1 or num > len(ALL_DIMENSIONS):
-            return []
+            continue
         dim = ALL_DIMENSIONS[num - 1]
         if dim not in result:
             result.append(dim)

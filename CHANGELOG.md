@@ -5,6 +5,40 @@
 
 ---
 
+## [3.13.0] — 2026-11-09
+
+minor：新增 `iterate backup prune`（备份保留策略，此前备份只增不减、只能手动
+删文件）与 `iterate doctor --check`/`--list-checks`（把诊断从「一次全跑」变成
+「可按检查名定向跑」，失败可自愈）。本轮全面审查（review-bugbot）确认 2 处中
+缺陷并全部修复（含 21 个新增回归）。
+
+### 新增功能
+- **`iterate backup prune`**（+16 回归）：按保留策略删除旧时间戳备份——
+  `--keep N` 对每个原始文件保留最新 N 份（滚动窗口，避免误删罕见文件的唯一
+  备份）、`--older-than AGE`（`30d`/`7d`/`24h`/`90m` 或纯天数）删除更旧的，
+  两者可并用取并集。只删可识别的 iterate 备份、绝不触碰被保护的原文件与
+  非备份文件；`--dry-run` 预览、`--json` 结构化输出；无策略/非法年龄/`--keep 0`
+  均给出可执行报错而非静默成功。
+- **`iterate doctor --check`/`--list-checks`**（+9 回归）：`--list-checks` 列出
+  全部检查名（`config.schema`、`max_rounds`、`drift`、`iterate.md.markers` 等）
+  后退出；`--check NAME` 只跑指定检查（可重复/逗号分隔），值取自
+  `doctor --json` 里 `findings[].check`，因此「看到哪个检查挂了 → 只重跑那个」
+  一步到位。config 依赖检查所需的前置检查（onboarding、config.parse）仍静默
+  运行并只暴露错误，阻塞原因始终被说明；未知检查名 exit 2 并提示
+  `--list-checks`。
+
+### 修复（全面审查发现）
+- **wizard 非法输入会清空既有 dimension_sets**（`wizard.py` `_collect_dimension_sets`，
+  +4 回归）：`选择要启用的范围蓝图编号` 输入非数字或越界时返回 `{}`，把回访用户
+  精心维护的命名维度集整个抹掉（模块自身不变量声明既有集合权威、必须存活）。
+  现改为保留当前已启用蓝图，与空输入路径一致。
+- **personalize 单个坏 token 丢弃整组维度**（`personalize.py` `_parse_dimension_numbers`，
+  +5 回归）：`1, x` 或 `1, 99` 因一个非法/越界 token 返回 `[]`，把用户输入的合法
+  维度一并丢弃并「保持原顺序」。现改为逐 token 丢弃（与 `wizard._parse_dimension_selection`
+  一致），只跳过非法 token、保留合法维度。
+
+---
+
 ## [3.12.0] — 2026-11-06
 
 minor：新增 `iterate config schema` 子命令（把规范 JSON Schema 暴露给编辑器 /

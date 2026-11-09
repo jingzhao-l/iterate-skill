@@ -504,6 +504,8 @@ def _dispatch_command(
             fix=getattr(args, "fix", False),
             strict=getattr(args, "strict", False),
             json_out=getattr(args, "json_out", None),
+            check=getattr(args, "check", None),
+            list_checks=getattr(args, "list_checks", False),
         )
     if args.command == "config":
         if show_banner:
@@ -554,6 +556,8 @@ def _dispatch_command(
             yes=getattr(args, "yes", False),
             dry_run=getattr(args, "dry_run", False),
             json_output=getattr(args, "json", False),
+            keep=getattr(args, "keep", None),
+            older_than=getattr(args, "older_than", None),
         )
     if args.command == "update":
         if show_banner:
@@ -966,6 +970,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Treat warnings as failures too: exit 1 when any warning is "
         "present (default: only errors are blocking). Useful for CI gating.",
     )
+    doctor_parser.add_argument(
+        "--check",
+        action="append",
+        metavar="NAME",
+        default=argparse.SUPPRESS,
+        help="Run only the named check(s) instead of all of them (repeatable, "
+        "or comma-separated). Use '--list-checks' to see the valid names.",
+    )
+    doctor_parser.add_argument(
+        "--list-checks",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Print every available check name and exit (no diagnostics run).",
+    )
     config_parser = subparsers.add_parser(
         "config",
         parents=[parent],
@@ -1117,23 +1135,26 @@ def _build_parser() -> argparse.ArgumentParser:
     backup_parser = subparsers.add_parser(
         "backup",
         parents=[parent],
-        help="List or restore timestamped backups written by write commands.",
-        description="List or restore the timestamped backups other iterate "
-        "commands write before mutating project state (config set/unset, "
-        "doctor --fix, refresh, personalize, onboard, import, reonboard). "
-        "'list' (default) enumerates every recognisable backup in the project "
-        "root, newest first; 'restore FILE' puts one back, taking a fresh "
-        "backup of the current file first so the restore is itself reversible. "
-        "Restore never touches a file that does not look like an iterate "
-        "backup.",
+        help="List, restore or prune timestamped backups written by write "
+        "commands.",
+        description="List, restore or prune the timestamped backups other "
+        "iterate commands write before mutating project state (config "
+        "set/unset, doctor --fix, refresh, personalize, onboard, import, "
+        "reonboard). 'list' (default) enumerates every recognisable backup in "
+        "the project root, newest first; 'restore FILE' puts one back, taking "
+        "a fresh backup of the current file first so the restore is itself "
+        "reversible; 'prune' deletes old backups under a retention policy. "
+        "Restore and prune never touch a file that does not look like an "
+        "iterate backup.",
     )
     backup_parser.add_argument(
         "backup_action",
         nargs="?",
-        choices=["list", "restore"],
+        choices=["list", "restore", "prune"],
         default="list",
         help="Action to perform: 'list' (default) enumerates backups; "
-        "'restore FILE' restores one backup file to its original name.",
+        "'restore FILE' restores one backup file to its original name; "
+        "'prune' deletes old backups (see --keep / --older-than).",
     )
     backup_parser.add_argument(
         "backup_file",
@@ -1159,6 +1180,21 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Emit a structured JSON object instead of TUI output.",
+    )
+    backup_parser.add_argument(
+        "--keep",
+        metavar="N",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="With 'prune': keep the N newest backups of each original file "
+        "and delete the rest (must be >= 1).",
+    )
+    backup_parser.add_argument(
+        "--older-than",
+        metavar="AGE",
+        default=argparse.SUPPRESS,
+        help="With 'prune': delete backups older than AGE (e.g. '30d', '7d', "
+        "'24h', '90m', or a plain number of days).",
     )
 
     update_parser = subparsers.add_parser(
@@ -2873,6 +2909,8 @@ def _cmd_doctor(
     fix: bool = False,
     strict: bool = False,
     json_out: str | None = None,
+    check: list[str] | None = None,
+    list_checks: bool = False,
 ) -> int:
     """Handle the 'doctor' subcommand — project health diagnostics.
 
@@ -2885,23 +2923,60 @@ def _cmd_doctor(
     When ``strict`` is True, warnings flip the exit code to 1 (errors are
     always blocking); this lets CI gate on any non-clean state.
 
+    When ``list_checks`` is True, every available check name is printed and
+    nothing is run.
+
+    When ``check`` is given, only those named checks run (the preamble a
+    config-dependent check needs still runs silently, surfacing only errors).
+
     Args:
         project_root: Project root directory.
         json_output: When True, emit a structured JSON report.
         fix: When True, apply safe config fixes before running diagnostics.
         strict: When True, warnings are treated as failures.
         json_out: When set, export the JSON report to this path.
+        check: Optional list of check names to run (None = all checks).
+        list_checks: When True, list the available check names and exit.
 
     Returns:
         Exit code: 0 when healthy, 1 when errors are found (or warnings too
         under --strict).
     """
     from iterate_cli.doctor import (
+        DOCTOR_CHECK_NAMES,
         export_report_json,
         render_report,
         run_doctor,
         run_doctor_fix,
     )
+
+    if list_checks:
+        if json_output:
+            print(
+                json.dumps(
+                    {"ok": True, "checks": list(DOCTOR_CHECK_NAMES)},
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            tui.intro("Iterate Skill — Doctor checks")
+            for name in DOCTOR_CHECK_NAMES:
+                tui.key_value(name, "", indent=2)
+            tui.hint(
+                "Run one with `iterate doctor --check <name>`.",
+                indent=2,
+            )
+        return 0
+
+    # --check is repeatable and each value may itself be comma-separated.
+    check_names: set[str] | None = None
+    if check:
+        check_names = {
+            piece.strip()
+            for value in check
+            for piece in value.split(",")
+            if piece.strip()
+        }
 
     fixes: list[str] = []
     if fix:
@@ -2969,7 +3044,14 @@ def _cmd_doctor(
                 tui.success("doctor --fix: no safe fixes needed.")
                 tui.empty_line()
 
-    report = run_doctor(project_root)
+    try:
+        report = run_doctor(project_root, checks=check_names)
+    except ValueError as exc:
+        if json_output:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        else:
+            tui.error(str(exc))
+        return 2
     # Attach applied fixes to the structured report so JSON consumers (both
     # --json and --json-out) see them without the report being polluted by
     # TUI text or the fixes list being dropped from the exported file.
@@ -3627,8 +3709,10 @@ def _cmd_backup(
     yes: bool = False,
     dry_run: bool = False,
     json_output: bool = False,
+    keep: int | None = None,
+    older_than: str | None = None,
 ) -> int:
-    """Handle ``iterate backup`` — list or restore timestamped backups.
+    """Handle ``iterate backup`` — list, restore or prune timestamped backups.
 
     ``list`` (the default) is a pure read: it enumerates every recognisable
     backup in the project root and always exits 0, even when there are none
@@ -3640,11 +3724,17 @@ def _cmd_backup(
     first, then writes the backup content to the original path. It requires
     ``--yes`` when stdin is not a terminal, and refuses anything that does not
     look like an iterate backup so an arbitrary path can never be clobbered.
+
+    ``prune`` is a write that deletes old backups under a retention policy
+    (``--keep`` newest per base and/or ``--older-than`` age). It never touches
+    the live files a backup protects, and only deletes files that look like
+    iterate backups. ``--dry-run`` previews without deleting.
     """
     from iterate_cli.backup import (
         BackupError,
         backups_json,
         list_backups,
+        prune_backups,
         restore_backup,
     )
 
@@ -3687,6 +3777,60 @@ def _cmd_backup(
                 f"{entry.label} · {entry.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
                 f" · {entry.size} B → {entry.base}",
                 indent=2,
+            )
+        return 0
+
+    # action == "prune"
+    if action == "prune":
+        if keep is None and older_than is None:
+            message = (
+                "backup prune needs at least one of --keep or --older-than "
+                "(e.g. `iterate backup prune --keep 5`)"
+            )
+            if json_output:
+                print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+            else:
+                tui.error(message)
+            return 2
+        try:
+            outcome = prune_backups(
+                project_root,
+                keep=keep,
+                older_than=older_than,
+                dry_run=dry_run,
+            )
+        except BackupError as exc:
+            if json_output:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            else:
+                tui.error(str(exc))
+            return 1
+
+        if json_output:
+            print(json.dumps(outcome, ensure_ascii=False))
+            return 0
+
+        if dry_run:
+            tui.intro("Iterate Skill — Backup prune preview")
+            tui.key_value("Total backups", str(outcome["total"]))
+            tui.key_value("Would delete", str(len(outcome["deleted"])))
+            tui.key_value("Would keep", str(len(outcome["kept"])))
+            tui.hint(
+                "Dry run: nothing was deleted. Re-run without --dry-run to prune."
+            )
+            return 0
+
+        tui.empty_line()
+        if outcome["deleted"]:
+            tui.success(
+                f"Pruned {len(outcome['deleted'])} backup(s); "
+                f"{len(outcome['kept'])} kept."
+            )
+            for entry in outcome["deleted"]:
+                tui.hint(f"deleted {entry['name']}", indent=2)
+        else:
+            tui.info(
+                "No backups matched the retention policy; nothing was deleted."
             )
         return 0
 

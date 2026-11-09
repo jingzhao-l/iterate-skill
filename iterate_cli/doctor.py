@@ -265,8 +265,62 @@ def _command_is_whitelisted(command: Any, whitelist: Any) -> bool:
     return False
 
 
-def run_doctor(project_root: Path) -> DoctorReport:
-    """Run all health checks against ``project_root``.
+#: Every check name a doctor run can report, in run order. These are the exact
+#: ``check`` values surfaced in ``findings[].check`` under ``--json`` and are
+#: what ``iterate doctor --check`` accepts.
+DOCTOR_CHECK_NAMES: tuple[str, ...] = (
+    "onboarding",
+    "config.parse",
+    "config.schema",
+    "dimensions",
+    "max_rounds",
+    "reasoning_effort",
+    "language",
+    "review.scope",
+    "git.target_branch",
+    "validation.commands",
+    "validation.command_whitelist",
+    "validation.whitelist",
+    "invariants",
+    "invariants.commands",
+    "invariants.ensure",
+    "skill_version",
+    "drift",
+    "personalization.consistency",
+    "dimension_sets",
+    "iterate.md.markers",
+)
+
+#: Names that can run without a parsed config (the rest need ``config``).
+_NON_CONFIG_CHECKS = frozenset({"onboarding", "config.parse", "iterate.md.markers"})
+
+#: Maps each finding name to the ``_check_*`` group that produces it, so a
+#: group with several sibling names (e.g. ``validation.whitelist`` also records
+#: ``validation.command_whitelist``) runs exactly once.
+_GROUP_FOR_FINDING: dict[str, str] = {
+    "config.schema": "config_schema",
+    "dimensions": "dimensions",
+    "max_rounds": "max_rounds",
+    "reasoning_effort": "reasoning_effort",
+    "language": "language",
+    "review.scope": "review_scope",
+    "git.target_branch": "git_branch",
+    "validation.commands": "validation_commands",
+    "validation.command_whitelist": "validation_whitelist",
+    "validation.whitelist": "validation_whitelist",
+    "invariants": "invariants",
+    "invariants.commands": "invariants",
+    "invariants.ensure": "invariants",
+    "skill_version": "skill_version",
+    "drift": "manifest_drift",
+    "personalization.consistency": "personalization",
+    "dimension_sets": "dimension_sets",
+    "iterate.md.markers": "iterate_md_markers",
+}
+
+
+def run_doctor(project_root: Path, checks: set[str] | None = None) -> DoctorReport:
+    """Run health checks against ``project_root``.
 
     Each check is factored into a single-purpose ``_check_*`` function so
     the orchestration stays readable and each check stays under the
@@ -274,37 +328,135 @@ def run_doctor(project_root: Path) -> DoctorReport:
     completeness, config parse) short-circuit the run: nothing downstream
     can be validated without a parsed config.
 
+    ``checks``, when given, restricts the run to those named checks (the
+    ``check`` values reported in findings; see :data:`DOCTOR_CHECK_NAMES`).
+    The preamble checks that a config-dependent check needs (onboarding,
+    config parse) still run as silent prerequisites so a blocker is always
+    explained, but they only surface their own findings when explicitly
+    requested. ``--list-checks`` in the CLI lists ``DOCTOR_CHECK_NAMES``.
+
     Args:
         project_root: Project root directory.
+        checks: Optional set of check names to run (None = all checks).
 
     Returns:
         A DoctorReport aggregating every finding.
+
+    Raises:
+        ValueError: If ``checks`` names a check not in :data:`DOCTOR_CHECK_NAMES`.
     """
     report = DoctorReport(str(project_root))
+    if checks is None:
+        requested = set(DOCTOR_CHECK_NAMES)
+    else:
+        requested = set(checks)
+        unknown = requested - set(DOCTOR_CHECK_NAMES)
+        if unknown:
+            raise ValueError(
+                "unknown doctor check(s): "
+                + ", ".join(sorted(unknown))
+                + " (run `iterate doctor --list-checks` for the available checks)"
+            )
 
-    if not _check_onboarding(report, project_root):
-        return report
-    config = _check_config_parse(report, project_root)
-    if config is None:
-        return report
+    config_names = set(DOCTOR_CHECK_NAMES) - _NON_CONFIG_CHECKS
+    need_config = bool(requested & config_names)
+    wants_config_parse = "config.parse" in requested or need_config
 
-    _check_config_schema(report, config)
-    _check_dimensions(report, config)
-    _check_max_rounds(report, config)
-    _check_reasoning_effort(report, config)
-    _check_language(report, config)
-    _check_review_scope(report, config)
-    _check_git_branch(report, config)
-    _check_validation_commands(report, config)
-    _check_validation_whitelist(report, config)
-    _check_invariants(report, config, project_root)
-    _check_skill_version(report, config)
-    _check_manifest_drift(report, project_root, config)
-    _check_personalization(report, config)
-    _check_dimension_sets(report, config)
-    _check_iterate_md_markers(report, project_root)
+    # Onboarding gates everything in the unfiltered flow. As a prerequisite it
+    # runs silently, surfacing only its errors so a missing ITERATE.md is still
+    # explained when the operator asked for one config-dependent check.
+    if "onboarding" in requested:
+        if not _check_onboarding(report, project_root):
+            return report
+    elif wants_config_parse:
+        prereq = DoctorReport(str(project_root))
+        if not _check_onboarding(prereq, project_root):
+            report.findings.extend(
+                f for f in prereq.findings if f.severity != "ok"
+            )
+            return report
+
+    # Config parse produces the ``config`` every config-dependent check needs.
+    config: dict[str, Any] | None = None
+    if wants_config_parse:
+        if "config.parse" in requested:
+            config = _check_config_parse(report, project_root)
+        else:
+            prereq = DoctorReport(str(project_root))
+            config = _check_config_parse(prereq, project_root)
+            report.findings.extend(
+                f for f in prereq.findings if f.severity != "ok"
+            )
+        if config is None:
+            return report
+
+    run_groups: set[str] = set()
+    for name in DOCTOR_CHECK_NAMES:
+        if name in ("onboarding", "config.parse"):
+            continue
+        if name not in requested:
+            continue
+        group = _GROUP_FOR_FINDING[name]
+        if group in run_groups:
+            continue  # a sibling finding name maps to the same runner
+        run_groups.add(group)
+        _run_doctor_check(report, name, project_root, config)
+
+    # A group can report sibling check names (e.g. the validation.whitelist
+    # runner also records validation.command_whitelist). Keep only what was
+    # requested, plus any error so a blocker is never silently hidden.
+    if checks is not None:
+        report.findings = [
+            f
+            for f in report.findings
+            if f.check in requested or f.severity == "error"
+        ]
 
     return report
+
+
+def _run_doctor_check(
+    report: DoctorReport,
+    name: str,
+    project_root: Path,
+    config: dict[str, Any] | None,
+) -> None:
+    """Dispatch a single non-preamble check by its finding name."""
+    if name == "iterate.md.markers":
+        _check_iterate_md_markers(report, project_root)
+        return
+    if config is None:
+        # A config-dependent check without a parsed config cannot run; the
+        # preamble already reported the parse failure and stopped the run.
+        return
+    if name == "config.schema":
+        _check_config_schema(report, config)
+    elif name == "dimensions":
+        _check_dimensions(report, config)
+    elif name == "max_rounds":
+        _check_max_rounds(report, config)
+    elif name == "reasoning_effort":
+        _check_reasoning_effort(report, config)
+    elif name == "language":
+        _check_language(report, config)
+    elif name == "review.scope":
+        _check_review_scope(report, config)
+    elif name == "git.target_branch":
+        _check_git_branch(report, config)
+    elif name == "validation.commands":
+        _check_validation_commands(report, config)
+    elif name in ("validation.command_whitelist", "validation.whitelist"):
+        _check_validation_whitelist(report, config)
+    elif name in ("invariants", "invariants.commands", "invariants.ensure"):
+        _check_invariants(report, config, project_root)
+    elif name == "skill_version":
+        _check_skill_version(report, config)
+    elif name == "drift":
+        _check_manifest_drift(report, project_root, config)
+    elif name == "personalization.consistency":
+        _check_personalization(report, config)
+    elif name == "dimension_sets":
+        _check_dimension_sets(report, config)
 
 
 def _check_onboarding(report: DoctorReport, project_root: Path) -> bool:

@@ -1879,6 +1879,70 @@ class TestParseDimensionSelectionDedup:
         assert result == ["performance", "correctness", "security"]
 
 
+class TestCollectDimensionSetsPreservesExisting:
+    """A typo at the scope-blueprint prompt must not wipe a returning user's
+    curated dimension_sets (they are authoritative and must survive)."""
+
+    @staticmethod
+    def _scan(tmp_path: Path):
+        from iterate_cli.scan import scan_project
+
+        return scan_project(tmp_path)
+
+    def test_invalid_out_of_range_input_keeps_existing_sets(
+        self, tmp_path: Path
+    ) -> None:
+        from iterate_cli.wizard import _collect_dimension_sets
+
+        existing = {"review": {"dimensions": ["correctness", "security"]}}
+        result = _collect_dimension_sets(
+            ["correctness", "security"],
+            self._scan(tmp_path),
+            lambda _prompt: "999",  # out of range → previously returned {}
+            existing=existing,
+        )
+        assert result == existing
+
+    def test_non_numeric_input_keeps_existing_sets(self, tmp_path: Path) -> None:
+        from iterate_cli.wizard import _collect_dimension_sets
+
+        existing = {"review": {"dimensions": ["correctness", "security"]}}
+        result = _collect_dimension_sets(
+            ["correctness", "security"],
+            self._scan(tmp_path),
+            lambda _prompt: "abc",
+            existing=existing,
+        )
+        assert result == existing
+
+    def test_valid_input_still_selects_only_chosen(self, tmp_path: Path) -> None:
+        from iterate_cli.wizard import _collect_dimension_sets
+
+        existing = {
+            "review": {"dimensions": ["correctness", "security"]},
+            "performance": {"dimensions": ["performance"]},
+        }
+        result = _collect_dimension_sets(
+            ["correctness", "security", "performance"],
+            self._scan(tmp_path),
+            lambda _prompt: "1",  # select only the first blueprint
+            existing=existing,
+        )
+        assert result == {"review": {"dimensions": ["correctness", "security"]}}
+
+    def test_empty_input_still_enables_all(self, tmp_path: Path) -> None:
+        from iterate_cli.wizard import _collect_dimension_sets
+
+        existing = {"review": {"dimensions": ["correctness", "security"]}}
+        result = _collect_dimension_sets(
+            ["correctness", "security"],
+            self._scan(tmp_path),
+            lambda _prompt: "",  # Enter → all suggested
+            existing=existing,
+        )
+        assert result == existing
+
+
 class TestManualCollectCommandsModuleValidation:
     """Tests for _manual_collect_commands module name validation (M-10-5)."""
 

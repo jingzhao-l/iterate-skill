@@ -208,6 +208,206 @@ class TestRestoreBackup:
 
 
 # ---------------------------------------------------------------------------
+# prune_backups
+# ---------------------------------------------------------------------------
+
+
+class TestParseBackupAge:
+    def test_days_is_the_default_unit(self) -> None:
+        from datetime import timedelta
+
+        from iterate_cli.backup import parse_backup_age
+
+        assert parse_backup_age("30") == timedelta(days=30)
+        assert parse_backup_age("7d") == timedelta(days=7)
+
+    def test_every_unit_parses(self) -> None:
+        from datetime import timedelta
+
+        from iterate_cli.backup import parse_backup_age
+
+        assert parse_backup_age("2w") == timedelta(weeks=2)
+        assert parse_backup_age("24h") == timedelta(hours=24)
+        assert parse_backup_age("90m") == timedelta(minutes=90)
+
+    def test_surrounding_whitespace_is_tolerated(self) -> None:
+        from iterate_cli.backup import parse_backup_age
+
+        assert parse_backup_age("  5d  ") is not None
+
+    def test_rejects_garbage_with_actionable_message(self) -> None:
+        from iterate_cli.backup import parse_backup_age
+
+        for bad in ("", "abc", "5x", "5d6h", "-3d", "1.5d"):
+            with pytest.raises(BackupError, match="--older-than"):
+                parse_backup_age(bad)
+
+    def test_rejects_zero_and_negative(self) -> None:
+        from iterate_cli.backup import parse_backup_age
+
+        with pytest.raises(BackupError, match="positive"):
+            parse_backup_age("0d")
+        with pytest.raises(BackupError, match="positive"):
+            parse_backup_age("0")
+
+
+class TestPruneBackups:
+    def test_requires_a_policy(self, tmp_path) -> None:
+        from iterate_cli.backup import prune_backups
+
+        with pytest.raises(BackupError, match="--keep or --older-than"):
+            prune_backups(tmp_path)
+
+    def test_keep_zero_is_refused(self, tmp_path) -> None:
+        from iterate_cli.backup import prune_backups
+
+        with pytest.raises(BackupError, match="--keep must be at least 1"):
+            prune_backups(tmp_path, keep=0)
+
+    def test_keep_keeps_newest_per_base_and_deletes_the_rest(
+        self, tmp_path
+    ) -> None:
+        from iterate_cli.backup import list_backups, prune_backups
+
+        stamps = [
+            "20261101T010000Z", "20261102T010000Z",
+            "20261103T010000Z", "20261104T010000Z",
+        ]
+        paths = [
+            _write_backup_with_stamp(
+                tmp_path, CONFIG_YAML, f"v{i}", "configset", stamp
+            )
+            for i, stamp in enumerate(stamps)
+        ]
+        assert len(list_backups(tmp_path)) == 4
+
+        outcome = prune_backups(tmp_path, keep=2)
+        assert outcome["total"] == 4
+        assert len(outcome["deleted"]) == 2
+        assert len(outcome["kept"]) == 2
+        remaining = [e.path.name for e in list_backups(tmp_path)]
+        assert paths[-1].name in remaining
+        assert paths[-2].name in remaining
+        assert paths[0].name not in remaining
+        assert paths[1].name not in remaining
+
+    def test_keep_is_a_window_per_base(self, tmp_path) -> None:
+        from iterate_cli.backup import list_backups, prune_backups
+
+        bases = [CONFIG_YAML, "ITERATE.md"]
+        for base in bases:
+            for i in range(3):
+                stamp = f"2026110{i + 1}T010000Z"
+                _write_backup_with_stamp(tmp_path, base, f"v{i}", "bak", stamp)
+        assert len(list_backups(tmp_path)) == 6
+
+        outcome = prune_backups(tmp_path, keep=1)
+        assert outcome["total"] == 6
+        assert len(outcome["kept"]) == 2
+        assert len(outcome["deleted"]) == 4
+        kept_bases = {e["base"] for e in outcome["kept"]}
+        assert kept_bases == {CONFIG_YAML, "ITERATE.md"}
+
+    def test_older_than_deletes_everything_past_the_age(self, tmp_path) -> None:
+        from datetime import timedelta
+
+        from iterate_cli.backup import list_backups, prune_backups
+
+        now = datetime.now(timezone.utc)
+        old_stamp = (now - timedelta(days=40)).strftime("%Y%m%dT%H%M%SZ")
+        fresh_stamp = (now - timedelta(days=1)).strftime("%Y%m%dT%H%M%SZ")
+        _write_backup_with_stamp(
+            tmp_path, CONFIG_YAML, "old", "configset", old_stamp
+        )
+        _write_backup_with_stamp(
+            tmp_path, CONFIG_YAML, "fresh", "configset", fresh_stamp
+        )
+        assert len(list_backups(tmp_path)) == 2
+
+        outcome = prune_backups(tmp_path, older_than="30d")
+        assert len(outcome["deleted"]) == 1
+        assert outcome["deleted"][0]["base"] == CONFIG_YAML
+        assert len(list_backups(tmp_path)) == 1
+        assert list_backups(tmp_path)[0].path.read_text(encoding="utf-8") == "fresh"
+
+    def test_keep_and_older_than_union(self, tmp_path) -> None:
+        from datetime import timedelta
+
+        from iterate_cli.backup import list_backups, prune_backups
+
+        now = datetime.now(timezone.utc)
+        old_stamp = (now - timedelta(days=40)).strftime("%Y%m%dT%H%M%SZ")
+        mid_stamp = (now - timedelta(days=5)).strftime("%Y%m%dT%H%M%SZ")
+        fresh_stamp = (now - timedelta(days=1)).strftime("%Y%m%dT%H%M%SZ")
+        _write_backup_with_stamp(
+            tmp_path, CONFIG_YAML, "old", "configset", old_stamp
+        )
+        _write_backup_with_stamp(
+            tmp_path, CONFIG_YAML, "mid", "configset", mid_stamp
+        )
+        _write_backup_with_stamp(
+            tmp_path, CONFIG_YAML, "fresh", "configset", fresh_stamp
+        )
+        assert len(list_backups(tmp_path)) == 3
+
+        outcome = prune_backups(tmp_path, keep=1, older_than="30d")
+        assert len(outcome["kept"]) == 1
+        assert len(outcome["deleted"]) == 2
+        assert list_backups(tmp_path)[0].path.read_text(encoding="utf-8") == "fresh"
+
+    def test_dry_run_deletes_nothing(self, tmp_path) -> None:
+        from iterate_cli.backup import list_backups, prune_backups
+
+        stamps = ["20261101T010000Z", "20261102T010000Z", "20261103T010000Z"]
+        for i, stamp in enumerate(stamps):
+            _write_backup_with_stamp(
+                tmp_path, CONFIG_YAML, f"v{i}", "configset", stamp
+            )
+        assert len(list_backups(tmp_path)) == 3
+
+        outcome = prune_backups(tmp_path, keep=1, dry_run=True)
+        assert outcome["dry_run"] is True
+        assert len(outcome["deleted"]) == 2
+        assert len(list_backups(tmp_path)) == 3  # nothing actually removed
+
+    def test_never_touches_unrelated_files_or_live_files(self, tmp_path) -> None:
+        from iterate_cli.backup import prune_backups
+
+        live = tmp_path / CONFIG_YAML
+        live.write_text("live", encoding="utf-8")
+        unrelated = tmp_path / "notes.txt"
+        unrelated.write_text("notes", encoding="utf-8")
+        stamps = ["20261101T010000Z", "20261102T010000Z"]
+        for i, stamp in enumerate(stamps):
+            _write_backup_with_stamp(
+                tmp_path, CONFIG_YAML, f"v{i}", "configset", stamp
+            )
+
+        outcome = prune_backups(tmp_path, keep=1)
+        assert live.exists()  # the live file is never a prune candidate
+        assert unrelated.exists()  # a non-backup file is never touched
+        assert outcome["total"] == 2
+
+    def test_empty_project_prunes_nothing(self, tmp_path) -> None:
+        from iterate_cli.backup import prune_backups
+
+        outcome = prune_backups(tmp_path, keep=5)
+        assert outcome["total"] == 0
+        assert outcome["deleted"] == []
+        assert outcome["kept"] == []
+
+
+def _write_backup_with_stamp(
+    project: Path, base: str, content: str, tag: str, stamp: str
+) -> Path:
+    """Write a backup file with an explicit UTC timestamp component."""
+    name = f"{base}.{tag}-{stamp}-{uuid4().hex[:6]}"
+    backup = project / name
+    backup.write_text(content, encoding="utf-8")
+    return backup
+
+
+# ---------------------------------------------------------------------------
 # CLI layer
 # ---------------------------------------------------------------------------
 
@@ -323,3 +523,98 @@ class TestBackupCli:
         out = capsys.readouterr().out
         assert code == 0
         assert "usage: iterate backup" in out
+        assert "prune" in out
+
+    def test_prune_requires_a_policy(self, tmp_path, capsys) -> None:
+        capsys.readouterr()
+        code = cli_main(["backup", "prune", "-p", str(tmp_path)])
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "--keep or --older-than" in err
+
+    def test_prune_dry_run_end_to_end(self, tmp_path, capsys) -> None:
+        for i, stamp in enumerate(
+            ["20261101T010000Z", "20261102T010000Z", "20261103T010000Z"]
+        ):
+            _write_backup_with_stamp(
+                tmp_path, CONFIG_YAML, f"v{i}", "configset", stamp
+            )
+        capsys.readouterr()
+        code = cli_main(
+            ["backup", "prune", "--keep", "1", "-p", str(tmp_path), "--dry-run"]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Dry run" in out
+        # Nothing deleted; all three backups still present.
+        assert len(list_backups(tmp_path)) == 3
+
+    def test_prune_keep_end_to_end(self, tmp_path, capsys) -> None:
+        for i, stamp in enumerate(
+            ["20261101T010000Z", "20261102T010000Z", "20261103T010000Z"]
+        ):
+            _write_backup_with_stamp(
+                tmp_path, CONFIG_YAML, f"v{i}", "configset", stamp
+            )
+        capsys.readouterr()
+        code = cli_main(
+            ["backup", "prune", "--keep", "1", "-p", str(tmp_path)]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Pruned 2 backup(s)" in out
+        remaining = list_backups(tmp_path)
+        assert len(remaining) == 1
+        assert remaining[0].path.read_text(encoding="utf-8") == "v2"
+
+    def test_prune_json_success(self, tmp_path, capsys) -> None:
+        for i, stamp in enumerate(
+            ["20261101T010000Z", "20261102T010000Z"]
+        ):
+            _write_backup_with_stamp(
+                tmp_path, CONFIG_YAML, f"v{i}", "configset", stamp
+            )
+        capsys.readouterr()
+        code = cli_main(
+            ["backup", "prune", "--keep", "1", "-p", str(tmp_path), "--json"]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["total"] == 2
+        assert len(payload["deleted"]) == 1
+        assert len(payload["kept"]) == 1
+
+    def test_prune_older_than_end_to_end(self, tmp_path, capsys) -> None:
+        from datetime import timedelta
+
+        now = datetime.now(timezone.utc)
+        old_stamp = (now - timedelta(days=40)).strftime("%Y%m%dT%H%M%SZ")
+        fresh_stamp = (now - timedelta(days=1)).strftime("%Y%m%dT%H%M%SZ")
+        _write_backup_with_stamp(
+            tmp_path, CONFIG_YAML, "old", "configset", old_stamp
+        )
+        _write_backup_with_stamp(
+            tmp_path, CONFIG_YAML, "fresh", "configset", fresh_stamp
+        )
+        capsys.readouterr()
+        code = cli_main(
+            ["backup", "prune", "--older-than", "30d", "-p", str(tmp_path)]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Pruned 1 backup(s)" in out
+        remaining = list_backups(tmp_path)
+        assert len(remaining) == 1
+        assert remaining[0].path.read_text(encoding="utf-8") == "fresh"
+
+    def test_prune_json_requires_no_yes(self, tmp_path, capsys) -> None:
+        # Unlike restore, prune never prompts: it is always explicit about its
+        # policy and only touches recognisable backups, so --json needs no --yes.
+        capsys.readouterr()
+        code = cli_main(["backup", "prune", "--keep", "1", "-p", str(tmp_path), "--json"])
+        out = capsys.readouterr().out
+        assert code == 0
+        payload = json.loads(out)
+        assert payload["ok"] is True

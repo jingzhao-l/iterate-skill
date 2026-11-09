@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -300,6 +300,124 @@ def restore_backup(
         .isoformat(),
         "pre_restore_backup": str(pre_restore_backup) if pre_restore_backup else None,
         "restored": True,
+    }
+
+
+_AGE_RE = re.compile(r"^\s*(\d+)\s*([dwhm])?\s*$")
+
+
+def parse_backup_age(value: str) -> timedelta:
+    """Parse a ``--older-than`` duration into a ``timedelta``.
+
+    Accepts ``30d`` (days, the default unit), ``2w`` (weeks), ``24h`` (hours),
+    ``90m`` (minutes) or a bare integer (days). Raises :class:`BackupError`
+    with an actionable message on anything else, so the CLI can print the
+    accepted forms instead of a raw traceback.
+    """
+    match = _AGE_RE.fullmatch(value)
+    if not match:
+        raise BackupError(
+            f"invalid --older-than value {value!r} (expected a duration like "
+            "'30d', '7d', '24h', '90m', or a plain number of days)"
+        )
+    amount = int(match.group(1))
+    unit = (match.group(2) or "d").strip()
+    if amount <= 0:
+        raise BackupError("--older-than must be a positive duration")
+    return {
+        "d": timedelta(days=amount),
+        "w": timedelta(weeks=amount),
+        "h": timedelta(hours=amount),
+        "m": timedelta(minutes=amount),
+    }[unit]
+
+
+def prune_backups(
+    project_root: Path,
+    *,
+    keep: int | None = None,
+    older_than: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Prune backup files under a retention policy.
+
+    At least one of ``keep`` or ``older_than`` is required:
+
+    * ``keep`` (>= 1): for each distinct base file, keep the ``keep`` newest
+      backups and delete the rest — a rolling window per original file.
+    * ``older_than`` (a duration like ``30d`` / ``7d`` / ``24h`` / ``90m``):
+      delete every backup older than that age, even the newest of its base.
+
+    When both are given the union applies: a backup is deleted if it is beyond
+    the newest ``keep`` of its own base **or** older than ``older_than``.
+    ``--dry-run`` reports the same outcome without deleting anything. Only
+    recognisable iterate backups are ever touched; the live files they protect
+    are never candidates, so pruning can never lose project state.
+
+    Returns a JSON-serialisable outcome::
+
+        {
+            "ok": True,
+            "dry_run": bool,
+            "project": str,
+            "keep": int | None,
+            "older_than": str | None,
+            "total": int,
+            "deleted": [BackupEntry.to_dict(), ...],
+            "kept": [BackupEntry.to_dict(), ...],
+        }
+
+    Raises:
+        BackupError: If no policy is given, ``keep`` is < 1, ``older_than`` is
+            invalid, or a delete fails.
+    """
+    if keep is None and older_than is None:
+        raise BackupError(
+            "prune needs at least one of --keep or --older-than "
+            "(e.g. `iterate backup prune --keep 5`)"
+        )
+    if keep is not None and keep < 1:
+        raise BackupError("--keep must be at least 1 (0 would delete every backup)")
+    parsed_age = parse_backup_age(older_than) if older_than is not None else None
+
+    all_backups = list_backups(project_root)  # newest first
+    now = datetime.now(timezone.utc)
+
+    # Rank every backup within its own base (0 = newest), so --keep is a
+    # rolling window per original file rather than a global count that could
+    # wipe the only backup of a rarely-touched file.
+    rank_by_path: dict[str, int] = {}
+    per_base_count: dict[str, int] = {}
+    for entry in all_backups:
+        per_base_count[entry.base] = per_base_count.get(entry.base, 0) + 1
+        rank_by_path[str(entry.path)] = per_base_count[entry.base] - 1
+
+    deleted: list[BackupEntry] = []
+    kept: list[BackupEntry] = []
+    for entry in all_backups:
+        beyond_keep = keep is not None and rank_by_path[str(entry.path)] >= keep
+        too_old = parsed_age is not None and (now - entry.timestamp) > parsed_age
+        (deleted if (beyond_keep or too_old) else kept).append(entry)
+
+    if not dry_run:
+        for entry in deleted:
+            try:
+                entry.path.unlink()
+            except OSError as exc:
+                raise BackupError(
+                    f"failed to prune {entry.path.name}: {exc} (re-run "
+                    "`iterate backup list` to see what remains)"
+                ) from exc
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "project": str(project_root),
+        "keep": keep,
+        "older_than": older_than,
+        "total": len(all_backups),
+        "deleted": [entry.to_dict() for entry in deleted],
+        "kept": [entry.to_dict() for entry in kept],
     }
 
 

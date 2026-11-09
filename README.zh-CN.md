@@ -340,9 +340,11 @@ iterate guard pre-check src/        # 动手前：目标存在 / worktree 干净
 iterate guard post-check python     # 每次改动后：精确执行 validation.commands.<module>
 iterate invariant                   # 交付时：文件断言 + 精确命令（缺省退化为 validation.commands）
 
-# 列出 / 恢复写命令留下的时间戳备份
+# 列出 / 恢复 / 清理写命令留下的时间戳备份
 iterate backup list                 # 枚举 *.configset-* / *.doctorfix-* / *.refresh-* / *.bak-* 等
 iterate backup restore <file>       # 恢复某个备份（先备份当前文件；可逆）
+iterate backup prune --keep 5       # 每个原文件保留最新 5 份备份，删除其余
+iterate backup prune --older-than 30d  # 删除超过 30 天的备份（也接受 7d/24h/90m）
 ```
 
 ### 常见边界场景 / Edge Cases
@@ -390,6 +392,8 @@ iterate doctor            # TUI 输出；健康退出码 0，发现问题退出�
 iterate doctor --json     # 结构化 JSON 报告输出到 stdout（脚本友好）
 iterate doctor --json-out report.json   # 把 JSON 报告写入文件（自动建目录）
 iterate doctor --fix      # 先应用安全、非破坏性修复（自动写时间戳备份），再重跑诊断
+iterate doctor --list-checks            # 列出全部可用检查名后退出
+iterate doctor --check config.schema    # 只运行指定检查（可重复 / 逗号分隔）
 ```
 
 `--fix` 只做可安全自动修复的项，且每次修复前都会为 `iterate.config.yaml` 生成带时间戳的备份（`.doctorfix-<时间戳>` 后缀）；破坏性/有歧义的修复不会自动执行，会在报告中提示你手工处理。目前可自动修复的项包括：`dimensions` 去重/空时恢复默认、`language` 非法值重置为 `en`、`max_rounds` 非整数移除/越界收敛到 `[1, 50]`、`git.target_branch` 空值重置为 `main`、`onboarding.skill_version` 同步为当前安装版本。

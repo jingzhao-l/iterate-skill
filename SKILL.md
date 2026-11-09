@@ -3,7 +3,7 @@ name: iterate
 slug: iterate-skill
 displayName: Iterate
 description: Fully automated multi-round code iteration with configurable N-dimension parallel review, onboarding/personalization, and a cross-assistant installer/update system with mandatory SHA256 checksum verification. v3.0 adds a dual-mode (the original iterate mode plus a defensive-programming mode via /iterate defensive) that performs normal incremental coding tasks with defensive discipline end-to-end.
-version: 3.12.0
+version: 3.13.0
 permissions:
   file_read: true
   file_write: true
@@ -313,7 +313,7 @@ iterate personalize --clear [--yes]  # 清空所有个性化配置（结构化�
 iterate show         # 只读查看合并后的配置与个性化详情（支持 --json）
 iterate refresh      # 增量刷新（保留用户手写区；支持 --json / --dry-run --json 结构化报告）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
-iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查；--strict 将 warning 一并判失败；--fix 安全修复；--json / --json-out 结构化输出）
+iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查；--strict 将 warning 一并判失败；--fix 安全修复；--check NAME 只跑指定检查（可重复/逗号分隔，`--list-checks` 列出全部检查名）；--json / --json-out 结构化输出）
 iterate status       # 查看 onboarding 状态和漂移检测（--json 含 onboarded、config_exists/config_ok、drift_detected 与明细列表）
 iterate scan         # 只读导出项目扫描结果（识别到的 manifest/语言/包管理器/顶层目录/五个特性开关含 has_api + 建议维度/维度集/校验命令/命令白名单；不写文件，恒退出 0；--json）
 iterate scan --json  # 同上，结构化输出，供脚本/CI 消费
@@ -330,6 +330,7 @@ iterate fingerprint verify  # 校验 manifest 指纹漂移（--json，退出码 
 iterate fingerprint list    # 只读列出上次记录的指纹基线（path + sha256，不重扫；--json）
 iterate backup list         # 只读列出项目根下所有时间戳备份（config set/unset、doctor --fix、refresh、personalize、onboard、import、reonboard 写入的 *.configset-* / *.doctorfix-* / *.refresh-* / *.bak-* 等），最新在前；退出码恒 0（空结果也是信息性）；--json
 iterate backup restore FILE # 把某一备份恢复到其原始文件名（先对当前文件再备份为 *.restore-*，使恢复本身可逆；拒绝非 iterate 备份、项目目录外路径与目录目标；--dry-run / --yes / --json）
+iterate backup prune        # 按保留策略删除旧备份（--keep N 每个原始文件保留最新 N 份；--older-than AGE 如 30d/7d/24h/90m 删除更旧；两者可并用取并集）；只删可识别的 iterate 备份、绝不触碰被保护的原文件；--dry-run 预览 / --json
 iterate config       # 非交互式查看全部可设配置值（支持 --json）
 iterate config get <key>   # 读取单个配置项的解析值（支持 --json，输出 {"key": value}）
 iterate config set <key> <value>  # 校验并写回单个配置项（自动备份；--json 输出确认对象）

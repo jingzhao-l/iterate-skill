@@ -325,9 +325,11 @@ iterate guard pre-check src/        # before editing: target exists / worktree c
 iterate guard post-check python     # after editing: run exactly validation.commands.<module>
 iterate invariant                   # at delivery: file-assertions + exact commands (degrades to validation.commands)
 
-# List or restore the timestamped backups write commands leave behind
+# List, restore or prune the timestamped backups write commands leave behind
 iterate backup list                 # enumerate *.configset-* / *.doctorfix-* / *.refresh-* / *.bak-* etc.
 iterate backup restore <file>       # restore one backup (backs up the current file first; reversible)
+iterate backup prune --keep 5       # keep the 5 newest backups of each original file, delete the rest
+iterate backup prune --older-than 30d  # delete any backup older than 30 days (7d/24h/90m also accepted)
 ```
 
 > **Recommended new-user path**: `npx iterate-skill-installer` (install) → `iterate onboard` (init) → `iterate doctor` (optional health check) → `iterate personalize` (optional constraints) → `/iterate "your goal"` in your AI assistant, or `iterate status` / `iterate refresh` / `iterate personalize` on the CLI.
@@ -367,9 +369,13 @@ iterate doctor            # TUI output; healthy exit 0, problems exit 1
 iterate doctor --json     # structured JSON to stdout (script-friendly)
 iterate doctor --json-out report.json   # write JSON report to a file (auto-creates dirs)
 iterate doctor --fix      # apply safe, non-destructive fixes (auto timestamped backup), then re-run diagnostics
+iterate doctor --list-checks            # list every available check name and exit
+iterate doctor --check config.schema    # run only the named check(s); repeatable / comma-separated
 ```
 
 `--fix` only does items that can be safely auto-fixed, and always creates a timestamped backup of `iterate.config.yaml` (`.doctorfix-<timestamp>` suffix) before fixing. Destructive/ambiguous fixes are never applied automatically — they're reported for you to handle manually. Currently auto-fixable: `dimensions` de-dupe/empty-restore-to-default, `language` invalid value reset to `en`, `max_rounds` non-integer removal / out-of-range clamp to `[1, 50]`, `git.target_branch` empty reset to `main`, `onboarding.skill_version` sync to installed version.
+
+`--check <name>` runs only that check (the preamble a config-dependent check needs still runs silently, surfacing only its errors, so a blocker is always explained). It accepts the same `check` values reported in `findings[].check` under `--json` — e.g. `doctor --json | jq -r '.findings[].check'` to see a failing check's name, then `doctor --check <name>` to iterate on it quickly without re-running everything. `--list-checks` prints every name and exits.
 
 ### iterate scan (read-only tech-stack export)
 

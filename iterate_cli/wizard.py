@@ -1073,8 +1073,15 @@ def _collect_dimension_sets(
                 selected[name] = dict(pruned[name])
 
     if not selected:
-        tui.warning("无效输入，返回空蓝图 / Invalid input, no scope sets enabled.", indent=4)
-        return {}
+        # Keep the current selection rather than wiping it: existing scope
+        # sets are authoritative (see the invariant above) and a typo at this
+        # prompt must not erase a returning user's curated dimension_sets.
+        tui.warning(
+            "无效输入，保留当前已启用蓝图 / Invalid input, keeping the "
+            "current scope sets.",
+            indent=4,
+        )
+        return dict(pruned)
     return selected
 
 
