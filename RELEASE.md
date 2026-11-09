@@ -2803,6 +2803,43 @@ stamp 不匹配会自动重装到新 tag。
 >         `dist-tags.latest=3.13.0` 生效，`dshReleases` 仍 28（尾段 `0.2.1-rc.5`），tarball
 >         抽查 `dist/validation-detect.js` 含 `detectValidationCommands`、`dist/tools/config.js`
 >         含 `detect` 分支、`lib/client.js` 含 `应用建议` 按钮键。**遗留**：无。
+>
+>         **3.14.0 / 3.15.0 / 3.16.0 发布记录（2026-11-03 / 11-05 / 11-08，补记）**：这三轮
+>         由既有日更链发布，RELEASE.md 本轮才补登，完整变更见 `CHANGELOG.md`：
+>         3.14.0 右键菜单集成（dsh `0.2.2-alpha.3` `contextMenus`，Session 打开指挥中心 +
+>         复制预检 / dry-run / 断点恢复 / 拉取快照指令，File/Dir 定向 dry-run；
+>         `dshReleases` 29）；3.15.0 键盘快捷键（dsh `0.2.2-rc.1` `shortcuts`，
+>         Cmd/Ctrl+Shift+O 打开观测台 + 右键键帽 `commandId` + 修复 3.14.0 的
+>         文件/目录 open-panel 空操作回归 + `npm audit` 归零，devDeps 钉 `0.2.2-rc.1` /
+>         cordis `4.1.0`，`dshReleases` 30）；3.16.0 跨会话运行对比（F2 存为对比基准 +
+>         与基准对比，`run-compare.ts`，`localStorage` 版本化，损坏读作无基准）。
+>
+>         **3.17.0 发布记录（2026-11-09）**：一键重算门禁 + 对比表复制。
+>         取号按 CHANGELOG `[3.17.0]` 明文指示"新增两个用户可感知的净功能：F8 一键
+>         重算门禁（不再手写 findingsByRound）、F2 复制对比表为 Markdown"，按语义化
+>         版本是一次 minor。
+>         **上游 dsh**：检查 releases 与 tags（`deepseek-ai/deepseek-harness`），最新仍为
+>         `dsh-v0.2.2-rc.1`（2026-11-04，与 3.15.0 已声明 compatible），无新版本 →
+>         跳过第 2 步，本轮无 dsh 新能力可转化（C 类 dsh 转化项记录"无新能力"）。
+>         **F8 一键重算门禁（C 类：新的干预与覆写入口）**：`iterate_quality_gate` 的
+>         `compute` 载荷含手写极易错的 `findingsByRound`（每维度每轮收敛序列）；新增
+>         纯构建器 `buildQualityGateComputeInstruction` + 纯归约器
+>         `deriveQualityGateComputeInput`（维度 = 各轮线程维度并集，回退已持久化门禁
+>         维度集；findings/validationResults 取会话；findingsByRound 每维度 × 每轮补齐
+>         （缺维度的轮记 0）；fixedByDimension 按成功 fix 命中同文件（+同 line 更严）
+>         finding 归因），F8「重算门禁」按钮一键复制完整载荷。无数据禁用并提示。
+>         **F2 复制对比表（B/C 类：新导出格式）**：`buildRunCompareMarkdown` 把 v3.16
+>         的跨会话并排表渲染成 Markdown（`null` → `—`，标签注入），F2「复制对比表」
+>         复制进剪贴板，失败揭示原文。
+>         **修复**：`dist/tools/decision-log.js` 未随 `fix(consumers)`「plugin 校验丢
+>         内部空行」重建（`verifyDecisionLedger` 曾按 `decodedLines` 丢内部空行重排
+>         账本，掩盖真实断裂）→ 重建 dist，走 `ledgerTextForVerify`（只剥尾部换行）；
+>         `src/index.ts` 与 README 工具计数统一为 19（原 18/17）。
+>         **测试**：`test/parse.test.ts` +9、`test/run-compare.test.ts` +3、
+>         `test/client-render.test.ts` +4；主仓 `npm run typecheck`（三程序 server/test/
+>         client）0 错误、`npm test` **1436 passed / 0 failed / 0 skipped**（此前 1422，
+>         +14）；`npm run build && npm run build:client` 干净、`dist/` 与 `lib/client.js`
+>         与 `src/` 齐步（`package-contract` 强制，client-i18n 键/条目对齐测试亦过）。
 
 ---
 
