@@ -15,6 +15,10 @@
 【步骤 1】查上游 dsh 更新。
   gh api 或公开 GitHub API 取 deepseek-ai/deepseek-harness 的 releases 与 tags，
   找出当前 package.json 中 dsh.compatibility.dshReleases 声明之外的新发布。
+  ★ 对每个新发布，必须拉官方 release notes 全文再判断 ★
+    gh release view <tag> --repo deepseek-ai/deepseek-harness --json body
+    （或 /releases/tags/<tag> 的 .body），禁止只凭版本号 / 本插件 CHANGELOG 下结论。
+    从正文逐条筛出【插件面能力】（新能力 + breaking 迁移），而不是扫一眼就判「无新能力」。
 
 【步骤 2】升级并适配 dsh。
   五包 @deepseek-ai/* 精确钉版到目标版本；cordis 按目标版本 peer 硬性要求同步
@@ -59,6 +63,18 @@
 
 【步骤 6】★ dsh 新能力评估 —— 新功能层，不是适配层 ★
   定义：上游新 API 能让这个插件多做什么用户可感知的新功能。
+  ★ 硬性前置：先拉官方 changelog / release notes 全文，逐条列出插件面能力 ★
+    用 gh release view <tag> --repo deepseek-ai/deepseek-harness --json body 取正文，
+    把「开发者 / 插件 / SDK / 设置图标 / Session API / 工具启用 / 迁移 / breaking」等
+    条目全部抽出，逐条给三态判定：
+      - 【可转化】新 API 能解锁本插件用户场景 → 列入本轮实现或 DESIGN backlog（写明原因）。
+      - 【不可转化】必须给出具体理由（宿主级无插件面 / 域不相关 / 实验性自足插件），
+        不得只写「无新能力」。
+      - 【breaking 需核验】必须先 grep 本插件是否使用该 API（tools.resolve/executable、
+        agent.model / agent/request、sessionProjections、tools.mode / PTC、run_code、
+        appendPluginRecord 等），确认不踩坑再声明 compatible；严禁未核验就笼统
+        「确认不受影响」。
+    未转化的【可转化】能力必须进 DESIGN-iterate-plugin.md backlog，下一轮优先。
   必须逐条给出：新 API 签名 → 它能解锁哪个具体用户场景 → 现状的绕行代价。
 
   评估面（按已探明的实际能力）：

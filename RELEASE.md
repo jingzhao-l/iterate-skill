@@ -2840,6 +2840,37 @@ stamp 不匹配会自动重装到新 tag。
 >         client）0 错误、`npm test` **1436 passed / 0 failed / 0 skipped**（此前 1422，
 >         +14）；`npm run build && npm run build:client` 干净、`dist/` 与 `lib/client.js`
 >         与 `src/` 齐步（`package-contract` 强制，client-i18n 键/条目对齐测试亦过）。
+>
+>         **3.18.0 发布记录（2026-11-10）**：设置页导航图标 + 移动端合规响应式。
+>         本轮由用户审计触发：用户在「对照官方文档」后质疑「每次适配」与「手机端适配」
+>         缺口，遂直接补齐并修订每日任务提示词（见下）。
+>         **上游 dsh**：仍为 `dsh-v0.2.2-rc.1`（无新版本），本轮无新 dsh 版本可转化，
+>         但**主动转化了 0.2.2-rc.1 中此前漏掉的插件面能力**。
+>         **设置页导航图标（C 类：0.2.2-rc.1 插件面新能力转化）**：`settings.section.icon`
+>         贡献（与 `settings.section` 同 `id` `iterate-settings`），纯 SVG 组件
+>         `IterateSettingsIcon`（`size`/`active` 壳层注入，模块级保身份），壳层以 iterate
+>         循环箭头替换默认字形，卸载自动恢复；宿主未声明槽位优雅降级默认字形。
+>         **移动端合规响应式（B 类：明确 UX/UI 改造，官方 `dsh-responsive-ui`）**：此前
+>         客户端 0 个 `@media`、11px 输入无地板；补齐 5 条 `:hover` 门控到
+>         `@media (hover: hover)`、`(pointer: coarse)` 下输入/文本域 16px 地板、
+>         `.iterate-payload` `overflow-wrap: anywhere`、`(max-width: 480px)` 松弛最小宽度
+>         + 收紧内边距（390px 最小视口不溢出）。
+>         **每日任务提示词修订（TASK-plugin-daily.md）**：步骤 1 强制「拉官方 release
+>         notes 全文再判断」，禁止只凭版本号/本插件 CHANGELOG 下结论；步骤 6 强制逐条
+>         列出插件面能力并给三态（可转化/不可转化/breaking 需核验），breaking 必须先
+>         grep 插件是否使用该 API（tools.resolve、agent.model、sessionProjections、
+>         tools.mode/PTC、appendPluginRecord 等）再声明 compatible，未转化的可转化
+>         能力必须进 DESIGN backlog。
+>         **诚实审计结论**：0.2.x 系列至少 7 条插件面能力，此前仅转化 4 条；未转化
+>         候选（Session 事件日志/投影订阅 API、变更请求与工作树、working_directory
+>         工具）已入 DESIGN §14 backlog；0.2.2-rc.1 breaking（tools.resolve、Session
+>         Projection 异步、agent.model、tools.mode）经 grep 核验本插件不使用 → compatible
+>         成立，但今后须逐条核验（TASK-plugin-daily.md 新规）。
+>         **测试**：`test/client-render.test.ts` +4（图标注册+渲染、hover 门控+粗指针
+>         地板+载荷换行）；测试台 `boot()` 改同 id 保首个注册；主仓 `npm run typecheck`
+>         0 错误、`npm test` **1440 passed / 0 failed / 0 skipped**（此前 1436，+4）；
+>         `npm run build && npm run build:client` 干净、`dist/` 与 `lib/client.js` 与
+>         `src/` 齐步。
 
 ---
 
