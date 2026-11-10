@@ -9,6 +9,7 @@ import { DecisionLogEntrySchema, reservedPayloadKeys, type DecisionLogEntry } fr
 import {
   DimensionContextInputSchema,
   DimensionContextSchema,
+  refuseReservedRecordedKeys,
   type DimensionContext,
   type DimensionContextInput
 } from "./dimension-context.js";
@@ -84,6 +85,10 @@ export function parseDimensionContext(input: unknown): DimensionContext {
 }
 
 export function parseDimensionContextInput(input: unknown): DimensionContextInput {
+  // The raw value, before `z.record` copies it: a `recorded.__proto__` key would
+  // be reinterpreted instead of stored and the dimension it names would drop out
+  // of the totals with no refusal. Same guard `dimensionContext` applies.
+  refuseReservedRecordedKeys(input);
   return parseOrThrow(DimensionContextInputSchema, input, "dimension context input");
 }
 

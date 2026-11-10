@@ -275,6 +275,22 @@ test("a recorded key the object model reinterprets is refused rather than droppe
   );
 });
 
+test("the public validator path refuses a reinterpreted recorded key, not just dimensionContext", () => {
+  // The schema-only entry point runs `z.record` directly, and the copy it
+  // produces has already lost the key — so without the raw guard the dimension
+  // named by `__proto__` silently vanishes from the totals. Guarded on the raw
+  // input, the same way `dimensionContext` is.
+  const input = JSON.parse('{"planned":[{"id":"security"}],"recorded":{"__proto__":{"decisions":3},"security":{"decisions":1}}}');
+  assert.throws(
+    () => parseDimensionContextInput(input),
+    (error) => {
+      assert.ok(error instanceof KernelSchemaError, `got ${error}`);
+      assert.match(error.message, /__proto__/);
+      return true;
+    }
+  );
+});
+
 test("planned entries outside the documented shape are refused", () => {
   // An invented key on a planned entry would otherwise be carried into the
   // output as if the contract knew it.

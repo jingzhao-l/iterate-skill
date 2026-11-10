@@ -178,11 +178,15 @@ export class KernelDimensionError extends Error {
  *      make the planned count disagree with the list a caller printed, which is
  *      the class of quiet drift this whole structure exists to catch.
  */
-export function dimensionContext(input: DimensionContextInput): DimensionContext {
-  // A `recorded` key that the object model reinterprets rather than stores would
-  // silently drop a dimension out of the accounting — the one failure mode this
-  // structure exists to make visible. Checked on the raw input, before `z.record`
-  // copies it.
+/**
+ * Refuses a `recorded` key the object model reinterprets rather than stores, on
+ * the raw input — before `z.record` copies it and the dimension silently drops
+ * out of the accounting. Exported because the public validator path
+ * (`parseDimensionContextInput`) runs the schema directly and would otherwise
+ * bypass this check: the copy that `z.record` produces has already lost the key,
+ * so only the raw value can catch it.
+ */
+export function refuseReservedRecordedKeys(input: unknown): void {
   const recorded = (input as { recorded?: unknown } | null)?.recorded;
   if (recorded !== null && typeof recorded === "object" && !Array.isArray(recorded)) {
     const reserved = Object.keys(recorded as Record<string, unknown>).filter((key) => key === "__proto__");
@@ -195,6 +199,10 @@ export function dimensionContext(input: DimensionContextInput): DimensionContext
       ]);
     }
   }
+}
+
+export function dimensionContext(input: DimensionContextInput): DimensionContext {
+  refuseReservedRecordedKeys(input);
   // Validated, not trusted: the counts this function returns are read as fact by
   // reporters and compaction summaries, and an unvalidated `recorded` value can
   // make the arithmetic produce something its own schema refuses. A `decisions`
