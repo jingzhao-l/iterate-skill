@@ -660,6 +660,40 @@ class TestCommandExecutionBoundaries:
         assert len(detail) < 1000
 
     # ``seq`` also covers "last line is retained" (the tail source).
+    def test_drain_falls_back_when_select_is_unavailable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """On a platform where ``select`` cannot watch a pipe (Windows), the
+        drain must still capture the child's output instead of degrading to an
+        empty diagnostic tail (the previous behaviour broke out of the loop on
+        the first ``OSError`` from ``select``)."""
+        import iterate_cli.guard as guard_mod
+
+        project = _make_project(tmp_path)
+        scripts_dir = project / "scripts"
+        scripts_dir.mkdir()
+        script_path = scripts_dir / "blob.py"
+        script_path.write_text(
+            "import sys\n"
+            "sys.stdout.write('WINFALLBACK-MARK-12345\\n')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ITERATE_EXTRA_SAFE_COMMAND_PREFIXES", "python3")
+        config = _base_config()
+        config["validation"]["commands"] = {"python": ["python3 scripts/blob.py"]}
+        _write_config(project, config)
+
+        # Simulate Windows: select raises OSError for a non-socket fd.
+        def _raise(*_args, **_kwargs):
+            raise OSError("select not supported on this platform for pipes")
+
+        monkeypatch.setattr(guard_mod.select, "select", _raise)
+        out = run_guard_postcheck(project, None)
+        assert out.passed is True
+        detail = next(d for _, ok, d in out.items if ok)
+        # The fallback drain captured the child's line despite select failing.
+        assert "WINFALLBACK-MARK-12345" in detail
+
     def test_single_line_spans_chunks_without_loss(self, tmp_path, monkeypatch) -> None:
         """A line longer than one drain chunk must survive intact across seams.
 

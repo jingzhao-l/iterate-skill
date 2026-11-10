@@ -1268,29 +1268,40 @@ def save_personalization(
     # On-disk backups of both files before rewriting either. A failed backup
     # aborts the save: safe_dump drops YAML comments and the ITERATE.md merge
     # regenerates a section, so both rewrites need a recoverable snapshot.
-    if old_config != config_yaml:
-        backup_file(config_path, "personalize")
-    if (
+    config_changed = old_config != config_yaml
+    md_changed = (
         iterate_md_content is not None
         and old_iterate_md is not None
         and old_iterate_md != iterate_md_content
-    ):
+    )
+    if config_changed:
+        backup_file(config_path, "personalize")
+    if md_changed:
         backup_file(iterate_md_path, "personalize")
 
-    atomic_write(config_path, config_yaml)
-    if iterate_md_content is not None:
+    # Only write what actually changed. An unconditional rewrite (the previous
+    # behaviour) churned the file's mtime and re-serialised it on every
+    # personalize run — including a no-op or a notes-only run whose structured
+    # config is byte-identical — dropping hand-written YAML comments with no
+    # recoverable snapshot. Both writes are now conditional on a real change.
+    if config_changed:
+        atomic_write(config_path, config_yaml)
+    if iterate_md_content is not None and old_iterate_md != iterate_md_content:
         try:
             atomic_write(iterate_md_path, iterate_md_content)
         except OSError:
-            # Roll back config so the two files stay consistent.
-            try:
-                atomic_write(config_path, old_config)
-            except OSError as rollback_exc:
-                tui.error(
-                    f"Failed to roll back {config_path} after ITERATE.md write "
-                    f"error: {rollback_exc}. Two files may be inconsistent.",
-                    indent=2,
-                )
+            # Roll back config so the two files stay consistent (only if it
+            # was actually rewritten; an untouched config needs no rollback).
+            if config_changed:
+                try:
+                    atomic_write(config_path, old_config)
+                except OSError as rollback_exc:
+                    tui.error(
+                        f"Failed to roll back {config_path} after ITERATE.md "
+                        f"write error: {rollback_exc}. Two files may be "
+                        "inconsistent.",
+                        indent=2,
+                    )
             raise
     return config_path, iterate_md_path
 

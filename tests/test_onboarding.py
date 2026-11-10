@@ -5649,6 +5649,47 @@ class TestSavePersonalizationTransactional:
         with pytest.raises(FileNotFoundError):
             save_personalization(empty_project, PersonalizationData(protected_paths=["x"]))
 
+    def test_noop_does_not_rewrite_unchanged_files(
+        self, fake_project: Path, tmp_path: Path
+    ) -> None:
+        """A personalize run that changes nothing must not rewrite the config.
+
+        The previous implementation rewrote ``iterate.config.yaml`` on every
+        run — even a no-op or a notes-only run whose structured config was
+        byte-identical — churning mtime and re-serialising the file (which
+        drops hand-written YAML comments). Now both writes are conditional on
+        a real change.
+        """
+        data = _build_onboarding_data(fake_project)
+        write_onboarding_outputs(data, fake_project)
+
+        # Add a hand-written comment that safe_dump would drop.
+        config_path = fake_project / "iterate.config.yaml"
+        original = config_path.read_text(encoding="utf-8")
+        config_path.write_text(
+            original + "# hand-written note\n", encoding="utf-8"
+        )
+
+        personalization = PersonalizationData(
+            protected_paths=["legacy/**"],
+            iterate_notes=["不要修改迁移文件"],
+        )
+        # First run actually applies the change (config + notes change).
+        save_personalization(fake_project, personalization)
+
+        # Re-run the exact same personalization: nothing should change.
+        config_text_after_first = config_path.read_text(encoding="utf-8")
+        md_path = fake_project / "ITERATE.md"
+        md_text_after_first = md_path.read_text(encoding="utf-8")
+        mtime_after_first = config_path.stat().st_mtime_ns
+
+        save_personalization(fake_project, personalization)
+
+        # Config text and mtime are unchanged by the second (no-op) run.
+        assert config_path.read_text(encoding="utf-8") == config_text_after_first
+        assert config_path.stat().st_mtime_ns == mtime_after_first
+        assert md_path.read_text(encoding="utf-8") == md_text_after_first
+
     def test_warns_when_user_markers_invalid(self, fake_project: Path, capsys) -> None:
         """A present ITERATE.md with broken ownership markers must warn instead
         of silently dropping the user-owned notes (the config still saves, but

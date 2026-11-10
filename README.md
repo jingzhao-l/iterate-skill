@@ -307,6 +307,8 @@ iterate status
 
 # Incremental refresh (keeps hand-written ITERATE.md section)
 iterate refresh
+iterate refresh --diff        # preview the EXACT unified diff a refresh would apply (writes nothing)
+iterate refresh --dry-run     # preview line counts only (writes nothing)
 
 # Full re-onboarding (backs up old files)
 iterate reonboard
@@ -565,6 +567,30 @@ source <(iterate completion bash)      # or source it directly
 ```
 
 It completes subcommands, per-command flags (hidden options are excluded), fixed values such as `init --language zh|en`, directories for `-p/--project`, file arguments for `import` / `--out`, and command names after `iterate help`. `--install` picks the shell's conventional per-user file (honouring `XDG_DATA_HOME` / `XDG_CONFIG_HOME`), creates parent directories, refuses to replace an existing file without `--force`, and prints the reload/fpath hint; `--uninstall` removes exactly that file (never an arbitrary path) and is idempotent — a second run, or a run before ever installing, is still exit 0 and reports `removed: false`, so it is safe in teardown scripts. `--json` returns one `{shell, path, bytes, reload_hint}` document for `--install` and `{shell, path, removed, reload_hint}` for `--uninstall`.
+
+### iterate refresh --diff (exact change preview)
+
+`iterate refresh --dry-run` already answered "how many lines would change?", but a user deciding whether to apply a refresh had no way to see *what* would change — only a count. `--diff` closes that gap:
+
+```bash
+iterate refresh --diff            # print the exact unified diff refresh would apply
+iterate refresh --diff --json     # one JSON doc with md_diff / config_diff strings
+```
+
+It computes the same would-be content as a real refresh and renders a unified diff (ITERATE.md rewrite plus the `iterate.config.yaml` rewrite), and **never writes a file** — a diff is a preview, so it implies dry-run. When nothing would change it reports "no changes needed" (exit 0); under `--json` the diff strings ride in `md_diff` / `config_diff` (empty when unchanged). The diff is reviewable before it happens — in a terminal, in a PR, or as JSON in CI.
+
+### iterate template (bundled template surface)
+
+The templates the skill consumes silently (the `ITERATE.md` skeleton, the AI onboarding playbook, the decision-log structure) were unreachable from the CLI — a user who wanted to know what structure `iterate onboard` produces, or to customise a copy of the skeleton, had to locate the file inside the installed skill directory by hand. `iterate template` makes that surface discoverable and read-only:
+
+```bash
+iterate template                     # list every bundled template
+iterate template list --json         # structured metadata for each template
+iterate template show ITERATE.template.md  # print one template verbatim
+iterate template show playbook       # aliases: 'iterate', 'playbook', 'decisions'
+```
+
+It works from any directory (the templates belong to the skill, not one project), never writes, and a bad name is a usage error (exit 2) that names `iterate template list`.
 
 ---
 

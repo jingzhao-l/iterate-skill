@@ -234,6 +234,22 @@ def restore_backup(
     base, tag, stamp = parsed
     target = backup_resolved.parent / base
 
+    # Defense-in-depth: validate the DERIVED target stays inside the project
+    # root, not just the backup argument. ``base`` comes from a filename
+    # component so it cannot contain ``/``, but a crafted name like
+    # ``...configset-<stamp>-<salt>`` yields greedy ``base == ".."`` which
+    # would resolve to the project's PARENT directory. Today the ``is_dir()``
+    # guard below happens to reject that, but the containment guarantee must
+    # not rest on an incidental invariant — a future refactor that relaxes
+    # ``is_dir()`` would otherwise open an arbitrary sibling-file overwrite.
+    try:
+        target.resolve().relative_to(project_resolved)
+    except (OSError, ValueError) as exc:
+        raise BackupError(
+            f"cannot restore {backup_resolved.name}: {base} resolves outside "
+            f"the project directory {project_root}"
+        ) from exc
+
     if target.is_dir():
         raise BackupError(
             f"cannot restore {backup_resolved.name}: {base} is a directory, "

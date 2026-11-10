@@ -313,7 +313,9 @@ def incremental_refresh(project_root: Path) -> bool:
     return _write_refresh_outputs(project_root, refreshed_md, config_yaml)
 
 
-def preview_refresh(project_root: Path) -> dict[str, Any]:
+def preview_refresh(
+    project_root: Path, include_diff: bool = False
+) -> dict[str, Any]:
     """Compute a dry-run preview of what ``incremental_refresh`` would change.
 
     No files are written. Intended for ``iterate refresh --dry-run`` so a
@@ -321,6 +323,12 @@ def preview_refresh(project_root: Path) -> dict[str, Any]:
 
     Args:
         project_root: The project root directory.
+        include_diff: When True, also compute ``md_diff`` / ``config_diff``
+            unified diff strings so a caller can render exactly what would
+            change rather than only the line counts. The config diff is only
+            populated when the config is *semantically* different (a
+            whitespace-only rewrite is not reported as a change), matching
+            ``config_changed``.
 
     Returns:
         A dict:
@@ -330,6 +338,11 @@ def preview_refresh(project_root: Path) -> dict[str, Any]:
         - ``config_changed``: bool — whether iterate.config.yaml would change.
         - ``md_changed_lines``: int — total added+removed lines in ITERATE.md.
         - ``stats``: dict with added/removed/changed line counts.
+        - ``md_diff``: str (only when ``include_diff``) — unified diff of the
+          ITERATE.md rewrite.
+        - ``config_diff``: str (only when ``include_diff``) — unified diff of
+          the iterate.config.yaml rewrite, or ``""`` when the config is not
+          semantically changed.
     """
     empty = {
         "ok": False,
@@ -372,7 +385,7 @@ def preview_refresh(project_root: Path) -> dict[str, Any]:
     md_changed = refreshed_md != current_md
     config_changed = not _config_semantically_equal(current_config, config_yaml)
     stats = _diff_stats(current_md, refreshed_md)
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "error": "",
         "changed": md_changed or config_changed,
@@ -380,6 +393,16 @@ def preview_refresh(project_root: Path) -> dict[str, Any]:
         "md_changed_lines": stats["changed"],
         "stats": stats,
     }
+    if include_diff:
+        result["md_diff"] = unified_diff(
+            current_md, refreshed_md, ITERATE_MD, ITERATE_MD
+        )
+        result["config_diff"] = (
+            unified_diff(current_config, config_yaml, CONFIG_YAML, CONFIG_YAML)
+            if config_changed
+            else ""
+        )
+    return result
 
 
 def _build_refresh_outputs(project_root: Path) -> tuple[bool, str, str, str]:
@@ -552,6 +575,59 @@ def _write_refresh_outputs(project_root: Path, refreshed_md: str, config_yaml: s
     return True
 
 
+def unified_diff(before: str, after: str, fromfile: str, tofile: str) -> str:
+    """Build a unified diff between two text blobs.
+
+    ``difflib.unified_diff`` yields context lines including the ``---`` /
+    ``+++`` and ``@@`` hunks, which is exactly what a human or a review tool
+    wants when deciding whether to apply a refresh. The diff is generated
+    without a trailing newline after the final hunk so the CLI can print it
+    as-is; callers that write to a file add their own newline.
+
+    Args:
+        before: Original text.
+        after: New text.
+        fromfile: Label for the "before" side (typically the file path).
+        tofile: Label for the "after" side.
+
+    Returns:
+        A unified diff string (empty when the two blobs are identical).
+    """
+    import difflib
+
+    if before == after:
+        return ""
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=fromfile,
+            tofile=tofile,
+            lineterm="\n",
+        )
+    )
+
+
+def _coerce_bool(value: Any) -> bool:
+    """Coerce a git-boolean config value to a real bool, secure-by-default.
+
+    Mirrors the push_per_round normalisation: only real bools are
+    authoritative, and a truthy scalar (``"yes"``, ``"on"``, ``1``, ``"true"``)
+    is accepted so a hand-edited value does not silently flip a user's
+    ``use_worktree``/``auto_merge`` to its default. Anything unrecognised is
+    False (the secure default), matching the documented defaults.
+
+    Args:
+        value: The raw config value.
+
+    Returns:
+        The coerced bool.
+    """
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _diff_stats(before: str, after: str) -> dict[str, int]:
     """Count added/removed lines between two text blobs.
 
@@ -637,6 +713,12 @@ def _build_refreshed_config(
     git_cfg = _as_dict_list(existing_config.get("git"))
     git_cfg["target_branch"] = data.target_branch
     git_cfg["push_per_round"] = data.push_per_round
+    # Persist the preserved git booleans too, so the written config and the
+    # OnboardingData they came from cannot disagree (previously they were only
+    # carried through the existing git dict, which happened to work but left
+    # the two views of the same setting with no single source of truth).
+    git_cfg["use_worktree"] = data.use_worktree
+    git_cfg["auto_merge"] = data.auto_merge
     config["git"] = git_cfg
     validation = _as_dict_list(existing_config.get("validation"))
     # Schema requires command_whitelist to be non-empty when present (minItems
@@ -1078,6 +1160,14 @@ def _build_refresh_data(
         push_per_round = str(push_per_round).strip().lower() in (
             "1", "true", "yes", "on"
         )
+    # Preserve the two git booleans refresh does not reconcile, with the same
+    # truthy-scalar coercion as push_per_round. Previously they were left at
+    # their OnboardingData defaults (False) on the refresh path — a dead field
+    # that would clobber a user's ``use_worktree: true`` if any consumer ever
+    # read them, and that made the data model disagree with the config it was
+    # derived from.
+    use_worktree = _coerce_bool(git_cfg.get("use_worktree", False))
+    auto_merge = _coerce_bool(git_cfg.get("auto_merge", False))
     validation_commands, effective_whitelist = _resolve_validation_config(
         existing_config, scan
     )
@@ -1120,6 +1210,8 @@ def _build_refresh_data(
         dimension_sets=dimension_sets,
         target_branch=target_branch,
         review_scope=review_scope,
+        use_worktree=use_worktree,
+        auto_merge=auto_merge,
         push_per_round=push_per_round,
         validation_commands=validation_commands,
         command_whitelist=effective_whitelist,

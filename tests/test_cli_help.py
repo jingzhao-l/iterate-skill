@@ -184,6 +184,36 @@ class TestCommandTypoSuggestions:
         assert payload["error"] == "invalid usage"
         assert "did_you_mean" not in payload
 
+    def test_json_as_an_option_value_is_not_a_json_request(self, capsys) -> None:
+        """A token equal to ``--json`` used as a VALUE must not trigger JSON.
+
+        ``iterate report --out --json`` means "write the report to a file
+        literally named ``--json``"; the old raw-substring scan misread the
+        value as a ``--json`` flag and emitted a JSON document on a subsequent
+        usage error. A value consumed by a preceding option is never a flag.
+        """
+        capsys.readouterr()
+        # `report` accepts --out; `--json` here is its value. `report` also
+        # requires a project... it is a read-only command that works without a
+        # config but still parses. Force a usage error downstream by pairing it
+        # with a bogus flag so the JSON-detection path is exercised.
+        with pytest.raises(SystemExit):
+            cli_main(["report", "--out", "--json", "--bogus-flag"])
+
+        # stdout must NOT be a JSON document: the caller never asked for JSON.
+        assert "{" not in capsys.readouterr().out
+
+    def test_json_flag_before_a_value_option_is_still_detected(
+        self, capsys
+    ) -> None:
+        """A real ``--json`` flag is still detected when it precedes options."""
+        capsys.readouterr()
+        with pytest.raises(SystemExit):
+            cli_main(["scan", "--json", "--bogus-flag"])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["error"] == "invalid usage"
+
     def test_nested_choice_typos_are_suggested_too(self, capsys) -> None:
         """The subparsers inherit the behaviour (`guard`/`fingerprint` actions)."""
         capsys.readouterr()

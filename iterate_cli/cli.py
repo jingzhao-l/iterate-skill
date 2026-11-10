@@ -18,6 +18,7 @@ Provides subcommands for onboarding and personalization management:
     iterate backup      — List or restore timestamped backups written by write commands
     iterate update      — Self-update the CLI + installed assistant skill dirs
     iterate completion  — Print a bash/zsh/fish completion script
+    iterate template    — List or show the skill's bundled templates (read-only)
     iterate help        — Print help for iterate or for one command
     iterate --version   — Print version
 
@@ -117,6 +118,75 @@ def _should_show_banner(args: argparse.Namespace) -> bool:
     if os.environ.get("ITERATE_NO_BANNER", "").strip():
         return False
     return sys.stdout.isatty()
+
+
+def _collect_value_options(parser: argparse.ArgumentParser) -> set[str]:
+    """Collect every option string that consumes a following value.
+
+    Walks the top-level parser into each subparser so ``--out``, ``--check``,
+    ``--set`` etc. are all known, and returns the set of their option strings.
+    Used to disambiguate a literal ``--json`` token from a *value* that happens
+    to equal ``--json`` (e.g. ``iterate report --out --json`` means "write the
+    report to a file literally named ``--json``", not "emit JSON").
+
+    Args:
+        parser: The top-level parser.
+
+    Returns:
+        The set of option strings that take an argument.
+    """
+    value_options: set[str] = set()
+    seen_parsers: set[int] = set()
+
+    def _walk(p: argparse.ArgumentParser) -> None:
+        if id(p) in seen_parsers:
+            return
+        seen_parsers.add(id(p))
+        for action in p._actions:
+            if getattr(action, "nargs", None) == 0:
+                # store_true/store_false/const/help/version consume no value.
+                continue
+            value_options.update(action.option_strings)
+            if isinstance(action, argparse._SubParsersAction):
+                for sub in action.choices.values():
+                    if isinstance(sub, argparse.ArgumentParser):
+                        _walk(sub)
+
+    _walk(parser)
+    return value_options
+
+
+def _json_requested(argv: list[str], parser: argparse.ArgumentParser) -> bool:
+    """Return whether ``--json`` is a real flag request, not a value.
+
+    The old check (``"--json" in argv``) misread a *value* equal to ``--json``
+    as a JSON request: ``iterate report --out --json`` (out path literally
+    ``--json``) or ``iterate config set goal --json`` made a subsequent usage
+    error emit a JSON document even though the caller never asked for one.
+    A token is only counted as ``--json`` when it is not the value of a
+    preceding value-consuming option (``--out``, ``--check``, ``-p``, ...).
+
+    Args:
+        argv: The raw argument list.
+        parser: The top-level parser (for value-option introspection).
+
+    Returns:
+        True when ``--json`` was passed as a flag.
+    """
+    value_options = _collect_value_options(parser)
+    expect_value = False
+    for token in argv:
+        if expect_value:
+            # This token is the argument of the previous option; it is never a
+            # flag, even if its text happens to be ``--json``.
+            expect_value = False
+            continue
+        if token in value_options:
+            expect_value = True
+            continue
+        if token == "--json":
+            return True
+    return False
 
 
 def _force_utf8_stdio() -> None:
@@ -242,9 +312,11 @@ def main(argv: list[str] | None = None) -> int:
     # global --json help promises "stdout holds exactly one JSON document,
     # including on failure" — so a usage error must still emit JSON when the
     # caller asked for it (a script doing `iterate fingerprint bogus --json |
-    # jq` otherwise gets an empty body and a jq parse error).
+    # jq` otherwise gets an empty body and a jq parse error). A token equal to
+    # ``--json`` that is the VALUE of a preceding option (e.g.
+    # ``report --out --json``) is NOT a JSON request.
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    json_requested = "--json" in raw_argv
+    json_requested = _json_requested(raw_argv, parser)
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -306,6 +378,18 @@ def main(argv: list[str] | None = None) -> int:
             uninstall=getattr(args, "uninstall", False),
             directory=getattr(args, "dir", None),
             force=getattr(args, "force", False),
+        )
+
+    if args.command == "template":
+        # Same rationale as help/completion: the templates belong to the skill,
+        # not to one project, so this works outside a project (and `-p` is
+        # irrelevant). Read-only by construction.
+        from iterate_cli.template_cmd import run_template
+
+        return run_template(
+            getattr(args, "template_action", None),
+            getattr(args, "template_name", None),
+            json_output=getattr(args, "json", False),
         )
 
     # Interactive commands never produce structured output; a caller passing
@@ -449,6 +533,7 @@ def _dispatch_command(
             project_root,
             dry_run=getattr(args, "dry_run", False),
             json_output=getattr(args, "json", False),
+            show_diff=getattr(args, "diff", False),
         )
     if args.command == "reonboard":
         if show_banner:
@@ -761,6 +846,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Preview what would change without writing any files.",
+    )
+    refresh_parser.add_argument(
+        "--diff",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Print a unified diff of exactly what refresh would change "
+        "(implies a dry-run preview; never writes files).",
     )
     refresh_parser.add_argument(
         "--json",
@@ -1295,6 +1387,42 @@ def _build_parser() -> argparse.ArgumentParser:
     # Same reachable-gate rationale as help: parse --json so the friendly
     # rejection can emit one JSON document instead of an argparse error.
     completion_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
+
+    template_parser = subparsers.add_parser(
+        "template",
+        parents=[parent],
+        help="List or show the skill's bundled templates (read-only).",
+        description="List every bundled template the skill ships (the ITERATE.md "
+        "skeleton, the AI onboarding playbook, the decision-log structure) and "
+        "print one verbatim. Read-only: never writes and never touches the "
+        "project, so it works from any directory. This is the discoverable "
+        "surface for the templates the generator otherwise consumes silently — "
+        "see what structure onboarding produces, or copy a template to customise "
+        "it for your own team.",
+    )
+    template_parser.add_argument(
+        "template_action",
+        nargs="?",
+        choices=["list", "show"],
+        default="list",
+        help="Action to perform: 'list' (default) enumerates every bundled "
+        "template; 'show NAME' prints one template's content verbatim.",
+    )
+    template_parser.add_argument(
+        "template_name",
+        nargs="?",
+        default=None,
+        help="Template to show (required with 'show'; accepts a filename or an "
+        "alias such as 'iterate', 'playbook' or 'decisions').",
+    )
+    # Same reachable-gate rationale as help: parse --json so the friendly
+    # rejection can emit one JSON document instead of an argparse error.
+    template_parser.add_argument(
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -1881,8 +2009,28 @@ def _cmd_show(project_root: Path, json_output: bool = False) -> int:
     return run_show(project_root, json_output=json_output)
 
 
+def _print_diff(diff: str, label: str) -> None:
+    """Print a unified diff block with a compact header.
+
+    The diff already carries ``---`` / ``+++`` file labels, so the header only
+    names the file for human scanning; the diff body is printed verbatim so
+    added/removed markers stay at column 0 and can be copy-pasted or fed to
+    ``git apply --check``. Output goes to stdout (the data stream) so a
+    pipeline can capture it.
+
+    Args:
+        diff: The unified diff text (from ``refresh.unified_diff``).
+        label: Human-readable file label for the section header.
+    """
+    print(f"--- {label} ---")
+    print(diff, end="" if diff.endswith("\n") else "\n")
+
+
 def _cmd_refresh(
-    project_root: Path, dry_run: bool = False, json_output: bool = False
+    project_root: Path,
+    dry_run: bool = False,
+    json_output: bool = False,
+    show_diff: bool = False,
 ) -> int:
     """Handle the 'refresh' subcommand.
 
@@ -1893,6 +2041,13 @@ def _cmd_refresh(
             lines. With ``--dry-run --json`` the preview is reported without
             writing; with ``--json`` alone the refresh runs and reports what
             changed.
+        show_diff: When True, print a unified diff of exactly what refresh
+            would change and write nothing. Implies the preview path (a diff
+            of a change you have not applied yet is what the user wants), so
+            ``--diff`` is incompatible with an actual write: combining it with
+            a real refresh would either lie about the write or show a diff of
+            nothing. Under ``--json`` the diff strings ride in ``md_diff`` /
+            ``config_diff``.
 
     Returns:
         Exit code: 0 on success, 1 on failure.
@@ -1903,7 +2058,8 @@ def _cmd_refresh(
         payload: dict[str, Any] = {
             "project": str(project_root),
             "ok": error == "",
-            "dry_run": dry_run,
+            "dry_run": dry_run or show_diff,
+            "diff": show_diff,
             "changed": False,
             "config_changed": False,
             "md_changed_lines": 0,
@@ -1922,6 +2078,59 @@ def _cmd_refresh(
         else:
             tui.warning("Onboarding not yet completed. Run 'iterate onboard' first.")
         return 1
+
+    if show_diff:
+        # A diff is a preview: never write. Compute the would-be content and
+        # render its unified diff so the user sees exactly what a refresh
+        # would apply, not just how many lines.
+        preview = preview_refresh(project_root, include_diff=True)
+        if not preview["ok"]:
+            if json_output:
+                print(json.dumps(_json(preview["error"]), ensure_ascii=False))
+            else:
+                tui.error(
+                    f"Refresh diff failed. Could not read ITERATE.md / "
+                    f"iterate.config.yaml: {preview['error']}"
+                )
+            return 1
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "project": str(project_root),
+                        "ok": True,
+                        "dry_run": True,
+                        "diff": True,
+                        "changed": preview["changed"],
+                        "config_changed": preview["config_changed"],
+                        "md_changed_lines": preview["md_changed_lines"],
+                        "stats": preview["stats"],
+                        "md_diff": preview.get("md_diff", ""),
+                        "config_diff": preview.get("config_diff", ""),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        md_diff = preview.get("md_diff", "")
+        config_diff = preview.get("config_diff", "")
+        if not md_diff and not config_diff:
+            tui.success(
+                "No changes needed — ITERATE.md and iterate.config.yaml are "
+                "already up to date."
+            )
+            return 0
+        tui.warning("Refresh would apply the following changes:")
+        if md_diff:
+            _print_diff(md_diff, "ITERATE.md")
+        if config_diff:
+            _print_diff(config_diff, "iterate.config.yaml")
+        tui.empty_line()
+        tui.hint(
+            "Run 'iterate refresh' (without --diff) to apply these changes.",
+            indent=2,
+        )
+        return 0
 
     if dry_run:
         preview = preview_refresh(project_root)
@@ -2137,8 +2346,12 @@ def _cmd_report(
             code=2,
         )
     if not target.parent.is_dir():
+        # A bad --out path is a usage error (exit 2), consistent with the
+        # overwrite-refusal and protected-state refusals in this same function.
         return _bundle_failure(
-            f"parent directory does not exist: {target.parent}", json_output
+            f"parent directory does not exist: {target.parent}",
+            json_output,
+            code=2,
         )
     try:
         atomic_write(target, text)
@@ -2256,11 +2469,15 @@ def _cmd_export(
             f"{target} already exists; pass --force to overwrite it or choose "
             "another --out path.",
             json_output,
+            code=2,
         )
     if not target.parent.is_dir():
+        # A bad --out path is a usage error (exit 2), matching report --out and
+        # the other --out refusals instead of falling back to the generic 1.
         return _bundle_failure(
             f"parent directory does not exist: {target.parent}",
             json_output,
+            code=2,
         )
     try:
         atomic_write(target, text)
@@ -2357,8 +2574,18 @@ def _cmd_import(
             # Cap the read itself: reading an unbounded stdin into memory is
             # exactly what the size limit exists to prevent, and checking the
             # length only after read_text()/read() has already allocated the
-            # whole document is too late for a multi-GiB file.
-            text = sys.stdin.read(MAX_BUNDLE_BYTES + 1)
+            # whole document is too late for a multi-GiB file. Read through the
+            # underlying byte stream when available so the cap is BYTES (a
+            # text-mode read(n) counts characters, letting a multi-byte CJK
+            # bundle transiently buffer up to ~4x the cap); the authoritative
+            # byte check in parse_bundle_text still applies either way.
+            stdin_buffer = getattr(sys.stdin, "buffer", None)
+            if stdin_buffer is not None:
+                text = stdin_buffer.read(MAX_BUNDLE_BYTES + 1).decode(
+                    "utf-8", errors="replace"
+                )
+            else:
+                text = sys.stdin.read(MAX_BUNDLE_BYTES + 1)
         except (OSError, UnicodeDecodeError) as exc:
             return _bundle_failure(f"cannot read {source}: {exc}", json_output)
     else:
@@ -2977,6 +3204,34 @@ def _cmd_doctor(
             for piece in value.split(",")
             if piece.strip()
         }
+        # `--check ""` / `--check ","` / `--check "   "` yield an EMPTY set
+        # after stripping. An empty filter must never silently run zero checks
+        # and exit 0 ("healthy") — that would make a CI gate pass without
+        # validating anything. Treat it as the usage error it is.
+        if not check_names:
+            if json_output:
+                print(
+                    json.dumps(
+                        {
+                            "project": str(project_root),
+                            "skill_version": __version__,
+                            "healthy": False,
+                            "blocking": True,
+                            "strict": strict,
+                            "has_errors": True,
+                            "has_warnings": False,
+                            "fixes": [],
+                            "findings": [],
+                            "error": "no check names given to --check",
+                            "hint": "run `iterate doctor --list-checks`",
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                tui.error("`--check` requires at least one check name.")
+                tui.hint("Run `iterate doctor --list-checks` for the available names.", indent=2)
+            return 2
 
     fixes: list[str] = []
     if fix:

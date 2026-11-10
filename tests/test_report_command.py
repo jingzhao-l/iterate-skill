@@ -422,7 +422,9 @@ class TestOutFile:
             tmp_path, "--out", str(tmp_path / "nope" / "r.md"), capsys=capsys
         )
 
-        assert code == 1
+        # A bad --out path is a usage error (exit 2), consistent with the
+        # overwrite-refusal and --out "" cases in the same command.
+        assert code == 2
         assert "parent directory does not exist" in err
 
     def test_out_empty_is_a_usage_error(self, tmp_path: Path, capsys) -> None:

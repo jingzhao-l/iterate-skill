@@ -201,6 +201,30 @@ class TestRestoreBackup:
         with pytest.raises(BackupError, match="is a directory"):
             restore_backup(tmp_path, backup.name)
 
+    def test_refuses_derived_target_escaping_the_project(self, tmp_path) -> None:
+        """A crafted backup filename whose regex-derived base is ``..``/``.``
+        must be refused by explicit containment validation, not just the
+        incidental ``is_dir()`` guard.
+
+        ``...configset-<stamp>-<salt>`` parses to greedy ``base == ".."``,
+        which would resolve to the project's PARENT directory; the derived
+        target must be re-validated against the project root.
+        """
+        # base == ".." via a leading triple dot in the original filename:
+        # the derived target resolves to the project's PARENT directory, which
+        # the explicit containment check must refuse.
+        escaped = tmp_path / "...configset-20261104T120000Z-a1b2c3"
+        escaped.write_text("x", encoding="utf-8")
+        with pytest.raises(BackupError, match="resolves outside"):
+            restore_backup(tmp_path, escaped.name)
+        # base == "." via a leading double dot: the derived target is the
+        # project root itself (still inside the project), so it is refused by
+        # the directory-target guard — never restored over the whole tree.
+        dot = tmp_path / "..configset-20261104T120000Z-a1b2c3"
+        dot.write_text("x", encoding="utf-8")
+        with pytest.raises(BackupError, match="is a directory"):
+            restore_backup(tmp_path, dot.name)
+
     def test_refuses_missing_backup(self, tmp_path) -> None:
         name = _make_backup_name(CONFIG_YAML, "configset")
         with pytest.raises(BackupError, match="backup not found"):

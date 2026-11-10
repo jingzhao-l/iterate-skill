@@ -1039,6 +1039,29 @@ class TestLoadSaveConfig:
         install.save_config(path, {"goal": "g", "nested": {"a": [1, 2]}})
         assert install.load_config(path) == {"goal": "g", "nested": {"a": [1, 2]}}
 
+    def test_save_config_preserves_existing_mode(self, tmp_path: Path):
+        """A restricted config must keep its mode across a save.
+
+        The old tempfile.mkstemp write forced every config to 0600 regardless
+        of its prior mode; the new write preserves the destination's bits.
+        """
+        path = tmp_path / "c.yaml"
+        path.write_text("old\n", encoding="utf-8")
+        os.chmod(path, 0o640)
+        install.save_config(path, {"goal": "g"})
+        assert (path.stat().st_mode & 0o777) == 0o640
+
+    def test_save_config_new_file_uses_umask_mode(self, tmp_path: Path):
+        """A NEW config must not be forced to 0600; the umask decides."""
+        path = tmp_path / "c.yaml"
+        install.save_config(path, {"goal": "g"})
+        mode = path.stat().st_mode & 0o777
+        # Not the mkstemp default 0600 (which silently dropped group/other
+        # read bits on a config the user may need to share).
+        assert mode != 0o600
+        # Group/other read bit is present under the common umask 022.
+        assert mode & 0o044 == 0o044
+
     def test_invalid_yaml_raises(self, tmp_path: Path):
         path = tmp_path / "bad.yaml"
         path.write_text("a: [unclosed\n", encoding="utf-8")
@@ -1221,6 +1244,63 @@ class TestSetConfigValues:
         target = tmp_path / "proj"
         target.mkdir()
         assert install.set_config_values(target, source, [["notakeyvalue"]]) == 1
+
+    def test_set_boolean_spelling_is_coerced(self, tmp_path, monkeypatch):
+        """`--set git.push_per_round=yes` must store a real bool.
+
+        PyYAML parses ``yes`` as True but ``parse_value`` deliberately kept
+        the literal string (for free-form string fields); for a boolean-typed
+        field the installer now coerces YAML-1.1 spellings so the value matches
+        the schema instead of failing with a confusing revert.
+        """
+        source = _make_fake_source(tmp_path, monkeypatch)
+        _seed_real_validation_source(source)
+        target = tmp_path / "proj"
+        target.mkdir()
+        shutil.copy(
+            source / "config" / "iterate.config.yaml",
+            target / "iterate.config.yaml",
+        )
+        assert (
+            install.set_config_values(
+                target, source, [["git.push_per_round=yes"]]
+            )
+            == 0
+        )
+        cfg = install.load_config(target / "iterate.config.yaml")
+        assert cfg["git"]["push_per_round"] is True
+
+    def test_set_boolean_no_spelling_is_coerced(self, tmp_path, monkeypatch):
+        source = _make_fake_source(tmp_path, monkeypatch)
+        _seed_real_validation_source(source)
+        target = tmp_path / "proj"
+        target.mkdir()
+        shutil.copy(
+            source / "config" / "iterate.config.yaml",
+            target / "iterate.config.yaml",
+        )
+        assert (
+            install.set_config_values(
+                target, source, [["git.auto_merge=no"]]
+            )
+            == 0
+        )
+        cfg = install.load_config(target / "iterate.config.yaml")
+        assert cfg["git"]["auto_merge"] is False
+
+    def test_set_non_boolean_field_keeps_literal_string(self, tmp_path, monkeypatch):
+        """A string field set to a YAML-1.1 spelling stays a string."""
+        source = _make_fake_source(tmp_path, monkeypatch)
+        _seed_real_validation_source(source)
+        target = tmp_path / "proj"
+        target.mkdir()
+        shutil.copy(
+            source / "config" / "iterate.config.yaml",
+            target / "iterate.config.yaml",
+        )
+        assert install.set_config_values(target, source, [["goal=yes"]]) == 0
+        cfg = install.load_config(target / "iterate.config.yaml")
+        assert cfg["goal"] == "yes"
 
     def test_non_utf8_project_config_refused_without_clobber(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2191,6 +2271,53 @@ class TestUpdateCommand:
         seq = _SeqInput(["n"])
         assert install.update_command("trae", target, source, None, global_install=False, yes=False, input_func=seq) == 1
         assert not (target / ".trae").exists()
+
+    def test_failed_first_alias_does_not_mark_twin_updated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ):
+        """A failed first alias must not make its twin (same destination)
+        look updated.
+
+        claude / claude-code share one destination dir. If claude's update
+        fails, claude-code was previously still "skipped as already updated"
+        (the destination was marked seen before the attempt), so an all-target
+        run could report claude-code updated even though nothing was copied for
+        it. Now a destination is only marked seen after a SUCCESSFUL update, so
+        the twin gets a real (honest) attempt.
+        """
+        source = _make_fake_source(tmp_path, monkeypatch)
+        target = tmp_path / "proj"
+        target.mkdir()
+        # No release → local fallback (fast, no network).
+        monkeypatch.setattr(
+            install, "_fetch_latest_release_info", lambda token: (None, "mock")
+        )
+        calls: list[str] = []
+
+        def fake_update_one(assistant, target_, source_, global_install_, input_func_):
+            calls.append(assistant)
+            # claude fails; its twin claude-code succeeds if actually attempted.
+            return 1 if assistant == "claude" else 0
+
+        monkeypatch.setattr(install, "_update_one_assistant", fake_update_one)
+
+        capsys.readouterr()
+        code = install.update_command(
+            "all", target, source, None, global_install=False, yes=True
+        )
+        captured = capsys.readouterr()
+
+        # claude-code shares claude's destination and must be ATTEMPTED (not
+        # silently skipped as "already updated") because claude failed.
+        assert "claude" in calls
+        assert "claude-code" in calls
+        # claude's failure makes the run incomplete.
+        assert code == 1
+        combined = captured.out + captured.err
+        # claude is reported as failed; the twin is not claimed updated without
+        # a copy (it either succeeded via the mock or is reported honestly).
+        assert "claude" in combined
+        assert "incomplete" in combined.lower() or "failed" in combined.lower()
 
     def test_downloads_when_release_available(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         source = _make_fake_source(tmp_path, monkeypatch)

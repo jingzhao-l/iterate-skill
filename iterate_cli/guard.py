@@ -503,6 +503,14 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
                 carry = carry[-_OUTPUT_BYTE_CAP:]
 
         quiet_deadline: float | None = None
+        # `select` on a pipe fd is POSIX-only; on Windows it raises. Detect
+        # that once and fall back to sleep-based polling so the bounded output
+        # capture works everywhere instead of degrading to an EMPTY tail.
+        select_works = True
+        try:
+            os.set_blocking(fd, False)
+        except (OSError, ValueError):
+            pass
         while True:
             if stop_drain.is_set():
                 # The caller is shutting us down (the direct child exited but
@@ -511,10 +519,6 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
                 # bytes the child flushed just before exiting are never lost.
                 # Bounded: a descendant that keeps writing cannot pin us here,
                 # and we stop at the first EAGAIN rather than waiting.
-                try:
-                    os.set_blocking(fd, False)
-                except (OSError, ValueError):
-                    pass
                 for _ in range(64):
                     try:
                         raw = os.read(fd, _DRAIN_CHUNK_BYTES)
@@ -527,10 +531,37 @@ def _run_command(command: str, project_root: Path) -> tuple[int, str]:
                 break
             if child_done.is_set() and quiet_deadline is None:
                 quiet_deadline = time.monotonic() + _DRAIN_QUIET_SECONDS
-            try:
-                readable, _, _ = select.select([fd], [], [], _DRAIN_POLL_SECONDS)
-            except (OSError, ValueError):
-                break
+            readable = False
+            if select_works:
+                try:
+                    readable, _, _ = select.select(
+                        [fd], [], [], _DRAIN_POLL_SECONDS
+                    )
+                except (OSError, ValueError):
+                    select_works = False
+            if not readable and not select_works:
+                # Windows/no-select fallback: wait briefly then attempt a
+                # non-blocking read. EAGAIN just means "not yet"; keep polling
+                # until the quiet deadline or shutdown.
+                time.sleep(_DRAIN_POLL_SECONDS)
+                try:
+                    raw = os.read(fd, _DRAIN_CHUNK_BYTES)
+                except BlockingIOError:
+                    if (
+                        quiet_deadline is not None
+                        and time.monotonic() >= quiet_deadline
+                    ):
+                        break
+                    continue
+                except (OSError, ValueError):
+                    break
+                if not raw:
+                    _consume(b"")
+                    break
+                _consume(raw)
+                if child_done.is_set():
+                    quiet_deadline = time.monotonic() + _DRAIN_QUIET_SECONDS
+                continue
             if readable:
                 try:
                     raw = os.read(fd, _DRAIN_CHUNK_BYTES)

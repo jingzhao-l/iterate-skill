@@ -697,8 +697,13 @@ function parseChecksums(text) {
     const basename = normalized.split('/').pop();
     // A duplicate basename carrying a *different* digest is a red flag (the
     // file is hand-corrupted or two sources disagree); refuse the whole file
-    // instead of silently letting one value win.
-    if (map.has(basename) && map.get(basename) !== parts[0]) {
+    // instead of silently letting one value win. Digests are compared
+    // case-insensitively (hex), matching constantTimeHashEqual — two entries
+    // that differ only in hex case are the SAME digest, not a conflict.
+    if (
+      map.has(basename) &&
+      map.get(basename).toLowerCase() !== parts[0].toLowerCase()
+    ) {
       throw new InstallerError(
         `Duplicate checksum entry for ${basename} with a different value — refusing to proceed.`,
       );
@@ -1539,6 +1544,35 @@ function parseArgs(argv) {
   return options;
 }
 
+/**
+ * Select the newest stable skill release from a GitHub release list.
+ *
+ * The list endpoint returns releases newest-published first. A usable release
+ * must carry the tarball AND its checksums. The detached signature is
+ * deliberately NOT part of the filter: a release without one is selectable and
+ * then handled by ``signaturePolicyError``, which aborts unless the documented
+ * ``ITERATE_ALLOW_UNSIGNED`` override is set — matching the Python installer's
+ * ``_select_skill_release`` (requiring the signature at selection time made
+ * that override unreachable, and the two installers disagreed).
+ *
+ * @param {Array} releases - The GitHub releases payload (newest first).
+ * @returns {object|null} The selected release, or null when none is usable.
+ */
+function selectSkillRelease(releases) {
+  if (!Array.isArray(releases)) return null;
+  return (
+    releases.find(
+      (r) =>
+        r &&
+        !r.draft &&
+        !r.prerelease &&
+        Array.isArray(r.assets) &&
+        r.assets.some((a) => a && a.name === TARBALL_ASSET_NAME) &&
+        r.assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME),
+    ) || null
+  );
+}
+
 async function main(options = {}) {
   printBanner();
 
@@ -1616,25 +1650,18 @@ async function main(options = {}) {
       );
     }
   }
-  // A usable release must carry the tarball, its checksums AND its detached
-  // signature: the signature is mandatory at install time (see
-  // signaturePolicyError), so selecting a release without one would only turn
-  // "found the latest" into "failed to install".
-  const release = releases.find(
-    (r) =>
-      r &&
-      !r.draft &&
-      !r.prerelease &&
-      Array.isArray(r.assets) &&
-      r.assets.some((a) => a && a.name === TARBALL_ASSET_NAME) &&
-      r.assets.some((a) => a && a.name === CHECKSUMS_ASSET_NAME) &&
-      r.assets.some((a) => a && a.name === TARBALL_SIGNATURE_ASSET_NAME),
-  );
+  // A usable release must carry the tarball and its checksums. The detached
+  // signature is NOT part of the selection filter: a release without one is
+  // selectable and then handled by signaturePolicyError, which ABORTS unless
+  // the documented ITERATE_ALLOW_UNSIGNED override is set — matching the
+  // Python installer (_select_skill_release), where requiring the signature at
+  // selection time made that override unreachable.
+  const release = selectSkillRelease(releases);
 
   if (!release) {
     error(
       `No published release in the last 100 carries a ${TARBALL_ASSET_NAME} + ` +
-        `${CHECKSUMS_ASSET_NAME} + ${TARBALL_SIGNATURE_ASSET_NAME} asset triple.`
+        `${CHECKSUMS_ASSET_NAME} asset pair.`
     );
     hint('This is usually a GitHub API rate limit; retry with GITHUB_TOKEN set.');
     return 1;
@@ -1827,6 +1854,7 @@ module.exports = {
   InstallerError,
   resolveInstallMode,
   askYesNo,
+  selectSkillRelease,
   parseChecksums,
   constantTimeHashEqual,
   enforceDownloadedSize,

@@ -573,7 +573,8 @@ class TestExportCli:
         code = cli_main(
             ["export", "--out", str(target), "-p", str(tmp_path), "--no-banner"]
         )
-        assert code == 1
+        # A bad --out path is a usage error (exit 2), matching report --out.
+        assert code == 2
         assert target.read_text() == "{}"
         assert "--force" in capsys.readouterr().err
 
@@ -606,7 +607,8 @@ class TestExportCli:
             ["export", "--out", str(tmp_path / "nope" / "x.json"),
              "-p", str(tmp_path), "--no-banner"]
         )
-        assert code == 1
+        # A bad --out path is a usage error (exit 2), matching report --out.
+        assert code == 2
         assert "parent directory does not exist" in capsys.readouterr().err
 
     def test_missing_config_emits_one_json_error(self, tmp_path: Path, capsys) -> None:
@@ -807,6 +809,41 @@ class TestImportCli:
 
         assert code == 1
         assert "larger than" in payload["error"]
+        assert seen == [MAX_BUNDLE_BYTES + 1]
+
+    def test_stdin_huge_bundle_is_bounded_by_bytes_not_chars(
+        self, tmp_path: Path, capsys, monkeypatch
+    ) -> None:
+        """The stdin read cap must bound BYTES, not characters.
+
+        A text-mode ``read(n)`` counts characters, so a multi-byte CJK bundle
+        could transiently buffer ~4x the byte budget. When stdin exposes a
+        ``.buffer`` the read is done on the raw byte stream with the byte cap.
+        """
+        seen: list[int] = []
+
+        class _HugeBuffer:
+            def read(self, n: int = -1) -> bytes:
+                seen.append(n)
+                return b"x" * n
+
+        class _FakeStdin:
+            buffer = _HugeBuffer()
+
+        target = tmp_path / "dst"
+        target.mkdir()
+        monkeypatch.setattr("sys.stdin", _FakeStdin())
+        capsys.readouterr()
+
+        code = cli_main(
+            ["import", "-", "--yes", "--json", "-p", str(target), "--no-banner"]
+        )
+        payload = json.loads(capsys.readouterr().out)
+
+        assert code == 1
+        assert "larger than" in payload["error"]
+        # The byte-stream read is capped at the byte budget + 1 (not a char
+        # count), so a CJK bundle cannot over-allocate.
         assert seen == [MAX_BUNDLE_BYTES + 1]
 
     def test_stdin_bundle(self, tmp_path: Path, capsys, monkeypatch) -> None:

@@ -133,6 +133,55 @@ class TestBuildRefreshDataPreservesReviewer:
         assert data.scope_chunk_size == 25
 
 
+class TestBuildRefreshDataPreservesGitBooleans:
+    """The git booleans refresh does not reconcile must not go dead.
+
+    ``_build_refresh_data`` previously left ``use_worktree``/``auto_merge`` at
+    their ``OnboardingData`` defaults (False) even when the existing config had
+    ``true``, so the data model disagreed with the config it was derived from
+    (and any future consumer reading them would clobber a user's setting)."""
+
+    def test_preserves_customised_git_booleans(self, tmp_path: Path) -> None:
+        config = {
+            "dimensions": ["correctness"],
+            "git": {
+                "target_branch": "develop",
+                "use_worktree": True,
+                "auto_merge": True,
+                "push_per_round": True,
+            },
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+        }
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.use_worktree is True
+        assert data.auto_merge is True
+        assert data.push_per_round is True
+        assert data.target_branch == "develop"
+
+    def test_coerces_truthy_scalar_git_booleans(self, tmp_path: Path) -> None:
+        config = {
+            "dimensions": ["correctness"],
+            "git": {"use_worktree": "yes", "auto_merge": "on", "push_per_round": 1},
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+        }
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.use_worktree is True
+        assert data.auto_merge is True
+        assert data.push_per_round is True
+
+    def test_defaults_false_when_absent(self, tmp_path: Path) -> None:
+        config = {
+            "dimensions": ["correctness"],
+            "onboarding": {"channel": "cli"},
+            "validation": {"commands": {}, "command_whitelist": []},
+        }
+        data = _build_refresh_data(tmp_path, _python_scan(), config)
+        assert data.use_worktree is False
+        assert data.auto_merge is False
+
+
 def _write_project(tmp_path: Path, config: dict) -> Path:
     """Create an onboarded project under tmp_path with ITERATE.md + config."""
     project = tmp_path / "proj"

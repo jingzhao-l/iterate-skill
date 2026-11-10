@@ -1924,6 +1924,39 @@ class TestDoctorCheckFilter:
         assert "max_rounds" in checks
         assert payload["has_errors"] is False
 
+    def test_empty_check_is_a_usage_error_not_a_silent_pass(
+        self, tmp_path, capsys
+    ) -> None:
+        """`--check ""` (or ",") must NOT run zero checks and exit 0.
+
+        A templated `--check ${CHECKS}` that expands empty previously produced
+        an empty filter set, ran no checks at all, and returned a healthy exit
+        code — silently disabling the gate. It is now a usage error (exit 2).
+        """
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        capsys.readouterr()
+        code = cli_main(["doctor", "-p", str(project), "--check", ""])
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "requires at least one check name" in err
+
+    def test_empty_check_json_emits_one_document_and_exits_two(
+        self, tmp_path, capsys
+    ) -> None:
+        project = _make_project(tmp_path)
+        _write_config(project, _base_config())
+        capsys.readouterr()
+        code = cli_main(
+            ["doctor", "-p", str(project), "--check", ",", "--json"]
+        )
+        out = capsys.readouterr().out
+        assert code == 2
+        payload = json.loads(out)  # exactly one JSON document on stdout
+        assert payload["healthy"] is False
+        assert payload["blocking"] is True
+        assert "no check names given" in payload["error"]
+
 
 class TestExportReportJsonLeavesNoTempFiles:
     def test_unique_tmp_is_cleaned_up(self, tmp_path: Path) -> None:

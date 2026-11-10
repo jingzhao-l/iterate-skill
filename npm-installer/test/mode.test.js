@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
-const { resolveInstallMode, parseChecksums, constantTimeHashEqual, enforceDownloadedSize, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, validateTokenShape, buildAuthFlags, InstallerError, runCommand, runPythonInstall, signaturePolicyError, allowUnsigned, ALLOW_UNSIGNED_ENV } = require('../lib/installer');
+const { resolveInstallMode, parseChecksums, constantTimeHashEqual, enforceDownloadedSize, parseArgs, buildPythonInstallArgs, isGithubApiUrl, normalizeToken, validateTokenShape, buildAuthFlags, InstallerError, runCommand, runPythonInstall, signaturePolicyError, allowUnsigned, ALLOW_UNSIGNED_ENV, selectSkillRelease } = require('../lib/installer');
 
 // 64-char lowercase hex digest, as sha256 actually produces.
 const H = 'a'.repeat(64);
@@ -184,6 +184,13 @@ async function run() {
   const dedup = parseChecksums(`${H}  x.tar.gz\n${H}  x.tar.gz\n`);
   assert.strictEqual(dedup.size, 1, 'identical duplicate should dedupe');
   assert.strictEqual(dedup.get('x.tar.gz'), H);
+
+  // A duplicate whose digest differs only in HEX CASE is the same digest, not
+  // a conflict (constantTimeHashEqual compares case-insensitively).
+  const caseVariant = `${H.toLowerCase()}  x.tar.gz\n${H}  x.tar.gz\n`;
+  const dedupCase = parseChecksums(caseVariant);
+  assert.strictEqual(dedupCase.size, 1, 'case-variant duplicate should dedupe');
+  assert.strictEqual(dedupCase.get('x.tar.gz'), H, 'first digest retained');
 
   console.log('mode.test.js: all parseChecksums tests passed');
 
@@ -492,6 +499,7 @@ async function run() {
 
   testEnforceDownloadedSize();
   testSignaturePolicy();
+  testSelectSkillRelease();
   testConstantTimeHashEqual();
   testCliBoundary();
 
@@ -647,4 +655,67 @@ function testSignaturePolicy() {
   }
 
   console.log('mode.test.js: all signaturePolicyError tests passed');
+}
+
+// ---------------------------------------------------------------------------
+// selectSkillRelease — the newest-stable-release filter
+// ---------------------------------------------------------------------------
+
+function testSelectSkillRelease() {
+  const mk = (tag, assets, extra = {}) => ({
+    tag_name: tag,
+    draft: false,
+    prerelease: false,
+    assets: assets.map((name) => ({ name })),
+    ...extra,
+  });
+  const T = 'iterate-skill.tar.gz';
+  const C = 'SHA256SUMS.txt';
+  const S = 'iterate-skill.tar.gz.asc';
+
+  // A release carrying tarball + checksum is selectable WITHOUT the .asc —
+  // the signature is enforced later by signaturePolicyError, so the
+  // ITERATE_ALLOW_UNSIGNED override actually works (previously the filter
+  // required the signature and made that override unreachable).
+  const unsigned = selectSkillRelease([mk('v3.14.0', [T, C])]);
+  assert.strictEqual(unsigned && unsigned.tag_name, 'v3.14.0',
+    'an unsigned release must still be selectable (policy decides later)');
+
+  // A signed release is selectable too.
+  const signed = selectSkillRelease([mk('v3.14.0', [T, C, S])]);
+  assert.strictEqual(signed && signed.tag_name, 'v3.14.0', 'a signed release is selectable');
+
+  // Newest-first: the first usable release wins, skipping an incomplete one.
+  const newestWins = selectSkillRelease([
+    mk('v3.15.0', [T]), // missing checksums → skipped
+    mk('v3.14.0', [T, C]),
+  ]);
+  assert.strictEqual(newestWins && newestWins.tag_name, 'v3.14.0',
+    'an incomplete newest release is skipped for the next usable one');
+
+  // Drafts / prereleases / missing-tarball / missing-checksum are skipped.
+  assert.strictEqual(
+    selectSkillRelease([mk('v9.9.9', [T, C], { draft: true })]), null,
+    'a draft is never selected',
+  );
+  assert.strictEqual(
+    selectSkillRelease([mk('v9.9.9', [T, C], { prerelease: true })]), null,
+    'a prerelease is never selected',
+  );
+  assert.strictEqual(
+    selectSkillRelease([mk('v9.9.9', [C])]), null,
+    'a release without the tarball is not usable',
+  );
+  assert.strictEqual(
+    selectSkillRelease([mk('v9.9.9', [T])]), null,
+    'a release without the checksum is not usable',
+  );
+  assert.strictEqual(
+    selectSkillRelease([mk('v9.9.9', [])]), null,
+    'a release without assets is not usable',
+  );
+  assert.strictEqual(selectSkillRelease('not-an-array'), null,
+    'a non-array payload selects nothing');
+
+  console.log('mode.test.js: all selectSkillRelease tests passed');
 }

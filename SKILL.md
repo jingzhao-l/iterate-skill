@@ -312,6 +312,8 @@ iterate personalize  # 个性化配置（项目中途追加约束，9 步向导�
 iterate personalize --clear [--yes]  # 清空所有个性化配置（结构化规则 + ITERATE.md 相关段落）
 iterate show         # 只读查看合并后的配置与个性化详情（支持 --json）
 iterate refresh      # 增量刷新（保留用户手写区；支持 --json / --dry-run --json 结构化报告）
+iterate refresh --diff  # 打印刷新将应用的确切 unified diff（ITERATE.md + 配置重写；恒不写文件、隐含 dry-run；--json 时 diff 在 md_diff/config_diff 字段；无变化报 "no changes needed"）
+iterate template     # 列出 skill 自带的模板（ITERATE.md 骨架 / onboarding playbook / 决策日志结构；只读，可在任意目录使用；`show NAME` 打印一个模板原文；别名 iterate/playbook/decisions；--json）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
 iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查；--strict 将 warning 一并判失败；--fix 安全修复；--check NAME 只跑指定检查（可重复/逗号分隔，`--list-checks` 列出全部检查名）；--json / --json-out 结构化输出）
 iterate status       # 查看 onboarding 状态和漂移检测（--json 含 onboarded、config_exists/config_ok、drift_detected 与明细列表）

@@ -36,6 +36,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import zlib
 from collections.abc import Callable
 from pathlib import Path
@@ -2439,12 +2440,18 @@ def update_command(
             relative_dir = SUPPORTED_AI[assistant]
             destination = effective_target / relative_dir
             if destination in seen_destinations:
+                # A second alias for an already-UPDATED destination (claude /
+                # claude-code share one dir) is genuinely covered by the first
+                # copy, so it is counted as handled — but only when the first
+                # alias actually SUCCEEDED (a failed first alias must not make
+                # its twin look updated). seen_destinations is populated only
+                # after a successful update, so a failed first alias falls
+                # through and the twin gets a real (honest) attempt/report.
                 _hint(
                     f"Skipped {assistant}: target {destination} already updated in this run."
                 )
                 updated.append(assistant)  # count it as handled, not a failure
                 continue
-            seen_destinations.add(destination)
             try:
                 code = _update_one_assistant(
                     assistant, target, update_source, global_install, input_func
@@ -2456,6 +2463,7 @@ def update_command(
                 failed.append((assistant, f"installer exited with code {code}"))
             else:
                 updated.append(assistant)
+                seen_destinations.add(destination)
     finally:
         if release_source:
             # release_source is always a subdir of a mkdtemp parent; remove the
@@ -2591,6 +2599,78 @@ def _validate_project_config(target: Path, source: Path) -> list[str]:
 
 YAML_BOOLEAN_ALIASES = {"true", "false", "True", "False", "TRUE", "FALSE"}
 
+#: YAML 1.1 boolean-like spellings that PyYAML parses to bool but which are
+#: NOT in ``YAML_BOOLEAN_ALIASES`` (so ``parse_value`` keeps them as strings
+#: for free-form string fields). They are valid boolean spellings for a
+#: boolean-typed config field and must be coerced there.
+_YAML_BOOL_LIKE = {
+    "yes", "no", "on", "off", "y", "n",
+    "Yes", "No", "On", "Off", "Y", "N",
+    "YES", "NO", "ON", "OFF",
+    "true", "false", "True", "False", "TRUE", "FALSE",
+}
+
+
+def _config_boolean_paths(schema_path: Path) -> set[str]:
+    """Return the dotted config paths the schema declares as ``type: boolean``.
+
+    Traverses the JSON Schema ``properties`` tree so ``--set`` can coerce a
+    YAML-1.1 boolean spelling (``yes``/``no``/``on``/``off``) to a real bool on
+    exactly the fields the schema expects a boolean, while leaving string
+    fields (``goal``, ``target_branch``) untouched.
+
+    Args:
+        schema_path: Path to ``config/config.schema.json``.
+
+    Returns:
+        The set of dotted paths whose schema type is ``boolean``.
+    """
+    result: set[str] = set()
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return result
+
+    def _walk(node: object, prefix: str) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "boolean":
+            result.add(prefix)
+            return
+        props = node.get("properties")
+        if not isinstance(props, dict):
+            return
+        for name, child in props.items():
+            _walk(child, f"{prefix}.{name}" if prefix else str(name))
+
+    _walk(schema, "")
+    return result
+
+
+def parse_bool_spelling(raw: str) -> bool:
+    """Parse a boolean config value from its string spelling.
+
+    Accepts the YAML-1.1 spellings a user types for a boolean field
+    (``yes``/``no``/``on``/``off``/``y``/``n`` plus ``true``/``false`` in any
+    case). Rejects anything else so a mistyped value fails loudly instead of
+    being silently stored as a string the schema then rejects.
+
+    Args:
+        raw: The raw string value.
+
+    Returns:
+        The parsed bool.
+
+    Raises:
+        ValueError: If ``raw`` is not a recognised boolean spelling.
+    """
+    normalized = raw.strip().lower()
+    if normalized in ("1", "true", "yes", "on", "y"):
+        return True
+    if normalized in ("0", "false", "no", "off", "n"):
+        return False
+    raise ValueError(f"{raw!r} is not a boolean value (expected yes/no/on/off/true/false)")
+
 
 def parse_value(raw: str) -> object:
     """Parse a config value from CLI string using JSON, then YAML semantics.
@@ -2671,18 +2751,41 @@ def load_config(path: Path) -> dict[str, object]:
     return data
 
 
-def save_config(path: Path, config: dict[str, object]) -> None:
-    """Save a config mapping to a YAML file with helpful comments.
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Atomically write raw text to ``path`` (temp file + ``os.replace``).
 
-    The write is atomic: the content is dumped to a temp file in the same
-    directory and then ``os.replace``d over the target, so a crash or error
-    mid-write can never leave a truncated config behind.
+    Used for config writes and rollbacks so a mid-write failure can never
+    leave a truncated config behind. Preserves the original file's permission
+    bits (e.g. ``0600`` for a manually restricted config); a NEW file is
+    created with mode ``0o666`` so the process umask decides its final mode,
+    matching ``iterate_cli.generator.atomic_write``. The previous
+    ``tempfile.mkstemp``-based write forced every config to ``0600`` regardless
+    of its prior mode, silently dropping group/other read bits.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        original_mode = path.stat().st_mode & 0o777
+    except OSError:
+        original_mode = None
+    create_mode = original_mode if original_mode is not None else 0o666
+    # Process-unique, collision-resistant temp name in the same directory (so
+    # ``os.replace`` stays on one mount point and is atomic).
+    tmp_name = str(
+        path.with_name(
+            f".{path.name}.{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp"
+        )
+    )
+    open_flags = (
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    )
+    fd = os.open(tmp_name, open_flags, create_mode)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if original_mode is not None:
+            os.chmod(tmp_name, original_mode)
         os.replace(tmp_name, path)
     except BaseException:
         # Never leave a partial temp file behind on failure.
@@ -2693,23 +2796,22 @@ def save_config(path: Path, config: dict[str, object]) -> None:
         raise
 
 
-def _atomic_write_text(path: Path, content: str) -> None:
-    """Atomically write raw text to ``path`` (temp file + ``os.replace``).
+def save_config(path: Path, config: dict[str, object]) -> None:
+    """Save a config mapping to a YAML file with helpful comments.
 
-    Used for config-rollback writes so a mid-write failure can never leave a
-    truncated config behind, matching ``save_config``'s guarantee.
+    The write is atomic (same-directory temp file + ``os.replace``) and
+    preserves the destination's permission bits (new files use the umask),
+    matching ``_atomic_write_text`` / ``generator.atomic_write``.
     """
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.remove(tmp_name)
-        except OSError:
-            pass
-        raise
+        content = yaml.safe_dump(
+            config, sort_keys=False, allow_unicode=True, default_flow_style=False
+        )
+    except TypeError as exc:
+        # yaml.safe_dump cannot serialise a non-serialisable value (e.g. a
+        # date object a hand-edited config introduced); surface it cleanly.
+        raise ValueError(f"Cannot serialise config: {exc}") from exc
+    _atomic_write_text(path, content)
 
 
 def init_config(target: Path, source: Path) -> int:
@@ -2777,6 +2879,10 @@ def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) ->
         config = {}
         previous_text = None
 
+    # Resolve which dotted paths are boolean-typed so a YAML-1.1 spelling
+    # (yes/no/on/off) becomes a real bool on exactly those fields.
+    bool_paths = _config_boolean_paths(source / "config" / "config.schema.json")
+
     for group in set_pairs:
         for pair in group:
             if "=" not in pair:
@@ -2788,7 +2894,10 @@ def set_config_values(target: Path, source: Path, set_pairs: list[list[str]]) ->
                 _error(f"Empty key in --set argument: {pair}")
                 return 1
             try:
-                set_nested_value(config, key, parse_value(value))
+                if key in bool_paths:
+                    set_nested_value(config, key, parse_bool_spelling(value))
+                else:
+                    set_nested_value(config, key, parse_value(value))
             except ValueError as exc:
                 _error(f"{exc}")
                 return 1
