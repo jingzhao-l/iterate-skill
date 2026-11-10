@@ -5,6 +5,67 @@
 
 ---
 
+## [3.14.0] — 2026-11-10
+
+minor：两个净新增用户可感知能力——`iterate refresh --diff`（把「dry-run 只报几行
+改动」变成「能看到确切 unified diff」，刷新可先审后应用）与 `iterate template`
+（把 skill 静默消费的模板表面化：ITERATE.md 骨架 / onboarding playbook / 决策日志
+结构，可列出、可查看、只读、任意目录可用）。本轮全面审查（review-bugbot）确认
+**3 处中 + 8 处低缺陷**并全部修复（含 42 个新增回归；测试套件 1987 → 2029）。
+
+### 新增功能
+- **`iterate refresh --diff`**（+11 回归）：打印刷新将应用的**确切 unified diff**——
+  ITERATE.md 重写与 iterate.config.yaml 重写；恒不写文件（diff 即预览，隐含
+  dry-run）；`--json` 时 diff 在 `md_diff`/`config_diff` 字段；无变化报
+  "no changes needed"（exit 0）。此前 `refresh --dry-run` 只给行数（"+N / -M"），
+  用户无法看到将改什么，属「能预览但不能看到内容」断链。
+- **`iterate template list|show`**（+14 回归）：把 generator 静默消费的模板表面化——
+  `list`（默认）列出全部捆绑模板（ITERATE.template.md / onboarding-playbook.md /
+  iterate-decisions.template.md，含 `exists` 标记），`show NAME` 打印一个模板原文；
+  支持别名 `iterate`/`playbook`/`decisions` 与 `--json`；只读、可在任意目录使用
+  （模板属于 skill 而非某个项目）；未知名称/动作 exit 2 并提示 `template list`。
+  此前模板只存在于包内，用户想了解 `onboard` 生成的结构或定制副本需手翻安装目录。
+
+### 修复（全面审查发现，3 中 + 8 低）
+- **`doctor --check ""` 静默通过**（中，+2 回归）：`--check ""`/`","` 剥空后得到空
+  过滤集，`run_doctor` 跑零个检查并 exit 0「健康」——CI 门禁被静默禁用。现改为
+  usage error（exit 2，`--json` 下仍是恰好一个文档）。
+- **backup restore 派生目标未显式校验包含**（中，+1 回归）：`restore` 校验的是备份
+  参数路径，而由 `base` 派生的 `target` 未显式做 `relative_to(project_root)` 校验
+  （此前仅靠 `is_dir()` 偶然挡住 `base==".."` 的越界）。现对派生目标显式校验。
+- **npx 安装器 unsigned 发布覆盖失效**（中，+1 JS 回归）：release 选择过滤器要求
+  `.asc` 资产，使 `ITERATE_ALLOW_UNSIGNED=1` 分支不可达（与 Python 安装器分歧）。
+  现抽取 `selectSkillRelease`，过滤器只要求 tarball+checksum，签名交由
+  `signaturePolicyError` 决定（覆盖真正生效）。
+- **`--json` 误判**（低，+2 回归）：`json_requested` 用原始 argv 子串扫描，把值恰为
+  `--json` 的 token（如 `report --out --json`）当成 JSON 请求。现为精确检测：token
+  是前一「取值选项」（`--out`/`--check`/`-p`…）的值时不算 flag。
+- **import stdin 字节上限**（低，+1 回归）：`sys.stdin.read(n)` 按字符计数，多字节
+  CJK bundle 会瞬时缓冲至 ~4× 上限。现优先从 `sys.stdin.buffer` 按字节读。
+- **report/export `--out` 退出码不一致**（低）：report 的「拒绝覆盖」=2 而
+  「父目录不存在」=1；export 的「已存在」=1。现统一为 usage error（exit 2）。
+- **personalize no-op 无条件重写**（低，+1 回归）：`save_personalization` 每次运行
+  都重写 config（mtime 抖动 + safe_dump 丢注释且可能无快照）。现两个写入都改为
+  「仅当实际变化」。
+- **guard 在 Windows 上 select 失效**（低，+1 回归）：`select` 对管道 fd 是
+  POSIX-only，失败即 break 导致诊断尾为空。现回退到 sleep+非阻塞轮询，输出仍被捕获。
+- **refresh 丢失 git 布尔**（低，+3 回归）：`_build_refresh_data` 让
+  `use_worktree`/`auto_merge` 停在默认 False（死字段）。现从现有配置保留并做 truthy
+  标量归一，`_build_refreshed_config` 一并持久化，数据模型与配置不再分歧。
+- **installer `--set` 布尔拼写**（低，+3 回归）：`--set git.push_per_round=yes` 存成
+  字符串 "yes" 而 schema 拒绝。现对 schema 声明的布尔字段用 `parse_bool_spelling`
+  归一（yes/no/on/off/y/n/true/false），字符串字段仍保留字面量。
+- **installer config 权限漂移**（低，+2 回归）：`save_config`/`_atomic_write_text` 经
+  `mkstemp` 强制 0600。现保留原文件权限位，新文件用 umask 决定（与
+  `generator.atomic_write` 一致）。
+- **installer `--ai all` 别名记账**（低，+1 回归）：共享目标目录的第二个别名
+  （claude/claude-code）在前一个别名失败时仍被记为「已更新」。现目标目录只在
+  成功更新后标记为 seen，失败别名会让其孪生真实重试/如实上报。
+- **npx parseChecksums 大小写敏感**（低，+1 JS 回归）：重复项 digest 仅大小写不同
+  被当成冲突。现按小写比较（与 `constantTimeHashEqual` 一致）。
+
+---
+
 ## [3.13.0] — 2026-11-09
 
 minor：新增 `iterate backup prune`（备份保留策略，此前备份只增不减、只能手动
