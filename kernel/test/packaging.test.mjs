@@ -17,7 +17,11 @@ function packedPaths() {
     cwd: kernelRoot,
     encoding: "utf8"
   });
-  const [manifest] = JSON.parse(raw);
+  // npm <= 10 returns a top-level array of manifests; npm 11+ returns an object
+  // keyed by package name. Accept both so the gate runs on whichever npm the
+  // developer or CI happens to have.
+  const parsed = JSON.parse(raw);
+  const manifest = Array.isArray(parsed) ? parsed[0] : parsed[Object.keys(parsed)[0]];
   return new Set(manifest.files.map((entry) => entry.path));
 }
 
