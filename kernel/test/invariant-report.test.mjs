@@ -156,6 +156,35 @@ test("an error refuses to be laundered into activity", () => {
   );
 });
 
+/**
+ * `errors.ts` names this function alongside `convergenceDecision` and
+ * `registerProvider` as one that validates its own input and raises the same error
+ * `parse.ts` raises. It digests the report into a re-verification citation, so a
+ * report that is not a contract value must never reach `invariantReportDigest` —
+ * otherwise it manufactures an `iv_…` citation over a non-value.
+ */
+test("a report that is not a contract value is refused, not cited by digest", () => {
+  // No `schemaVersion`, no `checks`: `parseInvariantReport` refuses this shape.
+  assert.throws(
+    () => reVerificationRequestFrom({ outcome: "fail" }, { dimensions: ["spec-compliance"] }),
+    (error) => {
+      assert.ok(error instanceof KernelSchemaError, `expected a KernelSchemaError, got ${error}`);
+      assert.ok(error.issues.some((issue) => issue.path.startsWith("schemaVersion")), `refused, but not at schemaVersion: ${JSON.stringify(error.issues)}`);
+      return true;
+    },
+    "a report with no schemaVersion must be refused"
+  );
+  // An empty `checks` list violates `.min(1)` even with a `schemaVersion` present.
+  assert.throws(
+    () => reVerificationRequestFrom(
+      { schemaVersion: INVARIANT_REPORT_SCHEMA_VERSION, outcome: "fail", checks: [] },
+      { dimensions: ["spec-compliance"] }
+    ),
+    KernelSchemaError,
+    "a report with zero checks must be refused"
+  );
+});
+
 test("a failure becomes a request that cites the failure by digest", () => {
   const report = parseInvariantReport(fixture.input);
   const request = reVerificationRequestFrom(report, { dimensions: ["spec-compliance", "frontend-backend"] });

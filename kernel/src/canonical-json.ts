@@ -32,7 +32,8 @@
 
 export const CANONICAL_JSON_CODES = {
   value: "KERNEL_E_CANONICAL_VALUE",
-  depth: "KERNEL_E_CANONICAL_DEPTH"
+  depth: "KERNEL_E_CANONICAL_DEPTH",
+  keyOrder: "KERNEL_E_CANONICAL_KEY_ORDER"
 } as const;
 
 export type KernelCanonicalJsonCode = (typeof CANONICAL_JSON_CODES)[keyof typeof CANONICAL_JSON_CODES];
@@ -78,6 +79,39 @@ export function canonicalJson(value: unknown): string {
   return write(value, 0);
 }
 
+/**
+ * A string carrying an unpaired surrogate has no UTF-8 representation. `JSON.stringify`
+ * escapes it (`"\ud83d"`), and the bytes hashed here are the six ASCII characters of that
+ * escape — but no UTF-8 reader agrees with those bytes, and a Python producer of the same
+ * string raises `UnicodeEncodeError` outright. So the two sides cannot share a digest for a
+ * value that is not a character at all. Refused, in the same "no token for it" class as
+ * `NaN`/`Infinity`/`Date`, rather than hashed over bytes only one runtime can reproduce.
+ */
+function refuseUnpairedSurrogates(value: string): void {
+  for (let i = 0; i < value.length; i++) {
+    const unit = value.charCodeAt(i);
+    const isHigh = unit >= 0xd800 && unit <= 0xdbff;
+    const isLow = unit >= 0xdc00 && unit <= 0xdfff;
+    if (isHigh) {
+      const next = value.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new KernelCanonicalJsonError(
+          CANONICAL_JSON_CODES.value,
+          `string contains an unpaired high surrogate at index ${i}, which has no UTF-8 representation and cannot be digested identically by every reader`,
+          "record the text the producer actually has; a lone surrogate is not a character, and a digest over its escape bytes is one a Python or Swift reader cannot reproduce"
+        );
+      }
+      i++;
+    } else if (isLow) {
+      throw new KernelCanonicalJsonError(
+        CANONICAL_JSON_CODES.value,
+        `string contains an unpaired low surrogate at index ${i}, which has no UTF-8 representation and cannot be digested identically by every reader`,
+        "record the text the producer actually has; a lone surrogate is not a character, and a digest over its escape bytes is one a Python or Swift reader cannot reproduce"
+      );
+    }
+  }
+}
+
 function write(value: unknown, depth: number): string {
   if (depth > CANONICAL_JSON_MAX_DEPTH) {
     throw new KernelCanonicalJsonError(
@@ -90,6 +124,7 @@ function write(value: unknown, depth: number): string {
   switch (typeof value) {
     case "string":
     case "boolean":
+      if (typeof value === "string") refuseUnpairedSurrogates(value);
       return JSON.stringify(value);
     case "number":
       if (!Number.isFinite(value)) {
@@ -123,7 +158,25 @@ function write(value: unknown, depth: number): string {
         );
       }
       const record = value as Record<string, unknown>;
-      const keys = Object.keys(record).sort();
+      const keys = Object.keys(record);
+      for (const key of keys) {
+        refuseUnpairedSurrogates(key);
+        // Mirror of the Python half's `CANONICAL_JSON_E_KEY_ORDER` guard. `Array.sort`
+        // orders by UTF-16 code unit; Python orders by code point. The two agree across
+        // the BMP and diverge above it, so a key with a character past U+FFFF would be
+        // serialised in a different key order by the two runtimes and the digest over
+        // it would disagree — the exact silent divergence this form exists to prevent.
+        for (const ch of key) {
+          if (ch.codePointAt(0)! > 0xffff) {
+            throw new KernelCanonicalJsonError(
+              CANONICAL_JSON_CODES.keyOrder,
+              `key ${JSON.stringify(key)} contains a character above U+FFFF, which the two implementations order differently`,
+              "keep canonicalised keys inside the BMP, where UTF-16 code-unit order and code-point order are the same"
+            );
+          }
+        }
+      }
+      keys.sort();
       return "{" + keys.map((key) => JSON.stringify(key) + ":" + write(record[key], depth + 1)).join(",") + "}";
     }
     default:

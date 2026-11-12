@@ -139,3 +139,48 @@ test("the shipped form still agrees with the independent implementation on JSON 
   assert.equal(canonicalJson({ n: 0.023 }), '{"n":0.023}');
   assert.equal(canonicalJson({ n: -0 }), '{"n":0}');
 });
+
+/**
+ * `Array.sort` orders keys by UTF-16 code unit; the Python half of this contract
+ * (`canonical_json.py`) orders by code point and REFUSES any key with a character
+ * above U+FFFF (`CANONICAL_JSON_E_KEY_ORDER`) because the two orders diverge there.
+ * This side must refuse the same key, or a Python producer's digest is one this
+ * verifier cannot reproduce — the exact silent divergence the form exists to prevent.
+ * The guard mirrors the Python refusal rather than inventing a third behaviour.
+ */
+test("a key with a character above the BMP is refused, matching the Python half", () => {
+  // Both orderings place these two keys differently: code-unit order puts the
+  // surrogate pair (0xD83D…) first, code-point order puts U+E000 first.
+  expectRefusal(
+    CANONICAL_JSON_CODES.keyOrder,
+    () => canonicalJson({ "\u{1F600}": 1, "\uE000": 2 }),
+    "an emoji key and a private-use key together"
+  );
+  // A single non-BMP key is refused too: the divergence is about ordering against
+  // a co-key, but the Python side refuses it outright, so this side does as well.
+  expectRefusal(
+    CANONICAL_JSON_CODES.keyOrder,
+    () => canonicalJson({ "\u{1F600}": 1 }),
+    "a lone emoji key"
+  );
+  // Astral characters in VALUES are fine — only keys are ordered. This must not refuse.
+  assert.equal(canonicalJson({ note: "\u{1F600}" }), '{"note":"😀"}');
+  // BMP keys with characters near the top of the BMP still sort and canonicalise.
+  // `JSON.stringify` leaves U+FFFF raw (it is not a control character), so the top
+  // BMP key prints as the literal character, sorted after `"\u0000"`.
+  assert.equal(canonicalJson({ "\uFFFF": 1, "\u0000": 2 }), '{"\\u0000":2,"\uFFFF":1}');
+});
+
+/**
+ * An unpaired surrogate has no UTF-8 representation. `JSON.stringify` escapes it and
+ * the bytes hashed here are the ASCII of that escape, but a Python producer of the same
+ * string raises `UnicodeEncodeError` — so no digest over it is shareable. Refused in the
+ * same "no token for it" class as `NaN`/`Infinity`, in keys and in values alike.
+ */
+test("a string with an unpaired surrogate is refused, in a value and in a key", () => {
+  expectRefusal(CANONICAL_JSON_CODES.value, () => canonicalJson({ note: "\uD83D" }), "lone high surrogate in a value");
+  expectRefusal(CANONICAL_JSON_CODES.value, () => canonicalJson({ "\uD83D": 1 }), "lone high surrogate in a key");
+  expectRefusal(CANONICAL_JSON_CODES.value, () => canonicalJson({ note: "\uDC00" }), "lone low surrogate in a value");
+  // A properly-paired surrogate (a real non-BMP character) in a value stays legal.
+  assert.equal(canonicalJson({ note: "\uD83D\uDE00" }), '{"note":"😀"}');
+});

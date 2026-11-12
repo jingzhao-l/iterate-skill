@@ -170,23 +170,32 @@ export function reVerificationRequestFrom(
   report: InvariantReport,
   targets: ReverificationTargets
 ): ReverificationRequest | null {
-  if (report.outcome === "pass") {
+  // Validated, not trusted: this digest is cited by a re-verification as the reason the
+  // engine is being asked to look again, so a report that is not a contract value must
+  // never reach `invariantReportDigest`. `errors.ts` names this function alongside
+  // `convergenceDecision` and `registerProvider` as one that validates its own input and
+  // raises the same error `parse.ts` raises; the two siblings do, and this one does too.
+  const checkedReport = InvariantReportSchema.safeParse(report);
+  if (!checkedReport.success) {
+    throw schemaErrorFrom("invariant report", checkedReport.error);
+  }
+  const checked = ReverificationTargetsSchema.safeParse(targets);
+  if (!checked.success) {
+    throw schemaErrorFrom("re-verification targets", checked.error);
+  }
+  if (checkedReport.data.outcome === "pass") {
     return null;
   }
-  if (report.outcome === "error") {
+  if (checkedReport.data.outcome === "error") {
     throw new KernelReverificationError(
       REVERIFICATION_CODES.unmeasured,
       "the invariant run reported error, not a verdict",
       "fix or re-run the invariant check itself; a re-verification of the app would answer a question nobody measured"
     );
   }
-  const checked = ReverificationTargetsSchema.safeParse(targets);
-  if (!checked.success) {
-    throw schemaErrorFrom("re-verification targets", checked.error);
-  }
   return {
     schemaVersion: REVERIFICATION_SCHEMA_VERSION,
-    trigger: { kind: "invariant", reportDigest: invariantReportDigest(report) },
+    trigger: { kind: "invariant", reportDigest: invariantReportDigest(checkedReport.data) },
     targets: checked.data
   };
 }
