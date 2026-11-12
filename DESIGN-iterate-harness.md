@@ -1041,7 +1041,7 @@ harness/iterate-plugin/
 | P12 | Capabilities 能力清单 | 工具/斜杠命令/技能/插件/MCP 配置的实际加载清单；静态 MCP 问题与可复制修复；类别筛选 + 搜索；永不启动服务器或模型 | `capabilities` 模块（与 `ih capabilities` 同源） |
 | P13 | Audit 审计 | 控制台每一次写操作的完整台账（时间/操作/目标/参数摘要）：操作前缀 + 目标子串 + 起始时间筛选，分页，导出 Markdown / CSV / JSON；只读、与 `ih audit` 同源 | `audit` 模块（web-audit.jsonl） |
 | P14 | Memory 记忆 | 项目记忆库：条目/大小/修改时间/描述，引擎相关度搜索排名，注入预览（与提示词同一条代码路径，点名截断），失效索引链接问题；新增/覆盖/删除（二次确认 + 审计）；只读面绝不创建记忆目录 | `memory` 模块（`ih memory` 同源） |
-| P15 | Hooks 生命周期钩子 | 已注册钩子清单（事件/类型/来源/匹配器/命令或提示或 URL/超时/失败拦截），未知事件名带可复制 remedy；执行台账（事件/类型/结果筛选、最新在前分页、Markdown/CSV/JSON 导出）；只读、永不启动钩子命令或模型 | `hooks` 模块（`ih hooks` 同源） |
+| P15 | Hooks 生命周期钩子 | 已注册钩子清单（事件/类型/来源/匹配器/命令或提示或 URL/超时/失败拦截/静态检查），未知事件名与跑不起来的命令/URL/空提示带可复制 remedy；执行台账（事件/类型/结果筛选、最新在前分页、Markdown/CSV/JSON 导出）；每事件「复制试运行命令」直达 `ih hooks test`；页面只读、永不启动钩子命令或模型 | `hooks` 模块（`ih hooks` 同源） |
 
 **操作边界（安全默认）**：P2/P3/P6 涉及写操作（启动/停止/恢复 checkpoint/保存配置）一律「只读默认 + 显式确认 + 写入前备份 + 失败回滚」，与 CLI 既有语义一致。
 
@@ -1065,7 +1065,8 @@ harness/iterate-plugin/
 | `memory/inject.py` | 运行时提示词与注入预览共用的记忆段落构造器（单一实现，二者不可漂移） |
 | `memory/inventory.py` | 记忆库只读清单 + 相关度排名 + 注入预览 + 单文件读取（`ih memory` / `GET /api/v1/memory`） |
 | `hooks/journal.py` | 钩子执行台账：写入侧（`HookExecutor` 每跑一笔）+ 读取侧（`ih hooks log` / `GET /api/v1/hooks/log`），大小上限惰性轮转 |
-| `hooks/inventory.py` | 已注册钩子只读清单 + 未知事件名问题报告（`ih hooks list` / `GET /api/v1/hooks` / capabilities 的 `hooks` 段） |
+| `hooks/inventory.py` | 已注册钩子只读清单 + 未知事件名与静态配置问题报告（命令不存在/URL 畸形/空提示；`ih hooks list` / `GET /api/v1/hooks` / capabilities 的 `hooks` 段） |
+| `hooks/testing.py` | 钩子试运行（`ih hooks test`）：与引擎同一注册表、同一执行器、同一台账；command/http 真跑，prompt/agent 无模型时明确 skipped，`--dry-run` 绝不执行；`--require-match` 供 CI 断言 |
 
 **关键路由契约（示例）**：
 
@@ -1089,7 +1090,8 @@ harness/iterate-plugin/
 | POST | `/api/v1/memory` | 新增/覆盖记忆（审计 + 确认；覆盖已存在需 `overwrite=true`，否则 409） | `OperationResult` |
 | DELETE | `/api/v1/memory` | 删除记忆并解除索引链接（审计 + 确认；`prune_index` 修失效链接） | `OperationResult` |
 | GET | `/api/v1/hooks` | 已注册生命周期钩子清单 + 执行台账摘要（未知事件名带 remedy）；只读、无网络 | `HooksView` |
-| GET | `/api/v1/hooks/log` | 钩子执行台账：`event`/`hook_type`/`success` 筛选，最新在前分页 | `HookLogView` |
+| GET | `/api/v1/hooks/log` | 钩子执行台账：`event`/`hook_type`/`success` 筛选，最新在前分页；非法 `success` 返回 422 | `HookLogView` |
+| GET | `/api/v1/hooks/log/export` | 钩子执行台账导出（Markdown / CSV / JSON，沿用筛选、不分页） | 下载（`X-Hooks-Total`） |
 
 **错误码约定**：`400` 参数非法 / `401` 未授权（非本机）/ `404` 资源不存在 / `409` 冲突（如恢复中再操作、把已有计划迁到另一目录未带 `replace`）/ `422` 校验失败 / `500` 内部错误（含日志 trace）。
 
