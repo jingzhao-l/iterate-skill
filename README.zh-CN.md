@@ -304,6 +304,10 @@ iterate personalize --clear  # 清空所有个性化（结构化规则 + ITERATE
 iterate personalize --clear --yes  # 跳过确认，直接清空
 iterate show                 # 只读查看合并后的配置与个性化详情（--json 输出结构数据）
 
+# 引导式「下一步」：现在该跑哪条命令、为什么（只读，恒 exit 0）
+iterate next                 # 空项目→init/onboard；漂移→refresh --diff；体检失败→doctor --fix；健康→/iterate "<goal>"
+iterate next --json          # 脚本/CI 用的稳定计划：state、blocking、drift、next、steps、notes
+
 # 查看 onboarding 状态和漂移检测
 iterate status
 
@@ -365,6 +369,8 @@ iterate backup prune --older-than 30d  # 删除超过 30 天的备份（也接�
 4. 补充约束    iterate personalize              # 项目专属约束（可选）
 5. 开始迭代    /iterate "你的目标"               # 或在 AI 助手中直接调用
 ```
+
+> 不确定当前在哪一步？直接跑 **`iterate next`**：它读取项目状态，只给出「下一条该跑的命令」以及原因、后续步骤和环境缺口（例如未初始化 git），无需先读文档；`iterate next --json` 返回同一份计划供脚本/其它 skill 消费。
 
 首次调用 `/iterate` 时若项目还没有知识库，skill 会**先做 onboarding** 再进入迭代——看到"正在初始化项目"的提示是正常流程，不是失效。之后每轮改动都保留在隔离的 `iterate/*` 分支/worktree 中，merge/push 默认关闭，由你 review 后再合并。
 

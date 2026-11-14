@@ -7,6 +7,7 @@ Provides subcommands for onboarding and personalization management:
     iterate refresh     — Incremental refresh of ITERATE.md (preserve user sections)
     iterate reonboard   — Full re-onboarding (backup old files, run wizard)
     iterate status      — Show onboarding status and drift detection
+    iterate next        — Guided next action (what to run now, and why)
     iterate scan        — Read-only export of the project tech-stack scan
     iterate report      — Aggregated Markdown/JSON health report (PR/CI friendly)
     iterate export      — Snapshot config + ITERATE.md as a portable JSON bundle
@@ -543,6 +544,12 @@ def _dispatch_command(
         if show_banner:
             tui.banner()
         return _cmd_status(project_root, json_output=getattr(args, "json", False))
+    if args.command == "next":
+        if show_banner:
+            tui.banner()
+        from iterate_cli.nextcmd import run_next
+
+        return run_next(project_root, json_output=getattr(args, "json", False))
     if args.command == "scan":
         if show_banner:
             tui.banner()
@@ -708,8 +715,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         default=False,
-        help="Emit structured JSON instead of TUI output for status, scan, "
-        "init, report, export, import, show, doctor, refresh, config, guard, "
+        help="Emit structured JSON instead of TUI output for status, next, "
+        "scan, init, report, export, import, show, doctor, refresh, config, guard, "
         "invariant, fingerprint, backup and update "
         "(and for --version). Interactive commands (onboard/personalize/"
         "reonboard) reject it; on every other path stdout holds exactly one "
@@ -886,6 +893,23 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Emit a structured JSON report instead of TUI output.",
+    )
+    next_parser = subparsers.add_parser(
+        "next",
+        parents=[parent],
+        help="Guided next action: what to run now, and why.",
+        description="Answer 'what should I do next?' from the project state: "
+        "not initialized -> init/onboard; corrupt config -> doctor --fix; "
+        "manifest drift -> refresh --diff then refresh; failing checks -> "
+        "doctor; healthy -> /iterate <goal>. Read-only and advisory (always "
+        "exits 0); --json returns the prioritized plan for scripts and other "
+        "skills.",
+    )
+    next_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit the prioritized plan as one JSON document.",
     )
     scan_parser = subparsers.add_parser(
         "scan",

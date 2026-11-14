@@ -302,6 +302,10 @@ iterate personalize --clear  # clear all personalization (structured rules + ITE
 iterate personalize --clear --yes  # skip confirmation
 iterate show                 # read-only merged config + personalization details (--json for structured output)
 
+# Guided next action: what to run now, and why (read-only; always exits 0)
+iterate next                 # fresh project -> init/onboard; drift -> refresh --diff; failing checks -> doctor --fix; healthy -> /iterate "<goal>"
+iterate next --json          # stable plan for scripts/CI: state, blocking, drift, next, steps, notes
+
 # View onboarding status and drift detection
 iterate status
 
@@ -335,6 +339,8 @@ iterate backup prune --older-than 30d  # delete any backup older than 30 days (7
 ```
 
 > **Recommended new-user path**: `npx iterate-skill-installer` (install) → `iterate onboard` (init) → `iterate doctor` (optional health check) → `iterate personalize` (optional constraints) → `/iterate "your goal"` in your AI assistant, or `iterate status` / `iterate refresh` / `iterate personalize` on the CLI.
+>
+> Not sure where you are? Run **`iterate next`** — it inspects the project and prints the single next command (plus follow-ups and environment gaps), so you do not need to read this table first. `iterate next --json` returns the same plan for scripts and other skills.
 >
 > The first `/iterate` invocation will do onboarding first if the project has no knowledge base — seeing a "initializing project" message is normal, not a failure. After that, every round's changes stay on an isolated `iterate/*` branch/worktree; merge/push is off by default and happens after you review.
 

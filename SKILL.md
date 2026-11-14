@@ -316,6 +316,7 @@ iterate refresh --diff  # 打印刷新将应用的确切 unified diff（ITERATE.
 iterate template     # 列出 skill 自带的模板（ITERATE.md 骨架 / onboarding playbook / 决策日志结构；只读，可在任意目录使用；`show NAME` 打印一个模板原文；别名 iterate/playbook/decisions；--json）
 iterate reonboard    # 完整重新 onboarding（备份旧文件）
 iterate doctor       # 项目健康诊断（onboarding/config/维度/漂移等全项检查；--strict 将 warning 一并判失败；--fix 安全修复；--check NAME 只跑指定检查（可重复/逗号分隔，`--list-checks` 列出全部检查名）；--json / --json-out 结构化输出）
+iterate next         # 引导式「下一步」：按项目状态给出有序命令计划（未初始化→init/onboard；配置损坏→doctor --fix；manifest 漂移→refresh --diff→refresh；体检失败→doctor --fix；仅有 warning→doctor；健康→/iterate "<goal>" + 可选 personalize），并提示非 git 等环境缺口；只读、建议式（恒 exit 0）；--json 输出稳定键 state/blocking/drift/next/steps/notes
 iterate status       # 查看 onboarding 状态和漂移检测（--json 含 onboarded、config_exists/config_ok、drift_detected 与明细列表）
 iterate scan         # 只读导出项目扫描结果（识别到的 manifest/语言/包管理器/顶层目录/五个特性开关含 has_api + 建议维度/维度集/校验命令/命令白名单；不写文件，恒退出 0；--json）
 iterate scan --json  # 同上，结构化输出，供脚本/CI 消费
@@ -345,7 +346,7 @@ iterate help doctor  # 打印单个命令的详细帮助
 
 CLI 通道会自动扫描代码库并让你确认/调整技术栈与配置，适合希望手动控制 onboarding 过程的用户；AI 通道则完全由 AI 自动扫描生成。两者产出相同格式的 `ITERATE.md` 和 `iterate.config.yaml`。
 
-**命令发现与容错 / Discoverability**：`iterate help [command]` 打印总览或单命令帮助（无需记住 `--help` 的位置）；命令拼错时会给出最近的可用命令（如 `iterate statu` → `did you mean 'status'?`），子命令动作同样适用（如 `iterate fingerprint verfy` → `did you mean 'verify'?`）。所有用法错误退出码为 2；带 `--json` 时 stdout 仍是恰好一个 JSON 文档（其中 `did_you_mean` 给出同样的建议）。`iterate completion bash|zsh|fish` 输出可直接安装的补全脚本（命令、参数、固定取值、路径参数），补全内容由 `--help` 同一个 parser 生成，新增/改名命令不会漏补；加 `--install` 可一步写入常规用户补全目录（`--dir` 自定义目录、`--force` 覆盖旧文件、`--json` 输出单个结果文档），不再需要自己记路径和重定向；加 `--uninstall` 只删除安装时写入的那一个文件（幂等、可脚本化、绝不触碰任意路径）。
+**命令发现与容错 / Discoverability**：不确定下一步时先跑 `iterate next`——它按项目状态给出「现在跑哪条、为什么、之后跑什么」的有序计划（`--json` 可被脚本/其它 skill 消费），新手无需先读文档即可从空目录走到 `/iterate`；`iterate help [command]` 打印总览或单命令帮助（无需记住 `--help` 的位置）；命令拼错时会给出最近的可用命令（如 `iterate statu` → `did you mean 'status'?`），子命令动作同样适用（如 `iterate fingerprint verfy` → `did you mean 'verify'?`）。所有用法错误退出码为 2；带 `--json` 时 stdout 仍是恰好一个 JSON 文档（其中 `did_you_mean` 给出同样的建议）。`iterate completion bash|zsh|fish` 输出可直接安装的补全脚本（命令、参数、固定取值、路径参数），补全内容由 `--help` 同一个 parser 生成，新增/改名命令不会漏补；加 `--install` 可一步写入常规用户补全目录（`--dir` 自定义目录、`--force` 覆盖旧文件、`--json` 输出单个结果文档），不再需要自己记路径和重定向；加 `--uninstall` 只删除安装时写入的那一个文件（幂等、可脚本化、绝不触碰任意路径）。
 
 **多路引导 / Multi-Path Flow**：
 - **首次 onboarding**（无 ITERATE.md）：确认手动配置 → 基础 onboarding → 询问是否需要个性化配置。
