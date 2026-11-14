@@ -5,6 +5,46 @@
 
 ---
 
+## [3.15.0] — 2026-11-14
+
+minor：新增 `iterate next`——把「状态」变成「下一步该跑哪条命令」，新手不必
+先读文档就能从空目录走到 `/iterate`，回访用户也能在漂移/体检失败时拿到有
+优先级的修复路径（含 `--json` 计划供脚本/其它 skill 消费）。本轮全面审查
+确认 2 处缺陷并全部修复：**pip 安装后 3 个模板有 2 个不可用**（包数据缺失，
+`template show` 把已知模板误报为 unknown）与 **`backup prune` 非法参数值退出码
+错误**（1 而非 2）。测试套件 2029 → 2050。
+
+### 新增功能
+- **`iterate next`**（+13 回归）：只读、建议式（恒 exit 0）的「下一步」命令。
+  按项目状态给出**有序计划**：未初始化 → `iterate init --yes`（备选
+  `iterate onboard`）；有配置缺 ITERATE.md → `iterate onboard`；有 ITERATE.md
+  缺配置 → `iterate init --yes`；配置损坏 → `iterate doctor --fix`；manifest
+  漂移 → `iterate refresh --diff` 再 `iterate refresh`（附具体变更文件）；
+  体检失败 → `iterate doctor --fix`；仅有 warning → `iterate doctor`（不阻塞）；
+  健康 → `/iterate "<goal>"` + 可选 `iterate personalize`。另附环境缺口提示
+  （如非 git 仓库）。`--json` 输出稳定键 `state`/`blocking`/`drift`/
+  `drift_reason`/`doctor`/`next`/`steps`/`notes`，CI 与其它 skill 可直接
+  branch，无需解析人类文案。此前 `status`/`show`/`doctor` 只报状态，不回答
+  「现在该做什么」，首次使用路径只能靠 README。
+
+### 修复（全面审查发现）
+- **pip 安装后模板不可用**（`template_cmd.py` + 包数据，+5 回归）：模板解析
+  只查仓库相对的 `templates/`，而 wheel 只打包 `iterate_cli/data/`，导致
+  `pip install iterate-skill` 后 `template list` 有 2/3 显示 missing、
+  `template show playbook|decisions` 直接失败。现优先解析包内数据、再回退
+  仓库目录，并补齐两份缺失模板（与 `templates/` 逐字节一致，测试强制）；
+  `list --json` 报告的 `path` 也指向实际使用的副本。
+- **已知模板缺失被误报为 unknown**（`template_cmd.py`，+2 回归）：`show` 对
+  「名字合法但文件缺失」返回 exit 2「Unknown template」，把安装损坏误报成
+  拼写错误；现区分未知名称（2）与安装缺文件（1，提示重装/`iterate update`），
+  `--json` 仍恰好一个文档。
+- **`backup prune` 非法参数值退出码不一致**（`cli.py`，+3 回归）：
+  `--keep 0`、`--older-than 3x`/`0d` 是非法参数值，却因复用 `BackupError`
+  的运行时分支返回 1，与「无策略」的 2 及文档化的 usage error 契约矛盾，
+  且与「部分删除失败」无法区分。现调用前先校验策略，非法值统一 exit 2。
+
+---
+
 ## [3.14.0] — 2026-11-10
 
 minor：两个净新增用户可感知能力——`iterate refresh --diff`（把「dry-run 只报几行
