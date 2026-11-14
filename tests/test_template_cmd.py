@@ -58,6 +58,65 @@ class TestRegistry:
     def test_read_unknown_returns_none(self) -> None:
         assert read_template("missing.md") is None
 
+    def test_bundled_data_copies_match_repo_templates(self) -> None:
+        # A pip wheel ships only iterate_cli/data/ (package-data), never the
+        # repo-relative templates/ dir. If the two drift, a source checkout and
+        # an installed package show different template content.
+        data_dir = Path(__file__).resolve().parent.parent / "iterate_cli" / "data"
+        repo_dir = Path(__file__).resolve().parent.parent / "templates"
+        for name in TEMPLATE_REGISTRY:
+            bundled = data_dir / name
+            repo = repo_dir / name
+            assert bundled.is_file(), f"{name} is missing from package data"
+            assert repo.is_file(), f"{name} is missing from templates/"
+            assert bundled.read_bytes() == repo.read_bytes(), name
+
+    def test_list_prefers_bundled_package_data(self) -> None:
+        data_dir = (
+            Path(__file__).resolve().parent.parent / "iterate_cli" / "data"
+        )
+        for item in list_templates():
+            assert Path(item["path"]).parent == data_dir, item
+
+    def test_missing_known_template_is_an_install_error(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        from iterate_cli import template_cmd
+
+        monkeypatch.setattr(template_cmd, "_TEMPLATE_DIRS", (tmp_path,))
+        capsys.readouterr()
+        code = template_cmd.run_template("show", "playbook")
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "missing from this installation" in captured.err
+        # The fix is a reinstall, not a different template name.
+        assert "Reinstall" in captured.out
+
+    def test_missing_known_template_json_is_one_document(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        from iterate_cli import template_cmd
+
+        monkeypatch.setattr(template_cmd, "_TEMPLATE_DIRS", (tmp_path,))
+        capsys.readouterr()
+        code = template_cmd.run_template("show", "decisions", json_output=True)
+        out = capsys.readouterr().out
+        assert code == 1
+        payload = json.loads(out)
+        assert payload["template"] == "iterate-decisions.template.md"
+        assert "Reinstall" in payload["hint"]
+
+    def test_missing_template_list_reports_exists_false(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from iterate_cli import template_cmd
+
+        monkeypatch.setattr(template_cmd, "_TEMPLATE_DIRS", (tmp_path,))
+        monkeypatch.setattr(template_cmd, "_PACKAGE_DATA_ROOT", tmp_path)
+        items = template_cmd.list_templates()
+        assert items
+        assert all(not item["exists"] for item in items)
+
 
 class TestCliTemplate:
     def test_default_action_lists_templates(self, capsys) -> None:

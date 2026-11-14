@@ -10,6 +10,15 @@ template surface is discoverable without reading the package source.
 
 The module is read-only and side-effect free: it never writes, never touches
 the project, and works from any directory.
+
+Templates are resolved from the **bundled package data** first
+(``iterate_cli/data/``, shipped in the wheel via ``package-data``) and only
+then from the repo-relative ``templates/`` directory. Preferring the repo copy
+looked correct in a checkout but broke every ``pip install``: the wheel has no
+``templates/`` dir, so all three templates were reported missing and ``show``
+called a known template "unknown". Both locations ship byte-identical copies
+(a regression test enforces that), so a source checkout and an installed
+package behave the same.
 """
 
 from __future__ import annotations
@@ -60,15 +69,27 @@ _ALIASES: dict[str, str] = {
     "decisionlog": "iterate-decisions.template.md",
 }
 
-#: The templates root as shipped. Generator falls back to the repo-relative
-#: ``templates/`` dir; using the same base keeps this command correct whether
-#: it runs from a checkout or an installed package.
-_TEMPLATES_ROOT = Path(__file__).resolve().parent.parent / "templates"
+#: Template search roots, in priority order:
+#:
+#: 1. ``iterate_cli/data/`` — the copy shipped in the wheel (``package-data``).
+#: 2. ``templates/`` — the repo checkout, also what the generator falls back
+#:    to when running from source.
+#:
+#: The bundled copy must come first: a ``pip install`` has no ``templates/``
+#: directory at all, so a repo-first lookup reported every template as missing
+#: even though the package data was present.
+_PACKAGE_DATA_ROOT = Path(__file__).resolve().parent / "data"
+_REPO_TEMPLATES_ROOT = Path(__file__).resolve().parent.parent / "templates"
+_TEMPLATE_DIRS: tuple[Path, ...] = (_PACKAGE_DATA_ROOT, _REPO_TEMPLATES_ROOT)
 
 
-def _templates_root() -> Path:
-    """Return the templates directory (may not exist in an odd install)."""
-    return _TEMPLATES_ROOT
+def _template_path(name: str) -> Path | None:
+    """Return the first existing path for ``name`` across the search roots."""
+    for directory in _TEMPLATE_DIRS:
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def list_templates() -> list[dict[str, Any]]:
@@ -81,10 +102,14 @@ def list_templates() -> list[dict[str, Any]]:
         dropping it — a missing bundled template is a packaging problem worth
         surfacing, not hiding.
     """
-    root = _templates_root()
     items: list[dict[str, Any]] = []
     for name, (rel, description) in TEMPLATE_REGISTRY.items():
-        path = root / Path(rel).name
+        # Report the copy actually in use. When neither root has it, report
+        # the bundled-data path a reinstall would populate (not a repo path
+        # that an installed package will never have).
+        path = _template_path(Path(rel).name) or (
+            _PACKAGE_DATA_ROOT / Path(rel).name
+        )
         items.append(
             {
                 "name": name,
@@ -125,7 +150,9 @@ def read_template(name: str) -> tuple[str, str, str] | None:
     if canonical is None:
         return None
     rel, _ = TEMPLATE_REGISTRY[canonical]
-    path = _templates_root() / Path(rel).name
+    path = _template_path(Path(rel).name)
+    if path is None:
+        return None
     try:
         content = path.read_text(encoding="utf-8")
     except OSError:
@@ -190,8 +217,8 @@ def run_template(
                 tui.error("`iterate template show` requires a template name.")
                 tui.hint("List them with `iterate template list`.", indent=2)
             return 2
-        result = read_template(name)
-        if result is None:
+        canonical = resolve_template(name)
+        if canonical is None:
             if json_output:
                 import json
 
@@ -208,6 +235,34 @@ def run_template(
                 tui.error(f"Unknown template: {name}")
                 tui.hint("Run `iterate template list` for the available names.", indent=2)
             return 2
+        result = read_template(canonical)
+        if result is None:
+            # A KNOWN template whose file is missing is a broken/incomplete
+            # installation (exit 1), not a usage error (exit 2). Reporting it
+            # as "unknown" sent the user looking for a typo while the real fix
+            # was a reinstall.
+            message = (
+                f"template {canonical} is missing from this installation "
+                "(the bundled package data is incomplete)"
+            )
+            hint = (
+                "Reinstall the skill (`npx iterate-skill-installer` or "
+                "`pip install --force-reinstall iterate-skill`), or run "
+                "`iterate update`."
+            )
+            if json_output:
+                import json
+
+                print(
+                    json.dumps(
+                        {"error": message, "hint": hint, "template": canonical},
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                tui.error(message)
+                tui.hint(hint, indent=2)
+            return 1
         canonical, content, path = result
         if json_output:
             import json
