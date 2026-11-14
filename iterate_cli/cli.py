@@ -3989,6 +3989,7 @@ def _cmd_backup(
         BackupError,
         backups_json,
         list_backups,
+        parse_backup_age,
         prune_backups,
         restore_backup,
     )
@@ -4046,6 +4047,28 @@ def _cmd_backup(
                 print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
             else:
                 tui.error(message)
+            return 2
+        # Validate the policy BEFORE touching any file. These are invalid
+        # argument values, so they must exit 2 like every other usage error —
+        # `prune_backups` raises the same BackupError for them as it does for a
+        # failed unlink, and the old single catch reported the argument typo as
+        # exit 1 ("runtime failure"), contradicting the documented contract and
+        # making `--keep 0` indistinguishable from a partial prune.
+        policy_error: str | None = None
+        if keep is not None and keep < 1:
+            policy_error = "--keep must be at least 1 (0 would delete every backup)"
+        elif older_than is not None:
+            try:
+                parse_backup_age(older_than)
+            except BackupError as exc:
+                policy_error = str(exc)
+        if policy_error is not None:
+            if json_output:
+                print(
+                    json.dumps({"ok": False, "error": policy_error}, ensure_ascii=False)
+                )
+            else:
+                tui.error(policy_error)
             return 2
         try:
             outcome = prune_backups(

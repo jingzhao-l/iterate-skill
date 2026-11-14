@@ -556,6 +556,38 @@ class TestBackupCli:
         assert code == 2
         assert "--keep or --older-than" in err
 
+    def test_prune_keep_zero_is_usage_error(self, tmp_path, capsys) -> None:
+        # An invalid option VALUE is a usage error (exit 2), like a missing
+        # policy — not a runtime failure (exit 1) indistinguishable from a
+        # partial prune.
+        capsys.readouterr()
+        code = cli_main(
+            ["backup", "prune", "--keep", "0", "-p", str(tmp_path), "--json"]
+        )
+        out = capsys.readouterr().out
+        assert code == 2
+        payload = json.loads(out)
+        assert "--keep must be at least 1" in payload["error"]
+
+    def test_prune_invalid_age_is_usage_error(self, tmp_path, capsys) -> None:
+        capsys.readouterr()
+        code = cli_main(
+            ["backup", "prune", "--older-than", "3x", "-p", str(tmp_path), "--json"]
+        )
+        out = capsys.readouterr().out
+        assert code == 2
+        payload = json.loads(out)
+        assert "invalid --older-than" in payload["error"]
+
+    def test_prune_zero_age_is_usage_error(self, tmp_path, capsys) -> None:
+        capsys.readouterr()
+        code = cli_main(
+            ["backup", "prune", "--older-than", "0d", "-p", str(tmp_path)]
+        )
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "positive duration" in err
+
     def test_prune_dry_run_end_to_end(self, tmp_path, capsys) -> None:
         for i, stamp in enumerate(
             ["20261101T010000Z", "20261102T010000Z", "20261103T010000Z"]
