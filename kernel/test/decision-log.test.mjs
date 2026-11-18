@@ -201,6 +201,41 @@ test("a valid entry stored in non-canonical form is caught, not silently re-hash
   expectRefusal("KERNEL_E_DECISION_LOG_CORRUPT", () => appendDecisionLogEntry(path, draft()));
 });
 
+/**
+ * A ledger whose entire content is a lone blank line is NOT an empty chain — it is
+ * a corrupt line 1. Reading it as a healthy empty chain used to let an append
+ * trust `sequence 0`, write past the blank line, and only then fail its own
+ * re-verification (`JSON.parse("")`), leaving the bytes on disk and every later
+ * read reporting a permanently poisoned ledger. A blank line is kept as a line so
+ * the refusal happens before any write.
+ */
+test("a lone blank line is a corrupt ledger, not an empty chain", () => {
+  const path = ledgerPath();
+  writeFileSync(path, "\n", { mode: 0o600 });
+  const verified = readDecisionLog(path);
+  assert.equal(verified.ok, false, "a blank-line ledger must not read as a healthy empty chain");
+  assert.equal(verified.brokenKind, "corrupt");
+  assert.equal(verified.firstBrokenLine, 1);
+  expectRefusal(DECISION_LOG_CODES.corrupt, () => decisionLogHead(path));
+  const before = sha256hex(readFileSync(path));
+  expectRefusal(DECISION_LOG_CODES.corrupt, () => appendDecisionLogEntry(path, draft()));
+  assert.equal(sha256hex(readFileSync(path)), before, "the refused append must not leave a poisoned ledger");
+});
+
+test("a leading or interior blank line is corrupt at its own line, not skipped", () => {
+  const first = entryLine(0, "");
+  const second = entryLine(1, decisionLogEntryHash(JSON.parse(first)));
+  // Leading blank: line 1 is empty, the real genesis shifts to line 2.
+  assert.equal(verifyDecisionLogText(`\n${first}\n`).firstBrokenLine, 1);
+  assert.equal(verifyDecisionLogText(`\n${first}\n`).brokenKind, "corrupt");
+  // Interior blank between two valid entries breaks at the blank line.
+  assert.equal(verifyDecisionLogText(`${first}\n\n${second}\n`).firstBrokenLine, 2);
+  assert.equal(verifyDecisionLogText(`${first}\n\n${second}\n`).brokenKind, "corrupt");
+  // A genuinely empty file is still a healthy empty chain.
+  assert.deepEqual(verifyDecisionLogText(""), { ok: true, entries: [] });
+  assert.equal(readDecisionLog(ledgerPath()).entries.length, 0, "a missing ledger reads as an empty chain");
+});
+
 test("replacing the tail with a valid-but-unlinked entry is reported as a chain break", () => {
   const path = ledgerPath();
   appendDecisionLogEntry(path, draft());

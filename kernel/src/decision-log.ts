@@ -155,8 +155,17 @@ function broken(
 }
 
 /**
- * The one line rule for a ledger: entries are separated by "\n", and a trailing
- * newline terminates the last one rather than starting an empty entry.
+ * The one line rule for a ledger: entries are separated by "\n", and a single
+ * trailing newline terminates the last one rather than starting an empty entry.
+ * Any *other* blank line — a leading one, or two consecutive newlines in the
+ * middle — is a line of nothing, and nothing is not a valid entry. It is kept
+ * here as an empty string so verification reports it `corrupt` and a reader (and
+ * `decisionLogHead`, before any append) refuses, instead of silently reading a
+ * blank-ledger file as a healthy empty chain and then writing onto it.
+ *
+ * Only one trailing newline is stripped, and only when it is the final byte: an
+ * entry is stored as canonical JSON followed by "\n", so the terminator must not
+ * be read back as an extra empty entry.
  *
  * Deliberately not `/^.*$/gm`: `.` and `$` also break at U+2028 and U+2029, both
  * of which `JSON.stringify` leaves raw because both are legal inside a JSON
@@ -165,8 +174,9 @@ function broken(
  * complaining about, so every later append reports the same false collision.
  */
 function ledgerLines(text: string): string[] {
+  if (text === "") return [];
   const body = text.endsWith("\n") ? text.slice(0, -1) : text;
-  return body.length === 0 ? [] : body.split("\n");
+  return body.split("\n");
 }
 
 /**
