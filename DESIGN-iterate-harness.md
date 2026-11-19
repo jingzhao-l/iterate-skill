@@ -1028,7 +1028,7 @@ harness/iterate-plugin/
 | # | 页面 | 核心能力 | 数据来源 |
 |---|---|---|---|
 | P1 | Dashboard 仪表盘 | 运行状态卡片、收敛曲线（findings/round）、预算/限流实时仪表、最近报告入口 | decision log / loop_policy / cost meter |
-| P2 | Runs 迭代详情 | trajectory 式逐轮时间线：round_start → review_result → atomic_fix / architectural_fix → revert → validation → decision；findings 表格；diff 展开 | decision log（`read_entries`） |
+| P2 | Runs 迭代详情 | trajectory 式逐轮时间线：round_start → review_result → atomic_fix / architectural_fix → revert → validation → decision；findings 表格；diff 展开；分诊（approve / reject / **ignore**，ignore 写 `known_intentional` 使引擎下一轮起真正过滤） | decision log（`read_entries`） + `iterate/triage.py` |
 | P3 | Checkpoints | 断点列表、状态标签、恢复（受控操作，二次确认） | checkpoint / last_state |
 | P4 | Workspaces | 工作区列表、隔离状态（worktree）、切换/选择 | worktree_runtime / 配置 |
 | P5 | Budget & Rate | 累计 token / 美元预算、限流窗口、熔断状态 | loop_policy / cost meter |
@@ -1400,9 +1400,18 @@ harness/iterate-harness/
 | 端点 | `GET /runs/findings/triage`（全部决策，最近优先）、`POST /runs/findings/triage`（记录，需 `confirm=true` + 审计）、`DELETE /runs/findings/triage`（清除全部，需 `confirm=true` + 审计） |
 | 请求模型 | `FindingsTriageRequest{file, line?, dimension, decision: "approve"|"reject", note?}`（decision 用 `Literal` 限定） |
 | 健壮性 | 读取对损坏行防御（跳过非 JSON / 非 dict / 空 key）；写入 best-effort 永不抛；非法 decision 抛 `ValueError` |
-| 语义 | `approve`=同意该 finding / 接受其修复建议；`reject`=误报 / 跳过修复。与 §18 引擎暂停菜单的审批互补：这是**人类对历史 run 的持久记录**，引擎审批是**进行中 run 的实时决策** |
+| 语义 | `approve`=同意该 finding / 接受其修复建议；`reject`=误报 / 跳过修复（二者是**人类对历史 run 的持久记录**，引擎审批是**进行中 run 的实时决策**）；`ignore`=**永久有意**——除日志记录外，同一事务还写 `personalization.known_intentional` 并桥接进 `iterate.config.yaml`，引擎下一轮评审即过滤。撤销（单条 dismiss / 全量 clear）同时解除机器写入的过滤条目，手写条目保留 |
 
-**前端**（`pages/Runs.tsx`）：findings 表格每行追加「批准 / 拒绝」按钮（busy 态禁用），分诊成功后即时反映到行状态；新增「仅看已分诊」筛选与「清除全部决策」操作（二次确认对话框）；初始化时加载全部已存决策并按去重键映射。
+**前端**（`pages/Runs.tsx`）：findings 表格每行追加「批准 / 拒绝 / 永久忽略」按钮（busy 态禁用），分诊成功后即时反映到行状态；新增「仅看已分诊」筛选与「清除全部决策」操作（二次确认对话框，文案说明会解除自动忽略但保留手写条目）；初始化时加载全部已存决策并按去重键映射。
+
+**控制台/CI 入口**（`ih iterate triage list|ignore|restore` + `iterate/triage.py`）：同一个分诊状态在终端可达，不依赖模型会话或打开 WebUI。
+
+| 项 | 设计 |
+|---|---|
+| `list` | 从 decision log 的 `review_result` / `report` 条目重建去重后的 findings（同键后出现取最新 severity/summary），与 WebUI 分诊日志、引擎 `known_intentional` 合并出状态（open / approve / reject / ignore），带稳定编号；`--severity/--dimension/--file/--status/--limit/--json` |
+| `ignore <1,3-5|all>` | 写 personalization + `iterate.config.yaml`（带 `triaged-intentional:` 机器标记）+ 分诊日志 + decision log 审计；无选择器/过滤器时拒绝执行（“忽略全部”必须显式写 `all`）；`--dry-run` 只报告不落盘；journal 写失败时回滚已写的过滤条目并退出 1，绝不出现“隐藏了 finding 却没有记录” |
+| `restore` | 只移除带机器标记的条目（手写 `known_intentional` 永不被撤销），同时清 config 桥与分诊日志；即便 personalization 已被清空，也会按机器前缀清理 config 里的残留 |
+| 并发 | personalization 的读-改-写由 `personalization.json.lock` 串行化；分诊日志继续用 `findings-triage.jsonl.lock`，两个 console / console+WebUI 同时操作不丢条目 |
 
 ### 19.3 工作区管理（落地 §17.3 P4）
 
