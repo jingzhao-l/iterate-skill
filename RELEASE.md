@@ -2031,6 +2031,33 @@ stamp 不匹配会自动重装到新 tag。
       > 构建 `iterate_harness-1.16.3-py3-none-any.whl` 上传 release + 自动发布 PyPI 1.16.3
       >（已验证 PyPI latest=1.16.3）；npm `iterate-harness@1.16.3` 已发布（registry 传播约 60s），
       > npm 包装器 `ih --version` 验证 =1.16.3。
+      >
+      > **2.24.0 发布记录（2026-11-19）**：例行审查 + 修复 + 新能力发版（minor）。主要变更：
+      > ① **findings 分诊第一次在终端/CI 可达且真正生效**——新增 `ih iterate triage
+      > list|ignore|restore`（`iterate/triage.py`）：`list` 从 decision log 的
+      > `review_result` / `report` 条目重建去重 findings（同键取最新 severity/summary），
+      > 合并分诊日志与引擎 `known_intentional` 给出 open/approved/rejected/ignored 与稳定编号；
+      > `ignore` 写入引擎真正读取的 personalization + `iterate.config.yaml`（带
+      > `triaged-intentional:` 机器标记）、分诊日志与 decision log 审计；`restore` 只移除机器
+      > 写入的条目（手写 `known_intentional` 永不误删），并清理 config 残留。支持
+      > `1,3-5` / `all` 选择器、severity/维度/文件过滤、`--dry-run`、`--json` 与脚本退出码
+      > （无选择/越界 → 1；「忽略全部」必须显式 `all`）。② **一致性**：personalization
+      > 读-改-写由 `personalization.json.lock` 串行化；分诊日志写失败时回滚本次新增的过滤条目
+      > 并以非零退出，绝不「隐藏了 finding 却没有记录」。③ **WebUI**：Runs 页新增「永久忽略」
+      > （approve/reject/ignore 三态），单条撤销与「清除全部审批记录」会解除机器写入的过滤条目。
+      > ④ **修复真实缺陷**：`api/__init__.py` 与 `services/__init__.py` 改为 PEP 562 惰性导出，
+      > `import iterate_harness.services.cron_scheduler` 由约 **37s** 降至约 **2s**，cron 守护
+      > 进程重新落在 20s 认领窗口内。版本号在 `__init__.py` / `npm/package.json` /
+      > `frontend/web/package.json` / lock 与 `CHANGELOG.md` 同步至 2.24.0；校验 **3421 pytest
+      > + 6 skip**、ruff clean、mypy clean（287 源文件）、npm 包装器 **89 passed**、前端
+      > `tsc --noEmit` + vitest 16 files/161 tests + `vite build` 85 modules。主仓库 push 提交
+      > `c1bf656f`（rebase 至 badge 提交后）。发布仓走 `.release/iterate-harness` 替代路径按
+      > 已提交树同步（702 文件，+3 新增）提交 `1598fee` 并快进推送（`a483c47..1598fee`）；推
+      > annotated tag `v2.24.0` 触发 release.yml（run 44460074179，success 50s，幂等建 Release
+      > + 构建 wheel/.asc/.sha256）与 npm publish 工作流（run 44460074114，success 23s）；
+      > 已验证 PyPI latest=2.24.0、GitHub Release v2.24.0 为 Latest 且含三件资产、npm
+      > latest=2.24.0；临时前缀安装后 `ih --version` = `iterate_harness 2.24.0`，
+      > `ih iterate triage --help` 可见 list/ignore/restore。
 
 ---
 
