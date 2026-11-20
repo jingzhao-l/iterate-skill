@@ -1,4 +1,4 @@
-/* iterate-plugin client source-digest: 27b0938ec2d1b286b1327ebbc1a2bdd526c5668d22e489aa062b2c9cfc693281 */
+/* iterate-plugin client source-digest: ef5a5e276c93002f7dac1d6b3181c88da502ebf99529637d5ccac7e867b9bb1e */
 window.__ModuleLoader__.load({ id: "iterate-plugin", factory: (require) => {
 var module = { exports: {} };
 var exports = module.exports;
@@ -2964,7 +2964,29 @@ var EN = {
   "\u65E0\u6CD5\u89E3\u6790 iterate-report \u8D1F\u8F7D\uFF1A{a0}": "Could not parse the iterate-report payload: {a0}",
   "\u672A\u8BC6\u522B\u7684 iterate \u8D1F\u8F7D\uFF08\u5DF2\u56DE\u9000\u4E3A\u666E\u901A\u4EE3\u7801\u5757\uFF09": "Unrecognized iterate payload (falling back to the plain code block)",
   \u590D\u5236\u804A\u5929\u5361\u7247: "Copy chat card",
-  "\u590D\u5236 ```iterate-report \u4EE3\u7801\u5757\uFF1A\u7C98\u8D34\u5230\u56DE\u590D\u91CC\uFF0CChat \u4F1A\u6E32\u67D3\u6210\u53EF\u4EA4\u4E92\u8FD0\u884C\u5361\u7247\uFF08\u6307\u6807 / \u8D28\u91CF\u95F8\u95E8 / \u53D1\u73B0 / \u590D\u5236\u6309\u94AE\uFF09": "Copy the ```iterate-report block: paste it into a reply and Chat renders an interactive run card (metrics / quality gate / findings / copy actions)"
+  "\u590D\u5236 ```iterate-report \u4EE3\u7801\u5757\uFF1A\u7C98\u8D34\u5230\u56DE\u590D\u91CC\uFF0CChat \u4F1A\u6E32\u67D3\u6210\u53EF\u4EA4\u4E92\u8FD0\u884C\u5361\u7247\uFF08\u6307\u6807 / \u8D28\u91CF\u95F8\u95E8 / \u53D1\u73B0 / \u590D\u5236\u6309\u94AE\uFF09": "Copy the ```iterate-report block: paste it into a reply and Chat renders an interactive run card (metrics / quality gate / findings / copy actions)",
+  // v3.20 — evidence viewers (F4 inline diff, F6 command output)
+  "\u5C55\u5F00/\u6536\u8D77\u8BE5\u4FEE\u590D\u7684\u9010\u884C\u5DEE\u5F02": "Show/hide the per-line diff of this fix",
+  \u6536\u8D77\u5DEE\u5F02: "Hide diff",
+  \u67E5\u770B\u5DEE\u5F02: "Show diff",
+  "\u590D\u5236 iterate_diff \u6307\u4EE4\u6587\u672C\uFF08\u8BFB\u53D6\u8BE5\u6587\u4EF6\u7684\u5B8C\u6574\u5DEE\u5F02\uFF09": "Copy the iterate_diff instruction (reads the full diff for this file)",
+  \u62C9\u53D6\u5DEE\u5F02: "Pull diff",
+  "\u590D\u5236\u7EDF\u4E00\u5DEE\u5F02\u6587\u672C\uFF08\u53EF\u7C98\u8D34\u8FDB PR / issue\uFF09": "Copy the unified diff text (paste into a PR / issue)",
+  "\u590D\u5236 diff": "Copy diff",
+  \u5DF2\u8BB0\u5F55\u7684\u5DEE\u5F02: "Diff recorded with the fix",
+  "\u53D6\u81EA\u672C\u4F1A\u8BDD\u7684 iterate_diff \u7ED3\u679C": "From an iterate_diff result in this session",
+  "\u5C55\u5F00/\u6536\u8D77\u8BE5\u547D\u4EE4\u7684 stdout / stderr": "Show/hide this command's stdout / stderr",
+  \u6536\u8D77\u8F93\u51FA: "Hide output",
+  \u67E5\u770B\u8F93\u51FA: "Show output",
+  \u65E0\u8F93\u51FA: "No output",
+  "\u672C\u4F1A\u8BDD\u8FD8\u6CA1\u6709\u8BE5\u547D\u4EE4\u7684\u8F93\u51FA\uFF08\u8DD1\u4E00\u6B21 iterate_validate \u5373\u53EF\u56DE\u586B\uFF09": "No output for this command in the session yet (run iterate_validate to backfill it)",
+  \u8D85\u65F6: "Timed out",
+  \u5DF2\u53D6\u6D88: "Cancelled",
+  \u8F93\u51FA\u88AB\u622A\u65AD: "Output truncated",
+  "\u590D\u5236\u8BE5\u547D\u4EE4\u7684\u5B8C\u6574\u8F93\u51FA\uFF08\u53EF\u7C98\u8D34\u8FDB PR / issue\uFF09": "Copy this command's full output (paste into a PR / issue)",
+  \u590D\u5236\u8F93\u51FA: "Copy output",
+  \u8BE5\u547D\u4EE4\u6CA1\u6709\u4EA7\u751F\u8F93\u51FA: "This command produced no output",
+  "{a0} \u6761\u53EF\u67E5\u770B\u8F93\u51FA": "{a0} with viewable output"
 };
 var current = "zh";
 var storage = null;

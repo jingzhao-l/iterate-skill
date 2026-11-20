@@ -105,6 +105,15 @@ import {
   isEffectiveConfig,
   scanSessionForConfigRead,
   configValueByPath,
+  // v3.20 — evidence viewers
+  capEvidenceText,
+  capOutputTail,
+  renderHunksText,
+  parseDiffLines,
+  collectSessionValidationOutputs,
+  mapValidationOutputsByCommand,
+  collectSessionDiffs,
+  buildDiffInstruction,
 } from '../lib/parse.js'
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
