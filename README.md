@@ -414,6 +414,15 @@ The report contains the detected `manifests`, `detected_languages`, `detected_pa
 
 Apply a suggestion with `iterate init` (one command, no prompts), `iterate onboard` (interactive) or `iterate config set <key> <value>`.
 
+**Is your config still in step with the project?** `iterate scan --compare` answers that without reading two JSON documents side by side. It compares the current `iterate.config.yaml` with a fresh scan and reports only the suggestions the config is missing: dimensions that are suggested but not enabled, named dimension sets that are suggested but not configured, and validation modules that have no commands. Each gap is followed by the exact command that closes it (`iterate config set dimensions …` / `iterate refresh`). It is read-only and advisory (always exits `0`), and it also handles the pre-onboarding states by pointing at `init` / `onboard`, or `doctor --fix` for an unreadable config:
+
+```bash
+iterate scan --compare         # TUI report with gaps + next steps
+iterate scan --compare --json  # one JSON document: config / suggested / gaps / in_sync / next
+```
+
+Extra dimensions, custom dimension sets and hand-tuned validation commands are treated as deliberate choices, never as gaps.
+
 ### iterate init (prompt-free onboarding)
 
 `iterate onboard` is interactive by design, which means CI jobs, shell scripts and other skills cannot drive it (they would block on the first prompt). `iterate init` runs the same scanner and the same generator with **no questions**, so initializing a repository is one command:

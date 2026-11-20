@@ -433,6 +433,15 @@ iterate scan --json  # stdout 输出单个 JSON 文档
 
 用 `iterate init`（一条命令、无提问）、`iterate onboard`（交互式）或 `iterate config set <key> <value>` 落地这些建议。
 
+**配置还跟得上项目吗？** `iterate scan --compare` 直接回答这个问题，不必并排读两份 JSON。它把当前 `iterate.config.yaml` 与一次新扫描对比，只报告配置**缺少**的建议：建议了但未启用的维度、建议了但未配置的命名维度集、建议了但还没有命令的校验模块，并在每一项后给出可直接执行的补救命令（`iterate config set dimensions …` / `iterate refresh`）。命令只读、建议式（恒退出 `0`）；未初始化或配置不可读时也会给出 `init` / `onboard` / `doctor --fix` 的明确指引：
+
+```bash
+iterate scan --compare         # TUI：差异 + 下一步
+iterate scan --compare --json  # 单个 JSON 文档：config / suggested / gaps / in_sync / next
+```
+
+额外启用的维度、自定义维度集与手调的校验命令都视为用户的主动选择，不会被报成缺口。
+
 ### iterate init（无提问初始化）
 
 `iterate onboard` 是交互式的：CI、脚本和其它 skill 无法驱动它（会卡在第一个提问上）。`iterate init` 复用同一套扫描器与生成器，**全程不提问**，一条命令完成初始化：
