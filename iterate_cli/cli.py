@@ -553,7 +553,11 @@ def _dispatch_command(
     if args.command == "scan":
         if show_banner:
             tui.banner()
-        return _cmd_scan(project_root, json_output=getattr(args, "json", False))
+        return _cmd_scan(
+            project_root,
+            json_output=getattr(args, "json", False),
+            compare=getattr(args, "compare", False),
+        )
     if args.command == "report":
         # No banner: stdout is the report document itself.
         return _cmd_report(
@@ -919,13 +923,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "internally: detected manifests, languages, package managers, top-level "
         "directories, feature flags, and the review dimensions / validation "
         "commands / command whitelist the scanner would suggest. Writes nothing "
-        "and always exits 0, so `iterate scan --json` is safe to call from CI.",
+        "and always exits 0, so `iterate scan --json` is safe to call from CI. "
+        "With --compare, report how the current iterate.config.yaml differs from "
+        "those suggestions (missing dimensions / dimension sets / validation "
+        "modules) and the exact commands that close each gap.",
     )
     scan_parser.add_argument(
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
         help="Emit a structured JSON report instead of TUI output.",
+    )
+    scan_parser.add_argument(
+        "--compare",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Compare the scanner's suggestions with iterate.config.yaml instead "
+        "of printing the scan: lists suggested dimensions / dimension sets / "
+        "validation modules the config does not have yet, plus the command to "
+        "apply each. Read-only and always exits 0; works before initialization "
+        "too (then it points at init/onboard).",
     )
     report_parser = subparsers.add_parser(
         "report",
@@ -2309,14 +2326,24 @@ def _count_personalization_rules(personalization: dict[str, Any]) -> int:
     return count_personalization_rules(personalization)
 
 
-def _cmd_scan(project_root: Path, json_output: bool = False) -> int:
+def _cmd_scan(
+    project_root: Path, json_output: bool = False, compare: bool = False
+) -> int:
     """Handle the 'scan' subcommand.
 
     Thin wrapper: the scanner and its renderer live in ``iterate_cli.scan`` so
     the same pure functions the wizard and refresh use are the ones this
     command reports. Read-only and non-gating — it returns 0 for any project
     that exists, including one where nothing was recognised.
+
+    With ``compare``, the same scan is handed to the config-vs-scan comparison
+    (``iterate_cli.compare``) instead of the raw report. That comparison is
+    read-only and advisory too: an out-of-sync config is reported, never gated.
     """
+    if compare:
+        from iterate_cli.compare import run_compare
+
+        return run_compare(project_root, json_output=json_output)
     return render_scan(collect_scan_data(project_root), json_output=json_output)
 
 
