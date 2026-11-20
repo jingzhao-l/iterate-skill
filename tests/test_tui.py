@@ -194,6 +194,103 @@ class TestRenderMethods:
             _rendered(console_b)
         )
 
+    def test_long_hint_wraps_with_a_hanging_indent(self) -> None:
+        """Continuation lines line up under the message, not at column 0.
+
+        Rich's own paragraph wrap restarts continuation lines at column 0, so a
+        long hint looked like a new block. The wrap budget is measured in
+        display columns, so CJK text fits too.
+        """
+        from rich.console import Console
+
+        console = Console(record=True, width=60, force_terminal=False)
+        tui = TUI(console=console)
+        tui.hint("这是一个很长的中文提示" * 4)
+
+        lines = console.export_text().splitlines()
+        assert len(lines) > 1
+        assert all(_display_width(line) <= 60 for line in lines), lines
+        assert all(line.startswith("  ") for line in lines), lines
+
+    def test_command_is_never_wrapped(self) -> None:
+        """Suggestions must stay copy-pasteable as one shell command."""
+        from rich.console import Console
+
+        console = Console(record=True, width=40, force_terminal=False)
+        tui = TUI(console=console)
+        command = "iterate config set dimensions " + ",".join(["a"] * 20)
+        tui.command(command)
+
+        lines = console.export_text().splitlines()
+        assert lines == [f"  {command}"]
+
+    def test_long_warning_keeps_its_marker_only_on_the_first_line(self) -> None:
+        from rich.console import Console
+
+        console = Console(record=True, width=50, force_terminal=False)
+        tui = TUI(console=console)
+        tui.warning("warning " * 12)
+
+        lines = console.export_text().splitlines()
+        assert "⚠" in lines[0]
+        assert all("⚠" not in line for line in lines[1:])
+        assert all(_display_width(line) <= 50 for line in lines), lines
+
+    def test_key_value_wrapped_rows_fit_the_console_width(self) -> None:
+        """A long breakable value must wrap inside the console, not past it.
+
+        The separator space between the padded label and the value was left out
+        of the wrap budget, so the first row was exactly one column too wide;
+        rich then folded the value onto its own line at column 0.
+        """
+        from rich.console import Console
+
+        console = Console(record=True, width=80, force_terminal=False)
+        tui = TUI(console=console)
+        value = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
+        tui.key_value("Notes", value)
+
+        lines = console.export_text().splitlines()
+        assert len(lines) > 1
+        assert all(_display_width(line) <= 80 for line in lines), lines
+        # The value starts on the label row and continues at the value column,
+        # never at column 0.
+        assert "Notes:" in lines[0] and "alpha" in lines[0]
+        assert lines[1].startswith(" " * 24)
+
+    def test_key_value_keeps_a_long_path_intact(self) -> None:
+        """A path has no break points: keep it on one copy-pasteable line.
+
+        Hard-splitting inserted the continuation indent inside the path, so a
+        copied value was corrupted (``…/complet`` + ``ions/…``) and the label
+        was left alone on its row. Overflowing one long line is recoverable;
+        a broken path is not.
+        """
+        from rich.console import Console
+
+        console = Console(record=True, width=80, force_terminal=False)
+        tui = TUI(console=console)
+        path = (
+            "/private/var/folders/5h/2m890d1n4nn1ntfmb9lcnkm80000gn/"
+            "T/opencode/demo"
+        )
+        tui.key_value("Project", path)
+
+        lines = console.export_text().splitlines()
+        assert lines == [f"  {'Project:':<22} {path}"]
+
+    def test_key_value_accepts_an_empty_value(self) -> None:
+        """A template with no description renders a label and no value."""
+        from rich.console import Console
+
+        console = Console(record=True, width=80, force_terminal=False)
+        tui = TUI(console=console)
+        tui.key_value("ITERATE.template.md", "")
+
+        assert console.export_text().splitlines() == [
+            f"  {'ITERATE.template.md:':<22} "
+        ]
+
     def test_numbered_list_with_markers(self) -> None:
         tui, console = _make_tui()
         tui.numbered_list(["a", "b"], markers=["✓", ""])
