@@ -279,6 +279,19 @@ class TestRenderMethods:
         lines = console.export_text().splitlines()
         assert lines == [f"  {'Project:':<22} {path}"]
 
+    def test_key_value_wraps_long_cjk_without_overflowing(self) -> None:
+        """CJK has no spaces but can be hard-split; it must still fit."""
+        from rich.console import Console
+
+        console = Console(record=True, width=50, force_terminal=False)
+        tui = TUI(console=console)
+        tui.key_value("说明", "这是一个很长的中文值" * 5)
+
+        lines = console.export_text().splitlines()
+        assert len(lines) > 1
+        assert all(_display_width(line) <= 50 for line in lines), lines
+        assert all(line.startswith("  ") for line in lines), lines
+
     def test_key_value_accepts_an_empty_value(self) -> None:
         """A template with no description renders a label and no value."""
         from rich.console import Console

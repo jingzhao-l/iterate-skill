@@ -12,10 +12,10 @@ minor：新增 `iterate scan --compare`——把「扫描建议」与「当前�
 并排读 `scan --json` 与 `show --json`，或翻源码才知道差在哪）。同时修复
 TUI 折行缺陷：键值行首行超宽 1 列导致值被折到第 0 列、长提示/警告续行从
 第 0 列开始看起来像新段落（`status` 的长项目路径最明显）。测试套件
-2050 → 2076。
+2050 → 2077。
 
 ### 新增功能
-- **`iterate scan --compare`**（+19 回归）：只读、建议式（恒 exit 0）的
+- **`iterate scan --compare`**（+20 回归）：只读、建议式（恒 exit 0）的
   「配置 vs 最新扫描」差异报告。报告配置**缺少**的建议：未启用的建议维度、
   未配置的建议命名维度集、没有命令的建议校验模块；每类缺口后给出可直接
   复制执行的命令（`iterate config set dimensions …` / `iterate refresh`）。
@@ -36,11 +36,12 @@ TUI 折行缺陷：键值行首行超宽 1 列导致值被折到第 0 列、长�
 - **长命令建议被折断**（`tui.py` + `compare.py`，+1 回归）：补齐命令原本按
   空格折行，复制粘贴会得到半截命令。新增 `TUI.command()` 原样单行输出，
   `scan --compare` 的 next steps 使用它。
-- **路径/URL 被从中间截断**（`tui.py`，+2 回归）：键值行里的长绝对路径没有
+- **路径/URL 被从中间截断**（`tui.py`，+3 回归）：键值行里的长绝对路径没有
   空格可折，硬切会把续行缩进插进路径内部，复制出来是坏路径（`…/complet` +
-  `ions/…`），`iterate completion --install` 的安装路径提示最明显。现对无分隔
-  符的超宽 token 原样单行输出（终端自行滚动），并顺带修复空值键值行会抛
-  `IndexError` 的问题（`iterate template` 的无描述模板）。
+  `ions/…`），`iterate completion --install` 的安装路径提示最明显。现对含
+  `/` 或 `\` 的超宽 token 原样单行输出（终端自行滚动；纯 CJK 无分隔符但仍
+  允许硬切，不会误伤中文长值），并顺带修复空值键值行会抛 `IndexError` 的
+  问题（`iterate template` 的无描述模板）。
 
 ---
 

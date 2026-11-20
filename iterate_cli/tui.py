@@ -160,18 +160,20 @@ def _wrap_display(text: str, width: int) -> list[str]:
 
 
 def _has_unbreakable_overflow(text: str, width: int) -> bool:
-    """Return True when a whitespace-free token is wider than ``width``.
+    """Return True when a path/URL token is wider than ``width``.
 
-    Paths, URLs and hashes have no spaces to break at. Splitting one inserts
-    the continuation indent *inside* the token, so a copied value is corrupted
+    Paths and URLs have no spaces to break at. Splitting one inserts the
+    continuation indent *inside* the token, so a copied value is corrupted
     (``…/complet`` + ``ions/…``) and the row still cannot fit. Callers use this
-    to print such a value on one logical line instead of wrapping it.
+    to print such a value on one logical line instead of wrapping it. CJK text
+    has no separators either but *can* be hard-split without corrupting a
+    copy-pasteable token, so it is not treated as unbreakable.
     """
     if width <= 0:
         return False
     for paragraph in text.split("\n"):
         for word in paragraph.split(" "):
-            if word and _display_width(word) > width:
+            if ("/" in word or "\\" in word) and _display_width(word) > width:
                 return True
     return False
 
