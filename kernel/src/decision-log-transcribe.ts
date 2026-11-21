@@ -1,5 +1,5 @@
 import { canonicalJson } from "./canonical-json.js";
-import { DECISION_KIND_PATTERN, PAYLOAD_MAX_CANONICAL_LENGTH, type DecisionLogEntry, type DecisionOutcome } from "./decision-log-entry.js";
+import { DECISION_KIND_PATTERN, PAYLOAD_MAX_CANONICAL_LENGTH, SUMMARY_MAX_LENGTH, type DecisionLogEntry, type DecisionOutcome } from "./decision-log-entry.js";
 import { type DecisionLogDraft } from "./decision-log.js";
 import { DIMENSION_ID_MAX_LENGTH, DIMENSION_ID_PATTERN } from "./dimension-context.js";
 import { ISO_MILLIS_PATTERN, OPERATION_ID_PATTERN } from "./evidence-pack.js";
@@ -266,10 +266,10 @@ export function decisionLogDraftFromRecord(record: unknown, entryId: string): De
   }
 
   const summary = readSummary(payload, type, round);
-  if (summary.length > 2048) {
+  if (summary.length > SUMMARY_MAX_LENGTH) {
     refuse(
       DECISION_TRANSCRIBE_CODES.summary,
-      `the record's own sentence is ${summary.length} characters, over SUMMARY_MAX_LENGTH`,
+      `the record's own sentence is ${summary.length} characters, over SUMMARY_MAX_LENGTH (${SUMMARY_MAX_LENGTH})`,
       "shorten what the producer writes as `summary`; transcription will not truncate a decision to fit a line"
     );
   }

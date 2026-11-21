@@ -72,3 +72,29 @@ test("every src module is reachable as a subpath export", () => {
     assert.ok(packed.has(`dist/${name}.js`), `dist/${name}.js is not packed`);
   }
 });
+
+test("the summary length bound is the SUMMARY_MAX_LENGTH constant, not a hardcoded literal", () => {
+  // `decision-log-transcribe` (the refusal path) and `evidence-decision` (the clamp)
+  // both enforce the schema's summary bound. Both used to spell the number out as a
+  // bare `2048` / `2045`, so if the constant in decision-log-entry ever moved, these
+  // two would silently drift from the schema the digest is taken over. A drift here
+  // would mean the TS refusal/clamp and the zod `.max()` disagree — and only one of
+  // them would be wrong in a way no fixture catches. The guard is a source scan
+  // because the bound is enforced at build-time constants, not through a value that
+  // a behavioural test can pin across both call sites.
+  const offenders = [];
+  for (const file of ["decision-log-transcribe.ts", "evidence-decision.ts"]) {
+    const text = readFileSync(join(kernelRoot, "src", file), "utf8");
+    if (!text.includes("SUMMARY_MAX_LENGTH")) {
+      offenders.push(`${file} never references SUMMARY_MAX_LENGTH`);
+    }
+    // Any bare spelling of the bound (or the ellipsis-shortened slice) re-introduces
+    // the drift this guard exists to stop. Match a `20`/`2045`-class literal that is
+    // not part of another number and not the schema's own definition.
+    const literal = text.match(/(?<![0-9.])204[0-9](?![0-9])/);
+    if (literal) {
+      offenders.push(`${file} hardcodes the bound literal ${literal[0]} instead of SUMMARY_MAX_LENGTH`);
+    }
+  }
+  assert.deepEqual(offenders, [], `summary bound drifted from the constant: ${offenders.join("; ")}`);
+});

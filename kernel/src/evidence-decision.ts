@@ -1,6 +1,6 @@
 import { EvidencePackSchema, type EvidencePack } from "./evidence-pack.js";
 import { schemaErrorFrom } from "./errors.js";
-import type { DecisionOutcome } from "./decision-log-entry.js";
+import { SUMMARY_MAX_LENGTH, type DecisionOutcome } from "./decision-log-entry.js";
 
 /**
  * Transcribing an evidence pack into the decision log's vocabulary.
@@ -105,5 +105,8 @@ export function decisionSummaryFromEvidence(evidence: EvidencePack): string {
   }
   parts.push(`attribution ${pack.attribution.level}${pack.attribution.contaminated ? ", contaminated" : ""}`);
   const summary = parts.join("; ");
-  return summary.length > 2048 ? `${summary.slice(0, 2045)}...` : summary;
+  const ellipsis = "...";
+  return summary.length > SUMMARY_MAX_LENGTH
+    ? `${summary.slice(0, SUMMARY_MAX_LENGTH - ellipsis.length)}${ellipsis}`
+    : summary;
 }
