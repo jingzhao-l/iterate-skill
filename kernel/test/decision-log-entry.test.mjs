@@ -153,6 +153,25 @@ test("documented divergence: the payload length bound is validator-only, JSON Sc
   assert.throws(() => parseDecisionLogEntry(oversized), KernelSchemaError);
 });
 
+test("documented divergence: a payload integer outside ±2^53−1 is refused, JSON Schema cannot state it", () => {
+  // Above 2^53, ECMAScript and Python print two different byte sequences for the same
+  // value, so a ledger line carrying one would hash differently in each implementation
+  // and the stored digest could never be recomputed by the verifier. Like the length
+  // bound this is validator-only (JSON Schema has no integer-range-on-serialized-form),
+  // so ajv accepts and the zod side must refuse.
+  for (const [label, n] of [["above", 2 ** 53 + 1], ["below", -(2 ** 53) - 1]]) {
+    const entry = structuredClone(extended);
+    entry.payload = { n };
+    assert.equal(validate(entry), true, `ajv has no way to bound a payload integer (${label})`);
+    assert.throws(() => parseDecisionLogEntry(entry), KernelSchemaError, `zod must refuse the ${label}-range integer`);
+  }
+  // A boundary value inside the range still parses, and a non-integer float is not a
+  // canonicalisation hazard (2.5 prints identically on both sides).
+  const exact = structuredClone(extended);
+  exact.payload = { n: 2 ** 53 - 1, f: 2.5 };
+  assertBothSidesAccept(exact, "payload integer at the +2^53−1 boundary and a non-integer float");
+});
+
 test("payload contents are structured, not stringified, and stay inside the entry hash", () => {
   const parsed = parseDecisionLogEntry(extended);
   assert.equal(typeof parsed.payload, "object");

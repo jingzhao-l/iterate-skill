@@ -626,4 +626,27 @@ test("an append onto a gapped ledger refuses and leaves the bytes as found", () 
   assert.equal(sha256hex(readFileSync(path)), before, "a refused append must not mutate the ledger");
 });
 
+/**
+ * A ledger whose final entry lacks the trailing newline is still *verifiable*
+ * (`ledgerLines` accepts it), so `decisionLogHead` approves the append — and then
+ * `line + "\n"` lands directly after the unterminated entry, fusing two JSON objects
+ * onto one physical line. The read-back below catches it, but only after the file is
+ * already poisoned: a previously valid chain is now unparseable at that line, permanently.
+ * The guard must refuse before the fd is opened. A foreign writer or a torn write that
+ * dropped the terminator is exactly the interleaving this refuses to build on.
+ */
+test("an append onto an unterminated ledger refuses before any write", () => {
+  const path = ledgerPath();
+  appendDecisionLogEntry(path, draft());
+  writeFileSync(path, readFileSync(path, "utf8").replace(/\n$/, ""), { mode: 0o600 });
+  const before = sha256hex(readFileSync(path));
+  assert.equal(verifyDecisionLogText(readFileSync(path, "utf8")).ok, true, "the unterminated ledger is still a valid chain");
+  expectRefusal(DECISION_LOG_CODES.corrupt, () => appendDecisionLogEntry(path, draft()));
+  assert.equal(sha256hex(readFileSync(path)), before, "the refused append must not fuse two entries into one line");
+  // and once the terminator is repaired the honest path works again
+  writeFileSync(path, `${readFileSync(path, "utf8")}\n`, { mode: 0o600 });
+  const second = appendDecisionLogEntry(path, draft());
+  assert.equal(second.entry.sequence, 1);
+});
+
 

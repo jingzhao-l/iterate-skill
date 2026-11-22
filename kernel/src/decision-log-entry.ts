@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { canonicalJson } from "./canonical-json.js";
+import { canonicalJson, KERNEL_SAFE_INTEGER_MAX, KERNEL_SAFE_INTEGER_MIN } from "./canonical-json.js";
 import { DIMENSION_ID_MAX_LENGTH, DIMENSION_ID_PATTERN } from "./dimension-context.js";
 import { ISO_MILLIS_PATTERN, OPERATION_ID_PATTERN } from "./evidence-pack.js";
 
@@ -72,6 +72,39 @@ export function reservedPayloadKeys(value: unknown): string[] {
   return keys.filter((key) => (PAYLOAD_RESERVED_KEYS as readonly string[]).includes(key));
 }
 
+/**
+ * Paths of every integer in a raw payload value that falls outside the range every
+ * runtime prints identically.
+ *
+ * `sequence`/`round` carry a schema-level bound, but a payload's numbers are free-form
+ * data, so this is the one place the safe-integer rule can still be violated. An
+ * out-of-range integer is not refused because it is "too big" — it is refused because
+ * `canonicalJson` prints numbers in the host's shortest-roundtrip form, and above 2^53
+ * ECMAScript and Python print two different byte sequences for the same value. A ledger
+ * line carrying one would hash differently in each implementation: the producer would
+ * store a digest the verifier could not recompute, surfacing later as a false
+ * "corrupt / not stored in canonical form" alert on history that was never touched.
+ */
+export function outOfRangePayloadIntegers(value: unknown, path = ""): string[] {
+  if (typeof value === "number") {
+    if (Number.isInteger(value) && (value > KERNEL_SAFE_INTEGER_MAX || value < KERNEL_SAFE_INTEGER_MIN)) {
+      return [path === "" ? "<root>" : path];
+    }
+    return [];
+  }
+  if (typeof value !== "object" || value === null) return [];
+  const out: string[] = [];
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => out.push(...outOfRangePayloadIntegers(item, `${path}[${index}]`)));
+    return out;
+  }
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    const child = `${path === "" ? "" : path + "."}${key}`;
+    out.push(...outOfRangePayloadIntegers((value as Record<string, unknown>)[key], child));
+  }
+  return out;
+}
+
 export const DecisionOutcomeSchema = z.enum(["pass", "fail", "blocked", "inconclusive"]);
 export type DecisionOutcome = z.infer<typeof DecisionOutcomeSchema>;
 
@@ -130,6 +163,13 @@ export const DecisionLogEntrySchema = z.strictObject({
           code: z.ZodIssueCode.custom,
           path: ["payload"],
           message: `payload must stay within ${PAYLOAD_MAX_CANONICAL_LENGTH} characters of canonical JSON`
+        });
+      }
+      for (const intPath of outOfRangePayloadIntegers(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["payload"],
+          message: `\`payload.${intPath}\` carries an integer outside ±2^53−1, which ECMAScript and Python print as two different byte sequences — a digest over it could not be recomputed by every reader`
         });
       }
     })

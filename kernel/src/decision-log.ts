@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, fchmodSync, fsyncSync, openSync, readFileSync, statSync, writeSync } from "node:fs";
+import { closeSync, fchmodSync, fsyncSync, openSync, readFileSync, readSync, statSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { canonicalJson } from "./canonical-json.js";
@@ -414,6 +414,49 @@ export function appendDecisionLogEntry(
   const line = serializeDecisionLogEntry(entry);
   const payload = `${line}\n`;
   const expectedBytes = Buffer.byteLength(payload, "utf8");
+
+  // Append mode adds bytes at EOF, so it can only ever produce a well-formed line if
+  // the previous entry is newline-terminated. A file whose final entry lacks that
+  // terminator is still *verifiable* (ledgerLines accepts it), so decisionLogHead above
+  // approves the append — and then `line + "\n"` lands directly after the unterminated
+  // entry, fusing two JSON objects onto one physical line. The read-back below detects
+  // the mismatch and throws, but by then the file is already poisoned: a previously
+  // valid chain is now unparseable at that line, permanently. Refuse before any write,
+  // which is this module's "refuse rather than repair" discipline — and consistent with
+  // the single-writer assumption (a foreign writer that dropped the terminator is
+  // exactly the interleaving this guard refuses to build on).
+  let lastByte: number | undefined;
+  try {
+    const stat = statSync(logPath);
+    if (stat.size > 0) {
+      const fd0 = openSync(logPath, "r");
+      try {
+        const buf = Buffer.alloc(1);
+        const got = readSync(fd0, buf, 0, 1, stat.size - 1);
+        if (got === 1) lastByte = buf[0];
+      } finally {
+        closeSync(fd0);
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new KernelDecisionLogError(
+        DECISION_LOG_CODES.location,
+        logPath,
+        `cannot inspect the ledger's tail before appending (${(error as Error).message})`,
+        `fix the permissions on ${logPath}; this is evidence, so repair access rather than deleting the file`
+      );
+    }
+  }
+  if (lastByte !== undefined && lastByte !== 0x0a) {
+    throw new KernelDecisionLogError(
+      DECISION_LOG_CODES.corrupt,
+      logPath,
+      "the ledger's final entry is not newline-terminated, so appending would fuse it with the new entry into one unparseable line",
+      `a foreign writer or a torn write dropped the terminator on ${logPath}; preserve the file, re-verify the chain from its last line, and repair the terminator before producing more decisions`
+    );
+  }
+
   let fd: number | undefined;
   try {
     fd = openSync(logPath, "a", 0o600);
