@@ -210,6 +210,7 @@ harness/
 
 - Esc 暂停菜单：迭代中途暂停，弹"跳过当前 finding / 收窄维度 / 直接停"，选完继续——skill 无进程概念，插件 workflow 发起后不可中途改道。
 - 断点续跑画面：`resume` 恢复时 TUI 先显示上次快照（跑到第几轮、还剩哪些 finding），确认后续跑。
+- 跨终端干预通道（v2.25）：无头 `ih iterate run` / `review` 一旦开跑，过去唯一的干预手段是 `Ctrl-C`（连同当前轮次一起砍掉）；现在运行发布 `.iterate/run-control.json`，另一个终端的 `ih iterate control status|nudge|pause|stop|clear` 在下一个轮次边界生效。`nudge` 复用 WebUI 的注入路径，`pause`/`stop` 优雅收尾并保留可续跑 checkpoint，`status` 只读且区分「可控无头运行」与「TUI/WebUI 持有租约、有自己的控制入口」。
 
 **三、离开 IDE 才能跑的场景**（无人值守，存在性缺口）
 
@@ -498,6 +499,29 @@ iterate-harness/                     # fork 自 HKUDS/OpenHarness @ v0.1.9
 - **裁剪执行**：fork 首次提交即删 `vim/`、`channels/`、`ohmo/`（§11.3.2-四 证据），后续不再引入。
 - **版本线**：与 skill/插件一致采用「主仓库统一 + 发布仓独立发版」；harness 版本独立递增（同插件 2.3.7 先例）。
 
+#### 11.4.3 跨进程控制通道（v2.25：无头运行的第二个终端入口）
+
+**问题**：无头 `ih iterate run/review` 是「进程独占」的——启动后操作者只剩 `Ctrl-C`，那是把进程连同当前轮次一起砍掉，且不落审计。WebUI 的 pause/stop/nudge 只存在于服务器进程内存，够不到另一个终端里的运行。于是「无人值守」与「可干预」在无头场景下互斥。
+
+**设计**：把干预做成 `.iterate/` 上的共享文件协议，运行方唯一消费，命令方只追加。
+
+| 文件 | 写入方 | 内容 |
+|---|---|---|
+| `run-control.json` | 运行进程（`begin_run` / `end_run`） | `run_id` / `pid` / `role` / `status` / 起止时间；`status=running` 且 pid 存活才算可控 |
+| `run-control.jsonl` | 任意终端（`append_command`） | append-only 命令流：`{id, kind: nudge\|pause\|stop, content, created_at}` |
+| `run-control.cursor` | 运行进程（`consume_commands`） | `{line, lastId}`，单调前进；`lastId` 用于识别「同长度但被替换的日志」 |
+
+**契约**：
+
+1. **运行方唯一消费**：游标只由发布 state 的那个 pid 写，天然无竞争；命令方在 `O_APPEND` 下追加，`exclusive_file_lock` 串行化。
+2. **轮次边界生效**：`IterateLoopPolicy.before_request` 与 `on_turn_end` 各轮询一次；`nudge` 进入 `_pending_nudges`（与 WebUI nudge 同一条注入路径），`pause`/`stop` 置 `_control_stop_reason`，在 `_decide` 顶部优先于任何自动策略返回 stop——即便 `stop_on_convergence=False` 也生效，否则命令会被静默忽略。
+3. **pause 的语义**：无头运行没有交互暂停菜单，`pause` 与 `stop` 都是「下一个轮次边界优雅收尾」；区别只在给操作者/报告的理由——`pause` 明说 checkpoint 保留、可用 `ih iterate resume` 续跑。
+4. **审计**：每条被应用的命令追加一条 `decision` 条目（`kind=control-nudge|control-pause|control-stop`），与分诊/干预共用同一本决策日志。
+5. **只读状态**：`status` 绝不修改 state/lease/checkpoint；`active`（本通道可控）与 `leaseActive`（TUI/WebUI 持有运行租约）分开表达，后者明确写「not controllable」并指向它自己的 UI。
+6. **失败开放**：控制文件损坏/缺失/写游标失败都只记 warning，下一轮重读；绝不阻断收敛闭环。没有活跃运行时写命令直接拒绝并给 remedy，不往没人读的日志里写。
+
+**为什么不是 WebUI 路由**：控制通道必须在 WebUI 未启动时也成立（CI、SSH、定时任务），所以它属于引擎/CLI 层；WebUI 后续可把同一模块包成路由，而不需要另造一套状态。
+
 ### 11.5 CLI 命令集（v0）
 
 > ⚠️ v1.11 勘误（源码级）：① 会话恢复参数不存在 `--session`，上游用 `--continue` / `--resume <id>`（`cli.py:2110-2123`），iterate 命令集对齐为 `iterate-harness resume <id>`（缺省 = 最近会话）；② 入口命令沿用上游 console script `oh`，iterate 以子命令组挂载（`oh iterate ...`，参照 `cli.py:765-777` 子命令先例），同时保留独立 `iterate-harness` 别名；③ 「harness --dry-run 静态预览」直接复用上游 `oh --dry-run`（预览 settings/auth/skills/commands/tools）。
@@ -571,6 +595,7 @@ iterate-harness/                     # fork 自 HKUDS/OpenHarness @ v0.1.9
 - v1.39（2026-08-17）：**WebUI 迭代：对话界面人类-in-the-loop 控制（新增 §18）**——在 WebUI 管理台中嵌入可折叠侧边对话面板，支持启动/暂停/用户输入/停滞检测/督促注入，匹配 iterate 垂直领域定位（主体是管理台，对话是辅助干预）。
 - v1.40（2026-08-17）：**WebUI 迭代：工作区 / Findings 分诊 / 健壮性（新增 §19）**——落地 §17.3 P2 的 Findings 分诊（持久化 approve/reject 审批日志）与 P4 的工作区管理（主工作区 + 隔离 worktree 列表/删除）；对话面板新增工具调用可视化卡片；管理台新增 ErrorBoundary / Skeleton / 键盘快捷键 / SSE 断线轮询兜底 / 连接状态 toast / 浏览器通知等健壮性增强。
 - v2.0（2026-09-02）：**大版本方向：双模式（iterate 纯审查 / code 通用编程 agent + 防御式内核 + 多 agent 编排）（新增 §20）**——v1 系列已至 1.11.0 稳定期，功能趋于做尽；本条目确立 harness 2.0 升级方向。核心决策：① `task_mode`（code / iterate）与 `permission_mode`（default/plan/full_auto）**分离**——`task_mode` 决定 agent 干什么（通用编程 vs iterate 审查迭代闭环），`permission_mode` 决定权限多宽松；② **iterate 模式 = 1.x 完整保留**（9 维度审查→分诊→原子/架构修复→验证→收敛，零破坏）；③ **code 模式 = 通用编程 agent + 防御式内核**——深度融入 iterate 理念但**不脱离 iterate 基础**，防御式编程（最小化假设 / 信任边界验证 / fail-fast+原子事务 / 前置后置条件 / 不变量守护 / 假设声明与校验）成为 agent **每个动作的默认行为**而非事后审查，多 agent 编排（agent / send_message / task_stop + coordinator + swarm 全套）直接启用；④ **TUI 模式切换对齐 opencode**——空输入框 Tab 直切 code ↔ iterate，输入框左侧竖向色条随模式变色（code=primary / iterate=amber），输入框底部模式文字随切随色；⑤ 完整能力审计（§20.4）：对比 `.external/OpenHarness` 原始代码，通用编程 + 多 agent 能力 **100% 完整保留**，仅缺 4 个外围扩展（image_generation / autopilot / channels / vim），不影响 code 模式编程核心。**本版为纯设计细化，不修改 harness 源文件**。头部状态行更新至 v2.0。
+- v2.25（2026-11-22）：新增 §11.4.3 跨进程控制通道并补 §17.4 模块表——无头运行的第二个终端入口（`ih iterate control status|nudge|pause|stop|clear`）：`.iterate/run-control.json` 发布运行状态、`run-control.jsonl` append-only 命令流、`run-control.cursor` 单调游标（含 `lastId` 替换检测）；运行方唯一消费，`nudge` 复用 WebUI 注入路径，`pause`/`stop` 在轮次边界优雅收尾并保留 checkpoint，全部命令写决策日志审计；`status` 只读并区分可控运行与仅持租约的 TUI/WebUI 运行。失败开放：控制面损坏绝不阻断收敛闭环。同时把「跨终端干预」补入 §11.2.1 摸类体验。
 ## 13. 发布手册（Release Manual）
 
 > 本节为 `RELEASE.md` 的镜像章节（v1.31 并入），是 iterate 生态三个对外发布项目的统一发布 checklist。发布操作以本节为准，独立 `RELEASE.md` 保留便于快速勾选。
@@ -1070,6 +1095,7 @@ harness/iterate-plugin/
 | `hooks/inventory.py` | 已注册钩子只读清单 + 未知事件名与静态配置问题报告（命令不存在/URL 畸形/空提示；`ih hooks list` / `GET /api/v1/hooks` / capabilities 的 `hooks` 段） |
 | `hooks/testing.py` | 钩子试运行（`ih hooks test`）：与引擎同一注册表、同一执行器、同一台账；command/http 真跑，prompt/agent 无模型时明确 skipped，`--dry-run` 绝不执行；`--require-match` 供 CI 断言 |
 | `permissions/inventory.py` | 权限策略只读投影 + 决策模拟：`build_permission_policy`（合并边界 + 配置问题）/ `simulate_permission_decision`（复用引擎归一化与检查器，`ih permissions` / `GET /api/v1/permissions`）；`checker.build_permission_checker` 增 `cwd` 参数让策略可针对任意项目根构建 |
+| `iterate/control.py` | 跨进程控制通道（`ih iterate control`）：`run-control.json` 运行状态 + append-only `run-control.jsonl` 命令流 + 单调游标；运行方唯一消费，`nudge` 注入下一轮、`pause`/`stop` 在轮次边界优雅收尾并审计；`run_status` 只读且区分可控运行与仅持租约的 TUI/WebUI 运行（§11.4.3） |
 
 **关键路由契约（示例）**：
 
