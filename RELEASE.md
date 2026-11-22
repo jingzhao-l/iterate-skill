@@ -2094,6 +2094,35 @@ stamp 不匹配会自动重装到新 tag。
       > latest=2.24.0；临时前缀安装后 `ih --version` = `iterate_harness 2.24.0`，
       > `ih iterate triage --help` 可见 list/ignore/restore。
 
+      > **2.25.0 发布记录（2026-11-22）**：例行审查 + 新能力发版（minor）。主要变更：
+      > ① **无头运行的跨终端干预通道**——新增 `ih iterate control
+      > status|nudge|pause|stop|clear`（`iterate/control.py`）：运行进程发布
+      > `.iterate/run-control.json`，任意终端向 append-only `run-control.jsonl` 追加命令，
+      > 运行进程用带 `lastId` 的单调游标消费；`nudge` 走与 WebUI 督促框相同的
+      > `_pending_nudges` 注入路径，`pause`/`stop` 在下一个轮次边界优雅收尾、保留可续跑
+      > checkpoint，并把 `control-nudge`/`control-pause`/`control-stop` 写进决策日志审计。
+      > ② **状态可解释**：`status` 只读，`active`（可控无头运行）与 `leaseActive`
+      > （TUI/WebUI 仅持租约）分开表达，后者明确「not controllable」并指向自己的 UI；
+      > `--require-run` 供监控脚本。③ **失败开放**：控制面缺失/畸形/游标写失败只记 warning，
+      > 下一轮重读；无活跃运行写命令直接拒绝并给 remedy；进程内 id 集合兜底一次失败的游标
+      > 写入，避免重复注入。④ **零行为变化**：只有自己发布了运行状态的进程才拿到
+      > `ControlChannel`，TUI/WebUI 保持 `control_channel=None`。版本号在 `__init__.py` /
+      > `npm/package.json` / `frontend/web/package.json` / lock 与 `CHANGELOG.md` 同步至
+      > 2.25.0；校验 **3450 pytest + 6 skip**、ruff clean、mypy clean（288 源文件）、npm
+      > 包装器 **89 passed**（bootstrap 68）、前端 `tsc --noEmit` + vitest 16 files/161
+      > tests + `vite build` 85 modules。端到端（两个真实进程）：`status` 显示
+      > `running (controllable)`，`nudge "focus on auth"` 注入下一轮，`stop --reason
+      > "e2e done"` 产出 `operator stop requested via ih iterate control: e2e done`，
+      > 决策日志记录两条 control 条目。主仓库 push 提交 `bac317d6`（rebase 至 badge
+      > 提交后）。`git subtree split` 产物与公开 main 历史分叉（NOT_ANCESTOR），按手册
+      > 改走 `.release/iterate-harness` 替代路径同步已提交树（15 文件，+3 新增）提交
+      > `2e18686` 并快进推送（`ddf3c25..2e18686`）；推 annotated tag `v2.25.0` 触发
+      > release.yml（run 44984080095，success 35s，幂等建 Release + 构建
+      > wheel/.asc/.sha256）与 npm publish 工作流（run 44984080107，success 21s）；
+      > 已验证 PyPI latest=2.25.0、GitHub Release v2.25.0 非 draft/prerelease 且含三件
+      > 资产、npm latest=2.25.0；临时前缀安装后 `ih --version` = `iterate_harness 2.25.0`，
+      > `ih iterate control --help` 可见 status/nudge/pause/stop/clear。
+
 ---
 
 ## 项目 3：iterate-plugin（dsh 插件）
