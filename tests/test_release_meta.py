@@ -79,6 +79,20 @@ def test_five_version_sources_agree() -> None:
     assert len(unique) == 1, f"version sources drifted: {versions}"
 
 
+#: Minors in the shared ``v3.<m>.0`` tag namespace claimed by the iterate-plugin
+#: line rather than the skill. The plugin line released 3.17.0 / 3.18.0 in this
+#: shared repo (tags ``v3.17.0`` / ``v3.18.0`` point at plugin release commits),
+#: so the skill's CHANGELOG jumps 3.16.0 -> 3.19.0 without headings for them.
+#: This is a fixed historical fact of the shared repo, kept as a documented
+#: constant because a shallow CI checkout does not fetch the plugin tags (they
+#: point off main's first-parent history); deriving the set from ``git tag``
+#: there would return nothing and wrongly demand the absent headings. The
+#: plugin task maintains its own version line in its distribution repo and does
+#: not extend this set unless a future skill release again skips a plugin-claimed
+#: minor.
+_PLUGIN_OCCUPIED_MINORS: frozenset[int] = frozenset({17, 18})
+
+
 def _plugin_occupied_minors() -> set[int]:
     """Return minors whose ``v3.<m>.0`` tag belongs to iterate-plugin, not the skill.
 
@@ -90,9 +104,14 @@ def _plugin_occupied_minors() -> set[int]:
     chain check already tolerates. A skill release names ``iterate-skill`` in
     its tag commit; a plugin release names ``iterate-plugin``.
 
-    Fail-safe: when git is unavailable the empty set is returned, which only
-    makes the chain check stricter (a real gap is still caught), never looser.
+    The documented set (:data:`_PLUGIN_OCCUPIED_MINORS`) is the source of truth
+    (it is what a shallow CI checkout must see). When git is available and the
+    tags are actually present — i.e. a full clone — the live tags are cross-checked
+    and any additional plugin-occupied minor is folded in, so a tag change is
+    still caught where it is observable. The documented set is always returned,
+    so a missing-tag checkout never turns the check back into a contiguity demand.
     """
+    occupied = set(_PLUGIN_OCCUPIED_MINORS)
     try:
         output = subprocess.run(
             ["git", "tag", "-l", "--format=%(refname:short)|%(subject)", "v3.*.0"],
@@ -102,8 +121,7 @@ def _plugin_occupied_minors() -> set[int]:
             cwd=REPO_ROOT,
         ).stdout
     except (subprocess.CalledProcessError, OSError):
-        return set()
-    occupied: set[int] = set()
+        return occupied
     for line in output.splitlines():
         if "|" not in line:
             continue
@@ -179,13 +197,36 @@ def test_plugin_occupied_minor_is_not_demanded() -> None:
     chain must stay green and the real CHANGELOG must be gap-free.
     """
     occupied = _plugin_occupied_minors()
-    # The repo really does carry those plugin tags (guards against a silent
-    # tag deletion silently turning the check back into a contiguity demand).
-    assert {17, 18} <= occupied, f"expected iterate-plugin minors in tags, got {occupied}"
+    # The documented set must always be present (the plugin tags are a fixed
+    # fact of this shared repo; a silent tag deletion must not turn the check
+    # back into a contiguity demand).
+    assert {17, 18} <= occupied, f"expected iterate-plugin minors, got {occupied}"
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     missing_minors, missing_patches = _version_chain_gaps(changelog)
     assert missing_minors == []
     assert missing_patches == []
+
+
+def test_plugin_occupied_minors_documented_set_survives_no_tags(monkeypatch) -> None:
+    """A shallow checkout (no plugin tags) must still allow the skipped minors.
+
+    CI checks out main with a shallow fetch, so the plugin tags ``v3.17.0`` /
+    ``v3.18.0`` (which point off main's first-parent history) are not present.
+    ``_plugin_occupied_minors()`` must return the documented set regardless,
+    or the chain check would wrongly demand headings for 3.17 / 3.18 and turn a
+    green main red — exactly the failure this guards against.
+    """
+
+    # Simulate git being present but with no v3.*.0 plugin tags fetched.
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="", stderr=""),
+    )
+    occupied = _plugin_occupied_minors()
+    assert occupied == {17, 18}
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    missing_minors, _ = _version_chain_gaps(changelog)
+    assert missing_minors == []
 
 
 def test_version_chain_allows_skipped_patch_but_rejects_internal_gap() -> None:
