@@ -12,8 +12,14 @@ from __future__ import annotations
 import io
 import json
 import sys
+from pathlib import Path
 
 import pytest
+
+# CI runs `pytest tests/ -q` (not `python -m pytest`), so the repo root is not
+# on sys.path and `import iterate_cli` would fail at collection. Same pattern
+# as every other test module in this suite.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from iterate_cli.annotate import (
     Annotation,
