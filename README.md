@@ -379,6 +379,9 @@ iterate doctor --json-out report.json   # write JSON report to a file (auto-crea
 iterate doctor --fix      # apply safe, non-destructive fixes (auto timestamped backup), then re-run diagnostics
 iterate doctor --list-checks            # list every available check name and exit
 iterate doctor --check config.schema    # run only the named check(s); repeatable / comma-separated
+iterate doctor --annotate # in GitHub Actions, emit each finding as an inline PR annotation
+                          #   (::error / ::warning on stderr, so stdout stays clean);
+                          #   auto-enabled when GITHUB_ACTIONS=true, --no-annotate disables
 ```
 
 `--fix` only does items that can be safely auto-fixed, and always creates a timestamped backup of `iterate.config.yaml` (`.doctorfix-<timestamp>` suffix) before fixing. Destructive/ambiguous fixes are never applied automatically — they're reported for you to handle manually. Currently auto-fixable: `dimensions` de-dupe/empty-restore-to-default, `language` invalid value reset to `en`, `max_rounds` non-integer removal / out-of-range clamp to `[1, 50]`, `git.target_branch` empty reset to `main`, `onboarding.skill_version` sync to installed version.
@@ -563,6 +566,9 @@ iterate report --out report.md          # write it to a file (atomic; stdout sta
 iterate report --out report.md --force  # replace an existing report file
 iterate report --json                   # one structured JSON document for scripts
 iterate report --strict                 # warnings become blocking (exit 1), like doctor --strict
+iterate report --annotate               # in GitHub Actions, emit each finding as an inline PR
+                                        #   annotation (::error / ::warning on stderr); auto-enabled
+                                        #   when GITHUB_ACTIONS=true, --no-annotate disables
 ```
 
 The Markdown contains the tech stack, effective review configuration (target branch, scope, dimensions, dimension sets, validation/whitelist, personalization count), every doctor check as a table, drift + advice, and concrete next commands. Values are pipe/newline/backtick/HTML escaped, so the document is safe to paste as-is. `--out` refuses to overwrite an existing file (and iterate's own state files) unless `--force` is given, so a stray report can never clobber your notes. Exit code is `0` when healthy, `1` when the report is blocking (errors, plus warnings under `--strict`) — drop it into CI with no extra parsing.

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -78,6 +79,43 @@ def test_five_version_sources_agree() -> None:
     assert len(unique) == 1, f"version sources drifted: {versions}"
 
 
+def _plugin_occupied_minors() -> set[int]:
+    """Return minors whose ``v3.<m>.0`` tag belongs to iterate-plugin, not the skill.
+
+    The skill and iterate-plugin share this repo's tag namespace and both use a
+    3.x version line, so the plugin can occupy a **minor** tag the skill never
+    released (v3.17.0 / v3.18.0 are iterate-plugin releases). The skill's
+    CHANGELOG legitimately has no heading for those; demanding one would force
+    invented release notes, exactly like the patch-level 3.6.1 / 3.7.1 case the
+    chain check already tolerates. A skill release names ``iterate-skill`` in
+    its tag commit; a plugin release names ``iterate-plugin``.
+
+    Fail-safe: when git is unavailable the empty set is returned, which only
+    makes the chain check stricter (a real gap is still caught), never looser.
+    """
+    try:
+        output = subprocess.run(
+            ["git", "tag", "-l", "--format=%(refname:short)|%(subject)", "v3.*.0"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=REPO_ROOT,
+        ).stdout
+    except (subprocess.CalledProcessError, OSError):
+        return set()
+    occupied: set[int] = set()
+    for line in output.splitlines():
+        if "|" not in line:
+            continue
+        tag, subject = line.split("|", 1)
+        if "iterate-plugin" in subject and "iterate-skill" not in subject:
+            try:
+                occupied.add(int(tag.split(".")[1]))
+            except (IndexError, ValueError):
+                continue
+    return occupied
+
+
 def _version_chain_gaps(changelog: str) -> tuple[list[int], list[tuple[int, int]]]:
     """Return (missing minors, missing patches) for the 3.x release chain.
 
@@ -85,7 +123,10 @@ def _version_chain_gaps(changelog: str) -> tuple[list[int], list[tuple[int, int]
     patches must be contiguous from ``.0`` to that minor's highest patch. It
     deliberately does NOT demand a patch for every minor: the skill line
     skipped 3.6.1/3.7.1 (those tags belong to iterate-plugin), so demanding a
-    global 0..latest-patch range would force invented release notes.
+    global 0..latest-patch range would force invented release notes. For the
+    same reason a minor is allowed to be absent when its ``v3.<m>.0`` tag
+    belongs to iterate-plugin (v3.17.0 / v3.18.0) — the plugin line overtook
+    the skill's minor line and occupies those numbers.
     """
     patches_by_minor: dict[int, set[int]] = {}
     for line in changelog.splitlines():
@@ -96,7 +137,12 @@ def _version_chain_gaps(changelog: str) -> tuple[list[int], list[tuple[int, int]
             if len(parts) == 3 and parts[0] == "3":
                 patches_by_minor.setdefault(int(parts[1]), set()).add(int(parts[2]))
     latest_minor = max(patches_by_minor)
-    missing_minors = [m for m in range(4, latest_minor + 1) if m not in patches_by_minor]
+    occupied = _plugin_occupied_minors()
+    missing_minors = [
+        m
+        for m in range(4, latest_minor + 1)
+        if m not in patches_by_minor and m not in occupied
+    ]
     missing_patches = sorted(
         (m, p)
         for m, patches in patches_by_minor.items()
@@ -112,12 +158,34 @@ def test_changelog_version_chain_has_no_gaps() -> None:
     A release-notes block that lost its ``## [x.y.z]`` heading (the 3.4.1
     orphan) silently merges into the neighbouring release, so the patch
     history is unreadable and the next version is mis-numbered. Lock the
-    invariant that the 3.x series is contiguous from 3.4.0 upward.
+    invariant that the 3.x series is contiguous from 3.4.0 upward, with the
+    single carve-out that a minor whose ``v3.<m>.0`` tag belongs to
+    iterate-plugin (see :func:`_plugin_occupied_minors`) may be absent.
     """
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     missing_minors, missing_patches = _version_chain_gaps(changelog)
     assert not missing_minors, f"CHANGELOG.md is missing minor headings for 3.{missing_minors}"
     assert not missing_patches, f"CHANGELOG.md is missing headings for 3.{missing_patches}"
+
+
+def test_plugin_occupied_minor_is_not_demanded() -> None:
+    """A minor whose tag is iterate-plugin's may be absent from the skill CHANGELOG.
+
+    The plugin line overtook the skill's minor line (plugin at 3.20.0, skill at
+    3.16.0), so ``v3.17.0`` / ``v3.18.0`` are iterate-plugin release tags and
+    the skill's chain legitimately jumps 3.16.0 -> 3.19.0 without headings for
+    them. Reporting those as gaps would demand invented release notes, which is
+    exactly what the patch-level 3.6.1 / 3.7.1 carve-out already avoids. The
+    chain must stay green and the real CHANGELOG must be gap-free.
+    """
+    occupied = _plugin_occupied_minors()
+    # The repo really does carry those plugin tags (guards against a silent
+    # tag deletion silently turning the check back into a contiguity demand).
+    assert {17, 18} <= occupied, f"expected iterate-plugin minors in tags, got {occupied}"
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    missing_minors, missing_patches = _version_chain_gaps(changelog)
+    assert missing_minors == []
+    assert missing_patches == []
 
 
 def test_version_chain_allows_skipped_patch_but_rejects_internal_gap() -> None:

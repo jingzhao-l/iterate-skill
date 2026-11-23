@@ -566,6 +566,7 @@ def _dispatch_command(
             strict=getattr(args, "strict", False),
             json_output=getattr(args, "json", False),
             force=getattr(args, "force", False),
+            annotate=_annotate_from_args(args),
         )
     if args.command == "export":
         if show_banner:
@@ -602,6 +603,7 @@ def _dispatch_command(
             json_out=getattr(args, "json_out", None),
             check=getattr(args, "check", None),
             list_checks=getattr(args, "list_checks", False),
+            annotate=_annotate_from_args(args),
         )
     if args.command == "config":
         if show_banner:
@@ -980,6 +982,21 @@ def _build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Emit a structured JSON report instead of Markdown.",
     )
+    report_annotate = report_parser.add_mutually_exclusive_group()
+    report_annotate.add_argument(
+        "--annotate",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit GitHub Actions workflow commands (::error/::warning) for "
+        "each finding on stderr, so a CI run annotates the PR diff inline. "
+        "Auto-enabled when GITHUB_ACTIONS=true; --no-annotate disables it.",
+    )
+    report_annotate.add_argument(
+        "--no-annotate",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Disable GitHub Actions annotations even when GITHUB_ACTIONS=true.",
+    )
     export_parser = subparsers.add_parser(
         "export",
         parents=[parent],
@@ -1116,6 +1133,23 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Print every available check name and exit (no diagnostics run).",
+    )
+    doctor_annotate = doctor_parser.add_mutually_exclusive_group()
+    doctor_annotate.add_argument(
+        "--annotate",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit GitHub Actions workflow commands (::error/::warning) for "
+        "each finding on stderr, so a CI run annotates the PR diff inline "
+        "instead of hiding the failure in the job log. Auto-enabled when "
+        "GITHUB_ACTIONS=true; --no-annotate disables it.",
+    )
+    doctor_annotate.add_argument(
+        "--no-annotate",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Disable GitHub Actions annotations even when GITHUB_ACTIONS=true "
+        "(for teams that prefer plain job logs).",
     )
     config_parser = subparsers.add_parser(
         "config",
@@ -2354,6 +2388,7 @@ def _cmd_report(
     strict: bool = False,
     json_output: bool = False,
     force: bool = False,
+    annotate: bool | None = None,
 ) -> int:
     """Handle ``iterate report`` — aggregated Markdown/JSON health report.
 
@@ -2361,6 +2396,10 @@ def _cmd_report(
     the CLI contract: protect iterate's own state files from ``--out``, write
     atomically, honour the "one JSON document on stdout" promise, and mirror
     ``doctor``'s exit code (errors block; ``--strict`` adds warnings).
+
+    ``annotate`` (from ``--annotate``/``--no-annotate``/GITHUB_ACTIONS) emits
+    GitHub Actions workflow commands on stderr for each finding, so a CI run
+    annotates the PR diff inline without corrupting the stdout document.
     """
     from iterate_cli.generator import atomic_write
     from iterate_cli.report import build_report, render_markdown, report_json
@@ -2370,6 +2409,18 @@ def _cmd_report(
         return _bundle_failure(message, json_output, code=2)
 
     payload = build_report(project_root, strict=strict)
+    from iterate_cli.annotate import (
+        annotations_from_findings,
+        emit,
+        enabled_from_args,
+    )
+
+    if enabled_from_args(annotate):
+        emit(
+            annotations_from_findings(
+                (payload.get("doctor") or {}).get("findings") or []
+            )
+        )
     text = report_json(payload) if json_output else render_markdown(payload)
     code = 1 if payload["summary"]["blocking"] else 0
 
@@ -2413,6 +2464,20 @@ def _cmd_report(
     # stderr-only so `report --out x > y` cannot interleave text.
     print(f"report: written to {target}", file=sys.stderr)
     return code
+
+
+def _annotate_from_args(args: argparse.Namespace) -> bool | None:
+    """Resolve the doctor/report ``--annotate``/``--no-annotate`` tri-state.
+
+    Returns ``True`` (annotate), ``False`` (no-annotate) or ``None``
+    (auto-detect). The two flags are mutually exclusive at parse time, so at
+    most one of ``annotate`` / ``no_annotate`` is present on ``args``.
+    """
+    if getattr(args, "no_annotate", False):
+        return False
+    if getattr(args, "annotate", False):
+        return True
+    return None
 
 
 def _emit_json_failure(message: str, args: argparse.Namespace) -> None:
@@ -3189,6 +3254,7 @@ def _cmd_doctor(
     json_out: str | None = None,
     check: list[str] | None = None,
     list_checks: bool = False,
+    annotate: bool | None = None,
 ) -> int:
     """Handle the 'doctor' subcommand — project health diagnostics.
 
@@ -3207,6 +3273,10 @@ def _cmd_doctor(
     When ``check`` is given, only those named checks run (the preamble a
     config-dependent check needs still runs silently, surfacing only errors).
 
+    ``annotate`` (from ``--annotate``/``--no-annotate``/GITHUB_ACTIONS) emits
+    GitHub Actions workflow commands on stderr for each finding, so a CI run
+    annotates the PR diff inline without corrupting the stdout document.
+
     Args:
         project_root: Project root directory.
         json_output: When True, emit a structured JSON report.
@@ -3215,6 +3285,7 @@ def _cmd_doctor(
         json_out: When set, export the JSON report to this path.
         check: Optional list of check names to run (None = all checks).
         list_checks: When True, list the available check names and exit.
+        annotate: Tri-state for GitHub Actions annotations (None = auto).
 
     Returns:
         Exit code: 0 when healthy, 1 when errors are found (or warnings too
@@ -3362,6 +3433,16 @@ def _cmd_doctor(
     # --json and --json-out) see them without the report being polluted by
     # TUI text or the fixes list being dropped from the exported file.
     report.fixes = fixes
+    # GitHub Actions annotations go to stderr, so the JSON/TUI output on
+    # stdout stays byte-identical whether or not the run is in CI.
+    from iterate_cli.annotate import (
+        annotations_from_findings,
+        emit,
+        enabled_from_args,
+    )
+
+    if enabled_from_args(annotate):
+        emit(annotations_from_findings(report.findings))
     code = render_report(report, json_output=json_output, strict=strict)
 
     if json_out:
