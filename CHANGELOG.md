@@ -5,6 +5,43 @@
 
 ---
 
+## [3.19.0] — 2026-11-23
+
+minor：新增 `iterate doctor --annotate` / `iterate report --annotate`——在
+GitHub Actions 里把每条诊断 finding 输出为工作流命令（`::error` /
+`::warning`），GitHub 会把它渲染成 PR 的 **Files changed / Checks 视图内联注释**。
+此前 CI 里 `iterate doctor` 失败只会在 job 日志里留下一段文本，开发者必须打开
+日志、按检查名去找问题；现在失败直接钉在 PR 对应的文件上，无需翻日志。
+`--json` 的 stdout 承诺（恰好一个 JSON 文档）不受影响：注释写到 **stderr**，
+GitHub 会从任一数据流解析工作流命令。`GITHUB_ACTIONS=true` 时自动开启，
+`--no-annotate` 可关闭；`--annotate`/`--no-annotate` 互斥（同传是用法错误，退出码 2）。
+测试套件 2078 → 2103（新增 25 个回归：转义规则、render/emit、finding→注释映射、
+`--annotate`/`--no-annotate`/自动判定，以及 CLI 级 doctor 接线与 `--json` stdout 纯净性）。
+
+> 版本号说明：3.16.0 → 3.19.0（跳过 3.17.0/3.18.0）。这两级已被同仓的
+> `iterate-plugin` 版本线占用（tag v3.17.0 / v3.18.0 指向 plugin 发布提交），
+> skill 的 minor 升版无法复用同名 tag，故取下一个空闲的 v3.19.0。
+
+### 新增功能
+- **`iterate doctor --annotate` / `iterate report --annotate`**（+25 回归）：
+  把 doctor/report 的 warn/error finding 输出为 GitHub Actions 工作流命令。
+  每条 `::error file=iterate.config.yaml::…` / `::warning file=ITERATE.md::…`，
+  `file` 按检查归属钉到 `iterate.config.yaml` 或 `ITERATE.md`；passing（ok）
+  finding 不输出（健康运行不产生噪音）。自动判定：`--annotate` 强制开、
+  `--no-annotate` 强制关、否则看 `GITHUB_ACTIONS` 环境变量（true 才开）。
+  消息与属性按 GitHub 规范转义（`%`→`%25`、CR/LF→`%0D`/`%0A`，属性额外
+  `:`→`%3A`、`,`→`%2C`），含 `%`/换行/逗号路径的 finding 也不会破坏注释。
+  纯格式化/emit 逻辑在 `iterate_cli/annotate.py`，与 doctor/report 解耦，
+  可供未来任何诊断命令复用。
+
+### 全面审查结论
+本轮调用 review-bugbot 对 `iterate_cli/` 全部实现做只读全面审查（正确性、
+边界条件、异常处理、规范一致性、潜在缺陷），**未发现可复现的具体缺陷**——
+代码库已高度加固，所有候选点复核后均为契约一致的 fail-closed 设计或不可
+触发的理论路径（详见会话审查记录）。
+
+---
+
 ## [3.16.0] — 2026-11-20
 
 minor：新增 `iterate scan --compare`——把「扫描建议」与「当前配置」放在一起
