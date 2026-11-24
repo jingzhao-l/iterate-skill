@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  canonicalJson,
   decisionOutcomeFromEvidence,
   decisionSummaryFromEvidence,
   parseDecisionLogEntry,
@@ -205,4 +206,45 @@ test("the value the read path folds is exactly what this mapping now demands", (
     assert.doesNotThrow(() => parseDecisionLogEntry(entryFor(folded)), file);
     assert.throws(() => decisionOutcomeFromEvidence(archived), /evidence pack/, `${file}: the raw archive is not a pack`);
   }
+});
+
+
+// ---------------------------------------------------------------- boundary truncation
+// `decisionSummaryFromEvidence` truncates by UTF-16 code unit (`slice(0, 2045)`), which
+// can cut an astral character in half: an emoji in a `circuitBreaker` reason landing on the
+// boundary leaves a lone high surrogate at the end. The summary schema accepts that unit
+// string, but `canonicalJson` refuses it — so a producer would hold a rendered summary it
+// cannot hash into an entry, and the failure would surface only at append time. The cut
+// must back up to a code-point boundary.
+test("a truncated summary never ends on a lone surrogate", () => {
+  // Build the summary that overflows the cap with the emoji high surrogate sitting exactly
+  // on the last kept unit. The reason is the only overflow-length field, so measure the
+  // prefix before it with a short probe and place the surrogate on the boundary — the
+  // offset is computed, not guessed. A code-unit cut there amputates the low half, leaving
+  // an unpaired surrogate the schema accepts but `canonicalJson` refuses: the producer
+  // would hold a rendered summary it cannot hash into an entry.
+  const probe = decisionSummaryFromEvidence(pack({ circuitBreaker: { level: 1, reason: "MARK" } }));
+  const prefix = probe.indexOf("MARK");
+  assert.ok(prefix > 0, "the reason is rendered last-ish; a probe should find its marker");
+  const keep = 2048 - 3; // the buggy cut keeps these units
+  const reasonOffset = keep - prefix - 1; // -1: the high surrogate occupies this slot
+  const reason = "A".repeat(reasonOffset) + "\ud83d\ude00" + "B".repeat(50);
+  const evidence = parseEvidencePackRead(pack({ circuitBreaker: { level: 1, reason } }));
+  const summary = decisionSummaryFromEvidence(evidence);
+  assert.ok(summary.length <= 2048, "the boundary case still truncates to the cap");
+  const loneSurrogate = (s) => {
+    for (let i = 0; i < s.length; i++) {
+      const u = s.charCodeAt(i);
+      if (u >= 0xd800 && u <= 0xdbff) {
+        const n = s.charCodeAt(i + 1);
+        if (!(n >= 0xdc00 && n <= 0xdfff)) return true;
+        i++;
+      } else if (u >= 0xdc00 && u <= 0xdfff) return true;
+    }
+    return false;
+  };
+  assert.equal(loneSurrogate(summary), false, "the truncated summary must not carry an unpaired surrogate");
+  // the real property: the producer can hash what it rendered
+  assert.doesNotThrow(() => canonicalJson({ summary }));
+  assert.doesNotThrow(() => parseDecisionLogEntry(entryFor(evidence)));
 });

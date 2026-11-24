@@ -650,3 +650,28 @@ test("an append onto an unterminated ledger refuses before any write", () => {
 });
 
 
+
+
+// ---------------------------------------------------------------- unhashable summary
+// `verifyDecisionLogText` documents itself as "Never throws: a broken chain is a
+// result". A foreign producer can hand-write a canonical-shaped line whose free-text
+// `summary` carries an unpaired surrogate: `JSON.parse` accepts the `\ud83d` escape and
+// the schema accepts it (`z.string().max` counts UTF-16 code units, not characters), but
+// the entry has no canonical form — `canonicalJson` refuses a lone surrogate. The
+// comparison against the stored bytes therefore must be reported as a `corrupt` line, not
+// thrown out of a reader that promised to say where the ledger broke.
+test("a summary carrying an unpaired surrogate is a reported result, not a throw", () => {
+  const genesis = JSON.stringify({
+    entryId: newDecisionEntryId(0),
+    sequence: 0,
+    prevEntryHash: "",
+    summary: "\ud83d",
+    outcome: "pass",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const verified = verifyDecisionLogText(`${genesis}\n`);
+  assert.equal(verified.ok, false, "an entry with no canonical form cannot verify");
+  assert.equal(verified.brokenKind, "corrupt");
+  assert.equal(verified.firstBrokenLine, 1);
+  assert.match(verified.reason ?? "", /canonical/i);
+});

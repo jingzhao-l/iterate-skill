@@ -106,7 +106,17 @@ export function decisionSummaryFromEvidence(evidence: EvidencePack): string {
   parts.push(`attribution ${pack.attribution.level}${pack.attribution.contaminated ? ", contaminated" : ""}`);
   const summary = parts.join("; ");
   const ellipsis = "...";
-  return summary.length > SUMMARY_MAX_LENGTH
-    ? `${summary.slice(0, SUMMARY_MAX_LENGTH - ellipsis.length)}${ellipsis}`
-    : summary;
+  if (summary.length <= SUMMARY_MAX_LENGTH) return summary;
+  // Truncate on a code-point boundary: `String.slice` counts UTF-16 code units, so a cut
+  // landing between the two halves of an astral character (an emoji in a `circuitBreaker`
+  // reason, say) would leave a lone surrogate at the end. The summary schema accepts that
+  // (`z.string().max` counts units too), but `canonicalJson` refuses a lone surrogate — so
+  // the producer would hold a rendered summary it cannot hash into an entry, and the failure
+  // would surface only downstream at append time. Back up over any high surrogate whose low
+  // half the cut would amputate.
+  const keep = SUMMARY_MAX_LENGTH - ellipsis.length;
+  let cut = keep;
+  const dropped = summary.charCodeAt(keep - 1);
+  if (dropped >= 0xd800 && dropped <= 0xdbff) cut -= 1;
+  return `${summary.slice(0, cut)}${ellipsis}`;
 }

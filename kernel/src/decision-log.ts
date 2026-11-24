@@ -219,7 +219,23 @@ export function verifyDecisionLogText(text: string): DecisionLogVerification {
         `line ${lineNumber} declares sequence ${entry.sequence}, expected ${i} (sequences start at 0 and rise by one)`
       );
     }
-    if (canonicalJson(entry) !== raw) {
+    // `canonicalJson` can itself refuse — an entry whose `summary` carries an unpaired
+    // surrogate passes the schema (`z.string().max` counts code units, not characters) but
+    // has no canonical form, so the comparison below would throw out of a function that
+    // promises never to. A line whose bytes cannot be reproduced canonically is exactly a
+    // "not stored in canonical form" result, so a refusal here is reported, not thrown.
+    let stored: string;
+    try {
+      stored = canonicalJson(entry);
+    } catch (error) {
+      return broken(
+        entries,
+        "corrupt",
+        lineNumber,
+        `line ${lineNumber} cannot be reproduced in canonical JSON form (${(error as Error).message}), so its hash cannot be recomputed from the bytes on disk`
+      );
+    }
+    if (stored !== raw) {
       return broken(
         entries,
         "corrupt",
