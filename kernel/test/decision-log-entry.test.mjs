@@ -165,11 +165,27 @@ test("documented divergence: a payload integer outside ±2^53−1 is refused, JS
     assert.equal(validate(entry), true, `ajv has no way to bound a payload integer (${label})`);
     assert.throws(() => parseDecisionLogEntry(entry), KernelSchemaError, `zod must refuse the ${label}-range integer`);
   }
-  // A boundary value inside the range still parses, and a non-integer float is not a
-  // canonicalisation hazard (2.5 prints identically on both sides).
+  // A boundary value inside the range still parses.
   const exact = structuredClone(extended);
-  exact.payload = { n: 2 ** 53 - 1, f: 2.5 };
-  assertBothSidesAccept(exact, "payload integer at the +2^53−1 boundary and a non-integer float");
+  exact.payload = { n: 2 ** 53 - 1 };
+  assertBothSidesAccept(exact, "payload integer at the +2^53−1 boundary");
+});
+
+test("documented divergence: a payload float is refused, JSON Schema cannot state it", () => {
+  // The Python half of this contract (`canonical_json.py`) refuses EVERY float
+  // (`CANONICAL_JSON_E_VALUE`): its integer branch is the only number path, and
+  // `JSON.stringify` drops a trailing `.0` that Python's repr keeps, so the two
+  // would not agree on non-integral values. A TS ledger line carrying a float
+  // payload therefore digests to bytes the Python verifier cannot recompute —
+  // `canonical_json` raises before it can hash, and `_validate_entry_fields`
+  // refuses the entry outright. Same validator-only class as the integer bound
+  // above: ajv accepts a `type: number`, so the zod side must refuse.
+  for (const [label, f] of [["fractional", 2.5], ["small", 0.1], ["exponent", 1e21], ["negative exponent", 1e-7]]) {
+    const entry = structuredClone(extended);
+    entry.payload = { ratio: f };
+    assert.equal(validate(entry), true, `ajv has no way to bound a payload float (${label})`);
+    assert.throws(() => parseDecisionLogEntry(entry), KernelSchemaError, `zod must refuse the ${label} float`);
+  }
 });
 
 test("payload contents are structured, not stringified, and stay inside the entry hash", () => {

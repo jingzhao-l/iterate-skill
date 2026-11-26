@@ -105,6 +105,37 @@ export function outOfRangePayloadIntegers(value: unknown, path = ""): string[] {
   return out;
 }
 
+/**
+ * Paths of every non-integral number in a raw payload value.
+ *
+ * The Python half of this contract (`canonical_json.py`) refuses EVERY float with
+ * `CANONICAL_JSON_E_VALUE`: its `int` branch is the only number path it has, and
+ * `JSON.stringify` drops a trailing `.0` that Python's repr keeps (and renders
+ * `1e-7`/`1e+21` where Python prints `1e-07`/`1000000000000000000000`), so the two
+ * cannot agree on non-integral bytes. This side digests the payload into the ledger,
+ * so a float payload would hash to bytes the Python verifier cannot recompute — it
+ * raises before it can hash and refuses the entry outright. Refused here for the same
+ * reason as the out-of-range integer: not "too precise", but "no form both readers
+ * print alike".
+ */
+export function nonIntegralPayloadFloats(value: unknown, path = ""): string[] {
+  if (typeof value === "number") {
+    if (!Number.isInteger(value)) return [path === "" ? "<root>" : path];
+    return [];
+  }
+  if (typeof value !== "object" || value === null) return [];
+  const out: string[] = [];
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => out.push(...nonIntegralPayloadFloats(item, `${path}[${index}]`)));
+    return out;
+  }
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    const child = `${path === "" ? "" : path + "."}${key}`;
+    out.push(...nonIntegralPayloadFloats((value as Record<string, unknown>)[key], child));
+  }
+  return out;
+}
+
 export const DecisionOutcomeSchema = z.enum(["pass", "fail", "blocked", "inconclusive"]);
 export type DecisionOutcome = z.infer<typeof DecisionOutcomeSchema>;
 
@@ -170,6 +201,13 @@ export const DecisionLogEntrySchema = z.strictObject({
           code: z.ZodIssueCode.custom,
           path: ["payload"],
           message: `\`payload.${intPath}\` carries an integer outside ±2^53−1, which ECMAScript and Python print as two different byte sequences — a digest over it could not be recomputed by every reader`
+        });
+      }
+      for (const floatPath of nonIntegralPayloadFloats(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["payload"],
+          message: `\`payload.${floatPath}\` carries a non-integral number, which the Python half of this contract refuses outright (\`CANONICAL_JSON_E_VALUE\`) — ECMAScript and Python cannot print the same bytes for it, so a digest over it could not be recomputed by every reader`
         });
       }
     })
