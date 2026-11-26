@@ -14,7 +14,7 @@ run-summary 页；并新增一份捆绑的 GitHub Actions CI workflow 模板
 （`iterate template show ci-workflow`），把 `--annotate` + `--github-summary`
 + JSON artifact 接成可直接粘贴的 `.github/workflows/iterate.yml`。
 此前在 CI 里这份报告只能靠翻 job 日志或下载 artifact 才看得到，现在它直接
-出现在开发者本来就会看的 run-summary 块。测试套件 2104 → 2155。
+出现在开发者本来就会看的 run-summary 块。测试套件 2104 → 2121。
 
 ### 新增功能
 - **`iterate report --github-summary`**（+18 回归）：把 Markdown 报告追加到
