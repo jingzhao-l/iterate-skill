@@ -30,17 +30,20 @@ def _run(*args: str) -> int:
 
 
 class TestRegistry:
-    def test_exposes_three_canonical_templates(self) -> None:
+    def test_exposes_four_canonical_templates(self) -> None:
         assert set(TEMPLATE_REGISTRY) == {
             "ITERATE.template.md",
             "onboarding-playbook.md",
             "iterate-decisions.template.md",
+            "ci-workflow.yml",
         }
 
     def test_resolve_accepts_friendly_aliases(self) -> None:
         assert resolve_template("iterate") == "ITERATE.template.md"
         assert resolve_template("playbook") == "onboarding-playbook.md"
         assert resolve_template("decisions") == "iterate-decisions.template.md"
+        assert resolve_template("ci") == "ci-workflow.yml"
+        assert resolve_template("ci-workflow") == "ci-workflow.yml"
         assert resolve_template("nope") is None
 
     def test_every_registered_template_exists_on_disk(self) -> None:
@@ -127,6 +130,7 @@ class TestCliTemplate:
         assert "ITERATE.template.md" in out
         assert "onboarding-playbook.md" in out
         assert "iterate-decisions.template.md" in out
+        assert "ci-workflow.yml" in out
 
     def test_list_json_is_single_document(self, capsys) -> None:
         capsys.readouterr()
@@ -134,8 +138,17 @@ class TestCliTemplate:
         out = capsys.readouterr().out
         assert code == 0
         payload = json.loads(out)
-        assert len(payload["templates"]) == 3
+        assert len(payload["templates"]) == 4
         assert all(t["exists"] for t in payload["templates"])
+
+    def test_show_ci_workflow_template(self, capsys) -> None:
+        capsys.readouterr()
+        code = _run("show", "ci-workflow")
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "name: iterate" in out
+        assert "--github-summary" in out
+        assert "--annotate" in out
 
     def test_show_prints_content_verbatim(self, capsys) -> None:
         capsys.readouterr()
